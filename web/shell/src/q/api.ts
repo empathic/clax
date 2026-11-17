@@ -7,6 +7,7 @@
 // throws an `ApiError` coded so, saying where to confirm; any other
 // failure throws an `ApiError`.
 import { HELD, heldOf } from "../held";
+import { readJson } from "../failure";
 import { ApiError, type AnswerBody, type InboxFilter, type InboxGroupPage, type InboxItem, type InboxPage, type InboxSummary, type QuestionView, type StripAgent } from "../api";
 
 export type Forbidden = "forbidden";
@@ -21,12 +22,12 @@ async function call<T>(path: string, init?: RequestInit, closed = false): Promis
   // Held for the owner's confirmation: where to confirm, not a result.
   const held = await heldOf(res);
   if (held) throw new ApiError(202, held.message, HELD);
-  if (res.ok) return (await res.json()) as T;
   if (res.status === 403) return "forbidden";
-  let body: { error?: { code?: string; message?: string }; question?: QuestionView } = {};
-  try { body = await res.json(); } catch { /* not json */ }
-  if (closed && res.status === 409 && body.question) return { closed: body.question };
-  throw new ApiError(res.status, body.error?.message ?? res.statusText, body.error?.code ?? null);
+  if (closed && res.status === 409) {
+    const body = (await res.clone().json().catch(() => ({}))) as { question?: QuestionView };
+    if (body.question) return { closed: body.question };
+  }
+  return readJson<T>(res);
 }
 const get = <T>(path: string) => call<T>(path) as Promise<T | Forbidden>;
 const post = <T>(path: string, body?: unknown) =>

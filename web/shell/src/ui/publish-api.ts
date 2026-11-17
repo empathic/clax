@@ -1,7 +1,8 @@
 // The local daemon's remotes and pushes the Publish button uses
 // (docs/contract.md "Publishing to a public Clax"). Loaded with the button,
 // after the first paint. A hosted daemon answers none of them (404).
-import { ApiError, getToken } from "../api";
+import { getToken } from "../api";
+import { ApiError, readJson } from "../failure";
 import { HELD, heldFetch, heldOf } from "../held";
 
 /** A public Clax this Clax is signed in to (never its token); while its
@@ -55,17 +56,7 @@ async function answer<T>(res: Response): Promise<T> {
   // confirmed here with a passkey (`heldFetch`): where to confirm.
   const held = await heldOf(res);
   if (held) throw new ApiError(202, held.message, HELD);
-  if (!res.ok) {
-    let msg = res.statusText;
-    let code: string | null = null;
-    try {
-      const e = (await res.json()).error;
-      msg = e?.message ?? msg;
-      code = e?.code ?? null;
-    } catch { /* not JSON */ }
-    throw new ApiError(res.status, msg, code);
-  }
-  return res.json() as Promise<T>;
+  return readJson<T>(res);
 }
 
 /** Artifact `id`'s public twins and the remotes it could go to. */

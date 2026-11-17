@@ -21,9 +21,9 @@
   // who opens the panel, a line when the clax is served unrestricted.
   import { onMount, tick, untrack } from "svelte";
   import { fromStore } from "svelte/store";
-  import { ApiError, getToken } from "../api";
+  import { getToken } from "../api";
   import type { ArtifactController } from "../view/artifact-controller";
-  import { failureText } from "../failure";
+  import { failureText, readError, readJson } from "../failure";
   import { type ContentSecurityPolicy, setContentSecurityPolicy } from "../hosted/api";
   import { policyOf } from "../view/artifact-controller";
   import ApprovalDialog from "./ApprovalDialog.svelte";
@@ -57,8 +57,7 @@
     try {
       token = await getToken();
       const res = await fetch(`/api/artifacts/${ctl.id}/permissions`, { headers: auth() });
-      if (!res.ok) throw new ApiError(res.status, res.statusText);
-      answer = { ...(await res.json()), id: ctl.id } as PermissionsView;
+      answer = { ...(await readJson<object>(res)), id: ctl.id } as PermissionsView;
       rows = permissionRows(answer, (await ctl.host?.grantState("comments")) ?? null);
       error = null;
     } catch (e) {
@@ -123,11 +122,7 @@
         // The view reloads when what is served shrinks; the panel reopens then.
         if (withdrawing) remember(true);
         const res = await fetch(r.revoke.path, { method: r.revoke.method, headers: auth() });
-        if (!res.ok && res.status !== 404) {
-          let msg = res.statusText;
-          try { msg = (await res.json()).error?.message ?? msg; } catch { /* not json */ }
-          throw new ApiError(res.status, msg);
-        }
+        if (!res.ok && res.status !== 404) throw await readError(res);
         if (r.key === "sample") await ctl.host?.revoke("sample");
       }
       error = null;

@@ -150,7 +150,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 
   it("shows the raw error for other failures, even when the text contains 404", async () => {
-    const view = await mountView(async () => new Response(JSON.stringify({ error: { message: "port 4040 or 404 busy" } }), { status: 500 }));
+    const view = await mountView(async () => new Response(JSON.stringify({ error: { code: "internal", message: "port 4040 or 404 busy" } }), { status: 500 }));
     const root = view.root;
     await waitFor(() => root.textContent?.includes("port 4040"), "error message");
     expect(root.textContent).not.toContain("Artifact not found");

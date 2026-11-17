@@ -1,4 +1,60 @@
-import { ApiError } from "./api";
+// Why a request failed, and what the person is told. Every request helper
+// reads a refusal through `readError` and a body through `readJson`, so the
+// daemon's code is never dropped and an answer that is not Clax's (a proxy's
+// or a CDN's page: a 530 "error code: 1016", an HTML 502, a 200 HTML page
+// where JSON was asked for) is told apart from Clax's own refusal.
+
+/** Why a request failed: `offline` (the browser says so), `unreachable` (no
+ * answer), `not_clax` (an answer that is not Clax's), and for Clax's own
+ * refusals `signed_out`, `gone` (deleted), `limited` (too many requests),
+ * `server` (Clax failed) and `refused` (any other refusal). */
+export type Trouble = "offline" | "unreachable" | "not_clax" | "signed_out" | "gone" | "limited" | "server" | "refused";
+
+/** A non-OK answer; `status` is the HTTP status code, `code` the daemon's
+ * error code and `reason` its message (without the status); `clax` whether
+ * the answer was Clax's (a JSON body naming `error.code`). */
+export class ApiError extends Error {
+  readonly reason: string;
+  constructor(public status: number, message: string, public code: string | null = null, readonly clax = code !== null) {
+    super(`${status} ${message}`);
+    this.name = "ApiError";
+    this.reason = message;
+  }
+}
+
+/** `res`, a refusal, as an `ApiError`: Clax's when its body is JSON naming
+ * `error.code` (its message the reason), else one that is not Clax's. */
+export async function readError(res: Response): Promise<ApiError> {
+  let e: { code?: unknown; message?: unknown } | undefined;
+  try { e = JSON.parse(await res.text())?.error; } catch { /* not JSON: not Clax's */ }
+  const code = typeof e?.code === "string" ? e.code : null;
+  return new ApiError(res.status, code !== null && typeof e?.message === "string" ? e.message : "", code);
+}
+
+/** `res`'s JSON body (`{}` for a 204); a refusal throws `readError`'s, and
+ * an answer that is not JSON (a page served with 200) throws one that is
+ * not Clax's. */
+export async function readJson<T>(res: Response): Promise<T> {
+  if (!res.ok) throw await readError(res);
+  if (res.status === 204) return {} as T;
+  try { return (await res.json()) as T; } catch { throw new ApiError(res.status, ""); }
+}
+
+/** Why `e`, anything a request threw, failed; `online` is the browser's
+ * `navigator.onLine`. A request with no answer is fetch's `TypeError` or a
+ * `DOMException` (aborted, timed out); an error that is no request's is
+ * `refused`. */
+export function classify(e: unknown, online = typeof navigator === "undefined" || navigator.onLine !== false): Trouble {
+  if (e instanceof ApiError) {
+    if (!e.clax) return online ? "not_clax" : "offline";
+    if (e.status === 401 && e.code !== "guest_name_required") return "signed_out";
+    if (e.status === 404 && e.code === "not_found") return "gone";
+    if (e.status === 429) return "limited";
+    return e.status >= 500 ? "server" : "refused";
+  }
+  if (e instanceof TypeError || e instanceof DOMException) return online ? "unreachable" : "offline";
+  return e instanceof SyntaxError ? "not_clax" : "refused";
+}
 
 export const SEND_FAILED = "Could not send to the agent";
 export const RESOLVE_FAILED = "Could not resolve";

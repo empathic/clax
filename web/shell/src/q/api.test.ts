@@ -51,7 +51,8 @@ describe("question and inbox fetchers", () => {
     const e = await answerQuestion("q", { answers: [] }).catch(x => x);
     expect(e).toBeInstanceOf(ApiError);
     expect(e).toMatchObject({ status: 400, code: "invalid_answer", message: "400 \"Notes\": it has no answer" });
-    await expect(declineQuestion("q")).rejects.toMatchObject({ status: 500, code: null, message: "500 Internal Server Error" });
+    // A body that is not Clax's (no JSON `error.code`) is read as such.
+    await expect(declineQuestion("q")).rejects.toMatchObject({ status: 500, code: null, clax: false, reason: "" });
     // Outside the closing verbs a 409 is an error like any other.
     await expect(markInbox("i", true)).rejects.toMatchObject({ status: 409 });
   });
