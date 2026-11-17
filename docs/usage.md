@@ -61,8 +61,12 @@ named. `clax init` writes the Clax plugins built into that binary to
 your `PATH` (Claude Code, Codex, Pi and Grok Build), and sets the `bin`
 setting in `~/.clax/config.toml` to itself, so the plugins run your build
 rather than the release they pin. The registration replaces any older one,
-including registrations under Clax's previous name. Start a new session in
-each harness afterwards. Moving or deleting the clone afterwards changes
+including registrations under Clax's previous name. When Pi's
+`settings.json` already lists the Clax Pi package from npm
+(`npm:@empathic/clax-pi`) or from git, `clax init` keeps that registration,
+adds no copy of its own for Pi, and says how to switch (`pi remove
+<source>`, then `clax init` again): Pi does not start with two copies. Start a new
+session in each harness afterwards. Moving or deleting the clone afterwards changes
 nothing.
 
 For Codex, `clax init` also offers, once, to approve the Clax tools that
