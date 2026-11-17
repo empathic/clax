@@ -655,7 +655,7 @@ async fn a_parked_run_leaves_no_engine_running() {
             case.name
         );
     }
-    assert!(sandbox.wait_abandoned_at_most(0, THREAD_END));
+    assert!(sandbox.wait_abandoned_at_most(0, HANG));
     let fine = run(&sandbox, "return 1", Limits::default()).await;
     assert_eq!(fine.value, Some(json!(1)), "{fine:?}");
 }

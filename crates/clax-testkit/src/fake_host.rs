@@ -27,8 +27,10 @@
 
 mod memory;
 mod replay;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod retries;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests;
 

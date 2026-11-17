@@ -76,6 +76,7 @@ impl Tally {
     }
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

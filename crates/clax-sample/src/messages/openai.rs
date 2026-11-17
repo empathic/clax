@@ -195,6 +195,7 @@ fn tool_message(id: &str, content: &Value, is_error: bool) -> Value {
 /// The streaming request body of `req` for the host at `base_url`.
 /// The Chat Completions body of `req`, each tool's schema its
 /// [`super::Tool::input_schema`].
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 pub(super) fn body(req: &MessagesRequest, base_url: &str) -> Value {
     body_marked(req, base_url, false)

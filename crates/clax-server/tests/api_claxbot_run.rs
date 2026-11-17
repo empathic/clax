@@ -977,9 +977,8 @@ async fn a_run_stopped_by_a_model_error_shows_the_providers_answer_to_its_person
         .send()
         .await
         .unwrap();
-    let body = tokio::time::timeout(clax_testkit::HANG, res.text())
+    let body = clax_testkit::within("the response body", res.text())
         .await
-        .unwrap()
         .unwrap();
     assert!(body.contains("event: run_end"), "{body}");
     assert!(
@@ -1023,9 +1022,8 @@ async fn get_text(ts: &TestServer, cookie: &str, path: &str) -> (u16, String) {
         .await
         .unwrap();
     let status = res.status().as_u16();
-    let body = tokio::time::timeout(clax_testkit::HANG, res.text())
+    let body = clax_testkit::within("the response body", res.text())
         .await
-        .unwrap()
         .unwrap();
     (status, body)
 }

@@ -243,6 +243,7 @@ impl Tells {
     }
 
     /// The bytes this holds, counting each list at its length.
+    #[warn(clippy::disallowed_methods)]
     #[cfg(test)]
     fn bytes(&self) -> usize {
         use std::mem::size_of;
@@ -289,6 +290,7 @@ pub(crate) struct Plan {
 impl Plan {
     /// The bytes the plan holds, counting each list at its length and
     /// each [`Tells`] once.
+    #[warn(clippy::disallowed_methods)]
     #[cfg(test)]
     pub(crate) fn bytes(&self) -> usize {
         use std::mem::size_of;
@@ -725,6 +727,7 @@ pub(crate) fn build(
 /// and how many steps building them took, counted and stopped as
 /// [`build`]'s are. `t` nests no deeper than the definition's limits
 /// allow.
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 pub(crate) fn beside(
     fixed: &[Node],

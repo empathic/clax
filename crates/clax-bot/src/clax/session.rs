@@ -172,6 +172,7 @@ impl StepSession for ClaxSession<'_> {
     }
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

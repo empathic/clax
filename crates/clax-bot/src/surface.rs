@@ -3162,6 +3162,7 @@ impl SurfaceProvider for FakeSurfaceProvider {
     }
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

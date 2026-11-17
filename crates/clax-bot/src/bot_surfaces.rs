@@ -211,6 +211,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests;
 

@@ -185,6 +185,7 @@ pub fn bindings_with(artifact_id: &str, web: &str, joined: Vec<StoredBinding>) -
     }
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

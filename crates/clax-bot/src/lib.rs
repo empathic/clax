@@ -57,15 +57,19 @@ pub mod clax;
 pub mod draft;
 pub mod driver;
 mod ending;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod ending_scenarios;
 pub mod events;
 pub mod finish;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod golden;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod golden_tests;
 pub mod history;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod history_fixtures;
 pub mod host;
@@ -79,6 +83,7 @@ pub mod provider_conformance;
 pub mod registry;
 pub mod run;
 pub mod script;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod script_scenarios;
 pub mod surface;

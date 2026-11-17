@@ -328,6 +328,7 @@ pub fn of_step(
     Ok(Some(choose(found, takes_images, limits)))
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

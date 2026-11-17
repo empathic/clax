@@ -332,10 +332,12 @@ async fn a_cancelled_scripts_stopped_step_counts_no_call_on_its_requests_line() 
         cancel: token,
         events: &sink,
     };
-    let out = tokio::time::timeout(PROMPTLY, clax_bot::tick(&deps, &run, &driver, opts))
-        .await
-        .expect("the cancel ends the script")
-        .unwrap();
+    let out = within(
+        "the cancel ends the script",
+        clax_bot::tick(&deps, &run, &driver, opts),
+    )
+    .await
+    .unwrap();
     assert_eq!(out.next, Next::Done(RunStatus::Stopped));
     assert_eq!(env.run_row(&run).reason.as_deref(), Some("cancelled"));
     assert_eq!(
