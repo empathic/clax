@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { relativeTime } from "./format";
-import { LOAD_RETRY } from "./lifecycle";
+import { LOAD_RETRY } from "./reach";
 import { FakeWorker, workerWith } from "./test/fake-worker";
 import { freshModules } from "./test/modules";
 import { settled } from "./test/settled";

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { freshModules } from "./test/modules";
 import { settled } from "./test/settled";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
-import { LOAD_RETRY } from "./lifecycle";
+import { LOAD_RETRY } from "./reach";
 import { artifactViewHooks, waitFor, ID, FakeES, artifact, page, viewer, mountView, stubMedia, buttonNamed, fromFrame, gestureIn, SITE } from "./test/artifact-view";
 
 describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {

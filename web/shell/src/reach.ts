@@ -13,6 +13,12 @@ import { classify, answered, type Trouble } from "./trouble";
 import { STUCK_MS, backoff } from "./lifecycle";
 import { visibility } from "./visibility";
 
+/** The label of a first load's wait before it asks again (`retrying`'s
+ * `wait`, lifecycle.ts), on the shell's clock (`claxTestClock.dueIn`). */
+export const LOAD_RETRY = "load-retry";
+/** A first load's wait before it asks again, on the shell's clock. */
+export const loadWait = (ms: number, done: () => void): (() => void) => after(ms, done, LOAD_RETRY);
+
 /** The route asked while Clax is not answering: open on a local and a hosted daemon. */
 export const PROBE_PATH = "/healthz";
 /** The label of the wait before the next ask (`claxTestClock.dueIn`). */

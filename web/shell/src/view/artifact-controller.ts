@@ -13,6 +13,7 @@ import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
 import { REQUEST_STUCK, connKept, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { readJson, unreached } from "../trouble";
+import { loadWait } from "../reach";
 import { APPROVE_FAILED, ARTIFACT_FAILED, COPY_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
@@ -981,7 +982,7 @@ export class ArtifactController {
     } else {
       // A daemon that does not answer, or an answer that is not Clax's, is
       // retried (with a notice); Clax's own answer, even a refusal, is shown.
-      retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: unreached, trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
+      retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: unreached, wait: loadWait, trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
         .then(d => this.loaded(d), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : failureText(ARTIFACT_FAILED, e) }); });
     }
     // Leaving the page ends the view: nothing it started outlives it, also
