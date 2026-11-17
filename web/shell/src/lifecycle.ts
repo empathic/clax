@@ -1,6 +1,7 @@
 // One owner for everything a view starts: listeners, timers, requests and
 // streams are registered with the view's Lifecycle, and its `dispose` ends
 // them all at once, so nothing outlives the view. Requests take its `signal`.
+import { after } from "./clock";
 
 /** The lifecycle of one view (or one part of it, through `child`). */
 export class Lifecycle {
@@ -88,8 +89,12 @@ export function backoff(attempt: number, random: () => number = Math.random, bas
  * abandoned and tried again. */
 export const STUCK_MS = 8000;
 
-/** Runs `attempt` until it succeeds, retrying with `backoff` after a failure
- * `retry` accepts (by default any), or after it was stuck `timeoutMs`
+/** The label of `retrying`'s wait before its next attempt, on the shell's
+ * clock (`claxTestClock.dueIn`). */
+export const LOAD_RETRY = "load-retry";
+
+/** Runs `attempt` until it succeeds, retrying with `backoff` (on the
+ * shell's clock) after a failure `retry` accepts (by default any), or after it was stuck `timeoutMs`
  * (aborted through its signal). `trouble(true)` is called while it is
  * failing or stuck, `trouble(false)` once it is settled. Rejects with the
  * failure `retry` refused, or with an `AbortError` once `life` ends. */
@@ -111,7 +116,9 @@ export async function retrying<T>(life: Lifecycle, attempt: (signal: AbortSignal
       trouble(true);
     }
     let forget = () => {};
-    await new Promise<void>(resolve => { life.timeout(resolve, backoff(n)); forget = life.defer(resolve); });
+    let stop = () => {};
+    await new Promise<void>(resolve => { stop = after(backoff(n), resolve, LOAD_RETRY); forget = life.defer(resolve); });
+    stop();
     forget();
     if (life.disposed) { trouble(false); throw new DOMException("the view ended", "AbortError"); }
   }

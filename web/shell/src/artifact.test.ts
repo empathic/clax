@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { freshModules } from "./test/modules";
 import { settled } from "./test/settled";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
+import { LOAD_RETRY } from "./lifecycle";
 import { artifactViewHooks, waitFor, ID, FakeES, artifact, page, viewer, mountView, stubMedia, buttonNamed, fromFrame, gestureIn, SITE } from "./test/artifact-view";
 
 describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
@@ -144,9 +145,20 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 
   it("says not found only for a 404 status", async () => {
-    const view = await mountView(async () => new Response(JSON.stringify({ error: { message: "nope" } }), { status: 404 }));
+    const view = await mountView(async () => new Response(JSON.stringify({ error: { code: "not_found", message: "nope" } }), { status: 404 }));
     const root = view.root;
     await waitFor(() => root.textContent?.includes("Artifact not found"), "not-found message");
+  });
+
+  it("retries a first load that found no Clax (a CDN's page) until Clax answers, and shows no failure meanwhile", async () => {
+    let down = true;
+    const view = await mountView(async () => (down ? new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } }) : new Response(JSON.stringify(artifact(1)))));
+    const clock = (globalThis as unknown as { claxTestClock: { dueIn(l: string): number | null; advance(ms: number): number } }).claxTestClock;
+    await waitFor(() => clock.dueIn(LOAD_RETRY) !== null, "the retry's wait");
+    expect(view.root.textContent).not.toContain("Could not load");
+    down = false;
+    clock.advance(clock.dueIn(LOAD_RETRY)!);
+    await waitFor(() => view.root.querySelector(".topbar h1"), "the artifact");
   });
 
   it("shows the raw error for other failures, even when the text contains 404", async () => {

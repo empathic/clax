@@ -68,6 +68,10 @@ export function classify(e: unknown, online = typeof navigator === "undefined" |
   return e instanceof SyntaxError ? "not_clax" : "refused";
 }
 
+/** Whether `e` says Clax was not reached (offline, no answer, an answer that
+ * is not Clax's), rather than that Clax refused: worth asking again. */
+export const unreached = (e: unknown): boolean => ["offline", "unreachable", "not_clax"].includes(classify(e));
+
 /** What the shell says while the artifact's Comments switch is off (spec
  * 2026-10-21-app-push-pull §5.6): the Comment button's title, the comments
  * sidebar's note, a page's refused `comments` call, and after its prefix a

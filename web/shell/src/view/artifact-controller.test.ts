@@ -1352,6 +1352,24 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       });
     }
 
+    for (const [what, answer] of [
+      ["a CDN's page for a Clax taken down", () => new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } })],
+      ["a page served with 200", () => new Response("<!doctype html>", { headers: { "content-type": "text/html" } })],
+      ["no answer", () => { throw new TypeError("Failed to fetch"); }],
+    ] as const) {
+      it(`leaves the frame, offering no tab, for ${what}: the connection notice says why`, async () => {
+        const { ctl, frame } = await started();
+        const calls = codes(answer);
+        fromFrame(frame.contentWindow!, STATE);
+        await vi.waitFor(() => expect(calls).toHaveLength(1));
+        await (await import("../api")).getToken();
+        await new Promise(r => setTimeout(r, 0));
+        expect(ctl.state.get().openInTab).toBeNull();
+        expect(frame.isConnected).toBe(true);
+        ctl.dispose();
+      });
+    }
+
     it("asks a frame without its cookie for storage access, starts once more when refused, then offers the page in a tab", async () => {
       const { ctl, frame } = await started();
       const calls = codes(sent);

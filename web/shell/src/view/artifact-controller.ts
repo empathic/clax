@@ -12,6 +12,7 @@ import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostA
 import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
 import { REQUEST_STUCK, connKept, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
+import { readJson, unreached } from "../trouble";
 import { APPROVE_FAILED, ARTIFACT_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
@@ -814,10 +815,13 @@ export class ArtifactController {
 
   /** The frame's site handed over its state: the shell asks its own API
    * for a code bound to it (`POST /api/artifacts/<id>/site-code`) and sends
-   * the frame to it; a code refused offers the page in a tab. */
+   * the frame to it; a code Clax refused offers the page in a tab. When
+   * Clax was not reached (no answer, an answer that is not Clax's), the
+   * frame stays as it is and the connection notice says why. */
   private async redeem(hs: NonNullable<ArtifactController["hs"]>, st: { state: string; next: string }): Promise<void> {
     hs.phase = "asking";
-    let src: string | null = null;
+    let src: unknown = null;
+    let away = false;
     try {
       const token = await getToken();
       const r = await fetch(`/api/artifacts/${encodeURIComponent(this.id)}/site-code`, {
@@ -825,9 +829,9 @@ export class ArtifactController {
         headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ next: st.next, partitioned: true, state: st.state }),
       });
-      if (r.ok) src = ((await r.json()) as { src?: unknown }).src as string;
-    } catch { /* refused below */ }
-    if (this.disposed || this.hs !== hs || this.frame?.el !== hs.el) return;
+      src = (await readJson<{ src?: unknown }>(r)).src;
+    } catch (e) { away = unreached(e); }
+    if (this.disposed || this.hs !== hs || this.frame?.el !== hs.el || away) return;
     if (typeof src !== "string" || !src.startsWith(`${this.s.origin}/`)) { this.offerInTab(); return; }
     hs.phase = "code";
     this.frame.go(src);
@@ -968,8 +972,9 @@ export class ArtifactController {
       this.set({ threads: boot.threads });
       this.loaded(boot.artifact, boot.attention ?? null);
     } else {
-      // A daemon that does not answer is retried (with a notice); an answer, even an error, is shown.
-      retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: e => !(e instanceof ApiError), trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
+      // A daemon that does not answer, or an answer that is not Clax's, is
+      // retried (with a notice); Clax's own answer, even a refusal, is shown.
+      retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: unreached, trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
         .then(d => this.loaded(d), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : failureText(ARTIFACT_FAILED, e) }); });
     }
     // Leaving the page ends the view: nothing it started outlives it, also

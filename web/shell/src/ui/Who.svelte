@@ -16,6 +16,7 @@
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import { presenceMap, roster, viewingLabel } from "../view/presence-model";
   import { withPeople } from "../view/agent-display";
+  import { partFailed } from "../conn-notice";
   import { agentNames, summary } from "../view/working-model";
   import Roster from "./Roster.svelte";
   import { ticker } from "./ticker.svelte";
@@ -26,7 +27,8 @@
   const p: { ctl: ArtifactController; s: ViewState & { data: Loaded }; open: number } = $props();
   // The people panel's code loads on first open (no await block, as the version menu).
   let Panel: typeof PeoplePanelT | null = $state(null);
-  $effect(() => { if (p.s.menu === "people" && !Panel) void import("./PeoplePanel.svelte").then(m => { Panel = m.default; }, () => {}); });
+  // A panel that cannot load says so and closes, so the next press tries again.
+  $effect(() => { if (p.s.menu === "people" && !Panel) void import("./PeoplePanel.svelte").then(m => { Panel = m.default; }, () => { partFailed(); p.ctl.closeMenu(); }); });
   // ClaxBot's part loads where it is on for this browser, where the address
   // names a run, or where the artifact's agents list ClaxBot (`builtin`:
   // shown disabled with why, and anyone's runs read-only); each listing of
