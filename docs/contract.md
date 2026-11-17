@@ -9494,8 +9494,34 @@ pings each tab every 10 s; a visible tab that has heard nothing from it for
 35 s counts it gone and starts a new one. Once the stream has been down for
 1.5 s, every tab shows a quiet notice ("Live updates paused.
 Reconnecting…") until it is back. A first load of the gallery or the
-artifact that has not answered within 8 s, or failed to connect, is
-abandoned and retried the same way, with a notice.
+artifact that has not answered within 8 s, failed to connect, or got an
+answer that is not Clax's, is abandoned and retried the same way, with a
+notice.
+
+Every request a shell page makes to its own origin tells that notice what
+it found. An answer counts as Clax's when it is JSON (a refusal naming
+`error.code`); anything else, such as a proxy's or a CDN's page (a 520–530
+answer, an HTML page where the API answers), is not Clax's. The notice then
+says, by kind: "This Clax is not answering. It may have been taken down or
+moved." for an answer that is not Clax's (in the warning's colours); "You
+are offline. Clax will catch up when you are back." when the browser is
+offline; "Clax is not answering on this computer. Retrying…" (a local
+daemon) or "Cannot reach Clax. Retrying…" (a hosted one) for no answer;
+"Clax is not answering yet. Still waiting…" for a write still pending after
+8 s; and "Part of Clax could not load. Try again in a moment." for a panel
+whose code did not load. The first kind outranks the others, which outrank
+the stream's own words; the stream's reason uses the same words when its
+own request found the same. While a composer, a reply box or the New
+comment box holds text not yet sent, the notice adds "What you wrote is
+kept." While it shows, the page asks `GET /healthz` with the same backoff
+(not while hidden) until Clax answers, and the notice clears by itself.
+A failed action says why after its prefix ("Could not post: …", "Not sent:
+…"): "this Clax is not answering. It may have been taken down or moved.",
+"you are offline.", "Clax did not answer.", "you are signed out.", "it was
+deleted.", "too many requests. Try again in a moment.", or else the
+daemon's own message, never a status number or the browser's error text.
+A reply or a New comment that fails keeps its text and says why beside its
+box; a stage action says it in the stage's banner.
 
 ## Toolpath journal and export
 
