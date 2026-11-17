@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createRawSnippet } from "svelte";
 import { describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../bridge/test/trusted";
@@ -683,5 +685,29 @@ describe("Sidebar: threads on other pages", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// The extension's side panel (web/extension/src/panel/Panel.svelte) mounts
+// the sidebar without a view, with props of these kinds: its markup is the
+// thread list's alone, as it was before the sidebar had views, pinned in
+// test/panel-sidebar.html (without the comments Svelte places; a comment's
+// local time stands there as {time}).
+describe("Sidebar as the extension's side panel mounts it", () => {
+  it("renders the markup it rendered before the views", async () => {
+    const threads: Thread[] = [
+      { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("a1", "viewer", "Alex", "two columns")] },
+      { ...base, id: "b", anchor: { ...anchor, file: "about.html" }, status: "open", sent_to_agent: true, comments: [comment("b1", "viewer", "Mia", "warmer"), comment("b2", "agent", "claude", "Done")] },
+      { ...base, id: "c", anchor, status: "resolved", resolved_at: base.created_at, resolved_by: "viewer:p_me", sent_to_agent: false, comments: [comment("c1", "viewer", "Alex", "old")] },
+      { ...base, id: "d", anchor: { ...anchor, file: "gone.html" }, status: "open", sent_to_agent: false, comments: [comment("d1", "viewer", "Alex", "lost")] },
+    ];
+    const m = mount(Sidebar, { threads, numbers: new Map([["a", 1]]), resolved: { a: { id: "a", found: true, method: "exact" as const, rect: null } }, selected: "a", file: "index.html",
+      holds: (f: string) => f !== "gone.html", now: new Date(base.created_at), versions: [], shown: 1, agent: "claude", me: { public_id: "p_me", display_name: "Alex", created_at: base.created_at },
+      working: [], agents: [], sendTo: null, commenting: false, onSelect: vi.fn(), onSend: vi.fn(), onSendUnsent: vi.fn(), onChoose: vi.fn(), onResolve: vi.fn(), onReply: vi.fn(),
+      clip: async () => null, onSeen: vi.fn() });
+    await vi.dynamicImportSettled();
+    const pinned = readFileSync(join(__dirname, "test/panel-sidebar.html"), "utf8").trim().replaceAll("{time}", new Date(base.created_at).toLocaleString());
+    expect(m.root.innerHTML.replace(/<!--[^]*?-->/g, "")).toBe(pinned);
+    m.unmount();
   });
 });

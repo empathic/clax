@@ -8,7 +8,10 @@ export type SetNotice = (u: string | null | ((prev: string | null) => string | n
  * lookup, which sets the viewer cookie, so the two never create two viewers. */
 export class NameSaver {
   private saved = "";
+  /** The lookup, then each save in turn. */
   private loaded: Promise<unknown> = Promise.resolve();
+  /** The name of the latest save not yet answered. */
+  private saving: string | null = null;
   private edited = false;
 
   constructor(private readonly setNotice: SetNotice, private readonly onViewer?: (v: Viewer) => void) {}
@@ -35,14 +38,22 @@ export class NameSaver {
     this.edited = true;
   }
 
-  /** Saves `name` (trimmed) once the lookup answered, unless it is the stored name. */
+  /** Saves `name` (trimmed) once the lookup and every earlier save answered,
+   * unless it is the stored name then. A save of the name already being
+   * saved (Enter, then the blur that follows) sends nothing more: on a
+   * hosted daemon a second request sent before the first answers carries no
+   * guest cookie yet and is refused 409 `name_taken`. Saves go in order, so
+   * the last name typed is the one stored. */
   save(name: string): void {
     const next = name.trim();
-    void this.loaded.then(() => {
-      if (next === this.saved) return;
-      void report(setViewerName(next), NAME_FAILED, scopedNotice(this.setNotice, NAME_FAILED, NAME_LOAD_FAILED)).then(v => {
+    if (next === this.saving) return;
+    this.saving = next;
+    this.loaded = this.loaded.then(async () => {
+      if (next !== this.saved) {
+        const v = await report(setViewerName(next), NAME_FAILED, scopedNotice(this.setNotice, NAME_FAILED, NAME_LOAD_FAILED));
         if (v) { this.onViewer?.(v); this.saved = v.display_name ?? ""; this.edited = false; }
-      });
+      }
+      if (this.saving === next) this.saving = null;
     });
   }
 }

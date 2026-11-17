@@ -90,11 +90,19 @@ async function threads(page) {
   await page.locator(".new-comment-open").waitFor({ timeout: LIMIT });
 }
 
+/** Names `page`'s viewer in the People panel and waits for the name's
+ * `PUT /api/viewers/me` to answer 200, so what follows goes as the named viewer. */
 async function setName(page, name) {
   await page.getByRole("button", { name: "People and agents" }).click();
   const field = page.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name");
   await field.fill(name);
+  const saved = page.waitForResponse(
+    (r) => r.request().method() === "PUT" && new URL(r.url()).pathname === "/api/viewers/me",
+    { timeout: LIMIT },
+  );
   await field.press("Enter");
+  const res = await saved;
+  if (res.status() !== 200) throw new Error(`saving the name ${name}: ${res.status()} ${await res.text()}`);
   await page.keyboard.press("Escape");
 }
 
@@ -184,6 +192,13 @@ async function main() {
     const owner = { viewport: { width: 1280, height: 800 }, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } };
     const a = await browser.newContext(owner);
     const b = await browser.newContext(owner);
+    // Their artifact sidebar opens on the thread list, whose cards these
+    // checks find, rather than on the timeline.
+    for (const c of [a, b]) {
+      await c.addInitScript(() => {
+        try { if (localStorage.getItem("clax.sidebar") === null) localStorage.setItem("clax.sidebar", '{"view":"threads"}'); } catch { /* storage refused */ }
+      });
+    }
     const pa = await a.newPage();
     const pb = await b.newPage();
     // The second browser's stream hub runs in its tab, not a shared worker,

@@ -5233,7 +5233,29 @@ the version button gets a dot, the top bar's summary reads "v5 addressed 3",
 the sidebar's "Addressed in v5" group lists the threads it addressed that
 the viewer is in, with your reply shown as "<agent> · addressed in v5", and
 the version menu lists every version's note. Each thread's history line
-shows what happened on which version. When the person sends several
+shows what happened on which version.
+
+The artifact view's sidebar has two tabs, Timeline and Threads, and the
+browser remembers which was last chosen (Timeline at first). The Timeline
+lists what happened, newest first under day headings: each version with
+its note, the comments made, sent, replied to and resolved. Each thread is
+one row under the newest line about it, with its state at the right
+("✓ v5" for addressed, "Send" for unsent, "Reply" when an agent answered
+without a version, "sent" or "working" while an agent has it); a row opens
+into the thread's card. Earlier days fold to a summary line that still
+shows their pending threads. A grey band on the sidebar's outer edge
+shows how many threads were pending after each line, the part waiting on a
+person in orange. A thread is pending until a version addresses it or it
+is resolved; one a version addressed stays open, and is pending again when
+a person replies. The Threads tab is the thread list, with the "Addressed
+in v5" group and the Open, Detached and Resolved sections. Hidden while
+docked left or right on a screen wider than a phone, the sidebar leaves a
+56 px strip on that edge with the pending count, how many need the
+viewer, and the band; activating it shows the threads. An artifact with
+no threads leaves no strip. The extension's side panel shows the thread
+list alone.
+
+When the person sends several
 threads, or several agents work on one artifact, the person picks the agent;
 the payload is the same.
 

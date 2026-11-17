@@ -156,8 +156,13 @@ function oversized(base, path, chunked, mib = 97, extra = {}) {
   });
 }
 
+/** A browser of `name`'s. Its artifact sidebar opens on the thread list,
+ * whose cards these checks find, rather than on the timeline. */
 async function newPage(browser, name) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await ctx.addInitScript(() => {
+    try { if (localStorage.getItem("clax.sidebar") === null) localStorage.setItem("clax.sidebar", '{"view":"threads"}'); } catch { /* storage refused */ }
+  });
   const p = await ctx.newPage();
   p.on("pageerror", (e) => console.log(`     [${name} error] ${e.message}`));
   return p;
@@ -182,11 +187,20 @@ async function threads(page) {
   await page.locator(".new-comment-open").waitFor({ timeout: LIMIT });
 }
 
+/** Names `page`'s viewer in the People panel and waits for the name's
+ * `PUT /api/viewers/me` to answer 200: a visitor's first name makes them a
+ * guest, whose session every comment after it goes with. */
 async function setName(page, name) {
   await page.getByRole("button", { name: "People and agents" }).click();
   const field = page.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name");
   await field.fill(name);
+  const saved = page.waitForResponse(
+    (r) => r.request().method() === "PUT" && new URL(r.url()).pathname === "/api/viewers/me",
+    { timeout: LIMIT },
+  );
   await field.press("Enter");
+  const res = await saved;
+  if (res.status() !== 200) throw new Error(`saving the name ${name}: ${res.status()} ${await res.text()}`);
   await page.keyboard.press("Escape");
 }
 

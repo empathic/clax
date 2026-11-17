@@ -202,12 +202,23 @@ export async function signInTo(context: BrowserContext, base: string): Promise<v
 
 /** Counts `context` among the worker's browsers: it is a browser of the
  * owner's on every daemon the worker runs, now and later, as every browser
- * of this machine was before a browser had to log in. */
-export async function trustContext(context: BrowserContext): Promise<void> {
+ * of this machine was before a browser had to log in. Its sidebar opens on
+ * the thread list unless the context chose a view itself, or `threadsFirst`
+ * is false (the `threadsFirst` option: the sidebar's own default then). */
+export async function trustContext(context: BrowserContext, threadsFirst = true): Promise<void> {
   liveContexts.add(context);
   context.once("close", () => liveContexts.delete(context));
+  // The artifact view's sidebar opens on the thread list, where the specs
+  // find their cards: only where no choice is stored, so a spec that picks
+  // the timeline keeps it through a reload.
+  if (threadsFirst) await context.addInitScript(() => {
+    try { if (localStorage.getItem("clax.sidebar") === null) localStorage.setItem("clax.sidebar", '{"view":"threads"}'); } catch { /* storage refused */ }
+  }).catch((e: unknown) => { if (!String(e).includes("closed")) throw e; });
   for (const d of liveDaemons) await signIn(context, d);
 }
+
+/** The running test's `threadsFirst`, for the contexts its browser opens. */
+let threadsFirstNow = true;
 
 /** Makes every context `browser` opens (`newContext`, `newPage`) a
  * browser of the owner's on the worker's daemons ([`trustContext`]): the
@@ -216,7 +227,7 @@ export function trustBrowser(browser: Browser): Browser {
   const newContext = browser.newContext.bind(browser);
   browser.newContext = (async (o?: Parameters<Browser["newContext"]>[0]) => {
     const c = await newContext(o);
-    await trustContext(c);
+    await trustContext(c, threadsFirstNow);
     return c;
   }) as Browser["newContext"];
   browser.newPage = (async (o?: Parameters<Browser["newPage"]>[0]) => {
@@ -233,10 +244,20 @@ export function trustBrowser(browser: Browser): Browser {
  * titles and judges only those. `freshDaemon` is a daemon of the test's own,
  * for a test that judges the daemon's global state (its open streams). Every
  * browser context a test uses is a browser of the owner's on every daemon
- * the worker runs ([`trustContext`]). */
-export const test = playwrightTest.extend<{ freshDaemon: Daemon }, { daemon: Daemon }>({
-  context: async ({ context }, use) => {
-    await trustContext(context);
+ * the worker runs ([`trustContext`]). `threadsFirst` (true unless a spec
+ * says `test.use({ threadsFirst: false })`): the test's own context's
+ * sidebar opens on the thread list where no view is stored. */
+export const test = playwrightTest.extend<{ freshDaemon: Daemon; threadsFirst: boolean }, { daemon: Daemon }>({
+  threadsFirst: [true, { option: true }],
+  // The test's context is made from these options, so the choice is known
+  // to the browser's `newContext` (`trustBrowser`) before it is made.
+  contextOptions: async ({ contextOptions, threadsFirst }, use) => {
+    threadsFirstNow = threadsFirst;
+    await use(contextOptions);
+    threadsFirstNow = true;
+  },
+  context: async ({ context, threadsFirst }, use) => {
+    await trustContext(context, threadsFirst);
     await use(context);
   },
   browser: [async ({ browser }, use) => {
@@ -422,13 +443,23 @@ export async function seenOf(page: Page, aid: string): Promise<number | null> {
   return page.evaluate(async a => (await (await fetch(`/api/viewers/me/seen?artifact=${a}`)).json()).seen as number | null, aid);
 }
 
-/** A JSON API call with the token (and, when given, the session header). */
-export async function api(base: string, token: string, path: string, init: RequestInit & { session?: string } = {}) {
+/** A JSON API call with the token (and, when given, the session header).
+ * Throws on a refusal, and on an answer that is only `{guidance}`: the
+ * daemon's 200 refusal of an agent's write (a reply, resolve, reopen or
+ * delete on a thread not sent to it), which wrote nothing. A caller that
+ * means to get guidance passes `guidance: true`. */
+export async function api(base: string, token: string, path: string, init: RequestInit & { session?: string; guidance?: boolean } = {}) {
+  const { session, guidance, ...rest } = init;
   const headers: Record<string, string> = { "content-type": "application/json", authorization: `Bearer ${token}` };
-  if (init.session) headers["x-clax-session"] = init.session;
-  const res = await fetch(`${base}${path}`, { ...init, headers });
+  if (session) headers["x-clax-session"] = session;
+  const res = await fetch(`${base}${path}`, { ...rest, headers });
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
-  return res.status === 204 ? {} : res.json();
+  if (res.status === 204) return {};
+  const body = await res.json();
+  if (!guidance && body && typeof body === "object" && Object.keys(body).join() === "guidance") {
+    throw new Error(`${path}: answered guidance, nothing written: ${body.guidance}`);
+  }
+  return body;
 }
 
 /** Approves, as the owner by hand (the token, no session), what artifact
