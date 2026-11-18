@@ -20,6 +20,7 @@
 //!   SHA-256 is kept.
 
 use super::Store;
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::secret::{self, sha256_hex};
 use clax_core::{ArtifactId, Result};
 use rusqlite::{OptionalExtension, params};
@@ -37,6 +38,17 @@ pub const SITE_SESSION_RENEW_SECS: i64 = 300;
 /// open one waits on the person's answer to its question, which is spent
 /// once used, as a push's is ([`Store::create_push_approval`]).
 pub const OPEN_TO_WORLD: &str = "site:world";
+
+/// The `remote_id` of a `push_approvals` row that approves letting its
+/// artifact's site set its own content policy, as [`OPEN_TO_WORLD`] does
+/// opening it.
+pub const SET_OWN_POLICY: &str = "site:own-policy";
+
+/// `artifacts.content_policy` of a site held to its own site (the
+/// default).
+pub const LOCKED_POLICY: &str = "locked";
+/// `artifacts.content_policy` of a site that sets its own content policy.
+pub const OWN_POLICY: &str = "own";
 
 /// Who a site code or session reads as.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -350,6 +362,66 @@ impl Store {
             if n == 0 {
                 return Err(clax_core::CoreError::NotFound);
             }
+            Ok(())
+        })
+    }
+
+    /// Whether artifact `aid`'s site sets its own content policy
+    /// (`artifacts.content_policy` is `own`); false (`locked`) for one that
+    /// does not exist or is deleted.
+    ///
+    /// # Errors
+    /// The database's.
+    pub fn content_policy_own(&self, aid: &ArtifactId) -> Result<bool> {
+        self.with_read(|c| {
+            let v: Option<String> = c
+                .query_row(
+                    "SELECT content_policy FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
+                    params![aid.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(v.as_deref() == Some(OWN_POLICY))
+        })
+    }
+
+    /// Lets artifact `aid`'s site set its own content policy (`own`) or
+    /// locks it to its own site again, recorded under `ctx` as
+    /// `artifact.update` with `fields.content_policy` when it changes.
+    ///
+    /// # Errors
+    /// `NotFound` when the artifact does not exist; the database's.
+    pub fn set_content_policy_own(
+        &self,
+        ctx: &AuditCtx,
+        aid: &ArtifactId,
+        own: bool,
+    ) -> Result<()> {
+        let policy = if own { OWN_POLICY } else { LOCKED_POLICY };
+        self.with_tx(|tx| {
+            let before: Option<String> = tx
+                .query_row(
+                    "SELECT content_policy FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
+                    params![aid.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(before) = before else {
+                return Err(clax_core::CoreError::NotFound);
+            };
+            if before == policy {
+                return Ok(());
+            }
+            tx.execute(
+                "UPDATE artifacts SET content_policy = ?2 WHERE id = ?1",
+                params![aid.as_str(), policy],
+            )?;
+            let mut fields = serde_json::Map::new();
+            fields.insert("content_policy".into(), policy.into());
+            let mut rec =
+                AuditRecord::new(AuditKind::ArtifactUpdate, self.now()).with("fields", fields);
+            rec.ids.artifact = Some(aid.as_str().to_string());
+            self.record_audit(tx, ctx, rec)?;
             Ok(())
         })
     }
