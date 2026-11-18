@@ -455,8 +455,13 @@ fn anchor_class(field: &str) -> Class {
 
 fn fields_class(field: &str) -> Class {
     match field {
-        "icon" | "pinned" | "link_access" | "link_listed" | "db_read_grants" | "colour"
-        | "content_policy" => Class::Safe,
+        "icon"
+        | "pinned"
+        | "link_access"
+        | "link_listed"
+        | "db_read_grants"
+        | "colour"
+        | "content_security_policy" => Class::Safe,
         // A cost line's figures (`admin.cost_line`).
         "unit"
         | "cost_micro_usd"

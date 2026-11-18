@@ -207,12 +207,13 @@ pub struct PublishPublicArgs {
     /// once the person approves; `private` closes it again at once. Takes
     /// no `remote` or `mode`.
     pub site_access: Option<String>,
-    /// Instead of publishing on a public Clax: `own` lets this artifact's
-    /// own site set its own content policy (load code from and connect to
-    /// any site, register a service worker) once the person approves;
-    /// `locked` holds its pages to their own site again at once. Takes no
-    /// `remote`, `mode` or `site_access`.
-    pub content_policy: Option<String>,
+    /// Instead of publishing on a public Clax: `unrestricted` serves this
+    /// artifact's own site without Clax's Content Security Policy (its
+    /// pages may load code from and connect to any site, and register a
+    /// service worker) once the person approves; `self` holds its pages to
+    /// their own site again at once. Takes no `remote`, `mode` or
+    /// `site_access`.
+    pub content_security_policy: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -2293,13 +2294,13 @@ impl ClaxTools {
                 ));
             }
         }
-        if let Some(v) = &a.content_policy {
-            if !["own", "locked"].contains(&v.as_str()) {
-                return Err(invalid("content_policy is own or locked"));
+        if let Some(v) = &a.content_security_policy {
+            if !["self", "unrestricted"].contains(&v.as_str()) {
+                return Err(invalid("content_security_policy is self or unrestricted"));
             }
             if a.remote.is_some() || a.mode.is_some() || a.site_access.is_some() {
                 return Err(invalid(
-                    "content_policy sets this artifact's own site's policy: it takes no remote, mode or site_access",
+                    "content_security_policy sets this artifact's own site's policy: it takes no remote, mode or site_access",
                 ));
             }
         }
@@ -2314,9 +2315,9 @@ impl ClaxTools {
                 .set_site(&id, "site_access", v, a.question_id, wait)
                 .await;
         }
-        if let Some(v) = &a.content_policy {
+        if let Some(v) = &a.content_security_policy {
             return self
-                .set_site(&id, "content_policy", v, a.question_id, wait)
+                .set_site(&id, "content_security_policy", v, a.question_id, wait)
                 .await;
         }
         // A push after the person answers starts only while `wait` has
@@ -2379,12 +2380,13 @@ impl ClaxTools {
         }
     }
 
-    /// `publish_public`'s `site_access` or `content_policy` (`field`):
-    /// `PATCH /api/artifacts/<id> {<field>}`, waiting up to `wait` seconds
-    /// on the person's answer when the daemon asks them (opening to the
-    /// world, or letting the site set its own content policy). The result's
-    /// `status` is `open` or `private` for `site_access`, and the policy
-    /// itself (`own` or `locked`) for `content_policy`.
+    /// `publish_public`'s `site_access` or `content_security_policy`
+    /// (`field`): `PATCH /api/artifacts/<id> {<field>}`, waiting up to
+    /// `wait` seconds on the person's answer when the daemon asks them
+    /// (opening to the world, or serving the site unrestricted). The
+    /// result's `status` is `open` or `private` for `site_access`, and the
+    /// policy itself (`self` or `unrestricted`) for
+    /// `content_security_policy`.
     async fn set_site(
         &self,
         id: &str,

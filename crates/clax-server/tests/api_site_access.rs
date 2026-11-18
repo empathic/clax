@@ -1052,13 +1052,13 @@ impl Site {
         .await
     }
 
-    /// `b`'s `PATCH /api/artifacts/<aid> {content_policy: v}`.
-    async fn content_policy(&self, b: &Browser, aid: &str, v: &str) -> (u16, Value) {
+    /// `b`'s `PATCH /api/artifacts/<aid> {content_security_policy: v}`.
+    async fn content_security_policy(&self, b: &Browser, aid: &str, v: &str) -> (u16, Value) {
         self.send(
             b,
             reqwest::Method::PATCH,
             &format!("/api/artifacts/{aid}"),
-            json!({"content_policy": v}),
+            json!({"content_security_policy": v}),
         )
         .await
     }
@@ -2216,7 +2216,7 @@ async fn only_its_maker_opens_a_persons_site_to_the_world_and_revoking_them_take
 }
 
 #[tokio::test]
-async fn only_its_maker_lets_a_persons_site_set_its_own_content_policy() {
+async fn only_its_maker_serves_a_persons_site_unrestricted() {
     let site = Site::new().await;
     let owner = site.owner().await;
     let owner_pid = site.pid(&owner).await;
@@ -2232,25 +2232,31 @@ async fn only_its_maker_lets_a_persons_site_set_its_own_content_policy() {
         )
         .await;
     assert_eq!(s, 200, "{v}");
-    for v in ["own", "locked"] {
-        let (s, body) = site.content_policy(&owner, &mias, v).await;
+    for v in ["unrestricted", "self"] {
+        let (s, body) = site.content_security_policy(&owner, &mias, v).await;
         assert_eq!((s, code_of(&body)), (403, "admin_only"), "{v}: {body}");
     }
     let aid = clax_core::ArtifactId::parse(&mias).unwrap();
-    assert!(!site.ts.store.content_policy_own(&aid).unwrap());
-    // Mia, its maker, lets it, from her browser, and locks it again.
-    let (s, v) = site.content_policy(&mia, &mias, "own").await;
     assert_eq!(
-        (s, &v["artifact"]["content_policy"]),
-        (200, &json!("own")),
+        site.ts.store.content_security_policy(&aid).unwrap(),
+        clax_store::site_sessions::ContentSecurityPolicy::SelfOnly
+    );
+    // Mia, its maker, serves it unrestricted, from her browser, and returns
+    // it to `self`.
+    let (s, v) = site
+        .content_security_policy(&mia, &mias, "unrestricted")
+        .await;
+    assert_eq!(
+        (s, &v["artifact"]["content_security_policy"]),
+        (200, &json!("unrestricted")),
         "{v}"
     );
-    let (s, v) = site.content_policy(&owner, &mias, "locked").await;
+    let (s, v) = site.content_security_policy(&owner, &mias, "self").await;
     assert_eq!((s, code_of(&v)), (403, "admin_only"), "{v}");
-    let (s, v) = site.content_policy(&mia, &mias, "locked").await;
+    let (s, v) = site.content_security_policy(&mia, &mias, "self").await;
     assert_eq!(
-        (s, &v["artifact"]["content_policy"]),
-        (200, &json!("locked")),
+        (s, &v["artifact"]["content_security_policy"]),
+        (200, &json!("self")),
         "{v}"
     );
 }

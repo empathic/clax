@@ -145,7 +145,7 @@ const PublishPublicArgs = Type.Object({
   question_id: opt(str("The approval question an earlier call returned, to keep waiting on it.")),
   timeout_s: opt(Type.Integer({ minimum: 0, description: "Seconds to wait for the person's answer (default 600, 50 under Codex)." })),
   site_access: opt(str("Instead of publishing on a public Clax: `world` opens this artifact's own site (`site_url`) to anyone, without signing in, once the person approves; `private` closes it again at once. Takes no `remote` or `mode`.")),
-  content_policy: opt(str("Instead of publishing on a public Clax: `own` lets this artifact's own site set its own content policy (load code from and connect to any site, register a service worker) once the person approves; `locked` holds its pages to their own site again at once. Takes no `remote`, `mode` or `site_access`.")),
+  content_security_policy: opt(str("Instead of publishing on a public Clax: `unrestricted` serves this artifact's own site without Clax's Content Security Policy (its pages may load code from and connect to any site, and register a service worker) once the person approves; `self` holds its pages to their own site again at once. Takes no `remote`, `mode` or `site_access`.")),
 }, strict);
 
 const ForkArgs = Type.Object({
@@ -1644,10 +1644,10 @@ class Tools {
       if (!["world", "private"].includes(a.site_access)) throw invalid("site_access is world or private");
       if (a.remote !== undefined || a.mode !== undefined) throw invalid("site_access opens this artifact's own site: it takes no remote or mode");
     }
-    if (a.content_policy !== undefined) {
-      if (!["own", "locked"].includes(a.content_policy)) throw invalid("content_policy is own or locked");
+    if (a.content_security_policy !== undefined) {
+      if (!["self", "unrestricted"].includes(a.content_security_policy)) throw invalid("content_security_policy is self or unrestricted");
       if (a.remote !== undefined || a.mode !== undefined || a.site_access !== undefined) {
-        throw invalid("content_policy sets this artifact's own site's policy: it takes no remote, mode or site_access");
+        throw invalid("content_security_policy sets this artifact's own site's policy: it takes no remote, mode or site_access");
       }
     }
     const c = this.clientFor(ctx);
@@ -1655,14 +1655,14 @@ class Tools {
     const wait = Math.min(Math.max(a.timeout_s ?? DEFAULT_ASK_WAIT_S, MIN_WAIT_S), MAX_ASK_WAIT_S);
     const now = this.opts.now ?? (() => Date.now());
     const started = now();
-    const site: ["site_access" | "content_policy", string] | undefined =
+    const site: ["site_access" | "content_security_policy", string] | undefined =
       a.site_access !== undefined ? ["site_access", a.site_access]
-      : a.content_policy !== undefined ? ["content_policy", a.content_policy]
+      : a.content_security_policy !== undefined ? ["content_security_policy", a.content_security_policy]
       : undefined;
     if (site !== undefined) {
-      // PATCH /api/artifacts/<id> {site_access} or {content_policy}: the
-      // daemon asks the person before opening to the world or letting the
-      // site set its own content policy, as for a push.
+      // PATCH /api/artifacts/<id> {site_access} or {content_security_policy}:
+      // the daemon asks the person before opening to the world or serving
+      // the site unrestricted, as for a push.
       const [field, value] = site;
       const req: Record<string, unknown> = { [field]: value, question_id: a.question_id ?? null };
       for (;;) {

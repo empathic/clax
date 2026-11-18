@@ -13,11 +13,11 @@
   // Anyone with the link, or Public (listed on the public page too), the
   // last two at Can view or Can comment. Site: Open to the world, with the
   // site's address (when the daemon says them; the comments and history
-  // keep the access above), and Let this clax set its own content policy:
-  // turning it on first shows what that lets its pages do, inside the
-  // dialog, and sends `own` only once the person confirms (Cancel sends
-  // nothing); turning it off sends `locked` at once; a clax that sets its
-  // own policy says so beside its site. Copy link. Names and logins are
+  // keep the access above), and Serve this clax without Clax's Content
+  // Security Policy: turning it on first shows what that lets its pages
+  // do, inside the dialog, and sends `unrestricted` only once the person
+  // confirms (Cancel sends nothing); turning it off sends `self` at once; a
+  // clax served unrestricted says so beside its site. Copy link. Names and logins are
   // people's text, rendered as text. A modal dialog: everything else is
   // inert while it is open, Tab stays inside, Escape, Done or a click
   // outside closes it and focus goes back.
@@ -26,7 +26,7 @@
   import { inertOutside, trapTab } from "./modal";
   import {
     ACCESS_LABEL, ACCESSES, COMMENTS_LABEL, COMMENTS_NOTE, GENERAL_LABEL, GENERAL_NOTE, GENERALS, LINK_ACCESSES,
-    OWN_POLICY_EXPLAIN, OWN_POLICY_LABEL, OWN_POLICY_NOTE, SITE_NOTE,
+    CSP_EXPLAIN, CSP_LABEL, CSP_NOTE, SITE_NOTE,
     linkRequest, shareDetail, shareName, subject, suggest,
   } from "./share-model";
 
@@ -41,9 +41,9 @@
   let busy = $state(false);
   let err = $state("");
   let copied = $state(false);
-  /** Whether the dialog is asking the person to confirm letting the clax set its own content policy. */
-  let askingOwn = $state(false);
-  let ownBox: HTMLInputElement | undefined = $state();
+  /** Whether the dialog is asking the person to confirm serving the clax without Clax's Content Security Policy. */
+  let askingUnrestricted = $state(false);
+  let cspBox: HTMLInputElement | undefined = $state();
   let panel: HTMLElement | undefined = $state();
   let backdrop: HTMLElement | undefined = $state();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -108,27 +108,27 @@
     if (!(await act(() => api.setSiteAccess(id, box.checked ? "world" : "private")))) box.checked = data.site_access === "world";
   }
 
-  const ownHeld = () => data.content_policy === "own";
-  /** A change of the content policy switch: on asks first (nothing is sent until `confirmOwn`), off sends `locked` at once; a refused change puts the box back to what the daemon holds. */
-  async function changeOwn(box: HTMLInputElement) {
+  const unrestrictedHeld = () => data.content_security_policy === "unrestricted";
+  /** A change of the Content Security Policy setting: on asks first (nothing is sent until `confirmUnrestricted`), off sends `self` at once; a refused change puts the box back to what the daemon holds. */
+  async function changeCsp(box: HTMLInputElement) {
     if (box.checked) {
-      box.checked = ownHeld();
-      askingOwn = true;
+      box.checked = unrestrictedHeld();
+      askingUnrestricted = true;
       await tick();
-      panel?.querySelector<HTMLElement>("[data-testid=own-confirm] button.primary")?.focus();
+      panel?.querySelector<HTMLElement>("[data-testid=csp-confirm] button.primary")?.focus();
       return;
     }
-    askingOwn = false;
-    if (!(await act(() => api.setContentPolicy(id, "locked")))) box.checked = ownHeld();
+    askingUnrestricted = false;
+    if (!(await act(() => api.setContentSecurityPolicy(id, "self")))) box.checked = unrestrictedHeld();
   }
-  async function confirmOwn() {
-    askingOwn = false;
-    const ok = await act(() => api.setContentPolicy(id, "own"));
-    if (ownBox) { if (!ok) ownBox.checked = ownHeld(); ownBox.focus(); }
+  async function confirmUnrestricted() {
+    askingUnrestricted = false;
+    const ok = await act(() => api.setContentSecurityPolicy(id, "unrestricted"));
+    if (cspBox) { if (!ok) cspBox.checked = unrestrictedHeld(); cspBox.focus(); }
   }
-  function cancelOwn() {
-    askingOwn = false;
-    if (ownBox) { ownBox.checked = ownHeld(); ownBox.focus(); }
+  function cancelUnrestricted() {
+    askingUnrestricted = false;
+    if (cspBox) { cspBox.checked = unrestrictedHeld(); cspBox.focus(); }
   }
 
   function copy() {
@@ -215,19 +215,19 @@
       <label class="world"><input type="checkbox" name="world" checked={data.site_access === "world"}
         onchange={e => { void setWorld(e.currentTarget); }} />Open to the world</label>
       <p class="meta" data-testid="site-note">{SITE_NOTE[data.site_access]}<a class="site" href={data.site_url} target="_blank" rel="noopener noreferrer">{data.site_url}</a></p>
-      {#if data.content_policy}
-        <label class="world own"><input type="checkbox" name="own_policy" checked={data.content_policy === "own"} bind:this={ownBox}
-          onchange={e => { void changeOwn(e.currentTarget); }} />{OWN_POLICY_LABEL}</label>
-        {#if askingOwn}
-          <div class="own-confirm" role="group" aria-labelledby="share-own-explain" data-testid="own-confirm">
-            <p id="share-own-explain">{OWN_POLICY_EXPLAIN}</p>
-            <div class="own-actions">
-              <button type="button" class="primary" disabled={busy} onclick={() => { void confirmOwn(); }}>Confirm</button>
-              <button type="button" onclick={cancelOwn}>Cancel</button>
+      {#if data.content_security_policy}
+        <label class="world csp"><input type="checkbox" name="content_security_policy" checked={data.content_security_policy === "unrestricted"} bind:this={cspBox}
+          onchange={e => { void changeCsp(e.currentTarget); }} />{CSP_LABEL}</label>
+        {#if askingUnrestricted}
+          <div class="csp-confirm" role="group" aria-labelledby="share-csp-explain" data-testid="csp-confirm">
+            <p id="share-csp-explain">{CSP_EXPLAIN}</p>
+            <div class="csp-actions">
+              <button type="button" class="primary" disabled={busy} onclick={() => { void confirmUnrestricted(); }}>Confirm</button>
+              <button type="button" onclick={cancelUnrestricted}>Cancel</button>
             </div>
           </div>
         {/if}
-        {#if data.content_policy === "own"}<p class="meta" data-testid="own-note">{OWN_POLICY_NOTE}</p>{/if}
+        {#if data.content_security_policy === "unrestricted"}<p class="meta" data-testid="csp-note">{CSP_NOTE}</p>{/if}
       {/if}
     {/if}
 
@@ -273,10 +273,10 @@
   .sw input:focus-visible + .track { outline: 2px solid var(--focus); outline-offset: 2px; }
   .general { display: flex; flex-wrap: wrap; gap: 8px; }
   .world { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-  .own { margin-top: 12px; }
-  .own-confirm { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--border-hover); border-radius: var(--radius-sm); font-size: 13px; line-height: 1.5; }
-  .own-confirm p { margin: 0 0 8px; }
-  .own-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .csp { margin-top: 12px; }
+  .csp-confirm { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--border-hover); border-radius: var(--radius-sm); font-size: 13px; line-height: 1.5; }
+  .csp-confirm p { margin: 0 0 8px; }
+  .csp-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .site { overflow-wrap: anywhere; }
   .meta, .none { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
   .none { margin: 0; }

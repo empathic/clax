@@ -1,13 +1,14 @@
-# A clax that sets its own content policy
+# A clax served without Clax's Content Security Policy
 
 ## Why
 
-Every response on a clax's site carries the lockdown
-(`crates/clax-http/src/content_policy.rs`, `lockdown`): the page loads and
-connects to its own site only, posts no form, and registers no service
-worker. That is the right rule for a page an agent just published and
-nobody has vouched for: an injected page cannot send what its viewer can
-read to another host.
+Every response on a clax's site carries Clax's Content Security Policy,
+the lockdown (`crates/clax-http/src/content_policy.rs`, `lockdown`): a
+`Content-Security-Policy` that holds the page to its own site (`'self'`),
+so it loads and connects to its own site only, posts no form, and
+registers no service worker. That is the right rule for a page an agent
+just published and nobody has vouched for: an injected page cannot send
+what its viewer can read to another host.
 
 It is the wrong rule for a clax that is a web app in its own right, which
 may be the primary site of whoever runs it. Such a site loads scripts,
@@ -19,31 +20,32 @@ never a WebSocket, a `<script src>` or a frame.
 
 ## What changes
 
-One switch per artifact, `content_policy`, with two values:
+One setting per artifact, `content_security_policy`, with two values:
 
-- `locked` (the default, and every existing artifact's): today's
-  behaviour, unchanged.
-- `own`: the clax is trusted as a site. Clax stops deciding what its
-  pages load, connect to, post to and register; the page's own `<meta>`
-  policy, if it has one, is the only content policy besides framing.
+- `self` (the default, and every existing artifact's): Clax sends a
+  `Content-Security-Policy` that holds the page to its own site
+  (`'self'`), as today.
+- `unrestricted`: the clax is trusted as a site. Clax sends no source
+  restrictions, only `frame-ancestors`; a `<meta>` Content Security Policy
+  of the page's own, if any, is the only one.
 
-The switch belongs to the artifact, not to a version: it says the clax is
+The setting belongs to the artifact, not to a version: it says the clax is
 trusted, and later versions keep it. Whoever administers the artifact may
-return it to `locked` at any time.
+return it to `self` at any time.
 
 ## Goals
 
-- A clax set to `own` can do what an ordinary site can: third-party
+- A clax at `unrestricted` can do what an ordinary site can: third-party
   scripts, styles, fonts, images, media and frames; `fetch`,
   `XMLHttpRequest`, `WebSocket` and `EventSource` to any host; form posts;
   a `<base>`; a service worker of its own (where it may register: below).
-- A clax nobody switched behaves exactly as today.
-- Only the person who answers for the artifact can switch it to `own`,
-  through the same gate as opening its site to the world.
+- A clax nobody changed behaves exactly as today.
+- Only the person who answers for the artifact can set it to
+  `unrestricted`, through the same gate as opening its site to the world.
 
 ## Non-goals
 
-- Per-origin allowlists (a list of hosts per directive). One switch says
+- Per-origin allowlists (a list of hosts per directive). One setting says
   what is being decided; a list of CDN hosts tells the person approving
   little and is fiddly for an agent to maintain.
 - Response headers chosen by the clax (a `_headers` file, a policy sent as
@@ -55,52 +57,55 @@ return it to `locked` at any time.
 
 ## Anti-goals
 
-- A page, an agent or a publish must never switch a clax to `own` on its
-  own: a prompt-injected page lifting its own lockdown defeats the
-  default.
-- `own` must not loosen what protects Clax itself: who may frame the
-  site, and the rules of `/_clax/`.
+- A page, an agent or a publish must never set a clax to `unrestricted`
+  on its own: a prompt-injected page lifting the policy that holds it to
+  its own site defeats the default.
+- `unrestricted` must not loosen what protects Clax itself: who may frame
+  the site, and the rules of `/_clax/`.
 
 ## Behaviour
 
 ### The setting
 
-- Stored on the artifact: a column `content_policy TEXT NOT NULL DEFAULT
-  'locked' CHECK (content_policy IN ('locked','own'))`, in the next free
-  migration.
+- Stored on the artifact: a column `content_security_policy TEXT NOT NULL
+  DEFAULT 'self' CHECK (content_security_policy IN
+  ('self','unrestricted'))`, in the next free migration.
 - Read: `GET /api/artifacts/<id>` and every answer that carries
-  `site_access` today carries `content_policy` beside it (additive).
-- Written: `PATCH /api/artifacts/<id> {"content_policy": "own"}`
-  (`"locked"` returns it; anything else is 400 `invalid_argument`), under
-  the rules `site_access` has in the same route (`docs/contract.md`,
-  "A site is private until…"):
+  `site_access` today carries `content_security_policy` beside it
+  (additive).
+- Written: `PATCH /api/artifacts/<id> {"content_security_policy":
+  "unrestricted"}` (`"self"` returns it; anything else is 400
+  `invalid_argument`), under the rules `site_access` has in the same route
+  (`docs/contract.md`, "A site is private until…"):
   - whoever administers the artifact may send it (the page's maker, and on
     a local Clax the owner); anyone else gets 403 `admin_only`;
   - a page (`x-clax-via: page`) never may;
-  - an agent's switch to `own` waits on its person: 202
-    `approval_pending` with a question the daemon writes (`Let it set its
-    own content policy` or `Keep it locked`), then the call again with
+  - an agent's change to `unrestricted` waits on its person: 202
+    `approval_pending` with a question the daemon writes (`Serve it
+    unrestricted` or `Keep it to its own site`), then the call again with
     `question_id`, exactly as an agent's opening of a site does; an
     approval is used once;
-  - switching to `own` is a confirmed decision where confirmations are
-    required, in the group that widens who may open a page (decision 3 of
-    the list in `docs/contract.md`); returning to `locked` never asks.
+  - the change to `unrestricted` is a confirmed decision where
+    confirmations are required, in the group that widens who may open a
+    page (decision 3 of the list in `docs/contract.md`); returning to
+    `self` never asks.
 - Either change holds from the next request.
-- The change is recorded as `artifact.update` of the artifact, as
-  `site_access` is.
+- The change is recorded as `artifact.update` of the artifact, with
+  `fields.content_security_policy`.
 - The setting does not travel: a push to a public Clax, a fork, a clone
-  and a bundle each start `locked`. The public copy's maker sets it there.
+  and a bundle each start at `self`. The public copy's maker sets it
+  there.
 - A draft follows its app's setting, as it follows its app's capability
-  approval. A new app's draft, with no live app, is `locked`.
+  approval. A new app's draft, with no live app, is at `self`.
 
-### What `own` lifts
+### What `unrestricted` lifts
 
-On a site whose artifact is `own`:
+On a site whose artifact is `unrestricted`:
 
 - **Content responses** (the clax's own pages and files, at the root and
   under `/v/<n>/`, and a draft's) carry
   `Content-Security-Policy: <frame-ancestors as today>` and nothing more.
-  Today these carry the lockdown after the same `frame-ancestors`
+  At `self` these carry the lockdown after the same `frame-ancestors`
   (`crates/clax-server/src/routes/content.rs`, `content_policy`).
 - **A service worker's script** (`Service-Worker: script`) is served from
   the clax's files like any other file, not answered with the kill switch
@@ -116,80 +121,89 @@ What stays, on every site:
   redirect, a refusal) keeps the lockdown: those are Clax's documents.
 - The other isolation headers, unchanged.
 - The gated capabilities (`net` and the rest) keep their approval and
-  grants: `own` lifts the browser's policy, not what the daemon will do
-  on a page's behalf.
+  grants: `unrestricted` lifts the browser's policy, not what the daemon
+  will do on a page's behalf.
 
-### Returning to `locked`
+### Returning to `self`
 
 Pages loaded from the next request carry the lockdown again, and so does
-every other file a browser kept from while the clax was `own`: while `own`,
-its content is revalidated on every use (none of it `immutable`, as a
-version's raw files otherwise are), and each `ETag` also names the policy,
-so a browser's next use after relocking is answered `200` with the
-lockdown, never `304` (a `304` would keep the stored policy). Without
-this, a document-capable file (SVG, XHTML, XML) cached for a year without
-the lockdown lets a locked page frame it and fetch anywhere through it. A
-file a browser kept `immutable` from while the clax was `locked` keeps the
-lockdown until it expires, after a switch to `own` too: stricter than the
-setting, so accepted.
+every other file a browser kept from while the clax was `unrestricted`:
+while `unrestricted`, its content is revalidated on every use (none of it
+`immutable`, as a version's raw files otherwise are), and each `ETag` also
+names the policy, so a browser's next use after the return to `self` is
+answered `200` with the lockdown, never `304` (a `304` would keep the
+stored policy). Without this, a document-capable file (SVG, XHTML, XML)
+cached for a year without the lockdown lets a page held to its own site
+frame it and fetch anywhere through it. A file a browser kept `immutable`
+from while the clax was at `self` keeps the lockdown until it expires,
+after a change to `unrestricted` too: stricter than the setting, so
+accepted.
 
-A service worker the clax registered while `own` is answered with the
-kill switch at its next update check and unregisters; until then it still
-controls the tabs it already controls, and can answer them with documents
-that carry no policy. This window is accepted, and recorded as a waiver on
-`site_layer`.
+A service worker the clax registered while `unrestricted` is answered
+with the kill switch at its next update check and unregisters; until then
+it still controls the tabs it already controls, and can answer them with
+documents that carry no policy. This window is accepted, and recorded as a
+waiver on `site_layer`.
 
 ### Where its service worker registers
 
+The setting also decides whether the clax may register a service worker,
+because a service worker can answer the site's page requests with
+documents that carry no `Content-Security-Policy` header: at `self`, a
+worker's script request is answered with Clax's kill switch, so no worker
+of the clax's runs, and with `unrestricted` it is served from the clax's
+files.
+
 A worker's script request is decided by the site's access like any other
-request, so a private site answers it only with a site session: an `own`
-clax's worker registers on a site open to the world, or on a private site
-visited top-level on a hosted Clax, whose first-party site cookie the
-script request carries. In Chromium and Firefox it does not register from
-inside the shell's frame of a private site: they send the frame's
-partitioned site cookie with the frame's own fetches but not with its
-worker's script fetch, which is answered 401 `site_session_required`. Nor,
-there, on a local Clax's private site, whose top-level visit is sent to the
-shell. WebKit sends the frame's site cookie with the script request too, so
-there it registers from the shell's frame of a local Clax's private site. In the
-Clax app it never registers: a content origin there is `clax://<id>.c` on
-Apple platforms, a scheme no service worker is registered on, and
-`https://<id>.c.clax.invalid` on Android, whose worker script fetch the app
-does not answer (it intercepts its WebViews' requests, not a service
-worker's). Serving a worker's script
-without a session would hand a private site's files to anyone who sends
+request, so a private site answers it only with a site session: an
+`unrestricted` clax's worker registers on a site open to the world, or on
+a private site visited top-level on a hosted Clax, whose first-party site
+cookie the script request carries. In Chromium and Firefox it does not
+register from inside the shell's frame of a private site: they send the
+frame's partitioned site cookie with the frame's own fetches but not with
+its worker's script fetch, which is answered 401 `site_session_required`.
+Nor, there, on a local Clax's private site, whose top-level visit is sent
+to the shell. WebKit sends the frame's site cookie with the script request
+too, so there it registers from the shell's frame of a local Clax's
+private site. In the Clax app it never registers: a content origin there
+is `clax://<id>.c` on Apple platforms, a scheme no service worker is
+registered on, and `https://<id>.c.clax.invalid` on Android, whose worker
+script fetch the app does not answer (it intercepts its WebViews'
+requests, not a service worker's). Serving a worker's script without a
+session would hand a private site's files to anyone who sends
 `Service-Worker: script`.
 
 ### Where a person sees it
 
-- The switch sits beside "open to the world" wherever the shell offers
+- The setting sits beside "open to the world" wherever the shell offers
   that today, for a caller who may administer the artifact. Its label:
-  "Let this clax set its own content policy". Its explanation, shown
-  before the change is sent: "Its pages may then load code from, and send
-  anything they can read to, any site. So may every later version,
-  whoever publishes it: you, an editor, or an agent of either. Turn this
-  on for a clax you trust as a website."
-- An artifact that is `own` shows it wherever the shell shows that a site
-  is open to the world.
+  "Serve this clax without Clax's Content Security Policy". Its
+  explanation, shown before the change is sent: "Clax then sends no
+  Content-Security-Policy holding its pages to their own site: they may
+  load code from, and send anything they can read to, any site. So may
+  every later version, whoever publishes it: you, an editor, or an agent
+  of either. Turn this on for a clax you trust as a website."
+- An artifact that is `unrestricted` shows it wherever the shell shows
+  that a site is open to the world.
 
 ### Where an agent meets it
 
 - The MCP tool that carries `site_access` (`publish_public`) takes
-  `content_policy` the same way, making the same waiting call.
+  `content_security_policy` the same way, making the same waiting call.
 - The page contract's rule ("A page loads and fetches only its own files…
   no scripts, styles, fonts or images from CDNs…") becomes the default,
   and says what to do otherwise: bundle the files with the page, or ask
-  the person to let the clax set its own content policy.
+  the person to serve the clax without Clax's Content Security Policy.
 
-## What the person accepts with `own`
+## What the person accepts with `unrestricted`
 
 Recorded as waivers beside the code that implements each:
 
 - A page of the clax can send anything it can read (the clax's database
   and assets, who the viewer is, the room) to any host. Every later
-  version runs unlocked too, whoever publishes it: the maker, an editor
-  (on a hosted Clax, anyone with Can edit), or an agent of either; and so
-  does a draft of it.
+  version is served unrestricted too, whoever publishes it: the maker, an
+  editor (on a hosted Clax, anyone with Can edit), or an agent of either;
+  and so is a draft of it.
 - Viewers' browsers contact whatever hosts the page names.
 - A service worker of the clax's can answer its own site's requests,
   those under `/_clax/` in its scope included.
@@ -206,15 +220,15 @@ Recorded as waivers beside the code that implements each:
 
 ## Tests
 
-- Unit: the policy of an `own` content response is its `frame-ancestors`
-  alone; a `locked` one is unchanged.
+- Unit: the policy of an `unrestricted` content response is its
+  `frame-ancestors` alone; a `self` one is unchanged.
 - Integration (`crates/clax-server/tests`): the PATCH's rules (admin only,
   never a page, an agent's waiting call, used once, confirmation where
-  required, `locked` never asks); the headers of a page, a `/v/<n>/` file,
+  required, `self` never asks); the headers of a page, a `/v/<n>/` file,
   a draft, a 404 and a `/_clax/` response under each setting; the service
-  worker's script under each setting and after returning to `locked`; a
-  fork and a push start `locked`.
+  worker's script under each setting and after returning to `self`; a
+  fork and a push start at `self`.
 - End to end (`web/e2e`, beside `lockdown.spec.ts`): a page that loads a
-  script from another origin and opens a WebSocket to it is refused while
-  `locked` and works once the owner switches the clax to `own`; the switch
-  in the shell shows its explanation first.
+  script from another origin and opens a WebSocket to it is refused at
+  `self` and works once the owner sets the clax to `unrestricted`; the
+  setting in the shell shows its explanation first.

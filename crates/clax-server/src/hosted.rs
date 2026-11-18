@@ -941,11 +941,12 @@ fn share_view(sh: &clax_store::shares::Share) -> Value {
 /// their own device, [`browser_or_device`]) → for
 /// whoever may share it ([`may_share`]) `{artifact_id, can_share: true,
 /// comments, general, link_access, url, people: [{id, access, github_login,
-/// person, name, pending}], suggestions, site_access, content_policy,
-/// site_url}`, `comments` its Comments switch, the suggestions (people
-/// here, with their GitHub logins) for the owner alone, whether its site
-/// (at `site_url`) is open to the world (`world` or `private`) and whether
-/// it sets its own content policy (`own` or `locked`), each of which `PATCH
+/// person, name, pending}], suggestions, site_access,
+/// content_security_policy, site_url}`, `comments` its Comments switch,
+/// the suggestions (people here, with their GitHub logins) for the owner
+/// alone, whether its site (at `site_url`) is open to the world (`world`
+/// or `private`) and the `Content-Security-Policy` Clax sends on its own
+/// content (`self` or `unrestricted`), each of which `PATCH
 /// /api/artifacts/<aid>` changes; for another member who may
 /// read it, `{artifact_id, can_share: false}`. 404 for an artifact the
 /// caller may not read, and for the owner one out of the owner's reach but
@@ -1003,7 +1004,7 @@ async fn get_sharing(
                 "people": people,
                 "suggestions": suggestions,
                 "site_access": crate::routes::artifacts::site_access_of(st, &aid)?,
-                "content_policy": crate::routes::own_policy::of(st, &aid)?,
+                "content_security_policy": crate::routes::content_security_policy::of(st, &aid)?,
                 "site_url": site_url,
             }))
         })

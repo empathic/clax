@@ -1,7 +1,8 @@
 //! The switches that widen what an artifact's site may do or who may open
 //! it, and the one way either is turned: its site open to the world
-//! (`site_access`, [`super::world`]) and its own content policy
-//! (`content_policy`, [`super::own_policy`]), both fields of `PATCH
+//! (`site_access`, [`super::world`]) and its site served without Clax's
+//! Content Security Policy (`content_security_policy`,
+//! [`super::content_security_policy`]), both fields of `PATCH
 //! /api/artifacts/<aid>` ([`super::artifacts::patch`]).
 //!
 //! A turn is admitted first ([`admit`]) and applied only with what
@@ -33,7 +34,7 @@ use clax_http::auth::Caller;
 use clax_http::error::ApiError;
 use clax_http::state::AppState;
 use clax_store::questions::{NewQuestion, Source, Status};
-use clax_store::site_sessions::{OPEN_TO_WORLD, OWN_POLICY, SET_OWN_POLICY};
+use clax_store::site_sessions::{ContentSecurityPolicy, OPEN_TO_WORLD, UNRESTRICT_CSP};
 use serde_json::{Value, json};
 
 /// A switch of an artifact's site.
@@ -41,17 +42,17 @@ use serde_json::{Value, json};
 pub enum Switch {
     /// Anyone may load the site (`site_access: world`).
     OpenToWorld,
-    /// The site's pages set their own content policy (`content_policy:
-    /// own`).
-    OwnContentPolicy,
+    /// Clax sends no source restrictions on the site's own content
+    /// (`content_security_policy: unrestricted`).
+    ContentSecurityPolicy,
 }
 
 /// The direction a switch is turned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Turn {
-    /// To `world`, or to `own`.
+    /// To `world`, or to `unrestricted`.
     Widen,
-    /// To `private`, or to `locked`.
+    /// To `private`, or to `self`.
     Narrow,
 }
 
@@ -78,7 +79,7 @@ impl Switch {
     const fn kind(self) -> &'static str {
         match self {
             Switch::OpenToWorld => OPEN_TO_WORLD,
-            Switch::OwnContentPolicy => SET_OWN_POLICY,
+            Switch::ContentSecurityPolicy => UNRESTRICT_CSP,
         }
     }
 
@@ -87,7 +88,7 @@ impl Switch {
     const fn widened_to(self) -> &'static str {
         match self {
             Switch::OpenToWorld => "world",
-            Switch::OwnContentPolicy => OWN_POLICY,
+            Switch::ContentSecurityPolicy => ContentSecurityPolicy::Unrestricted.as_str(),
         }
     }
 
@@ -95,7 +96,9 @@ impl Switch {
     fn widened(self, st: &clax_store::Store, id: &ArtifactId) -> clax_core::Result<bool> {
         match self {
             Switch::OpenToWorld => st.site_open_to_world(id),
-            Switch::OwnContentPolicy => st.content_policy_own(id),
+            Switch::ContentSecurityPolicy => {
+                Ok(st.content_security_policy(id)? == ContentSecurityPolicy::Unrestricted)
+            }
         }
     }
 
@@ -106,8 +109,8 @@ impl Switch {
             Switch::OpenToWorld => format!(
                 "Open \"{title}\" to the world? Anyone with its site's address can then load it and use its data as a visitor, as its rules allow, without signing in."
             ),
-            Switch::OwnContentPolicy => format!(
-                "Let \"{title}\" set its own content policy? Its pages may then load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website."
+            Switch::ContentSecurityPolicy => format!(
+                "Serve \"{title}\" without Clax's Content Security Policy? Its pages may then load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website."
             ),
         }
     }
@@ -126,20 +129,20 @@ impl Switch {
                 what: "opening this site to the world",
                 declined: "they chose to keep it private",
             },
-            Switch::OwnContentPolicy => &Wording {
-                admin_only: "only the page's maker (on a local Clax, the owner too) sets its site's content policy",
-                no_session: "an agent lets a site set its own content policy with publish_public's content_policy, which asks the person first",
-                header: "Content policy",
+            Switch::ContentSecurityPolicy => &Wording {
+                admin_only: "only the page's maker (on a local Clax, the owner too) sets its site's Content Security Policy",
+                no_session: "an agent serves a site without Clax's Content Security Policy with publish_public's content_security_policy, which asks the person first",
+                header: "Content Security Policy",
                 approve: (
-                    super::own_policy::LET_IT,
-                    "Its pages, and every later version's, load and connect where they choose; lock it again at any time",
+                    super::content_security_policy::SERVE_UNRESTRICTED,
+                    "Its pages, and every later version's, load and connect where they choose; restore the policy at any time",
                 ),
                 decline: (
-                    super::own_policy::KEEP_LOCKED,
+                    super::content_security_policy::KEEP_TO_ITS_SITE,
                     "Its pages load and connect to its own site alone",
                 ),
-                what: "letting this site set its own content policy",
-                declined: "they chose to keep it locked",
+                what: "serving this site without Clax's Content Security Policy",
+                declined: "they chose to keep it to its own site",
             },
         }
     }
@@ -254,7 +257,7 @@ pub async fn admit(
     }))
 }
 
-/// Makes the turn `admitted` names. A content policy's change is recorded
+/// Makes the turn `admitted` names. A Content Security Policy change is recorded
 /// as `ctx`'s; a site's opening or closing publishes `Event::SiteAccess`,
 /// on which its room sockets of visitors close when it closes.
 ///
@@ -277,8 +280,13 @@ pub async fn apply(s: &AppState, ctx: AuditCtx, admitted: Admitted) -> Result<()
                 world: widen,
             });
         }
-        Switch::OwnContentPolicy => {
-            s.store_call(move |st| st.set_content_policy_own(&ctx, &artifact, widen))
+        Switch::ContentSecurityPolicy => {
+            let policy = if widen {
+                ContentSecurityPolicy::Unrestricted
+            } else {
+                ContentSecurityPolicy::SelfOnly
+            };
+            s.store_call(move |st| st.set_content_security_policy(&ctx, &artifact, policy))
                 .await?;
         }
     }

@@ -1285,22 +1285,23 @@ async fn site_answer(
     )
 }
 
-/// The app answers a clax's site as the daemon does under each content
-/// policy: locked, the lockdown and Clax's service worker kill switch; own,
-/// the framing alone, files that revalidate under a tag naming the policy,
-/// and the clax's own worker script; locked again, the lockdown and the
-/// kill switch. A content frame's `If-None-Match` is dropped (it is never
-/// answered 304), so a copy kept while own is never reused.
+/// The app answers a clax's site as the daemon does under each
+/// `content_security_policy`: `self`, the lockdown and Clax's service
+/// worker kill switch; `unrestricted`, the framing alone, files that
+/// revalidate under a tag naming the policy, and the clax's own worker
+/// script; `self` again, the lockdown and the kill switch. A content
+/// frame's `If-None-Match` is dropped (it is never answered 304), so a copy
+/// kept while `unrestricted` is never reused.
 #[tokio::test]
-async fn a_clax_that_sets_its_own_content_policy_is_answered_in_the_app_as_on_the_daemon() {
+async fn an_unrestricted_clax_is_answered_in_the_app_as_on_the_daemon() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());
     let sw = "self.addEventListener('fetch', () => {});";
     let (status, v) = call_json(
         &embed,
         head("POST", "/api/artifacts", As::Owner),
-        Some(json!({"title": "Own", "files": {
-            "index.html": {"content": "<title>Own</title>own", "encoding": "utf8"},
+        Some(json!({"title": "Unrestricted", "files": {
+            "index.html": {"content": "<title>Unrestricted</title>unrestricted", "encoding": "utf8"},
             "app.js": {"content": "export {}", "encoding": "utf8"},
             "sw.js": {"content": sw, "encoding": "utf8"},
         }})),
@@ -1329,52 +1330,52 @@ async fn a_clax_that_sets_its_own_content_policy_is_answered_in_the_app_as_on_th
             let (s, v) = call_json(
                 embed,
                 head("PATCH", &format!("/api/artifacts/{id}"), As::Owner),
-                Some(json!({"content_policy": policy})),
+                Some(json!({"content_security_policy": policy})),
             )
             .await;
             assert_eq!(s, 200, "{policy}: {v}");
-            assert_eq!(v["artifact"]["content_policy"], policy, "{v}");
+            assert_eq!(v["artifact"]["content_security_policy"], policy, "{v}");
         }
     };
 
     let mut was = Vec::new();
     for path in paths {
         let (s, p, cc, tag, _) = site_answer(&embed, &id, path, &[]).await;
-        assert_eq!(s, 200, "locked {path}");
-        assert!(lockdown(&p), "locked {path}: {p:?}");
+        assert_eq!(s, 200, "self {path}");
+        assert!(lockdown(&p), "self {path}: {p:?}");
         was.push((cc, tag));
     }
     let (s, _, _, _, body) = site_answer(&embed, &id, "/sw.js", &worker).await;
-    assert_eq!((s, body.as_str()), (200, kill), "locked worker");
+    assert_eq!((s, body.as_str()), (200, kill), "self worker");
 
-    patch("own").await;
+    patch("unrestricted").await;
     let mut tags = Vec::new();
     for (path, before) in paths.iter().zip(&was) {
         let (s, p, cc, tag, _) = site_answer(&embed, &id, path, &[]).await;
-        assert_eq!(s, 200, "own {path}");
-        assert!(framing_alone(&p), "own {path}: {p:?}");
+        assert_eq!(s, 200, "unrestricted {path}");
+        assert!(framing_alone(&p), "unrestricted {path}: {p:?}");
         let cc = cc.unwrap_or_default();
         assert!(
             cc.contains("no-cache") && !cc.contains("immutable") && !cc.contains("max-age"),
-            "own {path}: {cc}"
+            "unrestricted {path}: {cc}"
         );
-        let tag = tag.unwrap_or_else(|| panic!("own {path}: no ETag"));
-        assert_ne!(Some(&tag), before.1.as_ref(), "own {path}");
+        let tag = tag.unwrap_or_else(|| panic!("unrestricted {path}: no ETag"));
+        assert_ne!(Some(&tag), before.1.as_ref(), "unrestricted {path}");
         tags.push(tag);
     }
     let (s, p, _, _, body) = site_answer(&embed, &id, "/sw.js", &worker).await;
-    assert_eq!((s, body.as_str()), (200, sw), "own worker");
-    assert!(framing_alone(&p), "own worker: {p:?}");
+    assert_eq!((s, body.as_str()), (200, sw), "unrestricted worker");
+    assert!(framing_alone(&p), "unrestricted worker: {p:?}");
 
-    patch("locked").await;
+    patch("self").await;
     for ((path, tag), before) in paths.iter().zip(&tags).zip(&was) {
         let (s, p, cc, etag, _) =
             site_answer(&embed, &id, path, &[("if-none-match", tag.as_str())]).await;
-        assert_eq!(s, 200, "locked again {path}");
-        assert!(lockdown(&p), "locked again {path}: {p:?}");
-        assert_eq!(&(cc, etag), before, "locked again {path}");
+        assert_eq!(s, 200, "self again {path}");
+        assert!(lockdown(&p), "self again {path}: {p:?}");
+        assert_eq!(&(cc, etag), before, "self again {path}");
     }
     let (s, _, _, _, body) = site_answer(&embed, &id, "/sw.js", &worker).await;
-    assert_eq!((s, body.as_str()), (200, kill), "locked again worker");
+    assert_eq!((s, body.as_str()), (200, kill), "self again worker");
     embed.close();
 }

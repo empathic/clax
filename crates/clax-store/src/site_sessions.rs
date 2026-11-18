@@ -39,16 +39,46 @@ pub const SITE_SESSION_RENEW_SECS: i64 = 300;
 /// once used, as a push's is ([`Store::create_push_approval`]).
 pub const OPEN_TO_WORLD: &str = "site:world";
 
-/// The `remote_id` of a `push_approvals` row that approves letting its
-/// artifact's site set its own content policy, as [`OPEN_TO_WORLD`] does
-/// opening it.
-pub const SET_OWN_POLICY: &str = "site:own-policy";
+/// The `remote_id` of a `push_approvals` row that approves serving its
+/// artifact's site with [`ContentSecurityPolicy::Unrestricted`], as
+/// [`OPEN_TO_WORLD`] does opening it.
+pub const UNRESTRICT_CSP: &str = "site:csp-unrestricted";
 
-/// `artifacts.content_policy` of a site held to its own site (the
-/// default).
-pub const LOCKED_POLICY: &str = "locked";
-/// `artifacts.content_policy` of a site that sets its own content policy.
-pub const OWN_POLICY: &str = "own";
+/// The `Content-Security-Policy` Clax sends on an artifact's own content
+/// (`artifacts.content_security_policy`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentSecurityPolicy {
+    /// `self` (every artifact's at first): a policy that holds its pages
+    /// to their own site (`'self'`), and a service worker script request
+    /// answered with Clax's own, which unregisters itself.
+    SelfOnly,
+    /// `unrestricted`: no source restrictions, only `frame-ancestors`, so
+    /// a `<meta>` Content Security Policy of the page's own, if any, is the
+    /// only one; the artifact may register its own service worker.
+    Unrestricted,
+}
+
+impl ContentSecurityPolicy {
+    /// Its value in `artifacts.content_security_policy` and the API:
+    /// `self` or `unrestricted`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ContentSecurityPolicy::SelfOnly => "self",
+            ContentSecurityPolicy::Unrestricted => "unrestricted",
+        }
+    }
+
+    /// The policy named `v` ([`ContentSecurityPolicy::as_str`]), or `None`.
+    #[must_use]
+    pub fn parse(v: &str) -> Option<Self> {
+        match v {
+            "self" => Some(ContentSecurityPolicy::SelfOnly),
+            "unrestricted" => Some(ContentSecurityPolicy::Unrestricted),
+            _ => None,
+        }
+    }
+}
 
 /// Who a site code or session reads as.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -366,20 +396,20 @@ impl Store {
         })
     }
 
-    /// Whether artifact `aid`'s site sets its own content policy
-    /// (`artifacts.content_policy` is `own`); false (`locked`) for one that
-    /// does not exist or is deleted. A draft of an app follows its live
-    /// app's setting, as its network grants do (`net_grants::live_app_in`):
-    /// a new app's draft, a draft made offline (a bundle update's check
-    /// draft) and a draft whose app is gone keep their own, `locked`.
+    /// Artifact `aid`'s `Content-Security-Policy` setting
+    /// (`artifacts.content_security_policy`); `self` for one that does not
+    /// exist or is deleted. A draft of an app follows its live app's
+    /// setting, as its network grants do (`net_grants::live_app_in`): a new
+    /// app's draft, a draft made offline (a bundle update's check draft)
+    /// and a draft whose app is gone keep their own, `self`.
     ///
     /// # Errors
     /// The database's.
-    pub fn content_policy_own(&self, aid: &ArtifactId) -> Result<bool> {
+    pub fn content_security_policy(&self, aid: &ArtifactId) -> Result<ContentSecurityPolicy> {
         self.with_read(|c| {
             let v: Option<String> = c
                 .query_row(
-                    "SELECT coalesce(app.content_policy, a.content_policy)
+                    "SELECT coalesce(app.content_security_policy, a.content_security_policy)
                        FROM artifacts a
                        LEFT JOIN artifacts app
                          ON a.hidden = 1 AND a.draft_inherit_net = 1
@@ -389,27 +419,29 @@ impl Store {
                     |r| r.get(0),
                 )
                 .optional()?;
-            Ok(v.as_deref() == Some(OWN_POLICY))
+            Ok(v.as_deref()
+                .and_then(ContentSecurityPolicy::parse)
+                .unwrap_or(ContentSecurityPolicy::SelfOnly))
         })
     }
 
-    /// Lets artifact `aid`'s site set its own content policy (`own`) or
-    /// locks it to its own site again, recorded under `ctx` as
-    /// `artifact.update` with `fields.content_policy` when it changes.
+    /// Sets artifact `aid`'s `Content-Security-Policy` setting to `policy`,
+    /// recorded under `ctx` as `artifact.update` with
+    /// `fields.content_security_policy` when it changes.
     ///
     /// # Errors
     /// `NotFound` when the artifact does not exist; the database's.
-    pub fn set_content_policy_own(
+    pub fn set_content_security_policy(
         &self,
         ctx: &AuditCtx,
         aid: &ArtifactId,
-        own: bool,
+        policy: ContentSecurityPolicy,
     ) -> Result<()> {
-        let policy = if own { OWN_POLICY } else { LOCKED_POLICY };
+        let policy = policy.as_str();
         self.with_tx(|tx| {
             let before: Option<String> = tx
                 .query_row(
-                    "SELECT content_policy FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
+                    "SELECT content_security_policy FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
                     params![aid.as_str()],
                     |r| r.get(0),
                 )
@@ -421,11 +453,11 @@ impl Store {
                 return Ok(());
             }
             tx.execute(
-                "UPDATE artifacts SET content_policy = ?2 WHERE id = ?1",
+                "UPDATE artifacts SET content_security_policy = ?2 WHERE id = ?1",
                 params![aid.as_str(), policy],
             )?;
             let mut fields = serde_json::Map::new();
-            fields.insert("content_policy".into(), policy.into());
+            fields.insert("content_security_policy".into(), policy.into());
             let mut rec =
                 AuditRecord::new(AuditKind::ArtifactUpdate, self.now()).with("fields", fields);
             rec.ids.artifact = Some(aid.as_str().to_string());

@@ -687,7 +687,7 @@ Errors: `invalid_id`, `not_found`, `unknown_version`, `not_permitted`.
 | `question_id` | string | no | The approval question an earlier call returned (`call_again`), to keep waiting on it. |
 | `timeout_s` | integer | no | Seconds to wait for the person's answer, 1 to 600 (default 600); under Codex 1 to 50 (default 50). |
 | `site_access` | string | no | Instead of publishing on a public Clax: `world` opens the artifact's own site to anyone once the person approves, `private` closes it at once. Takes no `remote` or `mode`. |
-| `content_policy` | string | no | Instead of publishing on a public Clax: `own` lets the artifact's own site set its own content policy once the person approves, `locked` holds its pages to their own site again at once. Takes no `remote`, `mode` or `site_access`. |
+| `content_security_policy` | string | no | Instead of publishing on a public Clax: `unrestricted` serves the artifact's own site without Clax's Content Security Policy once the person approves, `self` holds its pages to their own site again at once. Takes no `remote`, `mode` or `site_access`. |
 
 With `site_access`, the tool sends `PATCH /api/artifacts/<id>
 {site_access, question_id}` (see "Security model"): opening asks the
@@ -698,12 +698,13 @@ the result is `{status: "open" | "private", site_access, site_url}`, or
 `not_approved`, `approval_used`, `admin_only`, `no_session`,
 `invalid_args`.
 
-With `content_policy`, the tool sends `PATCH /api/artifacts/<id>
-{content_policy, question_id}` in the same way: `own` asks the person
-`Let it set its own content policy` or `Keep it locked` and waits, and the
-result is `{status: "own" | "locked", content_policy, site_url}`, or the
-same `approval_pending` answer (call again with the same `content_policy`
-and `question_id`), with the same errors.
+With `content_security_policy`, the tool sends `PATCH /api/artifacts/<id>
+{content_security_policy, question_id}` in the same way: `unrestricted`
+asks the person `Serve it unrestricted` or `Keep it to its own site` and
+waits, and the result is `{status: "self" | "unrestricted",
+content_security_policy, site_url}`, or the same `approval_pending` answer
+(call again with the same `content_security_policy` and `question_id`),
+with the same errors.
 
 Publishes an artifact on a public Clax this Clax is signed in to (see
 "Publishing to a public Clax"). Making content public is the person's
@@ -2879,8 +2880,9 @@ answer made in the owner's browser). The decisions:
    decision 4 does);
 3. widening who may open a page: its site to the world (`PATCH
    /api/artifacts/<aid>` `{site_access: "world"}` for a site not open
-   yet), its site setting its own content policy (`{content_policy:
-   "own"}` for a site still `locked`; returning to `locked` never asks),
+   yet), its site served without Clax's Content Security Policy
+   (`{content_security_policy: "unrestricted"}` for a site still at
+   `self`; returning to `self` never asks),
    and its public copy's link access (`PUT
    /api/remotes/<rid>/artifacts/<raid>/sharing/link` with an `access`,
    or `listed: true`), a share of the public copy with a person (`PUT
@@ -7450,11 +7452,12 @@ dark mode, and on a phone:
   or other sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or
   `EventSource` to anywhere else. The daemon's content policy refuses the
   rest. Data from the web comes through the `net` capability. A page that
-  needs more bundles those files with it, or its person lets the clax set
-  its own content policy (`content_policy: "own"`, see "Security model";
-  an agent asks with `publish_public`'s `content_policy`): its pages may
-  then load from, connect to and post to any site, and register a service
-  worker of their own.
+  needs more bundles those files with it, or its person serves the clax
+  without Clax's Content Security Policy (`content_security_policy:
+  "unrestricted"`, see "Security model"; an agent asks with
+  `publish_public`'s `content_security_policy`): its pages may then load
+  from, connect to and post to any site, and register a service worker of
+  their own.
 - `icon.svg` at the top of the files is the app's icon, a square
   full-bleed design. Every publish refuses one that breaks these rules
   (`invalid_icon`), and a version a git push makes leaves it out, naming
@@ -8023,9 +8026,9 @@ grants only the hosts in force and answers 400 `not_declared` when none is.
 An app page cannot connect anywhere itself, nor load anything from another
 site: its content security policy lets it fetch only its own files and
 assets, and load only those, `data:` and `blob:` (see "Security model"),
-unless its site sets its own content policy (`own`), which `net` does not
-need. It fetches from the web through the daemon instead, from hosts it
-declares and the owner allows; under `own` too, `net` keeps its
+unless its `content_security_policy` is `unrestricted`, which `net` does
+not need. It fetches from the web through the daemon instead, from hosts
+it declares and the owner allows; at `unrestricted` too, `net` keeps its
 declaration, approval and grants.
 
 **Declaring.** `{"net": {"hosts": ["api.example.com", "cdn.example.com"]}}`:
@@ -11570,13 +11573,13 @@ was made; and a run's end, sent until it is acknowledged.
   script (`Service-Worker: script`), of any path, is answered with Clax's
   own script, which installs, unregisters itself and handles no fetch: a
   page's own worker never runs, and one registered before is removed at its
-  next update check. On the site of an artifact that sets its own content
-  policy (`content_policy` `own`, below), the artifact's own content (its
-  pages and files at the root and under `/_clax/v/<n>/`, and a draft's)
-  carries `Content-Security-Policy: frame-ancestors …` as above and nothing
-  more, so the page's own `<meta>` policy, if it has one, is its only
-  content policy besides framing; and a service worker's script is served
-  from its files like any other file. Every other response there (the rest
+  next update check. On the site of an artifact whose
+  `content_security_policy` is `unrestricted` (below), the artifact's own
+  content (its pages and files at the root and under `/_clax/v/<n>/`, and
+  a draft's) carries `Content-Security-Policy: frame-ancestors …` as above
+  and no source restrictions, so a `<meta>` Content Security Policy of the
+  page's own, if any, is the only one; and a service worker's script is
+  served from its files like any other file. Every other response there (the rest
   of `/_clax/`, a 404, a redirect, a refusal) and a live page's snapshot
   keep the policies above, and the other headers are unchanged. The host must be exactly a valid 12-character
   lowercase artifact ID followed by `.localhost` (a hosted Clax's
@@ -11611,8 +11614,8 @@ was made; and a run's end, sent until it is acknowledged.
   anything else answers 401 `site_session_required`. Such a site's
   responses are private to the browser: `Cache-Control` `private,
   no-cache` (the current version), `private, max-age=31536000, immutable`
-  (`/_clax/v/<n>/…` and assets; on an `own` site its content is `private,
-  no-cache`, below), and never `Access-Control-Allow-Origin`.
+  (`/_clax/v/<n>/…` and assets; on an `unrestricted` site its content is
+  `private, no-cache`, below), and never `Access-Control-Allow-Origin`.
 - A site session is made from a one-use code good for 60 s, bound to a
   **state** the browser holds in the site host's state cookie
   (`clax_site_state`, on `https` `__Host-clax_site_state`, so no sibling
@@ -11662,59 +11665,63 @@ was made; and a run's end, sent until it is acknowledged.
   (`publish_public` with `site_access` makes these calls). Closing never
   asks, and either change holds from the next request: a page, an asset
   or an API call of a visitor is refused right after.
-- A site is `locked` until whoever administers its artifact sends `PATCH
-  /api/artifacts/<id> {"content_policy": "own"}`, which lets it set its
-  own content policy (above), for a clax they trust as a website
-  (`"locked"` returns it; anything else is 400 `invalid_argument`; anyone
+- A site is at `self` until whoever administers its artifact sends `PATCH
+  /api/artifacts/<id> {"content_security_policy": "unrestricted"}`, for a
+  clax they trust as a website: Clax then sends no
+  `Content-Security-Policy` holding its pages to their own site (above)
+  (`"self"` returns it; anything else is 400 `invalid_argument`; anyone
   else 403 `admin_only`), under the rules of `site_access` above: their
   browser may send it alone without the token; a page never may (403
   `not_for_pages`, for a request carrying `x-clax-via: page`, as for
-  `site_access`); an agent's `own` waits on its person, who is asked `Let it
-  set its own content policy` or `Keep it locked`, with the same 202
-  `approval_pending`, `question_id`, `not_approved`, `approval_used` and
-  `no_session`; the owner's `own` with the token is decision 3 of "Browser
-  confirmations"; returning to `locked` never asks. One request changes
-  `site_access` or `content_policy`, not both (400 `invalid_args`). The
-  answer adds `artifact.content_policy`, as `GET /api/artifacts/<id>` and a
-  hosted Clax's sharing route say it too. Either change holds from the next
-  request, and is recorded as `artifact.update` with
-  `fields.content_policy`. It belongs to the artifact, not to a version:
-  every later version runs unlocked too, whoever publishes it (its maker,
-  an editor of it on a hosted Clax, or an agent of either). It does not
-  travel: a push to a public Clax, a fork, a clone and a bundle each start
-  `locked`. A draft follows its artifact's: an agent's draft of it
-  (`/_clax/draft/…`), and a draft artifact of the app (`POST /api/drafts`
-  with `of`) while the app is live; a new app's draft, and a bundle
-  update's check draft (`inherit_net: false`), are `locked`. A draft
-  artifact takes no `content_policy` of its own, either way (403
-  `draft`). While `own`,
-  its content is revalidated on every use, none of it `immutable`, and
-  each `ETag` also names the policy, so after it returns to `locked` a
-  browser's next use of anything it kept is answered whole, with the
-  lockdown, never `304 Not Modified`. A file a browser kept `immutable`
-  from while the site was `locked` keeps the lockdown until it expires,
-  after a switch to `own` too. Returning to `locked`, a service worker the
-  site registered while `own` is answered Clax's script at its next update
-  check and removes itself; until then it still controls the tabs it
-  controls. An `own` clax's service worker registers on a site open to the
-  world, or on a private site visited top-level on a hosted Clax, whose
-  first-party site cookie the worker's script request carries. In
-  Chromium and Firefox it does not register from inside the shell's frame
-  of a private site, whose script request carries no site cookie (they
-  send the frame's partitioned cookie with the frame's own fetches, not
-  with its worker's script fetch) and is answered 401
-  `site_session_required`; nor, there, on a local Clax's private site,
-  whose top-level visit is sent to the shell. WebKit sends the frame's
-  site cookie with the script request too, so there it registers from the
-  shell's frame of a local Clax's private site as well. In the Clax app it
-  never registers: a content origin there is `clax://<id>.c` on Apple
-  platforms, a scheme no service worker is registered on, and
-  `https://<id>.c.clax.invalid` on Android, whose worker script fetch the
-  app does not answer (it intercepts its WebViews' requests, not a service
-  worker's), so it never reaches the core. `own` lifts
-  the browser's policy, not what the daemon does for a page: the `net`
-  capability and the other gated capabilities keep their approval and
-  grants.
+  `site_access`); an agent's `unrestricted` waits on its person, who is
+  asked `Serve it unrestricted` or `Keep it to its own site`, with the
+  same 202 `approval_pending`, `question_id`, `not_approved`,
+  `approval_used` and `no_session`; the owner's `unrestricted` with the
+  token is decision 3 of "Browser confirmations"; returning to `self`
+  never asks. One request changes `site_access` or
+  `content_security_policy`, not both (400 `invalid_args`). The answer
+  adds `artifact.content_security_policy`, as `GET /api/artifacts/<id>`
+  and a hosted Clax's sharing route say it too. Either change holds from
+  the next request, and is recorded as `artifact.update` with
+  `fields.content_security_policy`. It belongs to the artifact, not to a
+  version: every later version is served unrestricted too, whoever
+  publishes it (its maker, an editor of it on a hosted Clax, or an agent
+  of either). It does not travel: a push to a public Clax, a fork, a clone
+  and a bundle each start at `self`. A draft follows its artifact's: an
+  agent's draft of it (`/_clax/draft/…`), and a draft artifact of the app
+  (`POST /api/drafts` with `of`) while the app is live; a new app's draft,
+  and a bundle update's check draft (`inherit_net: false`), are at `self`.
+  A draft artifact takes no `content_security_policy` of its own, either
+  way (403 `draft`). While `unrestricted`, its content is revalidated on
+  every use, none of it `immutable`, and each `ETag` also names the
+  policy, so after it returns to `self` a browser's next use of anything
+  it kept is answered whole, with the lockdown, never `304 Not Modified`.
+  A file a browser kept `immutable` from while the site was at `self`
+  keeps the lockdown until it expires, after a change to `unrestricted`
+  too. The setting also decides whether the clax may register a service
+  worker, because a service worker can answer the site's page requests
+  with documents that carry no policy header. Returning to `self`, a
+  service worker the site registered while `unrestricted` is answered
+  Clax's script at its next update check and removes itself; until then
+  it still controls the tabs it controls. An `unrestricted` clax's service
+  worker registers on a site open to the world, or on a private site
+  visited top-level on a hosted Clax, whose first-party site cookie the
+  worker's script request carries. In Chromium and Firefox it does not
+  register from inside the shell's frame of a private site, whose script
+  request carries no site cookie (they send the frame's partitioned cookie
+  with the frame's own fetches, not with its worker's script fetch) and is
+  answered 401 `site_session_required`; nor, there, on a local Clax's
+  private site, whose top-level visit is sent to the shell. WebKit sends
+  the frame's site cookie with the script request too, so there it
+  registers from the shell's frame of a local Clax's private site as well.
+  In the Clax app it never registers: a content origin there is
+  `clax://<id>.c` on Apple platforms, a scheme no service worker is
+  registered on, and `https://<id>.c.clax.invalid` on Android, whose
+  worker script fetch the app does not answer (it intercepts its WebViews'
+  requests, not a service worker's), so it never reaches the core.
+  `unrestricted` lifts the browser's policy, not what the daemon does for
+  a page: the `net` capability and the other gated capabilities keep their
+  approval and grants.
 - On a site open to the world, a request with no site session of a holder
   who may read it is a visitor's: the first navigation or `/_clax/api/`
   response without the visitor cookie sets it (`clax_visitor`, on `https`

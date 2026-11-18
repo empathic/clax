@@ -34,11 +34,12 @@ dark mode, and on a phone:
   or other sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or
   `EventSource` to anywhere else. The daemon's content policy refuses the
   rest. Data from the web comes through the `net` capability. A page that
-  needs more bundles those files with it, or its person lets the clax set
-  its own content policy (`content_policy: "own"`, see "Security model";
-  an agent asks with `publish_public`'s `content_policy`): its pages may
-  then load from, connect to and post to any site, and register a service
-  worker of their own.
+  needs more bundles those files with it, or its person serves the clax
+  without Clax's Content Security Policy (`content_security_policy:
+  "unrestricted"`, see "Security model"; an agent asks with
+  `publish_public`'s `content_security_policy`): its pages may then load
+  from, connect to and post to any site, and register a service worker of
+  their own.
 - `icon.svg` at the top of the files is the app's icon, a square
   full-bleed design. Every publish refuses one that breaks these rules
   (`invalid_icon`), and a version a git push makes leaves it out, naming

@@ -8,20 +8,21 @@
 //! every site response a content route did not give its own policy
 //! ([`ContentPolicySet`]).
 //!
-//! An artifact whose administrator lets its site set its own content
-//! policy (`artifacts.content_policy` is `own`) keeps only the framing on
-//! its own content (`clax_server::routes::content`), and its service
-//! worker's script is its own file; every other response on its site, and
-//! every response on a site left `locked`, is as above.
+//! An artifact whose administrator set its `Content-Security-Policy` to
+//! `unrestricted` (`artifacts.content_security_policy`) keeps only the
+//! framing on its own content (`clax_server::routes::content`), and its
+//! service worker's script is its own file; every other response on its
+//! site, and every response on a site left at `self`, is as above.
 
 use axum::http::{HeaderMap, header};
 
-/// A service worker script for any registration or update on a `locked`
-/// site host: it installs, then unregisters itself, and handles no fetch. A
-/// page's own worker script never runs (a worker answers its frames with
-/// documents that carry no policy), and a worker a page registered before,
-/// while its site set its own content policy among others, is replaced and
-/// removed at its next update check.
+/// A service worker script for any registration or update on a site host
+/// whose `Content-Security-Policy` setting is `self`: it installs, then
+/// unregisters itself, and handles no fetch. A page's own worker script
+/// never runs (a worker answers its frames with documents that carry no
+/// policy), and a worker a page registered before, while its site was
+/// `unrestricted` among others, is replaced and removed at its next update
+/// check.
 pub const SERVICE_WORKER_KILL_SWITCH: &str = "self.addEventListener(\"install\",()=>self.skipWaiting());\
 self.addEventListener(\"activate\",e=>e.waitUntil(self.registration.unregister()));";
 

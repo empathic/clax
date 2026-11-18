@@ -21,6 +21,7 @@ pub mod client_imports;
 pub mod confirmations;
 pub mod connect;
 pub mod content;
+pub mod content_security_policy;
 pub mod discovery;
 pub mod docs;
 pub mod drafts;
@@ -41,7 +42,6 @@ pub mod mcp;
 pub mod mcp_http;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net;
-pub mod own_policy;
 pub mod passkeys;
 pub mod people;
 pub mod perf;

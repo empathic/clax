@@ -913,8 +913,9 @@ async fn golden_now() -> Value {
 /// frames an artifact on, on every install. An artifact's
 /// `capabilities_in_force`, and for the owner `may_approve` and
 /// `pending_capabilities`, say what of its declaration its owner approved,
-/// on every install. An artifact's `content_policy` says whether its site
-/// sets its own content policy, on every install.
+/// on every install. An artifact's `content_security_policy` says what
+/// `Content-Security-Policy` Clax sends on its own content, on every
+/// install.
 pub const ADDITIVE_KEYS: [&str; 27] = [
     "owner",
     "taken_by",
@@ -942,7 +943,7 @@ pub const ADDITIVE_KEYS: [&str; 27] = [
     "capabilities_in_force",
     "may_approve",
     "pending_capabilities",
-    "content_policy",
+    "content_security_policy",
 ];
 
 /// Whether `v`, the value of item 6's key `key` that the golden lacks, is
@@ -959,8 +960,8 @@ pub const ADDITIVE_KEYS: [&str; 27] = [
 /// artifact made before apps has its Comments switch on and no bundle); an
 /// artifact's `capabilities_in_force` a declaration, `may_approve` true and
 /// `pending_capabilities` null (the golden's artifacts declare nothing
-/// that needs approval); an artifact's `content_policy` `locked` (every
-/// artifact made before the switch is).
+/// that needs approval); an artifact's `content_security_policy` `self`
+/// (every artifact made before the setting is).
 pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
     let owners_agent = |a: &Value| {
         a.is_null()
@@ -992,7 +993,7 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "capabilities_in_force" => v.is_object(),
         "may_approve" => *v == json!(true),
         "pending_capabilities" => v.is_null(),
-        "content_policy" => *v == json!("locked"),
+        "content_security_policy" => *v == json!("self"),
         _ => false,
     }
 }

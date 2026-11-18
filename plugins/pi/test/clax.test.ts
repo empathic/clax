@@ -2224,24 +2224,24 @@ describe("publishing failures", () => {
     }
   });
 
-  it("publish_public's content_policy patches the artifact, waiting on the person's answer as site_access does", async () => {
-    const { pi, ctx, fake } = await setup("pi-content-policy");
+  it("publish_public's content_security_policy patches the artifact, waiting on the person's answer as site_access does", async () => {
+    const { pi, ctx, fake } = await setup("pi-content-security-policy");
     try {
       const qid = "01J0000000000000000000000B";
       const patch = vi.spyOn(DaemonClient.prototype, "patch")
         .mockResolvedValueOnce({ status: "approval_pending", question_id: qid, inbox_url: "http://x/inbox" })
-        .mockResolvedValueOnce({ artifact: { id: "7q3k9mzx2b4t", site_access: "private", content_policy: "own" }, site_url: "http://x/" });
+        .mockResolvedValueOnce({ artifact: { id: "7q3k9mzx2b4t", site_access: "private", content_security_policy: "unrestricted" }, site_url: "http://x/" });
       const askWait = vi.spyOn(DaemonClient.prototype, "askWait").mockResolvedValueOnce({ question: { status: "open" } });
-      const pending = parts(await pi.callToolAsPi("clax_publish_public", { url_or_id: "7q3k9mzx2b4t", content_policy: "own", timeout_s: 5 }, ctx)).json;
+      const pending = parts(await pi.callToolAsPi("clax_publish_public", { url_or_id: "7q3k9mzx2b4t", content_security_policy: "unrestricted", timeout_s: 5 }, ctx)).json;
       expect(pending).toMatchObject({ status: "approval_pending", question_id: qid, url: "http://x/inbox", call_again: true });
-      expect(pending.note).toContain("content_policy");
-      expect(patch).toHaveBeenLastCalledWith("7q3k9mzx2b4t", { content_policy: "own", question_id: null });
+      expect(pending.note).toContain("content_security_policy");
+      expect(patch).toHaveBeenLastCalledWith("7q3k9mzx2b4t", { content_security_policy: "unrestricted", question_id: null });
       expect(askWait).toHaveBeenCalledTimes(1);
-      const done = parts(await pi.callToolAsPi("clax_publish_public", { url_or_id: "7q3k9mzx2b4t", content_policy: "own", question_id: qid }, ctx)).json;
-      expect(done).toMatchObject({ status: "own", content_policy: "own", site_url: "http://x/" });
-      expect(patch).toHaveBeenLastCalledWith("7q3k9mzx2b4t", { content_policy: "own", question_id: qid });
-      for (const extra of [{ site_access: "world" }, { mode: "new" }, { remote: "pub" }, { content_policy: "open" }]) {
-        const e = errorOf(await pi.callToolAsPi("clax_publish_public", { url_or_id: "7q3k9mzx2b4t", content_policy: "own", ...extra }, ctx));
+      const done = parts(await pi.callToolAsPi("clax_publish_public", { url_or_id: "7q3k9mzx2b4t", content_security_policy: "unrestricted", question_id: qid }, ctx)).json;
+      expect(done).toMatchObject({ status: "unrestricted", content_security_policy: "unrestricted", site_url: "http://x/" });
+      expect(patch).toHaveBeenLastCalledWith("7q3k9mzx2b4t", { content_security_policy: "unrestricted", question_id: qid });
+      for (const extra of [{ site_access: "world" }, { mode: "new" }, { remote: "pub" }, { content_security_policy: "open" }]) {
+        const e = errorOf(await pi.callToolAsPi("clax_publish_public", { url_or_id: "7q3k9mzx2b4t", content_security_policy: "unrestricted", ...extra }, ctx));
         expect(e.code, JSON.stringify(extra)).toBe("invalid_args");
       }
       expect(patch).toHaveBeenCalledTimes(2);
