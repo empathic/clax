@@ -49,8 +49,11 @@ jobs:
       # on a failure, then the Rust tests, the web and Pi checks, the other
       # script gates and the checks run outside Bazel. Performance is
       # measured on demand (`just perf`), not here. Each phase's time goes
-      # to the job summary.
+      # to the job summary. The keyed outside checks' pass records live on
+      # the sticky disk, so a run skips a check that main passed on the
+      # same files.
       - name: Run scripts/bazel-test.sh --ci
+        env: { CLAX_CHECKS_CACHE: /home/runner/.cache/bazel-ci/clax-checks }
         run: scripts/bazel-test.sh --ci
 
       # Also after a timeout, when the logs matter most.

@@ -172,8 +172,8 @@ for name in sorted(set(sys.stdin.buffer.read().split(b"\0")) - {b""}):
 # that reads only the files its pathspecs name (and the v* tags), skipped
 # when it passed before on the same files, in any worktree, as Bazel caches
 # a passed test. A pass is recorded as an empty file named by its key under
-# CLAX_CHECKS_CACHE (default ~/.cache/clax-checks), which CI does not keep,
-# so CI runs every one.
+# CLAX_CHECKS_CACHE (default ~/.cache/clax-checks). CI sets it to a
+# directory on its Bazel sticky disk, which keeps main's records.
 checks_cache="${CLAX_CHECKS_CACHE:-$HOME/.cache/clax-checks}"
 _run_keyed() {
     local name="$1" specs=() key stamp
