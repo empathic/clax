@@ -15,11 +15,14 @@ afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root
 /** A scratch web/ with a copy of the script, a minimal build and `budget` as the budget file. */
 const ENTRY = "<head><script id=\"clax-early\"></script><!--clax:boot--></head><body><!--clax:frame--><h1>Clax</h1></body>";
 
+/** The gallery entry as the build writes it: the daemon injects its bootstrap at the marker. */
+const GALLERY = "<!--clax:boot--><p>gallery</p>";
+
 /** The extension's release manifest as the build writes it. */
 const EXT_MANIFEST = { manifest_version: 3, name: "Clax", version: "1.0.0", optional_host_permissions: ["http://*/*", "https://*/*"] };
 
 /** `fonts` are font files put in dist (none by default); `index` is the gallery entry; `overlayMjs` is the overlay's ES module; `extFiles` are extra files put in dist-extension; `extBodies` are files written there with the given content. */
-function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = "<p>gallery</p>", extManifest = EXT_MANIFEST as Record<string, unknown>, extFiles = [] as string[], extBodies = {} as Record<string, string>, overlayMjs = "var o=1;export{o as overlay};" } = {}) {
+function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = GALLERY, extManifest = EXT_MANIFEST as Record<string, unknown>, extFiles = [] as string[], extBodies = {} as Record<string, string>, overlayMjs = "var o=1;export{o as overlay};" } = {}) {
   root = mkdtempSync(join(tmpdir(), "clax-bundle-size-"));
   const web = join(root, "web");
   mkdirSync(join(web, "scripts"), { recursive: true });
@@ -121,6 +124,12 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     }
   });
 
+  it("fails when the gallery entry lost its bootstrap marker", () => {
+    const r = run(full, ENTRY, [], { index: "<p>gallery</p>" });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("index.html lost <!--clax:boot-->");
+  });
+
   it("fails when a size is over its budget", () => {
     const r = run({ ...full, gallery: 1 });
     expect(r.status).toBe(1);
@@ -163,7 +172,7 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
   });
 
   it("fails when an entry preloads a font", () => {
-    const r = run(full, ENTRY, [], { index: `<link rel="preload" href="/_clax/fonts/x.woff2" as="font"><p>gallery</p>` });
+    const r = run(full, ENTRY, [], { index: `<link rel="preload" href="/_clax/fonts/x.woff2" as="font">${GALLERY}` });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("preloads a font");
   });
@@ -175,12 +184,12 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
       `<link as=font href=/_clax/fonts/x.woff2 rel=preload crossorigin>`,
       `<link rel="preload" href="/f" as="font" type="font/woff2">`,
     ]) {
-      const r = run(full, ENTRY, [], { index: `${link}<p>gallery</p>` });
+      const r = run(full, ENTRY, [], { index: `${link}${GALLERY}` });
       expect(r.status, link).toBe(1);
       expect(r.stderr).toContain("preloads a font");
       rmSync(root, { recursive: true, force: true });
     }
-    expect(run(full, ENTRY, [], { index: `<link rel="modulepreload" href="/_clax/shell/a.js"><link rel="icon" href="/_clax/mark.svg"><p>gallery</p>` }).status).toBe(0);
+    expect(run(full, ENTRY, [], { index: `<link rel="modulepreload" href="/_clax/shell/a.js"><link rel="icon" href="/_clax/mark.svg">${GALLERY}` }).status).toBe(0);
   });
 
   it("fails when an @font-face fetches a font, swap or not, and passes a local-only face", () => {

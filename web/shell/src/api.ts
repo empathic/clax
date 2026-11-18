@@ -132,6 +132,9 @@ export async function getAttention(only?: string): Promise<Record<string, Attent
 let tokenPromise: Promise<string | null> | null = null;
 const tokenHeard = new Set<() => void>();
 let tokenFailed = false;
+/** Whether the last token request failed rather than answered (a null
+ * from `getToken` then says nothing of whether the browser is the owner's). */
+export const tokenUnsure = () => tokenFailed;
 /** Calls `fn` each time a token request answers with the token after an
  * earlier one failed: only then did this page gain the events cookie. */
 export const onToken = (fn: () => void) => { tokenHeard.add(fn); };

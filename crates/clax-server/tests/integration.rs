@@ -207,6 +207,8 @@ mod core_start;
 #[cfg(any(not(clax_split), clax_split = "daemon"))]
 mod daemon;
 mod deferred;
+#[cfg(any(not(clax_split), clax_split = "gallery_boot"))]
+mod gallery_boot;
 #[cfg(any(not(clax_split), clax_split = "get_page"))]
 mod get_page;
 #[cfg(any(not(clax_split), clax_split = "golden_single_owner"))]

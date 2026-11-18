@@ -8,6 +8,7 @@
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
   import { type RemoteMute, remoteMutes, unmuteRemote } from "../q/remote-api";
+  import { holdReveal } from "../settings/first-data";
 
   let mutes = $state<RemoteMute[] | null>(null);
   let err = $state<string | null>(null);
@@ -22,8 +23,10 @@
     } catch (e) { err = refusal(e); } finally { busy = null; }
   }
 
+  // Shown in Settings, the screen waits for the muted instances.
+  const release = holdReveal();
   onMount(() => {
-    void remoteMutes().then(r => { mutes = r.mutes; }, e => { err = refusal(e); });
+    void remoteMutes().then(r => { mutes = r.mutes; }, e => { err = refusal(e); }).finally(release);
   });
 </script>
 

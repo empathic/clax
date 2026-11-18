@@ -28,6 +28,7 @@
   import ModelError from "./ModelError.svelte";
   import ModelSelect from "./ModelSelect.svelte";
   import SourceBadge from "./SourceBadge.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   let { now }: { now?: () => Date } = $props();
   let p = $state<Provider | null>(null);
@@ -84,9 +85,9 @@
     caps = Object.fromEntries(Object.entries(x.caps).map(([k, v]) => [k, String(v)]));
   }
   const load = () => provider().then(take, e => { err = refusal(e); });
-  function listModels() {
+  function listModels(): Promise<void> {
     why = "Listing the provider's models…"; whyDetail = null;
-    void providerModels().then(m => { models = m; why = null; }, e => { models = null; whyDetail = e instanceof ModelRefused ? e.detail : null; why = `The models could not be listed: ${refusal(e)} Set the key and the base URL, then list them again.`; });
+    return providerModels().then(m => { models = m; why = null; }, e => { models = null; whyDetail = e instanceof ModelRefused ? e.detail : null; why = `The models could not be listed: ${refusal(e)} Set the key and the base URL, then list them again.`; });
   }
   async function save() {
     if (!p || busy) return;
@@ -106,7 +107,7 @@
     if (!Object.keys(patch).length) { saved = "Nothing changed."; return; }
     busy = true; err = null; saved = "";
     const keyed = p.key.set && !p.sources.key?.startsWith("env:");
-    try { take(await setProvider(patch)); saved = patch.base_url && keyed ? "Saved. Set the key again for the new base URL." : "Saved."; if (patch.base_url || patch.api) listModels(); } catch (e) { err = refusal(e); } finally { busy = false; }
+    try { take(await setProvider(patch)); saved = patch.base_url && keyed ? "Saved. Set the key again for the new base URL." : "Saved."; if (patch.base_url || patch.api) void listModels(); } catch (e) { err = refusal(e); } finally { busy = false; }
   }
   async function runTest() {
     test = { ok: true, text: "Testing…" };
@@ -116,8 +117,11 @@
     } catch (e) { test = { ok: false, text: refusal(e) }; }
     void loadFailures();
   }
-  const keyChanged = async (fn: () => Promise<Provider>) => { take(await fn()); listModels(); void loadFailures(); };
-  onMount(() => { void load(); listModels(); void loadFailures(); });
+  const keyChanged = async (fn: () => Promise<Provider>) => { take(await fn()); void listModels(); void loadFailures(); };
+  // Shown in Settings, the screen waits for the provider, its models' list
+  // and the key's failed requests.
+  const release = holdReveal();
+  onMount(() => { void Promise.allSettled([load(), listModels(), loadFailures()]).then(release); });
 </script>
 
 {#if err}<p class="err" role="alert">{err}</p>{/if}

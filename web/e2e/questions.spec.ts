@@ -200,8 +200,10 @@ test("a notification fires when no Clax tab has focus", async ({ page, freshDaem
     // No Clax tab has focus: this one says it lost it.
     Document.prototype.hasFocus = () => false;
   });
-  // The feeds subscribe first, then fetch: once the questions are fetched, the stream holds `inbox`.
-  const fed = page.waitForResponse(r => new URL(r.url()).pathname === "/api/questions");
+  // The page's first load asks for the open questions; the feeds subscribe,
+  // then fetch them again: once that second answer is in, the stream holds `inbox`.
+  let asked = 0;
+  const fed = page.waitForResponse(r => new URL(r.url()).pathname === "/api/questions" && ++asked === 2);
   await page.goto(`${d.base}/`);
   await fed;
   await page.evaluate(() => { window.dispatchEvent(new Event("blur")); });

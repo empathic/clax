@@ -27,8 +27,11 @@
 //! - on the app host, `/`, `/inbox`, `/people`, `/tags`, `/admin`,
 //!   `/settings`, `/me` and `/audit` are the shell's
 //!   `index.html`, from the static assets, with the headers the daemon's
-//!   `shell::gallery_page` sends (no framing, revalidated), except on a
-//!   hosted instance (`HOSTED` = `1`), whose gate decides who gets them;
+//!   `shell::gallery_page` sends (no framing, revalidated) and no
+//!   first-load data (its marker an inert comment: the shell fetches it),
+//!   except on a hosted instance (`HOSTED` = `1`), whose gate decides who
+//!   gets them and whose instance serves them as the daemon does, with
+//!   each viewer's first-load data (`clax_server::shell::gallery`);
 //! - `/_clax/<path>` is the web UI's file from the static assets with the
 //!   daemon's caching (`shell::asset_cache`), and for the embeddable
 //!   overlay's files its type and any-origin reads (`shell::embed_file`),

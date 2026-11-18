@@ -19,6 +19,19 @@ use std::time::Duration;
 /// public client's longer deadline (`clax_server::public`).
 pub const REMOTE_DEADLINE: Duration = Duration::from_secs(20);
 
+/// How long a gallery page's load waits for the routes its bootstrap block
+/// asks (`clax_server::shell::gallery`), all of them together
+/// ([`AppState::gallery_boot_budget`]): 300 ms. The routes answer in
+/// process and at once, from the store, in a few milliseconds each when it
+/// is not busy, so a healthy daemon fills every field well inside it; a
+/// route that is stuck (a busy store, a large gallery's list, a hosted
+/// instance's first feedback configuration) holds the page no longer than
+/// a pause a person barely notices on a navigation, and the shell asks it
+/// itself, one round trip later. Longer would hold the page's static frame
+/// back for a field the shell can fetch; shorter would drop fields a
+/// loaded but healthy store still answers.
+pub const GALLERY_BOOT_BUDGET: Duration = Duration::from_millis(300);
+
 /// The visibility generation (spec 2026-10-08-multi-agent-multi-person
 /// M17): the store's counter, bumped by every committed change to what an
 /// agent may see, and a notification of each bump for waking the waiters
@@ -180,6 +193,11 @@ pub struct AppState {
     pub request_timeout: Duration,
     /// Deadline for the publish routes and asset upload.
     pub publish_timeout: Duration,
+    /// How long a gallery page's load waits for its bootstrap block's
+    /// routes, all together, before it is sent with what answered
+    /// ([`GALLERY_BOOT_BUDGET`] by default); never longer than
+    /// [`AppState::request_timeout`].
+    pub gallery_boot_budget: Duration,
     /// Deadline for each request an agent's call makes to a connected
     /// remote through this daemon ([`REMOTE_DEADLINE`] in the daemon):
     /// reads, comments, watches and sign-ins.
@@ -491,6 +509,7 @@ impl AppState {
             net: Arc::new(crate::net::Net::default()),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
+            gallery_boot_budget: GALLERY_BOOT_BUDGET,
             remote_deadline: REMOTE_DEADLINE,
             sse_keep_alive: Duration::from_secs(15),
             self_base: p.self_base,

@@ -58,7 +58,9 @@ test("on a hosted instance with nothing configured everyone files a report about
     await owner.goto(`${origin}/`);
     const menuButton = owner.getByRole("button", { name: /^Feedback/ });
     await expect(menuButton).toBeVisible();
-    expect(requests).toContain("/_app/feedback/config");
+    // The config route's answer is in the page's bootstrap block: the shell asks nothing for it.
+    expect(requests).not.toContain("/_app/feedback/config");
+    expect(JSON.parse((await owner.locator("#clax-boot").textContent()) ?? "{}").feedback).toMatchObject({ enabled: true });
     expect(requests).toContain("/_clax/overlay.js");
 
     // The instance's own queue, made as the shell asked: the owner's, for the

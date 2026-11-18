@@ -10,13 +10,21 @@ let asked: Promise<MeBot | null> | null = null;
 /** Where this tab keeps whether ClaxBot is on for this browser, so the artifact view asks no more where it is not. */
 const KEY = "clax.bot";
 
+const remember = (b: MeBot | null) => {
+  try { sessionStorage.setItem(KEY, b?.enabled ? "1" : "0"); } catch { /* this page only */ }
+  return b;
+};
+
 /** The caller's ClaxBot, asked once; the tab remembers whether it is on. */
 export function myBot(): Promise<MeBot | null> {
-  asked ??= meBot().catch(() => null).then(b => {
-    try { sessionStorage.setItem(KEY, b?.enabled ? "1" : "0"); } catch { /* this page only */ }
-    return b;
-  });
+  asked ??= meBot().catch(() => null).then(remember);
   return asked;
+}
+
+/** Takes `GET /api/me/bot`'s answer the page already holds (the gallery's
+ * first load: null for a 404), so `myBot` asks nothing. */
+export function seedBot(b: MeBot | null): void {
+  asked ??= Promise.resolve(remember(b));
 }
 
 /** What the artifact's agents say of ClaxBot (`live`, else why not): the

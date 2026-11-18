@@ -199,6 +199,8 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     // The guest sees nothing but shared pages.
     await guest.goto(`${origin}/signin`);
     await expect(guest.getByText("You are a guest named Mia.", { exact: false })).toBeVisible();
+    // The sign-in page shows its own header, not the gallery's hidden frame.
+    await expect(guest.locator("header.gbar")).toBeVisible();
 
     // Sam signs the phone out, from the end of Settings' navigation.
     await phone.goto(`${origin}/settings/account`);
@@ -577,6 +579,11 @@ test("the bundled Terms of Service and Privacy Policy: notices, pages, links and
       const body = await res.json();
       await r.fulfill({ response: res, json: { ...body, legal: { ...body.legal, agreed: false } } });
     });
+    // The gallery's page carries the route's answer in its bootstrap block.
+    await owner.route(`${origin}/`, async r => {
+      const res = await r.fetch();
+      await r.fulfill({ response: res, body: (await res.text()).replace(/"agreed":true/g, '"agreed":false') });
+    });
     await owner.goto(`${origin}/`);
     const prompt = owner.getByTestId("legal-prompt");
     await expect(prompt.getByRole("dialog")).toBeVisible();
@@ -584,6 +591,20 @@ test("the bundled Terms of Service and Privacy Policy: notices, pages, links and
     const agreed = owner.waitForResponse(r => r.url().endsWith("/api/hosted/legal/agree"));
     await prompt.getByRole("button", { name: "Continue" }).click();
     expect((await agreed).status()).toBe(204);
+    await expect(prompt).toHaveCount(0);
+    // Without the block (a page whose block left the route to the shell),
+    // the shell asks the route itself, and asks the same.
+    await owner.unroute(`${origin}/`);
+    await owner.route(`${origin}/`, async r => {
+      const res = await r.fetch();
+      await r.fulfill({ response: res, body: (await res.text()).replace(/<script[^>]*\bid="clax-boot"[^>]*>[\s\S]*?<\/script>/, "") });
+    });
+    await owner.goto(`${origin}/`);
+    expect(await owner.evaluate(() => !!document.getElementById("clax-boot"))).toBe(false);
+    await expect(prompt.getByRole("dialog")).toBeVisible();
+    const again = owner.waitForResponse(r => r.url().endsWith("/api/hosted/legal/agree"));
+    await prompt.getByRole("button", { name: "Continue" }).click();
+    expect((await again).status()).toBe(204);
     await expect(prompt).toHaveCount(0);
   } finally {
     await d.stop();

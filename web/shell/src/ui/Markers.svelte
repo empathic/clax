@@ -3,8 +3,8 @@
 <script lang="ts">
   // A gallery card's markers (spec §8), in the order `markers` gives them:
   // Live (a live page), addressed, new version, new replies, working, open. It carries the styles
-  // of the markers and of the version last seen, which load with the gallery's lazy module rather than its first
-  // paint. Props are read off `p`, and every class is static.
+  // of the markers and of the version last seen, injected with the gallery's
+  // first render of its cards. Props are read off `p`, and every class is static.
   import type { Marker } from "../view/attention-model";
 
   const p: { list: Marker[] } = $props();

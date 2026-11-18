@@ -68,12 +68,69 @@ export function inlineCss(): Plugin {
   };
 }
 
+/** The gallery entry's lazy chunks its inline `clax-page` script preloads
+ * (`<link rel="modulepreload">`), by the module each chunk is: `gallery`
+ * on every page of the entry but the sign-in pages, `q` and `summary` on
+ * the gallery for a browser with an inbox, and each page's own chunk on
+ * that page (`inbox` with `q`). */
+export const PRELOAD: Record<string, string> = {
+  gallery: "/src/ui/gallery-working.ts",
+  q: "/src/q/index.ts",
+  summary: "/src/q/GallerySummary.svelte",
+  inbox: "/src/q/InboxPage.svelte",
+  tags: "/src/ui/TagsPage.svelte",
+  queues: "/src/queues/Queues.svelte",
+  settings: "/src/settings/Settings.svelte",
+};
+
+/** Writes each `PRELOAD` chunk's file, with the files it imports that the
+ * entry (and, for any but `gallery`, the gallery's lazy module) has not
+ * loaded already, into `index.html`'s `/*clax:preload*\/{}`, so the lazy
+ * chunks every load needs download beside the entry instead of after it. */
+export function preloadLazy(): Plugin {
+  return {
+    name: "clax-preload-lazy",
+    apply: "build",
+    enforce: "post",
+    generateBundle(_options, bundle) {
+      const html = bundle["index.html"];
+      if (!html || html.type !== "asset") return;
+      const chunks = Object.values(bundle).flatMap(c => (c.type === "chunk" ? [c] : []));
+      const byName = new Map(chunks.map(c => [c.fileName, c]));
+      const closure = (from: string, into = new Set<string>()) => {
+        if (into.has(from)) return into;
+        into.add(from);
+        for (const i of byName.get(from)?.imports ?? []) closure(i, into);
+        return into;
+      };
+      const entry = chunks.find(c => c.isEntry && c.facadeModuleId?.endsWith("/shell/index.html"));
+      if (!entry) throw new Error("no chunk for shell/index.html");
+      const loaded = closure(entry.fileName);
+      const fileOf = (id: string) => {
+        const c = chunks.find(x => x.facadeModuleId?.endsWith(id)) ?? chunks.find(x => x.isDynamicEntry && x.moduleIds.some(m => m.endsWith(id)));
+        if (!c) throw new Error(`${id}, which index.html preloads, is in no chunk`);
+        return c.fileName;
+      };
+      const gallery = closure(fileOf(PRELOAD.gallery));
+      const map: Record<string, string[]> = {};
+      for (const [key, id] of Object.entries(PRELOAD)) {
+        const files = key === "gallery" ? gallery : closure(fileOf(id));
+        map[key] = [...files].filter(f => !loaded.has(f) && (key === "gallery" || !gallery.has(f))).map(f => `/${f}`);
+      }
+      const text = String(html.source);
+      const MARK = "/*clax:preload*/{}";
+      if (!text.includes(MARK)) throw new Error(`index.html lost ${MARK}`);
+      html.source = text.replace(MARK, () => JSON.stringify(map));
+    },
+  };
+}
+
 // CLAX_TEST_CLOCK=1 builds the browser tests' shell, whose clock a test can
 // advance (shell/src/clock.ts); every other build leaves the hook out.
 export const TEST_CLOCK = process.env.CLAX_TEST_CLOCK === "1";
 
 export default defineConfig({
-  root: "shell", base: "/", plugins: [svelte({ configFile: SVELTE_CONFIG }), inlineCss()],
+  root: "shell", base: "/", plugins: [svelte({ configFile: SVELTE_CONFIG }), inlineCss(), preloadLazy()],
   define: { __CLAX_TEST_CLOCK__: JSON.stringify(TEST_CLOCK) },
   build: {
     outDir: "../dist", emptyOutDir: false, assetsDir: "_clax/shell", manifest: true,

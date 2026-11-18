@@ -79,7 +79,8 @@ test("the New artifact tile leads the gallery, and ClaxBot builds what it makes 
     await route.fulfill({ status: res.status(), json: { ...made, run: { id: "r1" } } });
   });
   await page.goto(d.base);
-  await expect(page.locator(".gbar .bot-meter")).toHaveText("ClaxBot · 310 of 2,000 credits");
+  await expect(page.locator(".gbar .bot-meter .long")).toHaveText("ClaxBot · 310 of 2,000 credits");
+  await expect(page.locator(".gbar .bot-meter")).toHaveAccessibleName("ClaxBot: 310 of 2,000 credits used this week");
   const tile = page.locator(".cards > .new-tile").first();
   await expect(tile).toBeVisible();
   // The tile leads the first grid: "Artifacts", or "Needs your eyes" once

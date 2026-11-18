@@ -80,6 +80,21 @@ pub fn recv_within<T>(what: &str, rx: &std::sync::mpsc::Receiver<T>) -> T {
     }
 }
 
+/// A shell page less its bootstrap block (the `clax-boot` element the
+/// daemon writes at the entry's marker, `clax_server::shell::gallery` and
+/// `clax_server::shell::boot`): the entry it was served from, to compare
+/// pages whose first-load data differs.
+pub fn without_boot(html: &str) -> String {
+    const OPEN: &str = r#"<script type="application/json" id="clax-boot">"#;
+    let Some(start) = html.find(OPEN) else {
+        return html.to_string();
+    };
+    let end = html[start..]
+        .find("</script>")
+        .map_or(html.len(), |e| start + e + "</script>".len());
+    format!("{}{}", &html[..start], &html[end..])
+}
+
 /// `f`'s value once it has one, checked again every 50 ms. No wall-clock
 /// limit: a load that slows the daemons only delays it, and a condition
 /// that never holds is ended by the test runner's timeout, whose output

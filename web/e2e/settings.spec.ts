@@ -21,7 +21,9 @@ test("the gear opens Settings, whose search opens a setting at its heading", asy
   const gear = page.locator(".gbar a.settings-link");
   await expect(gear).toHaveAccessibleName("Settings");
   // The gear is the header's last control.
-  expect(await page.locator(".gbar > :last-child").getAttribute("class")).toContain("settings-link");
+  // The gear ends the header's links; the theme switch ends the header, where nothing that loads moves it.
+  expect(await page.locator(".gbar .glinks > :last-child").getAttribute("class")).toContain("settings-link");
+  expect(await page.locator(".gbar > :last-child").getAttribute("class")).toContain("theme-switch");
   await gear.click();
   await page.waitForURL(`${d.base}/settings`);
   await expect(page.getByRole("heading", { name: "Settings", level: 2 })).toBeVisible();
