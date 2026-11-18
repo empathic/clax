@@ -40,6 +40,7 @@
 //!   JSON line and exits 0.
 //!
 //! Any other refusal is printed to stderr with its body, and exits 1.
+#![warn(clippy::disallowed_methods)]
 
 use clax_surface::wire::{CODE_UNKNOWN_REGISTRATION, Delivery, Notation, Registered};
 use clax_testkit::fake_host::{Behaviour, FakeHost, HostTransport, HttpTransport, Served};
@@ -359,7 +360,7 @@ async fn run(o: Options) -> Result<(), String> {
             host,
             meant,
             |_| stop.exists(),
-            |ms| tokio::time::sleep(std::time::Duration::from_millis(ms)),
+            pause,
             |transport: &mut HttpTransport| match read_token(&o.token_file) {
                 Ok(token) => transport.set_token(token),
                 Err(e) => eprintln!("fake_host: {e}"),
@@ -391,4 +392,16 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 #[path = "fake_host/tests.rs"]
+#[warn(clippy::disallowed_methods)]
 mod tests;
+
+/// The host's pause between serves when the daemon asks it to retry: a
+/// real host's own pacing on real time, which no test of this binary
+/// judges.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a real host's pacing between serves, judged by no test"
+)]
+fn pause(ms: u64) -> tokio::time::Sleep {
+    tokio::time::sleep(std::time::Duration::from_millis(ms))
+}

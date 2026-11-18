@@ -5233,7 +5233,29 @@ the version button gets a dot, the top bar's summary reads "v5 addressed 3",
 the sidebar's "Addressed in v5" group lists the threads it addressed that
 the viewer is in, with your reply shown as "<agent> · addressed in v5", and
 the version menu lists every version's note. Each thread's history line
-shows what happened on which version. When the person sends several
+shows what happened on which version.
+
+The artifact view's sidebar has two tabs, Timeline and Threads, and the
+browser remembers which was last chosen (Timeline at first). The Timeline
+lists what happened, newest first under day headings: each version with
+its note, the comments made, sent, replied to and resolved. Each thread is
+one row under the newest line about it, with its state at the right
+("✓ v5" for addressed, "Send" for unsent, "Reply" when an agent answered
+without a version, "sent" or "working" while an agent has it); a row opens
+into the thread's card. Earlier days fold to a summary line that still
+shows their pending threads. A grey band on the sidebar's outer edge
+shows how many threads were pending after each line, the part waiting on a
+person in orange. A thread is pending until a version addresses it or it
+is resolved; one a version addressed stays open, and is pending again when
+a person replies. The Threads tab is the thread list, with the "Addressed
+in v5" group and the Open, Detached and Resolved sections. Hidden while
+docked left or right on a screen wider than a phone, the sidebar leaves a
+56 px strip on that edge with the pending count, how many need the
+viewer, and the band; activating it shows the threads. An artifact with
+no threads leaves no strip. The extension's side panel shows the thread
+list alone.
+
+When the person sends several
 threads, or several agents work on one artifact, the person picks the agent;
 the payload is the same.
 
@@ -8511,11 +8533,25 @@ each harness whose CLI is on `PATH`: `claude plugin marketplace add` and
 `grok plugin uninstall clax-grok --confirm` (failure ignored) and
 `grok plugin install ~/.clax/marketplace/plugins/clax-grok --trust`.
 It first removes the existing Clax registrations and any under Clax's
-previous name, and records what it registered in
+previous name. A removal command that fails is named in the harness's
+`detail` as ignored, unless the harness's registry, read without error,
+does not list what the command removes. It records what it registered in
 `~/.clax/registrations.json`. `--agent` (repeatable) limits it to named
 harnesses. A harness whose CLI is missing or fails is reported, and the
 others still run. Re-running is safe: it reinstalls the plugin, which
 enables it again where it was disabled.
+
+When `<pi dir>/settings.json` already lists the Clax Pi package from npm
+(`npm:@empathic/clax-pi`, with or without a version) or from git (a git
+source whose installed copy under `<pi dir>/git` has that package name),
+`clax init` keeps that registration and runs no `pi install`: with two
+copies, Pi reports each tool as a conflict and does not start. It reports Pi with the status `"kept"` and a detail that names
+the source and the commands that switch to the binary's copy, and records
+nothing for Pi, so `clax uninit` does not remove that registration. When
+the working directory's `.pi/settings.json` lists a Clax Pi package other
+than the user's (the kept registration, or the copy `init` installs), the
+detail names the two copies in that project and the `pi remove -l` command.
+An entry Pi counts as the same package as the user's adds no note.
 
 `clax uninit` removes the registrations, then deletes `~/.clax/marketplace/`
 unless a harness's registry still refers to it or cannot be read. Both
@@ -8559,7 +8595,9 @@ the GitHub repository to be public.
 
 `clax init` also sets the `bin` setting (below) to its own executable, so
 the plugins it registers, which match that binary, run it; it reports
-`"bin": {"status": "set" | "failed", "detail": ...}`. `clax uninit` removes
+`"bin": {"status": "set" | "failed", "detail": ...}`, with a `note` when it
+kept Pi's registration: that package then runs this binary, not the release
+it pins. `clax uninit` removes
 the setting when it names its own executable (`"cleared"`), and otherwise
 leaves it (`"kept"`).
 
@@ -9118,6 +9156,17 @@ harness and the daemon, each `ok` or failed with the fix:
   version, with the build, the reason, when the hold ends, and what to do.
 - `plugin`: the harness's installed copy of the plugin; failed when none is
   found, or its manifest version or its wrapper differs from this binary's.
+  For Pi, the copies are the Clax packages that `<pi dir>/settings.json` and
+  the working directory's `.pi/settings.json` lead to (npm, git or local
+  sources) and those `pi list --no-approve` prints; the detail names a
+  user package that only one of the two finds.
+- `double_load` (Pi only): each settings entry that loads the Clax package,
+  when there is more than one, with its scope and the `pi remove` command
+  for it (`-l` for a project entry). Pi then reports each tool of a later
+  copy as a conflict and does not start. Entries Pi counts as one package
+  count once. Failed when two of the entries are user entries; not failed
+  when the second copy is a project entry, which Pi loads only in a project
+  it trusts.
 - `skill`: the installed skill's stated version and tool count, and whether
   it is the skill this binary was built with.
 - `mcp`: whether the daemon has a live session of the harness.

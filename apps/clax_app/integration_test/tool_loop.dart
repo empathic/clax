@@ -15,6 +15,7 @@ import 'package:clax_app/ui/inspector_surface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'held_clock.dart';
 import 'rig.dart';
 import 'tool_script.dart';
 
@@ -22,12 +23,18 @@ import 'tool_script.dart';
 void toolLoopTest() {
   testWidgets('make and change an app on the tool loop', (tester) async {
     final runner = RecordingRunner([makeRun, changeRun]);
+    final held = HeldClock();
+    addTearDown(held.release);
     late final Rig rig;
     rig = await Rig.create(
       backend: ScriptedBackend(const []),
       runner: () => runner,
-      // On the shell's origin through the core, as the app's inspector is.
-      inspector: WebViewInspector(surface: (_) => Rig.coreSurface(rig.schemes)),
+      // On the shell's origin through the core, as the app's inspector is;
+      // its limits wait on the rig's step guard instead.
+      inspector: WebViewInspector(
+        surface: (_) => Rig.coreSurface(rig.schemes),
+        clock: held,
+      ),
     );
     addTearDown(rig.close);
 

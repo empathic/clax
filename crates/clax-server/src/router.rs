@@ -556,8 +556,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let api_fast = api_fast.layer(axum::middleware::from_fn(clax_http::http_cache::api_etag));
     let api_fast =
         with_timeout(api_fast, state.request_timeout).layer(clax_http::http_cache::compression());
-    // The instance the feedback integration mints through, its whole
-    // router built at the first mint.
+    // The instance the feedback integration mints through and the gallery
+    // pages ask their first-load data of, its whole router built at the
+    // first use.
     let feedback_instance = crate::integrations::instance::Instance::new(state.clone());
     let api_slow = Router::new()
         .route(
@@ -585,7 +586,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route(
             "/_app/feedback/config",
-            get(feedback_integration::config).layer(axum::Extension(feedback_instance)),
+            get(feedback_integration::config).layer(axum::Extension(feedback_instance.clone())),
         )
         .route("/api/bot/runs", get(bot::list).post(bot::create))
         .route("/api/bot/runs/{id}", get(bot::get))
@@ -825,6 +826,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
         .route("/_clax/{*path}", get(shell::static_file))
+        // The gallery pages ask their routes for their first-load data
+        // through the instance's own router (`shell::gallery`).
+        .layer(axum::Extension(feedback_instance))
         .layer(clax_http::http_cache::compression());
     let r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
@@ -1018,7 +1022,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
 }
 
 /// Sleeps for the milliseconds in the `x-clax-test-delay-ms` request
-/// header, if any, before handling the request. It sits inside each route
+/// header, if any, before handling the request; with
+/// `x-clax-test-delay-path` too, only a request whose path is one of that
+/// header's values (a request that carries its headers into others, as a
+/// gallery page load does, can slow one of them). It sits inside each route
 /// group's timeout layer, so tests can make a real route slow. Debug
 /// builds add it only when [`AppState::test_daemon`] is set: the testkit's
 /// daemon, never one `serve` starts.
@@ -1027,12 +1034,14 @@ async fn test_delay(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let ms = req
-        .headers()
+    let h = req.headers();
+    let ms = h
         .get("x-clax-test-delay-ms")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
-    if let Some(ms) = ms {
+    let mut paths = h.get_all("x-clax-test-delay-path").iter().peekable();
+    let here = paths.peek().is_none() || paths.any(|p| p.as_bytes() == req.uri().path().as_bytes());
+    if let Some(ms) = ms.filter(|_| here) {
         clax_rt::time::sleep(Duration::from_millis(ms)).await;
     }
     next.run(req).await
@@ -1325,13 +1334,14 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     /// A Worker builds this router too, debug test routes included, and has
     /// no tokio timer: the routes sleep on `clax_rt::time` (crate docs).
     #[test]
     fn the_routes_sleep_on_clax_rt() {
         let src = include_str!("router.rs");
-        let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let src = &src[..src.find("\nmod tests {").unwrap()];
         assert!(!src.contains(concat!("tokio", "::time::")));
     }
 }

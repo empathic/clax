@@ -39,6 +39,7 @@
   import PersonCard from "./PersonCard.svelte";
   import UnconnectedSwitch from "./UnconnectedSwitch.svelte";
   import * as hostedApi from "../hosted/api";
+  import { holdReveal } from "../settings/first-data";
 
   type Part = "people" | "agents" | "account" | "sharing";
   let { stream, now, part = "people" }: { stream?: EventStream; now?: () => Date; part?: Part } = $props();
@@ -68,6 +69,12 @@
   let was = false;
   let off: (() => void) | null = null;
   const msg = refusal;
+  // The hosted panel's chunk did not load.
+  let panelBroken = $state(false);
+  // Shown in Settings, the screen waits for its first load, and for the
+  // hosted answer with the panel's chunk where it shows one.
+  const loaded = holdReveal();
+  const hostedIn = holdReveal();
 
   async function load() {
     let m: PeopleMe;
@@ -111,7 +118,7 @@
   function reload() {
     if (loading) { again = true; return; }
     loading = true;
-    void load().finally(() => { loading = false; if (again && !gone) { again = false; reload(); } });
+    void load().finally(() => { loading = false; loaded(); if (again && !gone) { again = false; reload(); } });
   }
   const owner = $derived(!!me?.person.owner);
   const self = $derived(me && { public_id: me.person.public_id, display_name: me.person.display_name, revoked_at: null, rights: me.person.rights, grants: me.grants, agents: me.agents });
@@ -150,8 +157,9 @@
     void hostedApi.me().then(h => {
       if (gone) return;
       hosted = h;
-      if (h?.person) void panel?.then(c => { if (!gone && c) HostedPanel = c; });
-    }, () => {});
+      if (!h?.person || !panel) { hostedIn(); return; }
+      void panel.then(c => { if (!gone) { if (c) HostedPanel = c; else panelBroken = true; } hostedIn(); });
+    }, () => { hostedIn(); });
   });
   onDestroy(() => { gone = true; off?.(); });
 </script>
@@ -165,6 +173,7 @@
   </div>
   {#if denied}<p class="note">{denied}</p>{/if}
   {#if err}<p class="err" role="alert">{err}</p>{/if}
+  {#if panelBroken && me}<p class="err" role="alert">This screen could not load. Reload to try again.</p>{/if}
   {#if banner && part !== "account" && part !== "sharing"}<p class="banner">{banner}</p>{/if}
   {#if hosted?.person && me && HostedPanel}<HostedPanel me={hosted} parts={HOSTED[part]} />{/if}
 

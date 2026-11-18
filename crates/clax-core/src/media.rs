@@ -433,6 +433,7 @@ fn webp(bytes: &[u8]) -> Result<Sniffed, SniffError> {
     }
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

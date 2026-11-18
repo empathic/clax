@@ -60,7 +60,7 @@ describe("git capture", () => {
       }
     }
     expect(wrong).toEqual([]);
-  }, 60_000);
+  });
 
   it("a capture is a header the daemon accepts, without contents or names", async () => {
     const base = freshDir();
@@ -126,9 +126,8 @@ describe("git capture", () => {
   it("times out at the deadline, killing git", async () => {
     const dir = freshDir();
     const hung = fakeExe(join(dir, "git"), "#!/bin/sh\nexec tail -f /dev/null\n");
-    const started = performance.now();
-    expect(await capture(hung, dir, started + CAPTURE_DEADLINE_MS)).toEqual({ capture: "timeout" });
-    expect(performance.now() - started).toBeLessThan(1_500);
+    // The fake git never exits, so only the deadline ends the capture.
+    expect(await capture(hung, dir, performance.now() + CAPTURE_DEADLINE_MS)).toEqual({ capture: "timeout" });
   });
 
   it("does not capture a missing directory", async () => {
@@ -200,9 +199,9 @@ describe("git version probe", () => {
     const probeDeadline = CAPTURE_DEADLINE_MS * 2;
     expect(probeDeadline).toBeLessThan(PROBE_DEADLINE_MS);
     const probe = new GitProbe(hung, Date.now, probeDeadline);
-    const started = performance.now();
-    expect(await probe.capture(dir, started + CAPTURE_DEADLINE_MS)).toEqual({ capture: "timeout" });
-    expect(performance.now() - started).toBeLessThan(probeDeadline);
+    // `timeout`, not the `unavailable` the probe's own deadline gives: the
+    // capture gave up at its deadline rather than waiting out the probe's.
+    expect(await probe.capture(dir, performance.now() + CAPTURE_DEADLINE_MS)).toEqual({ capture: "timeout" });
     // The probe goes on to its own deadline, kills git, and gets no answer.
     expect(await probe.capture(dir, soon())).toEqual({ capture: "unavailable" });
   });

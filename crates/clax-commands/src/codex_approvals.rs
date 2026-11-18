@@ -487,6 +487,7 @@ pub fn record_notice(marker: &Path, tools: &[&str]) {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_mcp::tools::ClaxTools;

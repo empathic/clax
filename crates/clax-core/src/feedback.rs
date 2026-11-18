@@ -724,6 +724,7 @@ pub fn render_notice(n: &Notice) -> String {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::anchor::Anchor;
@@ -1181,12 +1182,16 @@ mod tests {
         let mut bad = Vec::new();
         for f in &files {
             let text = std::fs::read_to_string(f).unwrap();
-            // Test code: everything from the first test module on, and
-            // files that are test modules themselves.
+            // Test code: everything from the first test module on (past
+            // any attributes after its `#[cfg(test)]`), and files that are
+            // test modules themselves.
             let end = text
                 .match_indices("#[cfg(test)]\n")
                 .find(|(i, m)| {
-                    let next = &text[i + m.len()..];
+                    let mut next = &text[i + m.len()..];
+                    while next.starts_with("#[") {
+                        next = next.split_once('\n').map_or("", |(_, rest)| rest);
+                    }
                     ["mod ", "pub mod ", "pub(crate) mod "]
                         .iter()
                         .any(|p| next.starts_with(p))

@@ -24,6 +24,20 @@ use tokio::io::AsyncWriteExt;
 /// A bound for a hung git or jj, not a time budget.
 pub const HANG: Duration = Duration::from_secs(120);
 
+/// `fut`'s output, bounded by the [`HANG`] guard.
+///
+/// # Panics
+/// Past the [`HANG`] guard, naming `what`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "within is the HANG guard on a wait"
+)]
+pub async fn within<F: std::future::IntoFuture>(what: &str, fut: F) -> F::Output {
+    tokio::time::timeout(HANG, fut)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: not after {HANG:?} (hang guard)"))
+}
+
 /// A scratch directory removed when dropped.
 pub fn temp(label: &str) -> TempDir {
     tempfile::Builder::new()
@@ -154,9 +168,8 @@ impl Home {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let child = c.spawn().unwrap_or_else(|e| panic!("spawn {program}: {e}"));
-        tokio::time::timeout(HANG, child.wait_with_output())
+        within(&format!("{program} {args:?}"), child.wait_with_output())
             .await
-            .unwrap_or_else(|_| panic!("{program} {args:?} hung"))
             .expect("output")
     }
 

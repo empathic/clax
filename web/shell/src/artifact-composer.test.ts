@@ -1,4 +1,5 @@
 import { describe, it, expect, onTestFinished } from "vitest";
+import { settled } from "./test/settled";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import { artifactViewHooks, waitFor, ID, artifact, page, viewer, mountView, stubMedia, postReady, buttonNamed, fromFrame, gestureIn, viewerPick, startOf, pick, pointerClick } from "./test/artifact-view";
 
@@ -18,7 +19,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     // A pick counts only in comment mode.
     viewerPick(frame, pick("p0", "Not in comment mode"));
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(root.querySelector(".composer")).toBeNull();
     buttonNamed(root, "Comment").click();
     await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
@@ -53,20 +54,19 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const comment = buttonNamed(root, "Comment");
     comment.click();
     await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode");
-    const settle = () => new Promise(r => setTimeout(r, 30));
     gestureIn(frame);
     fromFrame(win, pick("f1", "No start"));
-    await settle();
+    await settled();
     expect(root.querySelector(".composer")).toBeNull();
     gestureIn(frame, false);
     fromFrame(win, startOf(pick("f2", "No gesture")));
     fromFrame(win, pick("f2", "No gesture"));
-    await settle();
+    await settled();
     expect(root.querySelector(".composer")).toBeNull();
     gestureIn(frame);
     fromFrame(win, { type: "clax:pick-start", pickId: "f3" });
     fromFrame(win, pick("f3", "No anchor"));
-    await settle();
+    await settled();
     expect(root.querySelector(".composer")).toBeNull();
     expect(comment.getAttribute("aria-pressed")).toBe("true");
     expect(refused()).toEqual(["f2", "f3"]);
@@ -77,7 +77,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(win, startOf(pick("forged", "Forged")));
     fromFrame(win, pick("forged", "Forged"));
     fromFrame(win, pick("real", "Real"));
-    await settle();
+    await settled();
     expect(root.querySelector(".composer")).toBeNull();
     await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode back");
     expect(refused()).toEqual(["f2", "f3", "forged", "real"]);
@@ -95,7 +95,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     gestureIn(frame);
     fromFrame(win, startOf(pick("other", "Other")));
-    await settle();
+    await settled();
     expect(root.querySelector(".composer-quote")!.textContent).toContain("Mine");
     expect(root.querySelector<HTMLTextAreaElement>(".composer textarea")!.value).toBe("my words");
     expect(refused().at(-1)).toBe("other");
@@ -105,11 +105,11 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode after cancel");
     // A start is used once: a second pick under its ID changes nothing.
     viewerPick(frame, { ...pick("ok", "Quarterly goals"), clipError: "first" });
-    await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes("Quarterly goals"), "the viewer's pick");
+    await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes("Quarterly goals") && root.querySelector(".composer")?.textContent?.includes("No screenshot: first"), "the viewer's pick and its screenshot's note");
     comment.click();
     await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode again");
     fromFrame(win, { ...pick("ok", "Replayed"), clipError: "replayed" });
-    await settle();
+    await settled();
     expect(root.querySelector(".composer-quote")!.textContent).toContain("Quarterly goals");
     expect(root.querySelector(".composer")!.textContent).toContain("No screenshot: first");
   });
@@ -172,7 +172,6 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const comment = buttonNamed(root, "Comment");
     comment.click();
     await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode");
-    const settle = () => new Promise(r => setTimeout(r, 30));
     gestureIn(frame);
     fromFrame(win, startOf(pick("p1", "Goals")));
     const textarea = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "the composer");
@@ -182,7 +181,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => document.activeElement === textarea, "the textarea focused");
     // Text the page posts goes nowhere.
     fromFrame(win, { type: "clax:keys", pickId: "p1", keys: ["@", "a", "g", "e", "n", "t"], done: true });
-    await settle();
+    await settled();
     expect(textarea.value).toBe("");
     // The screenshot arrives: the composer keeps its anchor; Post waits for text.
     fromFrame(win, pick("p1", "Ignored anchor"));
@@ -235,7 +234,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const textarea = root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
     textarea.value = "look here";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    await new Promise(r => setTimeout(r, 0));
+    await settled();
     expect(buttonNamed(root, "Post comment").getAttribute("aria-disabled")).toBe("true");
     // The screenshot's wait runs on the shell's clock: past it, the note.
     (globalThis as unknown as { claxTestClock: { advance(ms: number): void } }).claxTestClock.advance(captureWait.ms);
@@ -289,7 +288,6 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello();
     const comment = buttonNamed(root, "Comment");
     const on = async () => { if (comment.getAttribute("aria-pressed") !== "true") comment.click(); await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode on"); };
-    const settle = () => new Promise(r => setTimeout(r, 30));
     const start = (id: string, quote: string) => { gestureIn(frame); fromFrame(win, startOf(pick(id, quote))); };
     const capturing = () => !!root.querySelector(".composer")?.textContent?.includes("Taking the screenshot…");
     const composerFor = (quote: string) => waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes(quote) && capturing(), quote);
@@ -300,7 +298,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(win, { ...pick("a1", "First"), clipError: "blank" });
     await waitFor(() => root.querySelector(".composer")?.textContent?.includes("No screenshot: blank"), "the pick's clip error");
     fromFrame(win, { ...pick("a1", "First"), clipError: "again" });
-    await settle();
+    await settled();
     expect(root.querySelector(".composer")!.textContent).toContain("No screenshot: blank");
     // Comment mode back on while a pick is in flight: the old pick is moot,
     // the new one works.
@@ -311,7 +309,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     start("b2", "New after a toggle");
     await composerFor("New after a toggle");
     fromFrame(win, { ...pick("b1", "Old"), clipError: "old" });
-    await settle();
+    await settled();
     expect(capturing()).toBe(true);
     fromFrame(win, { ...pick("b2", "New after a toggle"), clipError: "new" });
     await waitFor(() => root.querySelector(".composer")?.textContent?.includes("No screenshot: new"), "the new pick's clip");
@@ -321,7 +319,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await composerFor("Before the greeting");
     hello();
     fromFrame(win, { ...pick("c1", "Before the greeting"), clipError: "stale" });
-    await settle();
+    await settled();
     expect(capturing()).toBe(true);
     await on();
     viewerPick(frame, { ...pick("c2", "After the greeting"), clipError: "fresh" });
@@ -356,7 +354,6 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const comment = buttonNamed(root, "Comment");
     const pressed = () => comment.getAttribute("aria-pressed") === "true";
     const lastMode = () => toFrame.filter(m => m.type === "clax:comment-mode").at(-1)?.on;
-    const settle = () => new Promise(r => setTimeout(r, 30));
     const type = async (text: string) => {
       const t = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
       t.value = text;
@@ -373,7 +370,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => lastMode() === false, "comment mode off in the frame");
     buttonNamed(root, "Post comment").click();
     await waitFor(() => root.querySelector(".banner.notice"), "the failed post");
-    await settle();
+    await settled();
     expect(root.querySelector(".composer")).not.toBeNull();
     expect(pressed()).toBe(false);
     expect(lastMode()).toBe(false);
@@ -392,7 +389,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     (await import("./view/trail")).keyboardTrail.clear();
     buttonNamed(await waitFor(() => root.querySelector('[data-thread="t1"]'), "the posted thread"), "Send to claude").click();
     await waitFor(() => sends === 1, "the send");
-    await settle();
+    await settled();
     expect(pressed()).toBe(true);
     // A post that sends itself to the agent (`@agent`) closes it too.
     viewerPick(frame, pick("p3", "Costs"));
@@ -437,7 +434,6 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
     const comment = buttonNamed(root, "Comment");
     const pressed = () => comment.getAttribute("aria-pressed") === "true";
-    const settle = () => new Promise(r => setTimeout(r, 30));
     const pageOpens = async (id: string) => {
       gestureIn(frame);
       fromFrame(win, { type: "clax:call", id, ns: "comments", method: "openComposer", args: [{ anchor: pick("x", "Goals").anchor }] });
@@ -446,7 +442,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const cancelStaysOff = async () => {
       buttonNamed(root, "Cancel").click();
       await waitFor(() => !root.querySelector(".composer"), "composer closed");
-      await settle();
+      await settled();
       expect(pressed()).toBe(false);
     };
     // The page's openComposer, then Cancel: mode stays off.
@@ -456,7 +452,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ta.value = "typed for the page";
     ta.dispatchEvent(new Event("input", { bubbles: true }));
     ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }));
-    await settle();
+    await settled();
     expect(root.querySelector(".composer .act-hint")?.textContent).toBe("Click to post");
     await cancelStaysOff();
     // A pick's empty composer that the page's openComposer replaced: closing it leaves mode off.
@@ -481,12 +477,12 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const input = card.querySelector<HTMLInputElement>("input[aria-label=Reply]")!;
     input.value = "more";
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
+    await settled();
     // The viewer's press in the shell clears the keyboard trail every load starts with.
     (await import("./view/trail")).keyboardTrail.clear();
     buttonNamed(card, "Reply").click();
     await waitFor(() => replies === 1, "the reply");
-    await settle();
+    await settled();
     expect(pressed()).toBe(false);
   });
 
@@ -527,7 +523,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     frame.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     expect(posted.filter(m => m.type === "clax:key").at(-1)).toEqual({ type: "clax:key", key: "Escape", down: true });
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     // The page dropped a drag: comment mode stays on.
     expect(comment.getAttribute("aria-pressed")).toBe("true");
     fromFrame(win, { type: "clax:cancel" });

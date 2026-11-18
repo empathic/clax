@@ -6,7 +6,7 @@
 
 use clax_core::audit::AuditCtx;
 use clax_testkit::people::World;
-use clax_testkit::{EventReader, TestServer};
+use clax_testkit::{EventReader, TestServer, within};
 use serde_json::{Value, json};
 
 /// `(status, body)` of a response.
@@ -1218,14 +1218,13 @@ async fn a_decision_pushes_to_the_approvers_codex_session() {
         )
         .await;
     assert_eq!(status, 200, "{v}");
-    let text = match tokio::time::timeout(std::time::Duration::from_secs(60), reading).await {
-        Ok(read) => read.unwrap().unwrap(),
-        Err(_) => {
-            // Release the blocked reader, so the test fails rather than hangs.
-            drop(std::fs::OpenOptions::new().write(true).open(&fifo));
-            panic!("the decision queued nothing to the owner's Codex session");
-        }
+    let read = tokio::spawn(within("the decision's push to Codex", reading)).await;
+    let Ok(read) = read else {
+        // Release the blocked reader, so the test fails rather than hangs.
+        drop(std::fs::OpenOptions::new().write(true).open(&fifo));
+        panic!("the decision queued nothing to the owner's Codex session");
     };
+    let text = read.unwrap().unwrap();
     assert!(text.contains("Mia, held"), "{text}");
 }
 
@@ -2419,14 +2418,6 @@ async fn a_connected_person_learns_who_approves_first_only_about_their_own_conte
         own.contains(&json!(null)) && own.contains(&mia) && !own.contains(&sam),
         "{own:?}"
     );
-}
-
-/// `f` within 10 s, or the test fails naming `what` (a stream's keep-alive
-/// comments never end a wait on their own).
-async fn within<F: std::future::Future>(what: &str, f: F) -> F::Output {
-    tokio::time::timeout(std::time::Duration::from_secs(10), f)
-        .await
-        .unwrap_or_else(|_| panic!("{what} within 10 s"))
 }
 
 /// Thread `tid`'s `feedback_state` as `b` reads it.

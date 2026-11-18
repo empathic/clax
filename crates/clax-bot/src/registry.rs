@@ -595,6 +595,7 @@ impl SurfaceProvider for Unavailable {
     }
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

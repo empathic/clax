@@ -47,14 +47,14 @@ exit 1
 FAKE
 # A zip that does its work with the real zip, then, on a call whose
 # arguments hold $FAKE_ZIP_HANG_ON (any call when it is empty), tells the
-# test it started and waits to be interrupted.
+# test it started and waits to be interrupted: it never ends by itself.
 REAL_ZIP="$(command -v zip)"
 fake_exe "$ROOT/hang/zip" <<'FAKE'
 #!/bin/sh
 "$FAKE_REAL_ZIP" "$@" || exit
 case "$*" in *"$FAKE_ZIP_HANG_ON"*) ;; *) exit 0 ;; esac
 echo started > "$FAKE_ZIP_FIFO"
-exec sleep 600
+exec sleep 2147483647
 FAKE
 
 # A scratch repository: copies of the two scripts and a fake build-web.sh that

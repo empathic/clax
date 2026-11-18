@@ -1835,6 +1835,7 @@ fn not_found(e: CoreError) -> CoreError {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::test_util::DAEMON;
@@ -2128,7 +2129,7 @@ mod tests {
                     "UPDATE sessions SET last_seen_at = ?2 WHERE id = ?1",
                     params![
                         old.id,
-                        (chrono::Utc::now() - Duration::from_secs(600))
+                        (store.now_utc() - Duration::from_secs(600))
                             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
                     ],
                 )?;
@@ -2172,11 +2173,13 @@ mod tests {
 
     #[test]
     fn heartbeat_and_end() {
-        let (_d, store) = store();
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-09-01T10:00:00Z"));
+        let (_d, store) = crate::test_util::store_with_clock(clock.clone());
         let s = store
             .register_session(DAEMON, reg(None, Some(10), None))
             .unwrap();
-        std::thread::sleep(Duration::from_millis(5));
+        clock.advance(1);
         let beat = store.heartbeat(&s.id).unwrap();
         assert!(beat.last_seen_at > s.last_seen_at);
         let ended = store.end_session(DAEMON, &s.id).unwrap();
@@ -2373,7 +2376,9 @@ mod tests {
     fn reaping_releases_watches_and_rows() {
         use crate::test_util::{anchor, artifact};
         use crate::threads::NewThread;
-        let (_d, store) = store();
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-09-01T10:00:00Z"));
+        let (_d, store) = crate::test_util::store_with_clock(clock.clone());
         let s = store
             .register_session(DAEMON, reg(Some("dead"), Some(1001), None))
             .unwrap();
@@ -2395,9 +2400,9 @@ mod tests {
             )
             .unwrap();
         store.send_to_agent(DAEMON, &t.id).unwrap();
-        std::thread::sleep(Duration::from_millis(20));
+        clock.advance(301);
         let reaped = store
-            .reap_sessions(Duration::from_millis(10), &|_| false)
+            .reap_sessions(Duration::from_secs(300), &|_| false)
             .unwrap();
         assert_eq!(reaped.ended, vec![s.id.clone()]);
         assert!(reaped.touched.threads.iter().any(|(_, tid)| *tid == t.id));

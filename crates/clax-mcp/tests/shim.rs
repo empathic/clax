@@ -5,16 +5,17 @@
 use clax_core::Home;
 use clax_core::daemon::read_daemon_info;
 use clax_fake_exe::clax_bin;
+use clax_testkit::{until, within};
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 /// A running shim with its own `CLAX_HOME`; dropping it stops the daemon the
-/// shim started.
+/// shim started. The shim logs its warnings to `<dir>/shim.log`
+/// ([`Shim::log`]), shown when a test fails.
 struct Shim {
     dir: tempfile::TempDir,
     client: Option<RunningService<RoleClient, ()>>,
@@ -80,13 +81,17 @@ impl Shim {
                 .env("CLAX_NO_OPEN", "1")
                 // Captures never race the real deadline on a loaded machine.
                 .env(clax_mcp::git::DEADLINE_VAR, "20000")
-                .env("RUST_LOG", "error")
+                .env("RUST_LOG", "warn")
                 .current_dir(&work);
             if let Some(ms) = heartbeat_ms {
                 c.args(["--heartbeat-interval-ms", &ms.to_string()]);
             }
         });
-        let transport = TokioChildProcess::new(cmd).expect("spawn clax mcp");
+        let log = std::fs::File::create(dir.path().join("shim.log")).unwrap();
+        let (transport, _) = TokioChildProcess::builder(cmd)
+            .stderr(log)
+            .spawn()
+            .expect("spawn clax mcp");
         let client = ().serve(transport).await.expect("MCP handshake");
         Shim {
             dir,
@@ -96,6 +101,11 @@ impl Shim {
 
     fn home(&self) -> Home {
         Home::at(self.dir.path().join("ax"))
+    }
+
+    /// What the shim has logged so far.
+    fn log(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("shim.log")).unwrap_or_default()
     }
 
     fn client(&self) -> &RunningService<RoleClient, ()> {
@@ -181,6 +191,9 @@ impl Shim {
 
 impl Drop for Shim {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("the shim's log:\n{}", self.log());
+        }
         let _ = std::process::Command::new(clax_bin(None))
             .arg("stop")
             .env("CLAX_HOME", self.dir.path().join("ax"))
@@ -304,19 +317,19 @@ async fn serves_the_tools_and_registers_the_harness_session() {
 #[tokio::test]
 async fn heartbeats_advance_last_seen_at() {
     let shim = Shim::start(Some(200)).await;
-    let before = shim.live_sessions().await[0]["last_seen_at"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    let after = shim.live_sessions().await[0]["last_seen_at"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        after > before,
-        "last_seen_at {before} did not advance ({after})"
-    );
+    let seen = || async {
+        shim.live_sessions().await[0]["last_seen_at"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let before = seen().await;
+    let what = format!("last_seen_at past {before}");
+    within(
+        &what,
+        until(&what, || async { (seen().await > before).then_some(()) }),
+    )
+    .await;
     shim.finish().await;
 }
 
@@ -329,15 +342,15 @@ async fn closing_stdin_ends_the_session() {
         .to_string();
     // Closes the shim's stdin and waits for it to exit.
     shim.client.take().unwrap().cancel().await.unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let s = shim.get(&format!("/api/sessions/{id}")).await;
-        if !s["session"]["ended_at"].is_null() {
-            break;
-        }
-        assert!(Instant::now() < deadline, "session not ended: {s}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let what = format!("session {id} ended");
+    within(
+        &what,
+        until(&what, || async {
+            let s = shim.get(&format!("/api/sessions/{id}")).await;
+            (!s["session"]["ended_at"].is_null()).then_some(())
+        }),
+    )
+    .await;
     assert!(shim.live_sessions().await.is_empty());
     shim.finish().await;
 }
@@ -378,7 +391,15 @@ async fn heartbeats_never_start_a_daemon_but_tool_calls_do() {
     let shim = Shim::start(Some(200)).await;
     let before = ok(&shim.call("status", json!({})).await);
     shim.stop_daemon();
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    // A heartbeat has found no daemon (it says so once).
+    let what = "a heartbeat with no daemon";
+    within(
+        what,
+        until(what, || async {
+            shim.log().contains("heartbeat failed").then_some(())
+        }),
+    )
+    .await;
     if let Some(info) = read_daemon_info(&shim.home()) {
         assert!(
             !clax_core::daemon::pid_alive(info.pid),
@@ -399,9 +420,7 @@ async fn a_daemon_that_cannot_start_is_reported_as_unreachable() {
     let mut shim = Shim::start_in(dir, None).await;
 
     assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 42);
-    let r = tokio::time::timeout(Duration::from_secs(10), shim.call("list", json!({})))
-        .await
-        .expect("the tool answers within 10s instead of hanging");
+    let r = within("the tool's answer", shim.call("list", json!({}))).await;
     let (v, is_error) = body(&r);
     assert!(is_error, "{v}");
     assert_eq!(v["error"]["code"], "daemon_unreachable", "{v}");
@@ -409,10 +428,14 @@ async fn a_daemon_that_cannot_start_is_reported_as_unreachable() {
         v["error"]["log"],
         shim.home().log_path().to_string_lossy().as_ref()
     );
-    // With no daemon, the shim still exits promptly on stdin EOF.
-    let t = Instant::now();
-    shim.client.take().unwrap().cancel().await.unwrap();
-    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    // With no daemon, the shim still exits on stdin EOF, without waiting
+    // out its time to end the session or send its reports.
+    within("the shim's exit", shim.client.take().unwrap().cancel())
+        .await
+        .unwrap();
+    let log = shim.log();
+    assert!(!log.contains("ending the session timed out"), "{log}");
+    assert!(!log.contains("reports still unsent"), "{log}");
 }
 
 #[tokio::test]
@@ -528,14 +551,27 @@ async fn piggyback_and_wait_through_the_shim() {
         "{trailing}"
     );
 
-    let waiting = shim.call("wait_for_feedback", json!({"timeout_s": 10}));
+    // The longest wait, past the hang guard: the comment ends it.
+    let sid = shim.live_sessions().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let waiting = shim.call("wait_for_feedback", json!({"timeout_s": 600}));
     let sending = async {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        let what = "the wait in progress";
+        until(what, || async {
+            let v = shim
+                .get(&format!("/api/_test/sessions/{sid}/feedback/waiters"))
+                .await;
+            (v["count"] == 1).then_some(())
+        })
+        .await;
         assert_eq!(thread("@agent and the footer").await.unwrap().status(), 201);
-        Instant::now()
     };
-    let (r, sent) = tokio::join!(waiting, sending);
-    assert!(Instant::now().saturating_duration_since(sent) < Duration::from_secs(1));
+    let (r, ()) = within("the wait woken by the comment", async {
+        tokio::join!(waiting, sending)
+    })
+    .await;
     let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
     assert_eq!(v["feedback"][0]["body"], "@agent and the footer");
     assert_eq!(v["call_again"], false);

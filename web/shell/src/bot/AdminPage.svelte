@@ -10,6 +10,7 @@
   import type { Role } from "./api";
   import { isAdmin, myRole } from "./me";
   import BotPage from "./BotPage.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   export type Tab = "people" | "provider" | "web" | "pricing" | "usage";
   let { now, tab = "people" }: { now?: () => Date; tab?: Tab } = $props();
@@ -25,12 +26,18 @@
   const t = TABS[tab];
   let role = $state<Role | null>(null);
   let Body = $state<Component<{ role: Role; now?: () => Date }> | null>(null);
+  // The role was not answered, or the tab's chunk did not load.
+  let broken = $state(false);
+  // Shown in Settings, the screen waits for the role and, for an admin, the
+  // tab's body, which then holds it for its own first data.
+  const release = holdReveal();
   onMount(() => {
     document.title = `${t.title} · Settings · Clax`;
     void myRole().then(r => {
       role = r;
-      if (isAdmin(r)) void t.load().then(m => { Body = m.default as Component<{ role: Role; now?: () => Date }>; }, () => {});
-    });
+      if (!isAdmin(r)) { release(); return; }
+      void t.load().then(m => { Body = m.default as Component<{ role: Role; now?: () => Date }>; }, () => { broken = true; }).finally(release);
+    }, () => { broken = true; release(); });
   });
 </script>
 
@@ -39,6 +46,8 @@
     <p class="note">This screen is for the owner and the admins they name. Your own ClaxBot usage is under <a href="/settings/claxbot">Your ClaxBot</a>.</p>
   {:else if role && Body}
     <Body {role} {now} />
+  {:else if broken}
+    <p class="err" role="alert">This screen could not load. Reload to try again.</p>
   {:else}
     <p class="note" role="status">Loading…</p>
   {/if}

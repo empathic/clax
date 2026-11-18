@@ -289,10 +289,11 @@ _stubs bazelisk
 _try -- lint
 clippy="bazelisk build --lockfile_mode=error --config=clippy"
 own="--@rules_rust//rust/settings:clippy.toml"
+on="--@rules_rust//rust/settings:clippy_flag=-Wclippy::disallowed_methods"
 if [ "$status" = 0 ] &&
     _called "^$clippy -- //crates/\.\.\. -//crates/one/\.\.\. -//crates/two/\.\.\.$" &&
-    _called "^$clippy $own=//crates/one:clippy.toml //crates/one/\.\.\.$" &&
-    _called "^$clippy $own=//crates/two:clippy.toml //crates/two/\.\.\.$" &&
+    _called "^$clippy $on $own=//crates/one:clippy.toml //crates/one/\.\.\.$" &&
+    _called "^$clippy $on $own=//crates/two:clippy.toml //crates/two/\.\.\.$" &&
     [ "$(grep -c -- "$own" "$tmp/calls")" = 2 ] &&
     _called "^bazelisk test --lockfile_mode=error //web:lint$"; then
     _ok "lint: each crate's own clippy.toml, found by glob"

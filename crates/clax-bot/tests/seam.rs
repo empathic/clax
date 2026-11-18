@@ -1346,10 +1346,12 @@ async fn cancelled_in_the_run_loop() -> Left {
         cancel: token,
         events: &sink,
     };
-    let out = tokio::time::timeout(PROMPTLY, clax_bot::tick(&deps, &run, &driver, opts))
-        .await
-        .expect("the cancel ends the script")
-        .unwrap();
+    let out = within(
+        "the cancel ends the script",
+        clax_bot::tick(&deps, &run, &driver, opts),
+    )
+    .await
+    .unwrap();
     assert_eq!(out.next, Next::Done(RunStatus::Stopped));
     let (row, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
     assert_eq!(row.reason.as_deref(), Some("cancelled"));
@@ -1374,9 +1376,11 @@ async fn cancelled_through_the_seam() -> Left {
         cancel_after: Some(CANCEL_AFTER),
         ..Try::default()
     };
-    let cut = tokio::time::timeout(PROMPTLY, attempt(&env, &run, &driver, how))
-        .await
-        .expect("the cancel ends the script");
+    let cut = within(
+        "the cancel ends the script",
+        attempt(&env, &run, &driver, how),
+    )
+    .await;
     assert_eq!((cut.step, cut.attempt, cut.end), (2, 1, StepEnd::Cancelled));
     // The same step, begun again as the run's stopped step.
     let stopped = env

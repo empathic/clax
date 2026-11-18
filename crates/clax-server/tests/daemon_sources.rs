@@ -3,6 +3,7 @@
 //! `clax-commands`, `clax-worker` and others), which Bazel gives this
 //! target alone (`test_data_of` in `crates/clax-server/BUILD.bazel`), so
 //! an edit to them reruns it and no other test of the crate.
+#![warn(clippy::disallowed_methods)]
 
 /// The daemon's crates above the run loop's (which `clax-bot`'s own scan
 /// reads: `crates/clax-bot/tests/outside.rs`).

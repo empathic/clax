@@ -637,10 +637,12 @@ async fn a_fake_surfaces_script_that_is_cancelled_stops_the_run() {
         cancel: token,
         events: &sink,
     };
-    let out = tokio::time::timeout(PROMPTLY, clax_bot::tick(&deps, &run, &driver, opts))
-        .await
-        .expect("the cancel ends the script")
-        .unwrap();
+    let out = within(
+        "the cancel ends the script",
+        clax_bot::tick(&deps, &run, &driver, opts),
+    )
+    .await
+    .unwrap();
     assert_eq!(out.next, Next::Done(RunStatus::Stopped));
     assert_eq!(f.env.run_row(&run).reason.as_deref(), Some("cancelled"));
     let steps = f.steps(&run);
@@ -749,10 +751,12 @@ async fn a_clash_in_a_cancelled_step_does_not_keep_the_run_from_stopping() {
         cancel: token,
         events: &sink,
     };
-    let out = tokio::time::timeout(PROMPTLY, clax_bot::tick(&deps, &run, &driver, opts))
-        .await
-        .expect("the cancel ends the script")
-        .expect("the tick takes the stop");
+    let out = within(
+        "the cancel ends the script",
+        clax_bot::tick(&deps, &run, &driver, opts),
+    )
+    .await
+    .expect("the tick takes the stop");
     assert_eq!(out.next, Next::Done(RunStatus::Stopped));
     assert_eq!(f.env.run_row(&run).reason.as_deref(), Some("cancelled"));
     let steps = f.steps(&run);

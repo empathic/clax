@@ -6,7 +6,6 @@ import { dispatchTrusted } from "../../bridge/test/trusted";
 import { settle, stubFetch } from "./people/fixtures";
 import { flush, mount } from "./test/svelte";
 import NewArtifactDialog from "./ui/NewArtifactDialog.svelte";
-import { forgetViewer } from "./ui/may-create";
 import { connectPrompt, formProblem, MAX_TITLE, pickGroups, type ListedAgent } from "./view/new-artifact";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
@@ -304,19 +303,20 @@ describe("the New dialog with ClaxBot", () => {
 });
 
 describe("the New artifact tile", () => {
-  beforeEach(() => { forget(); forgetViewer(); });
+  beforeEach(() => { forget(); });
   it("shows for a browser that may create, says ClaxBot can build it, and opens the dialog", async () => {
-    stubFetch({ "GET /api/viewers/me": { viewer: { public_id: "p_owner", owner: true }, may_create: true }, "GET /api/me/bot": meBot() });
-    const m = mount(NewTile, {});
-    await settle();
+    const calls = stubFetch({ "GET /api/me/bot": meBot() });
+    const m = mount(NewTile, { me: { public_id: "p_owner", owner: true }, may: true, bot: true });
     const tile = m.root.querySelector<HTMLButtonElement>('button[aria-label="New artifact"]')!;
+    // In its final form at its first render: it asks nothing to show.
     expect(tile.textContent).toContain("Name it; ClaxBot can build it");
+    expect(calls).toEqual([]);
     click(tile);
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull());
   });
   it("is not offered to a browser that may not create", async () => {
-    stubFetch({ "GET /api/viewers/me": { viewer: null, may_create: false } });
-    const m = mount(NewTile, {});
+    stubFetch({});
+    const m = mount(NewTile, { me: null, may: false, bot: false });
     await settle();
     expect(m.root.querySelector("button")).toBeNull();
   });

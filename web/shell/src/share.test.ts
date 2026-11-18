@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { settled } from "./test/settled";
 import { flush, mount } from "./test/svelte";
 import type { Share as ShareRow, Sharing } from "./hosted/api";
 import Share from "./ui/Share.svelte";
@@ -33,15 +34,13 @@ function serve(state: { sharing: Sharing }, sent: { method: string; url: string;
   return sent;
 }
 
-const until = async <T,>(f: () => T | null | undefined | false): Promise<T> => {
-  for (let i = 0; i < 200; i++) {
-    flush();
-    const v = f();
-    if (v) return v;
-    await new Promise(r => setTimeout(r, 5));
-  }
-  throw new Error("not reached");
-};
+/** `f`'s first truthy value, applying updates before each look. */
+const until = <T,>(f: () => T | null | undefined | false): Promise<T> => vi.waitFor(() => {
+  flush();
+  const v = f();
+  if (!v) throw new Error("not reached");
+  return v;
+});
 
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = ""; });
 
@@ -93,15 +92,13 @@ describe("Share", () => {
   it("shows nothing to who may not share, or on a daemon without sharing", async () => {
     serve({ sharing: { artifact_id: ID, can_share: false } });
     const m = mount(Share, { id: ID, title: "Plan" });
-    await new Promise(r => setTimeout(r, 20));
-    flush();
+    await settled();
     expect(m.root.querySelector("button.share")).toBeNull();
     expect(shareOpen.current).toBeNull();
     m.unmount();
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 404 })));
     const l = mount(Share, { id: ID, title: "Plan" });
-    await new Promise(r => setTimeout(r, 20));
-    flush();
+    await settled();
     expect(l.root.querySelector("button.share")).toBeNull();
     l.unmount();
   });

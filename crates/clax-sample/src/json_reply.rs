@@ -38,6 +38,7 @@ pub fn parse(text: &str) -> Option<Value> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::parse;
     use serde_json::json;

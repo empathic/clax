@@ -17,6 +17,7 @@
   import KeyField from "./KeyField.svelte";
   import SourceBadge from "./SourceBadge.svelte";
   import Switch from "./Switch.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   let { now }: { now?: () => Date } = $props();
   let w = $state<WebSettings | null>(null);
@@ -85,10 +86,14 @@
     busy = true; err = null; saved = "";
     try { take(await putAdminWeb(patch)); saved = "Saved."; } catch (e) { err = refusal(e); } finally { busy = false; }
   }
+  // Shown in Settings, the screen waits for the settings, the search prices and whether the daemon is local.
+  const release = holdReveal();
   onMount(() => {
-    void getAdminWeb().then(take, e => { err = refusal(e); });
-    void pricing().then(p => { prices = webPrices(p.lines, p.credit_price_micro_usd); }, () => {});
-    void hosted().then(h => { local = !h; });
+    void Promise.allSettled([
+      getAdminWeb().then(take, e => { err = refusal(e); }),
+      pricing().then(p => { prices = webPrices(p.lines, p.credit_price_micro_usd); }, () => {}),
+      hosted().then(h => { local = !h; }),
+    ]).then(release);
   });
 </script>
 

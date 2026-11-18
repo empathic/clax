@@ -35,6 +35,33 @@ pub fn system_path_without(scratch: &std::path::Path, hide: &[&str]) -> std::ffi
     clax_fake_exe::path_without("/usr/bin:/bin", &scratch.join("system-path"), hide)
 }
 
+/// `f`'s value once it has one, checked again every 20 ms: the thread's
+/// twin of [`clax_testkit::until`], for tests that drive child processes
+/// without a runtime. Bounded only by the [`clax_testkit::HANG`] guard, so
+/// a load that slows the processes only delays it.
+///
+/// # Panics
+/// Past the [`clax_testkit::HANG`] guard, naming `what`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "wait_until polls its condition under the HANG guard; nothing is decided by how long it takes"
+)]
+#[allow(dead_code)]
+pub fn wait_until<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(v) = f() {
+            return v;
+        }
+        let waited = started.elapsed();
+        assert!(
+            waited < clax_testkit::HANG,
+            "{what}: not after {waited:?} (hang guard)"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// A scratch HOME and CLAX_HOME; dropping it stops the daemon started there.
 pub struct Env {
     pub dir: tempfile::TempDir,

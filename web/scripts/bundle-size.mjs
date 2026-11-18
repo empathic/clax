@@ -56,7 +56,7 @@ const entry = html => {
   return gz(html) + files.reduce((n, f) => n + gz(f), 0);
 };
 
-for (const [html, markers] of [["index.html", []], ["artifact.html", ["<script id=\"clax-early\">", "<!--clax:boot-->", "<!--clax:frame-->", "<h1>Clax</h1>"]]]) {
+for (const [html, markers] of [["index.html", ["<!--clax:boot-->"]], ["artifact.html", ["<script id=\"clax-early\">", "<!--clax:boot-->", "<!--clax:frame-->", "<h1>Clax</h1>"]]]) {
   const text = read(html).toString();
   if (text.includes(`<link rel="stylesheet"`)) throw new Error(`dist/${html} links a stylesheet; the CSS must be inlined`);
   for (const m of markers) if (!text.includes(m)) throw new Error(`dist/${html} lost ${m}, which the daemon injects at or the shell needs`);
@@ -140,7 +140,9 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
   if (!lazy) throw new Error("dist has no gallery-working chunk");
   const loaded = new Set([...closure("index.html"), ...closure(lazy)].map(k => manifest[k].file));
   for (const [key, srcs] of [["people", ["src/settings/Settings.svelte", "src/people/People.svelte"]], ["queues", ["src/queues/Queues.svelte"]]]) {
-    const pages = srcs.map(src => Object.keys(manifest).find(m => m.endsWith(src)));
+    // A page another chunk also imports from is keyed by its chunk, under its name.
+    const named = src => Object.keys(manifest).find(m => manifest[m].isDynamicEntry && manifest[m].name === src.replace(/^.*\/|\.\w+$/g, ""));
+    const pages = srcs.map(src => Object.keys(manifest).find(m => m.endsWith(src)) ?? named(src));
     if (pages.some(p => !p)) throw new Error(`dist has no ${srcs.join(" or ")} chunk`);
     sizes[key] = [...new Set(pages.flatMap(page => [...closure(page)].map(k => manifest[k].file)))].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
   }

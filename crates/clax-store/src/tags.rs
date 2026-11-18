@@ -421,6 +421,7 @@ pub fn carries_all(carried: &[tags::TagRef], refs: &[String]) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_core::Home;

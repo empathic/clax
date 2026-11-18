@@ -3296,4 +3296,5 @@ fn live_session_in(c: &Connection, sid: &str, message: &'static str) -> Result<(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests;

@@ -5,19 +5,18 @@
 // Sam read the wait with the lost access beside it. The daemon listens on
 // every interface, so its invites name this machine's LAN address; on a
 // machine with none the test skips.
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
-import { api, expect, publish, startDaemon, test } from "./fixtures";
+import { api, expect, publish, run, startDaemon, test } from "./fixtures";
 import { type Person, connect, invite, leave, threadFrom } from "./people-helpers";
 
 /** Runs the CLI as the person, on their scratch home, outside any agent channel. */
 function asPerson(home: string, args: string[], input?: string, cwd?: string) {
   const env: NodeJS.ProcessEnv = { ...process.env, CLAX_HOME: home };
   for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "CLAX_PORT"]) delete env[k];
-  return spawnSync(process.env.CLAX_E2E_BIN!, args, { env, input, cwd, encoding: "utf8", timeout: 20_000 });
+  return run(process.env.CLAX_E2E_BIN!, args, { env, input, cwd });
 }
 
 /** A JSON request from `page`'s browser (its credentials, same origin). */
@@ -46,7 +45,7 @@ test("the owner and the agent's person read a wait beside the lost access", asyn
     const refused = (await alert.count()) ? await alert.textContent() : null;
     test.skip(!!refused && refused.includes("LAN"), `no LAN address here: ${refused}`);
     const command = (await owner.locator(".invite code").textContent())!;
-    const out = asPerson(sam, ["connect", command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--yes", "--no-browser"]);
+    const out = await asPerson(sam, ["connect", command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--yes", "--no-browser"]);
     expect(out.status, out.stderr).toBe(0);
     const link = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)![0];
     const project = join(sam, "work", "sam-notes");
@@ -54,7 +53,7 @@ test("the owner and the agent's person read a wait beside the lost access", asyn
     writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
     const hook = (event: string, name: string) =>
       asPerson(sam, ["hook", "--agent", "claude", event], JSON.stringify({ session_id: "e2e-sam-1", cwd: project, hook_event_name: name, source: "startup", prompt: "Carry on." }), project);
-    expect(hook("session-start", "SessionStart").status).toBe(0);
+    expect((await hook("session-start", "SessionStart")).status).toBe(0);
 
     const aid = (await publish(d.base, d.token, "Plan", { "index.html": "<main><h2>Quarterly goals</h2></main>" })).artifact.id;
     const other = (await publish(d.base, d.token, "Elsewhere", { "index.html": "<main><h2>Other</h2></main>" })).artifact.id;
@@ -67,7 +66,7 @@ test("the owner and the agent's person read a wait beside the lost access", asyn
     // for Sam's approval: a row no take told of before the narrowing reads
     // only "held: the agent no longer has access".
     const waiting = (p: Page) => p.locator(".thread-card").filter({ hasText: "widen the goals" }).locator(".waiting");
-    expect(hook("prompt", "UserPromptSubmit").status).toBe(0);
+    expect((await hook("prompt", "UserPromptSubmit")).status).toBe(0);
     await owner.goto(`${d.base}/a/${aid}`);
     await expect(waiting(owner)).toHaveText("waiting for Sam's approval");
 
@@ -79,7 +78,7 @@ test("the owner and the agent's person read a wait beside the lost access", asyn
       { type: "clax-comments", actions: ["read", "reply", "watch"], locations: ["*"] },
       { type: "clax-ask", actions: ["ask"], locations: ["*"] },
     ] });
-    const told = hook("prompt", "UserPromptSubmit");
+    const told = await hook("prompt", "UserPromptSubmit");
     expect(told.stdout, told.stderr).toContain("you no longer have access to this page");
     expect(told.stdout).not.toContain("widen the goals");
 

@@ -3,8 +3,7 @@ import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { settle, stubFetch } from "../people/fixtures";
 import { flush, mount } from "../test/svelte";
 import AuditPage from "./AuditPage.svelte";
-import { errorDetail, meBot, settings, week } from "./fixtures";
-import HeaderBot from "./HeaderBot.svelte";
+import { errorDetail, meBot, settings } from "./fixtures";
 import { forget } from "./me";
 import MePage from "./MePage.svelte";
 import SettingsPage from "./SettingsPage.svelte";
@@ -250,42 +249,3 @@ describe("Audit's export", () => {
   });
 });
 
-describe("the gallery header's ClaxBot", () => {
-  it("shows the week's meter, linking to Your ClaxBot, and the banner at the limit", async () => {
-    const main = document.createElement("main");
-    main.className = "gal";
-    document.body.append(main);
-    stubFetch({ "GET /api/me/bot": meBot({ role: "admin", week: week({ spent_milli: 2_000_000 }) }) });
-    const m = mount(HeaderBot, {});
-    await settle();
-    const meter = m.root.querySelector<HTMLAnchorElement>(".bot-meter")!;
-    expect(meter.getAttribute("aria-label")).toBe("ClaxBot: 2,000 of 2,000 credits used this week");
-    expect(meter.classList.contains("out")).toBe(true);
-    expect(meter.getAttribute("href")).toBe("/settings/claxbot");
-    const banner = main.querySelector('.bbanner[role="alert"]')!;
-    expect(banner.textContent).toContain("This week's credits are used up.");
-    click(button(banner, "Ask an admin for a lift"));
-    expect(banner.querySelector("#bbanner-ask")!.textContent).toContain("Settings › Roles & ClaxBot access");
-    m.unmount();
-    expect(main.querySelector(".bbanner")).toBeNull();
-  });
-
-  it("marks the meter 'your key' on the person's own key, saying what its credits pay for", async () => {
-    stubFetch({ "GET /api/me/bot": meBot({ key: { own: { set: true, last4: "4f2c", set_at: null, last_ok_at: null }, use_own: true }, week: week({ spent_milli: 3_120 }) }) });
-    const m = mount(HeaderBot, {});
-    await settle();
-    const meter = m.root.querySelector<HTMLAnchorElement>(".bot-meter")!;
-    expect(meter.textContent!.replace(/\s+/g, " ").trim()).toBe("ClaxBot · your key · 3.12 of 2,000 credits");
-    expect(meter.getAttribute("href")).toBe("/settings/claxbot");
-    expect(meter.getAttribute("aria-label")).toBe("ClaxBot on your key: 3.12 of 2,000 credits used this week, for run fees, script compute, storage and web calls");
-    expect(meter.title).toContain("pays for your tokens");
-    m.unmount();
-  });
-
-  it("shows nothing where the daemon has no ClaxBot", async () => {
-    stubFetch({});
-    const m = mount(HeaderBot, {});
-    await settle();
-    expect(m.root.querySelector("a")).toBeNull();
-  });
-});

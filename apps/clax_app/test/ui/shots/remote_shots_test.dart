@@ -27,6 +27,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../bundle/services_support.dart';
 import '../../support/fake_clock.dart' show FakeClock;
+import '../../support/settle.dart';
 import 'rig.dart';
 
 String _h(int i) => 'sha256:${i.toRadixString(16).padLeft(64, '0')}';
@@ -37,18 +38,18 @@ void _shots(String surface, Future<void> Function(Shot s) body) {
   shots(surface, body, forms: const [phone], textScales: const [1.3, 2]);
 }
 
-/// Lets the fakes' futures run between frames, then draws.
-Future<void> _settle(Shot s) async {
-  for (var i = 0; i < 6; i++) {
-    await s.tester.runAsync(() => Future<void>.delayed(Duration.zero));
-    await s.tester.pump(const Duration(milliseconds: 100));
-  }
+/// Lets the fakes' futures run between frames until [shows] is on
+/// screen, then draws.
+Future<void> _settle(Shot s, Finder shows) async {
+  await settle(s.tester, shows);
   await s.settle();
 }
 
-/// Shows [sheet] (built with the page's context) over a page.
+/// Shows [sheet] (built with the page's context) over a page, until
+/// [shows] is on screen.
 Future<void> _sheet(
   Shot s,
+  Finder shows,
   void Function(BuildContext context) sheet,
 ) async {
   final page = GlobalKey();
@@ -62,14 +63,14 @@ Future<void> _sheet(
     ),
   );
   sheet(page.currentContext!);
-  await _settle(s);
+  await _settle(s, shows);
 }
 
 void main() {
   _shots('remote-connect', (s) async {
     final remote = FakeRemoteApi()..signInsWait = true;
     final clock = FakeClock();
-    await _sheet(s, (context) {
+    await _sheet(s, find.textContaining('Connect to'), (context) {
       Future<Remote?> _ = showConnectSheet(
         context,
         remote,
@@ -80,7 +81,7 @@ void main() {
       );
     });
     await s.tester.runAsync(() => clock.advance(Duration.zero));
-    await _settle(s);
+    await _settle(s, find.byKey(const ValueKey('connect-open')));
     await s.take('remote-connect');
   });
 
@@ -104,7 +105,7 @@ void main() {
         'commenter',
       );
     });
-    await _sheet(s, (context) {
+    await _sheet(s, find.textContaining('junp'), (context) {
       Future<void> _ = showShareSheet(
         context,
         remote,
@@ -123,7 +124,7 @@ void main() {
       const Offset(0, -2000),
       warnIfMissed: false,
     );
-    await _settle(s);
+    await _settle(s, find.text('General access'));
     await s.take('remote-share-end');
   });
 
@@ -194,12 +195,12 @@ void main() {
         ),
       ),
     );
-    await _settle(s);
+    await _settle(s, find.byKey(const ValueKey('remote-pill')));
     await s.take('remote-card');
   });
 
   _shots('remote-published', (s) async {
-    await _sheet(s, (context) {
+    await _sheet(s, find.byType(PublishedSheet), (context) {
       Future<PublishedAction?> _ = showBundleSheet<PublishedAction>(
         context,
         const PublishedSheet(
@@ -246,7 +247,10 @@ void main() {
         ),
       ),
     );
-    await _settle(s);
+    await _settle(
+      s,
+      find.text('Run tracker with a long name for the weekend races'),
+    );
     await s.take('remote-library');
   });
 }

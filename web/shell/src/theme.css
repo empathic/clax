@@ -18,6 +18,8 @@
 :root {
   --bg: #f7f7f5; --card: #ffffff; --raised: #ffffff; --hover: #f2f2ef; --fg: #1c1b19; --muted: #5f5d58;
   --border: #e6e5e1; --border-hover: #d6d4ce; --border-strong: #85827b;
+  /* The timeline's band (Timeline.svelte): the pending count's neutral fill, beside --you's. */
+  --band: #bdb9ae;
   --accent: var(--agent); --accent-ink: var(--agent-ink); --accent-hover: #285f24; --on-accent: #ffffff; --accent-tint: #e8f1e6;
   --primary-hover: #3a3935;
   --danger: #b3261e; --danger-tint: #fbeceb; --focus: var(--agent);
@@ -55,7 +57,7 @@
    (3.3 on --hover). */
 :root:not([data-theme="light"]) { @media (prefers-color-scheme: dark) {
   --bg: #141413; --card: #1c1c1a; --raised: #232321; --hover: #2a2a27; --fg: #ecebe7; --muted: #a9a69f;
-  --border: #2c2c29; --border-hover: #3a3a36; --border-strong: #7c7972;
+  --border: #2c2c29; --border-hover: #3a3a36; --border-strong: #7c7972; --band: #5c5a54;
   --accent-hover: #8fd082; --on-accent: #141413; --accent-tint: #1f2a1d; --primary-hover: #d6d4ce;
   --danger: #ff8a80; --danger-tint: #3a1f1c;
   --you: #ff7a57; --you-ink: #ff7a57; --agent: #7cc36f; --agent-ink: #7cc36f; --comment-hl: #2e1e19; --shadow: rgba(0,0,0,.5);
@@ -73,7 +75,7 @@
 } }
 :root[data-theme="dark"] {
   --bg: #141413; --card: #1c1c1a; --raised: #232321; --hover: #2a2a27; --fg: #ecebe7; --muted: #a9a69f;
-  --border: #2c2c29; --border-hover: #3a3a36; --border-strong: #7c7972;
+  --border: #2c2c29; --border-hover: #3a3a36; --border-strong: #7c7972; --band: #5c5a54;
   --accent-hover: #8fd082; --on-accent: #141413; --accent-tint: #1f2a1d; --primary-hover: #d6d4ce;
   --danger: #ff8a80; --danger-tint: #3a1f1c;
   --you: #ff7a57; --you-ink: #ff7a57; --agent: #7cc36f; --agent-ink: #7cc36f; --comment-hl: #2e1e19; --shadow: rgba(0,0,0,.5);
@@ -117,7 +119,9 @@ button:disabled { opacity: .5; cursor: default; }
 .gbar button.icon { background: none; border-color: transparent; }
 .gbar button.icon:not(:disabled):hover { background-color: var(--hover); }
 .search { margin-left: auto; width: 260px; min-width: 0; max-width: 50%; }
-.gal { max-width: 1360px; margin: 0 auto; padding: 28px 32px 40px; }
+/* The gallery's pages fill the window, so the footer under them is below
+   it, where nothing that lands above it is seen moving it. */
+.gal { max-width: 1360px; min-height: 100vh; margin: 0 auto; padding: 28px 32px 40px; }
 /* Clax's source, and a hosted Clax's Terms of Service and Privacy Policy, under the gallery, the inbox and People (after main, which People mounts into). */
 .glegal { padding: 0 var(--gutter) 32px; text-align: center; font-size: 12.5px; color: var(--muted); }
 .glegal a { color: inherit; text-decoration: underline; }

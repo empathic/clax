@@ -54,6 +54,7 @@ pub fn render(caps: &Value) -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use serde_json::json;

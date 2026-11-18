@@ -1281,6 +1281,7 @@ fn ordered_marker(word: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::super::page::links_of_html;
     use super::*;

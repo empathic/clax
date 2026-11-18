@@ -7,7 +7,7 @@
 // time the topic goes live or resyncs, so no change falls between a fetch
 // and the subscription, and a fetch that failed is made again when the
 // stream is back. A refused topic stops it.
-import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type QuestionView } from "../api";
+import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type InboxSummary, type QuestionView } from "../api";
 import { after } from "../clock";
 import type { EventStream, StreamEvent } from "../stream";
 import { type Closing, type Forbidden, answerQuestion, declineQuestion, inboxSummary, listInbox, listInboxGroups, listQuestions, markInbox, markInboxMany, pullQuestion, releaseQuestion } from "./api";
@@ -41,9 +41,14 @@ export class QuestionFeed {
   // events heard while it was in flight, which its answer may predate.
   declare private fetching: number;
   declare private heard: QuestionView[] | null;
+  // The questions this page is closing (its request sent, no answer yet):
+  // a list read after the daemon closed one does not take its card away
+  // before the answer says what closed it.
+  declare private sent: Set<string>;
 
   constructor(opts: { after?: After } = {}) {
     this.s = reactive({ open: [], recent: [] });
+    this.sent = new Set();
     this.changed = new Set();
     this.leave = new Map();
     this.unwatch = null;
@@ -84,6 +89,14 @@ export class QuestionFeed {
     return this.open.find(q => q.id === id) ?? this.recent.find(q => q.id === id);
   }
 
+  /** Takes the open list the page already holds (`GET
+   * /api/questions?status=open`'s, from the gallery's first load), before
+   * the topic goes live; the topic's first fetch replaces it. */
+  seed(open: QuestionView[]): void {
+    if (this.unwatch || this.open.length) return;
+    this.open = [...open].sort(byCreated);
+  }
+
   /** Follows the topic (once), fetching when it goes live. */
   start(stream: Stream): void {
     this.unwatch ??= stream.watch(["questions"], e => this.on(e), { background: true });
@@ -98,13 +111,13 @@ export class QuestionFeed {
   }
 
   /** Answers question `id`; rejects when the answer was not sent. */
-  answer(id: string, b: AnswerBody): Promise<void> { return this.close(answerQuestion(id, b)); }
+  answer(id: string, b: AnswerBody): Promise<void> { return this.close(id, answerQuestion(id, b)); }
   /** Skips question `id`. */
-  decline(id: string): Promise<void> { return this.close(declineQuestion(id)); }
+  decline(id: string): Promise<void> { return this.close(id, declineQuestion(id)); }
   /** Moves question `id` to the terminal (mirrored questions). */
-  release(id: string): Promise<void> { return this.close(releaseQuestion(id)); }
+  release(id: string): Promise<void> { return this.close(id, releaseQuestion(id)); }
   /** Ask me here: asks in-terminal question `id`'s agent to ask it here. */
-  pull(id: string): Promise<void> { return this.close(pullQuestion(id)); }
+  pull(id: string): Promise<void> { return this.close(id, pullQuestion(id)); }
 
   /** Takes a question view: an open one is listed (or replaced); one that
    * closed leaves the open list and stays in `recent` for `LEAVE_MS`. A
@@ -129,8 +142,9 @@ export class QuestionFeed {
     }));
   }
 
-  private async close(p: Promise<Closing | Forbidden>): Promise<void> {
-    const r = await p;
+  private async close(id: string, p: Promise<Closing | Forbidden>): Promise<void> {
+    this.sent.add(id);
+    const r = await p.finally(() => { this.sent.delete(id); });
     if (r === "forbidden") throw forbidden();
     this.upsert("question" in r ? r.question : r.closed);
   }
@@ -139,7 +153,9 @@ export class QuestionFeed {
    * list replaces `open`, and then the question events heard since the
    * fetch began are taken again in order, so a question asked or closed
    * while the fetch was in flight is not undone by a list read before it.
-   * Only the latest of overlapping fetches applies. */
+   * A question this page is closing stays listed though the list no longer
+   * has it, until its request's answer closes its card. Only the latest of
+   * overlapping fetches applies. */
   private async refetch(): Promise<void> {
     const n = ++this.fetching;
     this.heard = [];
@@ -149,7 +165,9 @@ export class QuestionFeed {
     this.heard = null;
     if (!r) return;
     // Those that closed unheard leave at once; a card closing now keeps its time.
-    this.open = r === "forbidden" ? [] : (r.questions ?? []).filter(q => !this.recent.some(x => x.id === q.id)).sort(byCreated);
+    const listed = r === "forbidden" ? [] : (r.questions ?? []).filter(q => !this.recent.some(x => x.id === q.id));
+    const mine = this.open.filter(q => this.sent.has(q.id) && !listed.some(x => x.id === q.id));
+    this.open = [...listed, ...mine].sort(byCreated);
     if (r !== "forbidden") for (const q of heard) this.upsert(q);
   }
 
@@ -217,6 +235,16 @@ export class InboxFeed {
   /** Subscribed, and the topic has not gone live yet: what a view shows
    * would be fetched again when it does (`{refetch}`). */
   declare waiting: boolean;
+
+  /** Takes the summary the page already holds (`GET /api/inbox/summary`'s,
+   * from the gallery's first load), as `summary` would, before the topic
+   * goes live; the topic's first fetch replaces it. */
+  seed(r: InboxSummary): void {
+    if (this.unwatch) return;
+    this.s.owner = true;
+    this.unread = r.unread ?? 0;
+    this.latest = r.latest ?? [];
+  }
 
   /** Follows the topic (once), fetching the summary when it goes live. */
   start(stream: Stream): void {

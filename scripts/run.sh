@@ -244,8 +244,12 @@ _bazel() {
             done
             _run "${b[@]}" build --lockfile_mode=error --config=fmt //crates/... &&
                 _run "${b[@]}" build --lockfile_mode=error --config=clippy -- "${rest[@]}" || return $?
+            # The lint build:clippy allows for the timing rules (test code
+            # only) is turned back on there, so a crate's own disallowed
+            # methods are errors.
             for crate in "${own[@]+"${own[@]}"}"; do
                 _run "${b[@]}" build --lockfile_mode=error --config=clippy \
+                    "--@rules_rust//rust/settings:clippy_flag=-Wclippy::disallowed_methods" \
                     "--@rules_rust//rust/settings:clippy.toml=//$crate:clippy.toml" "//$crate/..." || return $?
             done
             _run "${b[@]}" test --lockfile_mode=error //web:lint
@@ -318,8 +322,13 @@ _native() {
         check) _run "${awake[@]+"${awake[@]}"}" ./scripts/check.sh "$@" ;;
         test) _run "${awake[@]+"${awake[@]}"}" ./scripts/native-test.sh "$@" ;;
         lint)
-            _run cargo clippy --workspace --all-targets -- -D warnings &&
-                _run cargo clippy --workspace -- -D warnings &&
+            # clippy.toml's timing rules are for test code only, as
+            # .bazelrc's build:clippy has them: the lint is allowed and test
+            # code turns it back on; clax-commands' own disallowed methods
+            # are errors in a run of their own.
+            _run cargo clippy --workspace --all-targets -- -D warnings -A clippy::disallowed_methods &&
+                _run cargo clippy --workspace -- -D warnings -A clippy::disallowed_methods &&
+                _run cargo clippy -p clax-commands --all-targets -- -D warnings &&
                 _run bash -c 'cd web && pnpm run lint'
             ;;
         web-test) _run bash -c 'cd web && pnpm install --frozen-lockfile && pnpm run lint && pnpm run typecheck && pnpm test' ;;
@@ -331,7 +340,7 @@ _native() {
         worker-test)
             _run cargo fmt -p clax-worker -p clax-do-vfs -- --check &&
                 _run cargo test -q -p clax-worker -p clax-do-vfs &&
-                _run cargo clippy -q -p clax-worker -p clax-do-vfs --all-targets -- -D warnings &&
+                _run cargo clippy -q -p clax-worker -p clax-do-vfs --all-targets -- -D warnings -A clippy::disallowed_methods &&
                 _run "${awake[@]+"${awake[@]}"}" ./scripts/worker-checks.sh &&
                 _run bash -c 'cd web && pnpm install --frozen-lockfile && pnpm exec playwright install chromium' &&
                 _run bash -c 'cd crates/clax-worker && node e2e.mjs --no-build && node e2e-hosted.mjs --no-build'

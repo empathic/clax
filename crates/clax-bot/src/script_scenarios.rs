@@ -318,9 +318,8 @@ async fn drive(
             cancel: token.clone(),
             events: &watching,
         };
-        let out = tokio::time::timeout(PROMPTLY, crate::tick(deps, run, &driver, opts))
+        let out = within("the tick ends", crate::tick(deps, run, &driver, opts))
             .await
-            .expect("the tick ends")
             .expect("the tick");
         if out.next != Next::Runnable {
             return out.next;

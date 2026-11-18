@@ -1017,6 +1017,7 @@ pub fn refused(code: &str, message: impl Into<String>) -> ApiError {
     refusal(ErrorBody::new(code, message))
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

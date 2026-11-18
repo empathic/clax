@@ -21,6 +21,7 @@
   import ModelSelect from "./ModelSelect.svelte";
   import SourceBadge from "./SourceBadge.svelte";
   import Switch from "./Switch.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   let s = $state<Settings | null>(null);
   let none = $state(false);
@@ -40,9 +41,9 @@
   const hasModels = $derived(!!s?.fields.some(f => isModel(f.key)));
   const take = (x: Settings) => { s = x; draft = Object.fromEntries(x.fields.map(f => [f.key, f.value])); };
   const id = (k: string) => `set-${k.replace(/[^a-z0-9]/gi, "-")}`;
-  function listModels() {
+  function listModels(): Promise<void> {
     why = "Listing the provider's models…";
-    void providerModels().then(m => { models = m; why = null; }, e => { models = null; why = `The models could not be listed: ${refusal(e)}`; });
+    return providerModels().then(m => { models = m; why = null; }, e => { models = null; why = `The models could not be listed: ${refusal(e)}`; });
   }
   async function runTest() {
     test = { ok: true, text: "Testing…" };
@@ -62,9 +63,15 @@
       saved = `Saved ${n} to config.toml.${r.restart_required ? " Restart Clax for them to take effect." : ""}`;
     } catch (e) { err = refusal(e); } finally { busy = false; }
   }
+  // Shown in Settings, the screen waits for the configuration and, where it has model fields, their list.
+  const release = holdReveal();
   onMount(() => {
     document.title = "Configuration · Settings · Clax";
-    void settings().then(x => { if (x) { take(x); if (x.fields.some(f => isModel(f.key))) listModels(); } else none = true; }, e => { err = refusal(e); });
+    void settings().then(x => {
+      if (!x) { none = true; return; }
+      take(x);
+      if (x.fields.some(f => isModel(f.key))) return listModels();
+    }, e => { err = refusal(e); }).finally(release);
   });
 </script>
 

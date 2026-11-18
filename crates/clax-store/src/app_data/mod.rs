@@ -42,6 +42,7 @@ mod instance;
 mod migrations;
 pub mod shim;
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests;
 pub mod wire;
 

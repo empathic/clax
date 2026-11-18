@@ -5,7 +5,7 @@
 // their own), the overlay from the instance, and the header's menu. For
 // anyone else that one request is all: no menu, no shortcut, no overlay.
 import type { HostContext } from "../../../overlay/overlay";
-import { type AppView, type FeedbackConfig, askConfig, configOnce } from "./config";
+import { type AppView, type FeedbackConfig, askConfig, configOnce, seedConfig } from "./config";
 
 /** The config route's body as a `FeedbackConfig`, or null when this person
  * may not report (the integration off, or no person signed in) or the body
@@ -26,11 +26,13 @@ export function loadConfig(f: typeof fetch = fetch): Promise<FeedbackConfig | nu
 let started = false;
 
 /** Starts the shell's feedback, once per page: `where` names the view a
- * capture starts in (default from the page's address). A failure at any
- * step leaves the shell without it. */
-export function bootFeedback(where?: () => AppView): void {
+ * capture starts in (default from the page's address); `known` the config
+ * route's answer when the page holds it already (the gallery's bootstrap
+ * block), so nothing is asked. A failure at any step leaves the shell without it. */
+export function bootFeedback(where?: () => AppView, known?: { body: unknown }): void {
   if (started) return;
   started = true;
+  if (known) seedConfig(known.body);
   void configOnce().then(readConfig).then(cfg => cfg && import("./state.svelte").then(m => m.start(cfg, where)))
     .catch(e => { console.warn("Clax feedback is off:", e); });
 }

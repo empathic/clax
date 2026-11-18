@@ -583,6 +583,7 @@ pub fn run(cli: &crate::Cli, cmd: &Cmd) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

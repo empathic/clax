@@ -129,6 +129,7 @@ impl Store {
     /// version when it has no link yet. The version linked, or `None`.
     /// Records nothing: production links inside the resolve's transaction.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(crate) fn link_on_resolve(&self, thread_id: &str) -> Result<Option<u32>> {
         self.with_tx(|tx| link_on_resolve_in(tx, thread_id, &self.now()))
     }
@@ -179,6 +180,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use crate::test_util::DAEMON;
     use crate::test_util::{anchor, artifact, store};

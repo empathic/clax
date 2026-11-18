@@ -467,6 +467,7 @@ fn check_with(steps: &[Step], shown: &Transcript, shortened: bool) -> Result<(),
     Ok(())
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

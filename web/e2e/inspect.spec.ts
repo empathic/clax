@@ -45,7 +45,7 @@ async function view(page: Page, id: string, query: string, mode: "subdomain" | "
 async function inspect(page: Page, args: string): Promise<Inspection> {
   const before = (await ofType(page, "inspection")).length;
   await host(page, `inspect(${args})`);
-  await expect.poll(async () => (await ofType(page, "inspection")).length, { timeout: 20_000 }).toBeGreaterThan(before);
+  await expect.poll(async () => (await ofType(page, "inspection")).length).toBeGreaterThan(before);
   return (await ofType(page, "inspection")).at(-1) as Inspection;
 }
 

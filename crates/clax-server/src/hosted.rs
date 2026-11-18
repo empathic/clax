@@ -203,7 +203,7 @@ async fn legal_page(
 /// [`Hosted::with_reel`]: clax_http::hosted::Hosted::with_reel
 async fn landing(
     State(s): State<AppState>,
-    d: clax_http::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     uri: axum::http::Uri,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -215,7 +215,7 @@ async fn landing(
     }
     let file = uri.path().strip_prefix(LANDING).unwrap_or("");
     if file.is_empty() {
-        return crate::shell::gallery_page(State(s), d, req).await;
+        return crate::shell::bare_gallery(&s, &req);
     }
     if let Some(to) = reel_elsewhere(&s, file) {
         return Ok(axum::response::Redirect::temporary(&to).into_response());
@@ -1236,10 +1236,10 @@ async fn public_list(State(s): State<AppState>) -> Result<Response, ApiError> {
 /// code).
 async fn signin_page(
     State(s): State<AppState>,
-    d: clax_http::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let mut res = crate::shell::gallery_page(State(s), d, req).await?;
+    let mut res = crate::shell::bare_gallery(&s, &req)?;
     res.headers_mut().insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
@@ -1546,6 +1546,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     /// Every route [`super::router`] mounts is one the gate takes as hosted
     /// mode's own (`clax_http::hosted::own_route`), so none is sent through

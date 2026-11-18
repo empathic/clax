@@ -1989,6 +1989,7 @@ pub async fn events(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{
         event_for_reader, event_without_instance_failure, for_reader, panel_event, quartiles,

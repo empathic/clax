@@ -6,7 +6,7 @@
 // stream), so this module does not import it: the stream's chunk stays
 // shared with the code that loads it already.
 import { mount, unmount } from "svelte";
-import type { InboxItem } from "../api";
+import type { InboxItem, InboxSummary, QuestionView } from "../api";
 import type { EventStream } from "../stream";
 import InboxLink from "./InboxLink.svelte";
 import { setBadge } from "./badge";
@@ -26,6 +26,17 @@ const openUrl = (url: string) => {
   if (location.pathname === "/" || location.pathname === "/inbox") location.assign(url);
   else window.open(url, "_blank", "noopener");
 };
+
+/** Takes what the page's first load read of the inbox (its unread summary
+ * and open questions), so the surfaces show it before the feeds go live. */
+export function seed(summary: InboxSummary | null, open: QuestionView[] | null): void {
+  const { inbox, questions } = shared();
+  if (summary) inbox.seed(summary);
+  if (open) questions.seed(open);
+}
+
+/** The page's inbox feed: its unread count, for the gallery's header. */
+export const inboxFeed = () => shared().inbox;
 
 let started = false;
 // What `start` set up, undone by `stop`.

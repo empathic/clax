@@ -1,0 +1,7 @@
+name: clax_timing_lint
+description: The timing rules for the Clax app's Dart tests (lib/timing_lint.dart).
+publish_to: none
+environment:
+  sdk: ^3.12.0
+dependencies:
+  analyzer: 14.5.0

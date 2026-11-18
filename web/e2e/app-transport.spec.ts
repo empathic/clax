@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import type { Frame, Page } from "@playwright/test";
 import { hostChannel, host } from "./app-host";
 import { type AppHost, type AppHostOptions, BINDING, PART, SHELL, SseBlocks, answerScripts, content, startEmbedDaemon } from "./app-scheme";
-import { test as base, expect, type Daemon, api, publish, publishWith } from "./fixtures";
+import { test as base, expect, type Daemon, api, frameAt, publish, publishWith } from "./fixtures";
 import { quietEval } from "./time";
 import { REQUEST_STUCK } from "../shell/src/conn-notice";
 import { STUCK_MS } from "../shell/src/lifecycle";
@@ -22,7 +22,7 @@ const test = base.extend<object, { embed: Daemon }>({
     const d = await startEmbedDaemon();
     await use(d);
     await d.stop();
-  }, { scope: "worker", timeout: 30_000 }],
+  }, { scope: "worker" }],
 });
 
 let d: Daemon;
@@ -39,9 +39,7 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** The content frame showing version `n` of `id`, from its app origin, once parsed. */
 async function appFrame(page: Page, id: string, n: number): Promise<Frame> {
-  const url = new RegExp(`^${escape(content(id))}/_clax/v/${n}/`);
-  await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
-  const frame = page.frame({ url })!;
+  const frame = await frameAt(page, new RegExp(`^${escape(content(id))}/_clax/v/${n}/`));
   await frame.waitForLoadState("domcontentloaded");
   return frame;
 }
@@ -556,7 +554,7 @@ test("a page reads nothing of the shell and reaches nothing on its channel", asy
     addEventListener("message", e => { if (e.data?.probe) (window as unknown as { claxProbe: unknown }).claxProbe = { origin: e.origin, ...e.data.probe }; });
   }, SHELL);
   const { id, host: h, frame } = await openInApp(page, "Transport probe", { html: PROBE });
-  await expect.poll(() => quietEval<unknown>(page, "window.claxProbe ?? null"), { timeout: 10_000 }).not.toBeNull();
+  await expect.poll(() => quietEval<unknown>(page, "window.claxProbe ?? null")).not.toBeNull();
   const probe = await quietEval<{ origin: string; shellDoc: { error?: string; type?: string; body?: string }; shellApi: { error?: string; type?: string; body?: string }; parentDoc: string; channel: string }>(page, "window.claxProbe");
   expect(probe.origin).toBe(content(id));
   for (const r of [probe.shellDoc, probe.shellApi]) {
@@ -626,16 +624,14 @@ test("the core's redirects never reach the WebView: one within the same base is 
   // The bridge leaves a link marked external to the browser, which follows it.
   const html = PAGE.replace("</main>", `<a id="go" href="index.html" rel="external">Again</a></main>`);
   const { id, host: h, frame } = await openInApp(page, "Transport redirects", { html });
-  const at = (path: string) => expect.poll(() => page.frames().some(f => f.url() === `${content(id)}${path}`), { timeout: 10_000 }).toBe(true);
+  const at = (path: string) => frameAt(page, new RegExp(`^${escape(`${content(id)}${path}`)}$`));
   // index.html, which the core answers 308 to ./, is answered the page itself under its own URL.
   await frame.locator("#go").click();
-  await at("/_clax/v/1/index.html");
-  const followed = page.frames().find(f => f.url() === `${content(id)}/_clax/v/1/index.html`)!;
+  const followed = await at("/_clax/v/1/index.html");
   await expect(followed.locator("#t")).toHaveText("Quarterly goals");
   // /_clax/v/1, which the core answers 308 to 1/, is a page that refreshes to it.
   await followed.evaluate(() => { location.href = "/_clax/v/1"; });
-  await at("/_clax/v/1/");
-  const refreshed = page.frames().find(f => f.url() === `${content(id)}/_clax/v/1/`)!;
+  const refreshed = await at("/_clax/v/1/");
   await expect(refreshed.locator("#t")).toHaveText("Quarterly goals");
   // A request for /_clax/v/1 that is not a document's is answered 404.
   expect(await refreshed.evaluate(() => fetch("/_clax/v/1").then(r => r.status))).toBe(404);

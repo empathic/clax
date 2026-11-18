@@ -108,6 +108,7 @@ enum Side {
 /// that is not one of `def`'s own: each call prepares it, in steps
 /// counted as a definition's are and charged to the check's budget.
 /// Every `Content` and `Image` in the value is a whole handle.
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 pub(crate) fn check_held(def: &Definition, ty: &Ty, v: &Value) -> Result<(), ValueError> {
     free(def, ty, v, Side::Held, "value")
@@ -115,6 +116,7 @@ pub(crate) fn check_held(def: &Definition, ty: &Ty, v: &Value) -> Result<(), Val
 
 /// [`check_held`] of a value as a provider or a starter sent it, before
 /// Clax fills in its `Content`: each is a reference to an upload.
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 pub(crate) fn check_sent(def: &Definition, ty: &Ty, v: &Value) -> Result<(), ValueError> {
     free(def, ty, v, Side::Sent, "value")
@@ -124,6 +126,7 @@ pub(crate) fn check_sent(def: &Definition, ty: &Ty, v: &Value) -> Result<(), Val
 /// type is put in the form a check walks each time, in steps that are
 /// counted ([`crate::Limits::plan_steps`] bounds them) and charged to
 /// the check's budget, a unit a step.
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 fn free(def: &Definition, ty: &Ty, v: &Value, side: Side, what: &str) -> Result<(), ValueError> {
     if let Some(m) = check::foreign(def, ty) {
@@ -1407,6 +1410,7 @@ pub(crate) struct Work {
 
 /// [`check_held`], and the work it did on the value: preparing the
 /// type is not counted.
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 pub(crate) fn measured(def: &Definition, ty: &Ty, v: &Value) -> (Result<(), ValueError>, Work) {
     let (extra, root, _) = plan::beside(
@@ -1426,6 +1430,7 @@ pub(crate) fn measured(def: &Definition, ty: &Ty, v: &Value) -> (Result<(), Valu
 }
 
 /// A type of `def` as a message about a value shows it, whole.
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 pub(crate) fn shown_whole(def: &Definition, ty: &Ty) -> String {
     let (extra, root, _) = plan::beside(

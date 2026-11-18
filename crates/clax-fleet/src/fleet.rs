@@ -1174,6 +1174,7 @@ fn write_if_changed(path: &std::path::Path, bytes: &[u8], mode: u32) -> std::io:
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -1308,11 +1309,15 @@ mod tests {
         let slot = fleet.slot("acme");
         let start = slot.running.lock().await;
 
-        let a_day = Duration::from_secs(86_400);
-        let stop = tokio::time::timeout(a_day, fleet.stop("acme", "paused")).await;
-        assert!(stop.is_err(), "a catalog's stop waits for the start");
-        let drained = tokio::time::timeout(a_day, fleet.drain()).await;
-        assert!(drained.is_ok(), "the drain waited for the start for a day");
+        let stop = tokio::spawn({
+            let fleet = fleet.clone();
+            async move { fleet.stop("acme", "paused").await }
+        });
+        // Paused time passes STOP_TIMEOUT for the drain alone: the drain
+        // ends while the catalog's stop still waits for the start.
+        fleet.drain().await;
+        assert!(!stop.is_finished(), "a catalog's stop waits for the start");
+        stop.abort();
         drop(start);
     }
 }

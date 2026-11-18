@@ -901,6 +901,7 @@ pub async fn waiters(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{Woke, wait_for_change};
     use clax_core::Home;
@@ -915,6 +916,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
         (dir, st)
+    }
+
+    /// The time on tokio's paused clock: every test here runs under
+    /// `start_paused`, so this is the test's own time, never the wall's.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "reads tokio's paused clock (start_paused), not real time"
+    )]
+    fn now() -> Instant {
+        Instant::now()
     }
 
     /// The approval of `*unconnected` the store opens with, revoked: a
@@ -933,19 +944,19 @@ mod tests {
         let rows = Notify::new();
         let stopping = std::future::pending::<()>();
         tokio::pin!(stopping);
-        let deadline = Instant::now() + Duration::from_secs(600);
+        let deadline = now() + Duration::from_secs(600);
         // A bump after the generation was read, before the wait.
         let notified = rows.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
         let seen = g.current();
         bump(&st);
-        let start = Instant::now();
+        let start = now();
         assert_eq!(
             wait_for_change(notified.as_mut(), &g, seen, deadline, stopping.as_mut()).await,
             Woke::Visibility
         );
-        assert_eq!(Instant::now(), start, "no time passed");
+        assert_eq!(now(), start, "no time passed");
         // A row after the waiter registered, before the wait.
         let notified = rows.notified();
         tokio::pin!(notified);
@@ -956,7 +967,7 @@ mod tests {
             wait_for_change(notified.as_mut(), &g, seen, deadline, stopping.as_mut()).await,
             Woke::Row
         );
-        assert_eq!(Instant::now(), start);
+        assert_eq!(now(), start);
         // Neither: the deadline, exactly.
         let notified = rows.notified();
         tokio::pin!(notified);
@@ -966,7 +977,7 @@ mod tests {
             wait_for_change(notified.as_mut(), &g, seen, deadline, stopping.as_mut()).await,
             Woke::Deadline
         );
-        assert_eq!(Instant::now(), deadline);
+        assert_eq!(now(), deadline);
     }
 
     /// Paused time: a bump during the wait ends it when it lands, not at
@@ -979,7 +990,7 @@ mod tests {
         let rows = Notify::new();
         let stopping = std::future::pending::<()>();
         tokio::pin!(stopping);
-        let start = Instant::now();
+        let start = now();
         let deadline = start + Duration::from_secs(600);
         let notified = rows.notified();
         tokio::pin!(notified);
@@ -987,7 +998,7 @@ mod tests {
         let seen = g.current();
         let st2 = st.clone();
         let later = async move {
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            tokio::time::advance(Duration::from_secs(30)).await;
             tokio::task::spawn_blocking(move || bump(&st2))
                 .await
                 .unwrap();
@@ -998,6 +1009,6 @@ mod tests {
             () = later => unreachable!(),
         };
         assert_eq!(woke, Woke::Visibility);
-        assert!(Instant::now() < deadline, "{:?}", Instant::now() - start);
+        assert!(now() < deadline, "{:?}", now() - start);
     }
 }

@@ -468,6 +468,7 @@ fn long_run(b: &[u8], i: usize) -> Option<(usize, usize)> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

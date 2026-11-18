@@ -1,10 +1,11 @@
 //! Serves the web UI (the daemon's [`FileTree`], `AppState::web`): the
 //! shell's two entries (the gallery and the artifact view) and static
-//! assets. `boot` is the first-load data of `/a/…`, `route` how a shell
-//! path parses, and `get_page` the Get in Clax page of an app and its app
-//! links.
+//! assets. `boot` is the first-load data of `/a/…`, `gallery` the gallery
+//! pages', `route` how a shell path parses, and `get_page` the Get in Clax
+//! page of an app and its app links.
 
 pub mod boot;
+pub mod gallery;
 pub mod get_page;
 pub mod route;
 
@@ -90,29 +91,38 @@ fn unframeable(mut res: Response) -> Response {
     res
 }
 
-/// An entry of the shell (`index.html` or `artifact.html`) as an HTML page,
-/// marked for an embedding app's transport when the core is embedded
-/// ([`boot::with_embed_meta`]).
+/// An entry of the shell (`index.html` or `artifact.html`) as an HTML page
+/// with no bootstrap block (its marker removed), marked for an embedding
+/// app's transport when the core is embedded ([`boot::with_embed_meta`]).
 fn entry(
     s: &clax_http::state::AppState,
     req: &HeaderMap,
     name: &str,
 ) -> Result<Response, ApiError> {
-    match s.web.get(name) {
-        Some(f) => Ok(unframeable(http_cache::html(
-            req,
-            &boot::with_embed_meta(
-                &String::from_utf8_lossy(&f.data),
-                s.embed.as_ref(),
-                &embedded_transport(s),
-            ),
-        ))),
-        None => Err(ApiError::new(
+    entry_with(s, req, name, None)
+}
+
+/// [`entry`] with `boot` (a bootstrap block's JSON, escaped by
+/// [`boot::script_json`]) at its marker when given.
+fn entry_with(
+    s: &clax_http::state::AppState,
+    req: &HeaderMap,
+    name: &str,
+    block: Option<&str>,
+) -> Result<Response, ApiError> {
+    let Some(f) = s.web.get(name) else {
+        return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "ui_not_built",
             "the web UI has not been built; run `just web`",
-        )),
-    }
+        ));
+    };
+    let block = block.map(boot::boot_script).unwrap_or_default();
+    let page = String::from_utf8_lossy(&f.data).replacen(boot::BOOT_MARK, &block, 1);
+    Ok(unframeable(http_cache::html(
+        req,
+        &boot::with_embed_meta(&page, s.embed.as_ref(), &embedded_transport(s)),
+    )))
 }
 
 /// A page of the bundled Terms of Service or Privacy Policy
@@ -182,13 +192,48 @@ pub fn landing_file(
 /// The gallery shell's pages (`/`, `/inbox`, `/tags`, `/queues…`,
 /// `/settings` and `/settings/<screen>`, and the pages that moved into
 /// Settings: `/people`, `/admin`, `/me`, `/audit`): the gallery's entry,
-/// which shows the page its path names.
+/// which shows the page its path names, with the first-load data of that
+/// page ([`gallery`]: what its routes answer this browser, asked of them
+/// in process through `instance`'s router, at once and each within the
+/// API's timeout; a route that fails or is slow leaves its field out, and
+/// a page load whose answers would not be the shell's own gets none).
+///
+/// The page differs by viewer, read from cookies: it is `private,
+/// no-cache` with `Vary: Cookie`, as the artifact page is, and its `ETag`
+/// is over the exact bytes sent, so a revalidation answers `304` only for
+/// the same bytes. A cookie a route sets in its answer is set by the page.
 pub async fn gallery_page(
     axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
     _d: clax_http::agent::DeniedToGrants,
+    instance: Option<axum::Extension<std::sync::Arc<crate::integrations::instance::Instance>>>,
+    uri: axum::http::Uri,
+    extensions: axum::http::Extensions,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
-    entry(&s, &req, "index.html")
+    let assembled = match &instance {
+        Some(axum::Extension(i)) => {
+            gallery::assemble(&s, i, uri.path(), &req, &uri, &extensions).await
+        }
+        None => None,
+    };
+    let (block, cookies) = assembled.unzip();
+    let mut res = entry_with(&s, &req, "index.html", block.as_deref())?;
+    let h = res.headers_mut();
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(PRIVATE_REVALIDATE),
+    );
+    h.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    for c in cookies.into_iter().flatten() {
+        h.append(header::SET_COOKIE, c);
+    }
+    Ok(res)
+}
+
+/// The gallery's entry with no first-load data: the hosted sign-in pages
+/// and the landing page, which show their own views of it.
+pub fn bare_gallery(s: &clax_http::state::AppState, req: &HeaderMap) -> Result<Response, ApiError> {
+    entry(s, req, "index.html")
 }
 
 /// `/a/…`: `artifact.html` with the first-load data ([`boot`]), or the
@@ -589,6 +634,7 @@ fn hashed_name(path: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

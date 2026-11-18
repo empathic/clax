@@ -165,9 +165,7 @@ void main() {
     tid = api.sendComment(aid, 'make the title blue').threadId;
     await api.replyAsAgent(aid, tid, 'Done: it is blue.');
     api.pushInbox('reply', artifactId: aid, threadId: tid, body: 'Added it');
-    dir = Directory(
-      '${scratchRoot().path}/mac-shots-${DateTime.now().microsecondsSinceEpoch}',
-    )..createSync(recursive: true);
+    dir = scratchRoot().createTempSync('mac-shots-');
   });
 
   tearDown(() => dir.deleteSync(recursive: true));

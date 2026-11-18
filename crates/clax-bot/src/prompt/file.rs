@@ -923,6 +923,7 @@ pub fn rules(rules: &[&str]) -> String {
         .join("\n")
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

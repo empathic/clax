@@ -294,6 +294,7 @@ fn joins_where(c: &Connection, filter: &str, arg: &str) -> Result<Vec<Join>> {
     kept_joins(rows)
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

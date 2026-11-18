@@ -738,8 +738,8 @@ async fn a_parked_run_survives_a_restart_and_is_resumed_when_it_is_answered() {
 
     let driver = Driver::new(DriverId::mint(), Arc::new(d.deps()), d.env.hub.clone());
     assert_eq!(driver.start(true).await.unwrap(), 2);
-    let idle = |budget| tokio::time::timeout(PROMPTLY, driver.run_until_idle(budget));
-    let report = idle(Duration::from_secs(600)).await.unwrap();
+    let idle = |budget| within("the driver goes idle", driver.run_until_idle(budget));
+    let report = idle(Duration::from_secs(600)).await;
     assert_eq!(report.ticks, Vec::new(), "no parked run is ticked on start");
     // Each is due at its call's deadline.
     let wake = report.next_wake.expect("the deadline is armed");
@@ -753,7 +753,7 @@ async fn a_parked_run_survives_a_restart_and_is_resumed_when_it_is_answered() {
     // It bounds only a driver that would tick the parked run without
     // end.)
     driver.wake(&run);
-    let report = idle(Duration::from_secs(2)).await.unwrap();
+    let report = idle(Duration::from_secs(2)).await;
     let ticked: Vec<(&str, Next)> = report
         .ticks
         .iter()
@@ -765,7 +765,7 @@ async fn a_parked_run_survives_a_restart_and_is_resumed_when_it_is_answered() {
     // wakes it.
     d.answer("yes");
     driver.wake(&run);
-    let report = idle(Duration::from_secs(600)).await.unwrap();
+    let report = idle(Duration::from_secs(600)).await;
     assert_eq!(d.env.run_row(&run).status, RunStatus::Finished);
     assert!(matches!(report.ticks.last().unwrap().1.next, Next::Done(_)));
     assert_eq!(d.value(&run, 1), json!([2, "yes"]));
@@ -835,9 +835,11 @@ fn driver_with(
 
 /// The driver runs until it has nothing to do, promptly.
 async fn idle(driver: &Driver) -> clax_bot::IdleReport {
-    tokio::time::timeout(PROMPTLY, driver.run_until_idle(Duration::from_secs(600)))
-        .await
-        .expect("the driver goes idle")
+    within(
+        "the driver goes idle",
+        driver.run_until_idle(Duration::from_secs(600)),
+    )
+    .await
 }
 
 /// An answer that is journaled, and wakes the driver, after the tick

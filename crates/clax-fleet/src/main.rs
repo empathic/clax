@@ -541,6 +541,7 @@ fn web_ui() -> Arc<dyn FileTree> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

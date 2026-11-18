@@ -70,6 +70,9 @@
     /** The page's stream, whose `tags` events refresh the Tags filter's list. */
     stream?: EventStream;
     now?: Date;
+    /** Called once the page shows its first data: its cards, groups and
+     * agent strip, its filters' artifacts and tags, and whether the owner's. */
+    onready?: () => void;
   };
   const p: Props = $props();
   const inbox = $derived(p.inbox ?? shared().inbox);
@@ -214,11 +217,14 @@
     return [...kept, ...c];
   };
 
+  // The first load's end, with its strip's (`onready`).
+  let loadedOnce: (() => void) | null = null;
+  const firstLoad = new Promise<void>(r => { loadedOnce = r; });
   /** Fetches the cards and the first page of groups, replacing the list;
    * `keep` keeps the cards closed here, for the same search. */
   async function load(keep = true): Promise<void> {
     const g = ++gen;
-    void loadStrip();
+    const stripped = loadStrip();
     try {
       const [c, l] = await Promise.all([fetchCards(), fetchGroups()]);
       if (g !== gen) return;
@@ -232,6 +238,8 @@
       if (t) queueMicrotask(() => { if (toCard(t.id, t.kind)) target = null; });
     } catch (e) {
       if (g === gen) loadFailed(e);
+    } finally {
+      void stripped.then(() => { loadedOnce?.(); loadedOnce = null; });
     }
   }
 
@@ -403,10 +411,14 @@
 
   onMount(() => {
     document.title = "Inbox · Clax";
-    void getToken().then(t => { owner = !!t; });
-    void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
-    void loadTags();
-    void confirming.refresh();
+    const firsts = [
+      getToken().then(t => { owner = !!t; }),
+      listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {}),
+      loadTags(),
+      confirming.refresh(),
+      firstLoad,
+    ];
+    void Promise.all(firsts.map(f => Promise.resolve(f).catch(() => {}))).then(() => p.onready?.());
     // The tags themselves changed (made, renamed, recoloured, deleted).
     const offTags = p.stream?.watch(["gallery"], e => { if (e.type === "tags" && e.artifact_id == null) void loadTags(); });
     // An agent started, ended or was renamed, with no inbox item for it.

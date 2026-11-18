@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Timeline Sidebar Playground</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --card: #ffffff; --hover: #f2f2ef; --fg: #1c1b19; --muted: #5f5d58; --faint: #8a877f;
+    --border: #e6e5e1; --border-strong: #85827b; --you: #e0532f; --you-ink: #b5401f; --band: #bdb9ae; --page: #ecebe6;
+    --font: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141413; --card: #1c1c1a; --hover: #262624; --fg: #ecebe7; --muted: #a9a69f; --faint: #7c7972;
+      --border: #2c2c29; --border-strong: #7c7972; --you: #ff7a57; --you-ink: #ff7a57; --band: #5c5a54; --page: #0e0e0d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141413; --card: #1c1c1a; --hover: #262624; --fg: #ecebe7; --muted: #a9a69f; --faint: #7c7972;
+    --border: #2c2c29; --border-strong: #7c7972; --you: #ff7a57; --you-ink: #ff7a57; --band: #5c5a54; --page: #0e0e0d;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--font); display: flex; flex-direction: column; overflow: hidden; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  textarea { width: 100%; min-height: 54px; font: 13px var(--font); padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--card); color: var(--fg); resize: vertical; }
+
+  .top { display: flex; align-items: center; gap: 6px 14px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--card); }
+  .top .title { font-weight: 600; margin-right: auto; } .top .title span { color: var(--faint); font-weight: 400; }
+  .tb { font-size: 13px; color: var(--muted); padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); }
+  .tb:hover { color: var(--fg); } .tb[aria-pressed="true"] { color: var(--fg); border-color: var(--fg); }
+  .tb kbd { font: 11px var(--font); color: var(--faint); margin-left: 4px; }
+
+  .shell { flex: 1; display: flex; min-height: 0; }
+  .shell.left { flex-direction: row-reverse; }
+  .page { flex: 1; min-width: 0; overflow: auto; background: var(--page); padding: 24px 16px; }
+  .doc { max-width: 620px; margin: 0 auto; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 28px 24px; }
+  .doc [data-k] { position: relative; border-radius: 6px; transition: outline-color .15s; outline: 2px solid transparent; outline-offset: 3px; }
+  .commenting .doc [data-k] { cursor: crosshair; } .commenting .doc [data-k]:hover { outline-color: var(--you); }
+  .doc [data-k].flash { animation: flash 1.4s ease-out; }
+  @keyframes flash { 0% { outline-color: var(--fg); } 100% { outline-color: transparent; } }
+  .doc h1 { font-size: 26px; margin: 0 0 6px; } .doc h1.c1 { letter-spacing: -.02em; } .doc h1.c2 { font-weight: 800; }
+  .doc .sub { color: var(--muted); margin: 0 0 18px; } .doc .sub.c1 { font-style: italic; } .doc .sub.c2 { color: var(--fg); }
+  .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .plan { border: 1px solid var(--border); border-radius: 8px; padding: 12px; } .plan b { display: block; } .plan .p { font-size: 22px; font-weight: 600; margin: 4px 0; }
+  .plan.c1 { border-color: var(--fg); } .plan.c2 { background: var(--hover); }
+  .tog { display: inline-block; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; margin-bottom: 18px; color: var(--muted); } .tog.c1 { color: var(--fg); border-color: var(--fg); } .tog.c2 { font-weight: 600; }
+  .faq { color: var(--muted); margin: 0 0 18px; } .faq.c1 { color: var(--fg); } .faq.c2 { border-left: 2px solid var(--border-strong); padding-left: 10px; }
+  .cta { display: inline-block; padding: 8px 14px; border-radius: 8px; background: var(--fg); color: var(--bg); font-weight: 600; } .cta.c1 { border-radius: 999px; } .cta.c2 { padding: 10px 20px; }
+  .pinm { position: absolute; top: -9px; right: -9px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; font: 600 11px/18px var(--font); text-align: center; background: var(--card); color: var(--fg); border: 1px solid var(--border-strong); cursor: pointer; }
+  .pinm.w { background: var(--you); border-color: var(--you); color: #141413; }
+  .help { max-width: 620px; margin: 14px auto 0; color: var(--faint); font-size: 13px; }
+
+  .side { background: var(--card); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; flex: none; }
+  .left .side { border-left: 0; border-right: 1px solid var(--border); }
+  .side.open { width: 340px; } .side.shut { width: 56px; cursor: pointer; }
+  @media (max-width: 700px) { .shell.isopen .page { display: none; } .side.open { width: 100%; } }
+  .sb-head { display: flex; align-items: baseline; gap: 16px; padding: 12px 16px 10px; border-bottom: 1px solid var(--border); }
+  .tab { font-weight: 600; color: var(--faint); } .tab[aria-selected="true"] { color: var(--fg); }
+  .needs { margin-left: auto; font-size: 13px; color: var(--you-ink); } .needs.none { color: var(--faint); cursor: default; }
+  .ic { color: var(--faint); font-size: 15px; line-height: 1; padding: 2px 4px; } .ic:hover { color: var(--fg); }
+  .scroll { flex: 1; overflow: auto; padding: 4px 16px 18px; min-height: 0; }
+  .compose { padding: 12px 0; border-bottom: 1px solid var(--border); } .compose .on { color: var(--muted); margin-bottom: 6px; } .compose .on b { color: var(--fg); }
+  .acts { display: flex; gap: 14px; margin-top: 8px; flex-wrap: wrap; align-items: baseline; }
+  .lnk { font-weight: 600; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--border-strong); }
+  .lnk.q2 { font-weight: 400; color: var(--muted); }
+  .hint { color: var(--faint); font-size: 13px; padding: 12px 0 0; }
+
+  .tl { position: relative; } .right .tl { padding-right: 30px; } .left .tl { padding-left: 30px; }
+  .tl > svg { position: absolute; top: 0; overflow: visible; } .right .tl > svg { right: -16px; } .left .tl > svg { left: -16px; }
+  .day { font-size: 12px; color: var(--faint); margin: 20px 0 2px; }
+  .ev { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .ev .t { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; padding-top: 2px; }
+  .ev .line { color: var(--muted); } .ev .line b { font-weight: 600; color: var(--fg); } .ev.wants .line { color: var(--fg); }
+  .ev .more { grid-column: 1 / -1; }
+  .asks { margin: 5px 0 0; }
+  .row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; width: 100%; text-align: left; color: var(--muted); padding: 4px 0; }
+  .row:hover .q { color: var(--fg); }
+  .n { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .isopen > .row .q { color: var(--fg); white-space: normal; }
+  .st { font-size: 13px; color: var(--faint); white-space: nowrap; } .st.act { color: var(--you-ink); }
+  .thread { margin: 4px 0 8px 26px; padding-left: 12px; border-left: 1px solid var(--border-strong); font-size: 13px; color: var(--muted); }
+  .thread p { margin: 0 0 6px; overflow-wrap: anywhere; } .thread b { color: var(--fg); font-weight: 600; }
+  .grp { font-size: 12px; color: var(--faint); margin: 18px 0 2px; }
+
+  .rail { flex: 1; display: flex; flex-direction: column; align-items: stretch; min-height: 0; padding-top: 12px; }
+  .big { font: 600 22px/1 var(--font); text-align: center; font-variant-numeric: tabular-nums; } .big.you { font-size: 15px; color: var(--you-ink); }
+  .cap { font-size: 11px; color: var(--faint); text-align: center; margin: 2px 0 6px; }
+  .plot { position: relative; flex: 1; min-height: 0; overflow: hidden; } .plot svg { position: absolute; left: 0; top: 0; overflow: visible; }
+  .rail .ic { padding: 8px 0; text-align: center; }
+  .band-a { fill: var(--band); } .band-w { fill: var(--you); }
+  .spine { stroke: var(--border-strong); stroke-width: 1; } .vt { stroke: var(--fg); stroke-width: 1; }
+  .gap { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 1 3; }
+  .rl { font: 10px var(--font); fill: var(--faint); } .rl.v { fill: var(--fg); font-weight: 600; } .rl.cnt { fill: var(--muted); font-size: 9.5px; }
+  .pulse { fill: var(--fg); } @media (prefers-reduced-motion: no-preference) { .pulse { animation: pulse 1.6s ease-in-out infinite; } }
+  @keyframes pulse { 50% { opacity: .2; } }
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="title">Pricing page <span id="ver"></span></div>
+  <button class="tb" data-act="mode" id="b-mode">Comment <kbd>C</kbd></button>
+  <button class="tb" data-act="flip">Flip side <kbd>S</kbd></button>
+  <button class="tb" data-act="toggle" id="b-toggle">Collapse <kbd>E</kbd></button>
+  <button class="tb" data-act="reset">Reset</button>
+</div>
+<div class="shell" id="shell">
+  <div class="page">
+    <div class="doc" id="doc">
+      <h1 data-k="headline" data-l="the headline">Simple pricing</h1>
+      <p class="sub" data-k="sub" data-l="the subtitle">One plan per team size. Change or cancel any time.</p>
+      <div class="tog" data-k="toggle" data-l="the billing toggle">Monthly · Annual</div>
+      <div class="plans">
+        <div class="plan" data-k="starter" data-l="the Starter plan"><b>Starter</b><div class="p">$9</div>For one person</div>
+        <div class="plan" data-k="team" data-l="the Team plan"><b>Team</b><div class="p">$29</div>Up to ten people</div>
+        <div class="plan" data-k="ent" data-l="the Enterprise plan"><b>Enterprise</b><div class="p">Ask</div>Everyone</div>
+      </div>
+      <p class="faq" data-k="faq" data-l="the FAQ">Refunds within 30 days. Annual plans are billed once a year.</p>
+      <span class="cta" data-k="cta" data-l="the button">Start free</span>
+    </div>
+    <p class="help">Press <b>C</b> and click anything on the page to comment. claude takes a few seconds, then publishes a version. End a comment with <b>?</b> and claude asks you something back. Open an addressed comment and say <b>Not quite</b> to send it round again.</p>
+  </div>
+  <aside class="side" id="side" aria-label="Sidebar"></aside>
+</div>
+<script>
+"use strict";
+// ---------- Model ----------
+const WORK_MS = 4500, NS = 'http://www.w3.org/2000/svg';
+let M, clock = () => Date.now(), timer = null, seeding = false;
+const fresh = () => ({ side: 'right', open: true, tab: 'timeline', mode: false, threads: [], events: [], v: 0, working: null, openT: null, nq: null, compose: null, drafts: {} });
+const isOpen = t => ['unsent', 'sent', 'working', 'asked'].includes(t.state);
+const waits = t => t.state === 'unsent' || t.state === 'asked';
+const T = id => M.threads.find(t => t.id === id);
+const log = (kind, x = {}) => M.events.push({ id: M.events.length, kind, at: clock(), ...x, o: M.threads.filter(isOpen).length, w: M.threads.filter(waits).length });
+
+// ---------- Update ----------
+function comment(key, text, send, who = 'You') {
+  const t = { id: M.threads.length + 1, key, text, who, state: 'unsent', comments: [{ who, text }], asked: false };
+  M.threads.push(t);
+  if (send) sendTo([t.id]); else log('comment', { ids: [t.id], who });
+  return t;
+}
+function sendTo(ids, live = true) {
+  ids.forEach(id => { T(id).state = 'working'; });
+  log('sent', { ids });
+  work(ids, live);
+}
+function work(ids, live = true) {
+  ids.forEach(id => { T(id).state = 'working'; });
+  if (M.working) M.working.ids.push(...ids); else M.working = { ids: [...ids], since: clock() };
+  if (live) { clearTimeout(timer); timer = setTimeout(() => { finish(); render(); }, WORK_MS); }
+}
+function finish() {
+  if (!M.working) return;
+  const ids = M.working.ids; M.working = null;
+  const done = [], asked = [];
+  for (const t of ids.map(T)) {
+    const last = [...t.comments].reverse().find(c => !c.agent).text.trim();
+    if (last.endsWith('?') && !t.asked) { t.asked = true; t.state = 'asked'; t.q = 'Everywhere, or only here?'; t.comments.push({ who: 'claude', agent: true, text: t.q }); asked.push(t); }
+    else { t.state = 'addressed'; t.v = M.v + 1; t.comments.push({ who: 'claude', agent: true, text: 'Done. Have a look.' }); done.push(t); }
+  }
+  if (done.length) {
+    M.v++;
+    for (const t of done) { const el = document.querySelector(`[data-k="${t.key}"]`); if (el) { const c = el.classList.contains('c1') ? 'c2' : 'c1'; el.classList.remove('c1', 'c2'); el.classList.add(c); flash(t.key); } }
+    log('version', { n: M.v, ids: done.map(t => t.id), note: short(done.map(t => t.text).join('; '), 64) });
+  }
+  for (const t of asked) log('asked', { ids: [t.id], text: t.q });
+}
+function reply(id, text) {
+  const t = T(id); t.comments.push({ who: 'You', text });
+  if (t.state === 'addressed') { t.state = 'working'; log('notquite', { ids: [id] }); work([id]); }
+  else if (t.state === 'asked') { t.state = 'working'; log('reply', { ids: [id] }); work([id]); }
+  M.nq = null;
+}
+function resolve(id) { T(id).state = 'resolved'; log('resolved', { ids: [id] }); }
+function seed() {
+  clearTimeout(timer); M = fresh(); seeding = true;
+  document.querySelectorAll('#doc [data-k]').forEach(e => e.classList.remove('c1', 'c2'));
+  const real = Date.now(), at = min => { clock = () => real - min * 60000; };
+  at(1500); M.v = 1; log('version', { n: 1, ids: [], note: 'First draft' });
+  at(1490); const a = comment('headline', 'Shorter headline', false), b = comment('starter', 'Starter should be $9, not $12', false), c = comment('cta', 'Button says what happens next', false);
+  M.events.length = 1; sendTo([a.id, b.id, c.id], false); at(1470); finish();
+  at(1460); const d = comment('team', 'Say how many seats', false), e = comment('sub', 'Mention cancelling', false);
+  M.events.length -= 2; sendTo([d.id, e.id], false); at(1430); finish();
+  at(40); comment('toggle', 'Show both billing periods', true); clearTimeout(timer); at(31); finish();
+  at(14); comment('faq', 'Is the FAQ still accurate?', false, 'Mia');
+  at(9); const f = comment('headline', 'Make the headline bolder', false), g = comment('plans', 'Tighten the plan cards', false), h = comment('ent', 'Drop the enterprise tier?', false);
+  g.key = 'team'; M.events.length -= 3; sendTo([f.id, g.id, h.id], false); at(6); finish();
+  at(0.2); comment('toggle', 'Annual should be the default', true);
+  M.working.since = real - 12000; clock = () => Date.now();
+  M.openT = null; seeding = false;
+}
+
+// ---------- View helpers ----------
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const short = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
+const label = key => document.querySelector(`[data-k="${key}"]`)?.dataset.l ?? 'the page';
+const dayOf = at => { const d = new Date(at), n = new Date(); const days = Math.round((new Date(n.getFullYear(), n.getMonth(), n.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 864e5);
+  return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'long' }); };
+const rel = at => { const s = Math.max(0, Math.round((Date.now() - at) / 1000)); return s < 10 ? 'now' : s < 60 ? s + 's' : s < 3600 ? Math.round(s / 60) + 'm' : s < 86400 && dayOf(at) === 'Today' ? Math.round(s / 3600) + 'h' : new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); };
+const elapsed = since => { const s = Math.max(0, Math.floor((Date.now() - since) / 1000)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const nums = ids => ids.length === 1 ? 'comment ' + ids[0] : 'comments ' + ids.join(', ');
+function flash(key) { if (seeding) return; const el = document.querySelector(`[data-k="${key}"]`); if (!el) return; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+const status = t => t.state === 'addressed' ? ['✓ v' + t.v, ''] : t.state === 'asked' ? ['Answer', 'act'] : t.state === 'unsent' ? ['Send', 'act'] : t.state === 'resolved' ? ['resolved', ''] : ['working', ''];
+
+function threadView(t, key) {
+  const k = 'r:' + t.id, box = ph => `<textarea data-key="${k}" data-reply="${t.id}" placeholder="${ph}">${esc(M.drafts[k] ?? '')}</textarea>`;
+  let tail = '';
+  if (t.state === 'addressed') tail = M.nq === t.id ? box("What's still off? Enter sends it to claude.")
+    : `<div class="acts"><button class="lnk" data-act="nq" data-id="${t.id}">Not quite…</button><button class="lnk q2" data-act="show" data-id="${t.id}">Show on page</button><button class="lnk q2" data-act="resolve" data-id="${t.id}">Resolve</button></div>`;
+  else if (t.state === 'asked') tail = box('Answer claude. Enter sends.');
+  else if (t.state === 'unsent') tail = `<div class="acts"><button class="lnk" data-act="send" data-id="${t.id}">Send to claude</button><button class="lnk q2" data-act="show" data-id="${t.id}">Show on page</button><button class="lnk q2" data-act="resolve" data-id="${t.id}">Resolve</button></div>`;
+  else if (t.state === 'working') tail = `<p>claude is working on it.</p><div class="acts"><button class="lnk q2" data-act="show" data-id="${t.id}">Show on page</button></div>`;
+  else tail = `<p>Resolved.</p>`;
+  return `<div class="thread">${t.comments.map(c => `<p><b>${esc(c.who)}</b> ${esc(c.text)}</p>`).join('')}${tail}</div>`;
+}
+function askRow(t, key) {
+  const [st, cls] = status(t), open = M.openT === key;
+  return `<div class="${open ? 'isopen' : ''}"><button class="row" data-act="open" data-key="${key}"><span class="n">${t.id}</span><span class="q">${esc(t.text)}</span><span class="st ${cls}">${st}</span></button>${open ? threadView(t, key) : ''}</div>`;
+}
+function line(e) {
+  const ts = e.ids.map(T), one = ts[0];
+  switch (e.kind) {
+    case 'version': return [`<b>v${e.n}</b> &nbsp;${esc(e.note)}`, false];
+    case 'asked': return [`<b>claude</b> asks: ${esc(e.text)}`, one.state === 'asked'];
+    case 'sent': return [`<b>You</b> sent ${e.ids.length} comment${e.ids.length > 1 ? 's' : ''} to claude`, false];
+    case 'comment': return [`<b>${esc(e.who)}</b> commented, sent to no one`, one.state === 'unsent'];
+    case 'notquite': return [`<b>You</b> said “not quite” on ${nums(e.ids)}`, false];
+    case 'reply': return [`<b>You</b> answered claude on ${nums(e.ids)}`, false];
+    case 'resolved': return [`<b>You</b> resolved ${nums(e.ids)}`, false];
+  }
+}
+function timelineView() {
+  let h = '', day = null; const newest = new Map(); for (const e of M.events) for (const id of e.ids) newest.set(id, e.id);
+  if (M.working) h += `<div class="ev"><div class="line"><b>claude</b> is working on ${nums(M.working.ids)}</div><span class="t" data-since="${M.working.since}">${elapsed(M.working.since)}</span></div>`;
+  for (const e of [...M.events].reverse()) {
+    const d = dayOf(e.at); if (d !== day) { h += `<div class="day">${d}</div>`; day = d; }
+    const [text, wants] = line(e), here = e.ids.filter(id => newest.get(id) === e.id);
+    h += `<div class="ev${wants ? ' wants' : ''}" data-e="${e.id}"><div class="line">${text}</div><span class="t" data-at="${e.at}">${rel(e.at)}</span>${here.length ? `<div class="asks more">${here.map(id => askRow(T(id), e.id + ':' + id)).join('')}</div>` : ''}</div>`;
+  }
+  return `<div class="tl" id="tl">${h}</div>`;
+}
+function threadsView() {
+  const grp = (name, f) => { const l = M.threads.filter(f).reverse(); return l.length ? `<div class="grp">${name} · ${l.length}</div>${l.map(t => askRow(t, 'tab:' + t.id)).join('')}` : ''; };
+  return grp('Needs you', waits) + grp('With claude', t => t.state === 'working') + grp('Addressed', t => t.state === 'addressed') + grp('Resolved', t => t.state === 'resolved') || '<p class="hint">No comments yet.</p>';
+}
+function composeView() {
+  if (!M.compose) return `<p class="hint">${M.mode ? 'Click anything on the page to comment on it.' : 'Press C, then click anything on the page.'}</p>`;
+  return `<div class="compose"><div class="on">Comment on <b>${esc(label(M.compose))}</b></div><textarea data-key="new" placeholder="Enter sends it to claude.">${esc(M.drafts.new ?? '')}</textarea>
+    <div class="acts"><button class="lnk" data-act="post" data-send="1">Send to claude</button><button class="lnk q2" data-act="post">Just comment</button><button class="lnk q2" data-act="cancel">Cancel</button></div></div>`;
+}
+
+// ---------- The band ----------
+const el = (n, a) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+function area(pts, hi, lo, X) {
+  const e = 4, n = pts.length; let d = `M${X(hi(pts[0]))},${pts[0].y}`;
+  for (let i = 0; i < n - 1; i++) if (hi(pts[i]) !== hi(pts[i + 1])) d += ` V${pts[i].y - e} L${X(hi(pts[i + 1]))},${pts[i].y + e}`;
+  d += ` V${pts[n - 1].y} H${X(lo(pts[n - 1]))}`;
+  for (let i = n - 2; i >= 0; i--) if (lo(pts[i]) !== lo(pts[i + 1])) d += ` V${pts[i].y + e} L${X(lo(pts[i]))},${pts[i].y - e}`;
+  return d + ` V${pts[0].y} Z`;
+}
+// `rows`: events newest first, each {y, o, w, v}; the band above a row is as wide as that row's `o`.
+function band(svg, rows, x0, dir, u, top, o = {}) {
+  if (!rows.length) return;
+  const X = v => x0 - dir * v * u, end = rows[rows.length - 1], anchor = dir > 0 ? 'end' : 'start';
+  const pts = [{ ...rows[0], y: top }, ...rows, { y: end.y + 12, o: 0, w: 0 }];
+  svg.append(el('path', { class: 'band-a', d: area(pts, p => p.o - p.w, () => 0, X) }), el('path', { class: 'band-w', d: area(pts, p => p.o, p => p.o - p.w, X) }));
+  svg.append(el('line', { class: 'spine', x1: x0, x2: x0, y1: top, y2: end.y + 12 }));
+  const text = (cls, x, y, s) => { const t = el('text', { class: cls, x, y: y + 3, 'text-anchor': anchor }); t.textContent = s; svg.append(t); };
+  rows.forEach((r, i) => {
+    const below = rows[i + 1]?.o ?? 0;
+    if (r.v) { const x2 = X(Math.max(r.o, below)) - dir * 5; svg.append(el('line', { class: 'vt', x1: x0, x2, y1: r.y, y2: r.y })); if (o.labels) text('rl v', x2 - dir * 3, r.y, 'v' + r.v); }
+    if (o.labels && r.o && r.o !== below) { let j = i; while (j > 0 && rows[j - 1].o === r.o) j--; text('rl cnt', X(r.o) - dir * 3, (r.y + (j ? rows[j - 1].y : top)) / 2, r.o); }
+    if (o.labels && r.gap) { svg.append(el('line', { class: 'gap', x1: x0, x2: x0 - dir * 56, y1: r.y - 19, y2: r.y - 19 })); text('rl', x0 - dir * 30, r.y - 19 - 6, r.gap); }
+  });
+}
+function drawExpanded() {
+  const tl = document.getElementById('tl'); if (!tl) return;
+  tl.querySelector(':scope > svg')?.remove();
+  const top = tl.getBoundingClientRect().top, rows = [...tl.querySelectorAll('.ev[data-e]')].map(n => { const e = M.events[+n.dataset.e]; return { y: n.getBoundingClientRect().top - top + 14, o: e.o, w: e.w, v: e.kind === 'version' ? e.n : 0 }; });
+  const svg = el('svg', { width: 30, height: tl.scrollHeight, 'aria-hidden': 'true' }), right = M.side === 'right';
+  band(svg, rows, right ? 30 : 0, right ? 1 : -1, 4.5, 0); tl.prepend(svg);
+}
+function drawRail() {
+  const plot = document.getElementById('plot'); if (!plot) return;
+  const W = 56, u = 4.5, right = M.side === 'right', x0 = right ? W : 0, dir = right ? 1 : -1, now = M.events[M.events.length - 1] ?? { o: 0, w: 0 };
+  const svg = el('svg', { width: W, height: 10, 'aria-hidden': 'true' }); let y = 14, day = null;
+  const rows = [...M.events].reverse().map(e => { const d = dayOf(e.at), gap = day && d !== day ? new Date(e.at).toLocaleDateString(undefined, { weekday: 'short' }) : null; day = d; y += gap ? 38 : 18; return { y, o: e.o, w: e.w, v: e.kind === 'version' ? e.n : 0, gap }; });
+  for (let i = 0; i < now.o; i++) svg.append(el('rect', { class: i < now.o - now.w ? 'band-a' : 'band-w', x: right ? W - (i + 1) * u + .75 : i * u + .75, y: 3, width: u - 1.5, height: 10 }));
+  if (M.working) svg.append(el('circle', { class: 'pulse', cx: x0 - dir * (now.o * u + 6), cy: 8, r: 2 }));
+  band(svg, rows, x0, dir, u, 16, { labels: true }); plot.append(svg);
+}
+
+// ---------- Render ----------
+function render() {
+  const side = document.getElementById('side'), shell = document.getElementById('shell');
+  const act = document.activeElement, key = act?.dataset?.key, sel = key ? [act.selectionStart, act.selectionEnd] : null, sc = side.querySelector('.scroll')?.scrollTop ?? 0;
+  const o = M.threads.filter(isOpen).length, w = M.threads.filter(waits).length;
+  shell.className = `shell ${M.side}${M.open ? ' isopen' : ''}${M.mode ? ' commenting' : ''}`;
+  document.getElementById('ver').textContent = '· v' + M.v;
+  document.getElementById('b-mode').setAttribute('aria-pressed', M.mode);
+  document.getElementById('b-toggle').firstChild.textContent = M.open ? 'Collapse ' : 'Expand ';
+  side.className = 'side ' + (M.open ? 'open' : 'shut');
+  if (M.open) side.innerHTML = `<div class="sb-head"><button class="tab" data-act="tab" data-tab="timeline" aria-selected="${M.tab === 'timeline'}">Timeline</button><button class="tab" data-act="tab" data-tab="threads" aria-selected="${M.tab === 'threads'}">Threads</button>
+      <button class="needs${w ? '' : ' none'}" data-act="needs">${w ? w + (w === 1 ? ' needs you' : ' need you') : 'nothing needs you'}</button><button class="ic" data-act="toggle" aria-label="Collapse sidebar">${M.side === 'right' ? '›' : '‹'}</button></div>
+    <div class="scroll">${composeView()}${M.tab === 'timeline' ? timelineView() : threadsView()}</div>`;
+  else side.innerHTML = `<div class="rail" data-act="toggle" title="Expand the sidebar"><div class="big">${o}</div><div class="cap">open</div><div class="big you">${w}</div><div class="cap">yours</div><div class="plot" id="plot"></div><button class="ic" data-act="flip" aria-label="Move the sidebar to the other side">⇄</button></div>`;
+  document.querySelectorAll('.pinm').forEach(p => p.remove());
+  for (const t of M.threads) if (isOpen(t)) { const host = document.querySelector(`[data-k="${t.key}"]`); if (!host) continue;
+    const p = document.createElement('span'); p.className = 'pinm' + (waits(t) ? ' w' : ''); p.textContent = [...host.querySelectorAll('.pinm')].map(x => x.textContent).concat(t.id).join(' '); host.querySelectorAll('.pinm').forEach(x => x.remove());
+    p.dataset.pin = t.id; host.append(p); }
+  const sn = side.querySelector('.scroll'); if (sn) sn.scrollTop = sc;
+  if (key) { const again = side.querySelector(`[data-key="${key}"]`); if (again && again.tagName === 'TEXTAREA') { again.focus(); again.setSelectionRange(sel[0], sel[1]); } }
+  M.open ? drawExpanded() : drawRail();
+}
+const focus = key => { const n = document.querySelector(`[data-key="${key}"]`); if (n) { n.focus(); n.scrollIntoView({ block: 'nearest' }); } };
+function openThread(id) {
+  M.open = true; const e = [...M.events].reverse().find(e => e.ids.includes(id));
+  if (M.tab === 'timeline' && e) M.openT = e.id + ':' + id; else { M.tab = 'threads'; M.openT = 'tab:' + id; }
+  render(); document.querySelector(`[data-key="${M.openT}"]`)?.scrollIntoView({ block: 'center' }); focus('r:' + id);
+}
+function post(send) { const text = (M.drafts.new ?? '').trim(); if (!text || !M.compose) return; comment(M.compose, text, send); M.compose = null; M.drafts.new = ''; render(); }
+
+// ---------- Events ----------
+const acts = {
+  mode() { M.mode = !M.mode; if (!M.mode) M.compose = null; }, flip() { M.side = M.side === 'right' ? 'left' : 'right'; }, toggle() { M.open = !M.open; },
+  reset() { seed(); arm(); }, tab(d) { M.tab = d.tab; M.openT = null; }, open(d) { M.openT = M.openT === d.key ? null : d.key; M.nq = null; },
+  nq(d) { M.nq = +d.id; render(); focus('r:' + d.id); return true; }, show(d) { flash(T(+d.id).key); return true; }, resolve(d) { resolve(+d.id); },
+  send(d) { sendTo([+d.id]); }, post(d) { post(!!d.send); return true; }, cancel() { M.compose = null; M.drafts.new = ''; },
+  needs() { const t = [...M.threads].reverse().find(waits); if (t) { M.tab = 'timeline'; openThread(t.id); } return true; },
+};
+document.addEventListener('click', ev => {
+  const pin = ev.target.closest('[data-pin]'); if (pin) { openThread(+pin.dataset.pin.split(' ').pop() || +pin.dataset.pin); return; }
+  const b = ev.target.closest('[data-act]');
+  if (b) { ev.stopPropagation(); if (!acts[b.dataset.act](b.dataset)) render(); return; }
+  const k = M.mode && ev.target.closest('#doc [data-k]');
+  if (k) { M.compose = k.dataset.k; M.open = true; render(); focus('new'); }
+});
+document.addEventListener('input', ev => { const k = ev.target.dataset?.key; if (k) M.drafts[k] = ev.target.value; });
+document.addEventListener('keydown', ev => {
+  const ta = ev.target.tagName === 'TEXTAREA';
+  if (ta && ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault();
+    if (ev.target.dataset.key === 'new') post(true);
+    else { const id = +ev.target.dataset.reply, text = ev.target.value.trim(); if (text) { M.drafts['r:' + id] = ''; reply(id, text); render(); } }
+    return; }
+  if (ev.key === 'Escape') { M.compose = null; M.nq = null; M.mode = false; render(); return; }
+  if (ta || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const a = { c: 'mode', s: 'flip', e: 'toggle' }[ev.key.toLowerCase()]; if (a) { acts[a]({}); render(); }
+});
+setInterval(() => {
+  document.querySelectorAll('[data-since]').forEach(n => { n.textContent = elapsed(+n.dataset.since); });
+  document.querySelectorAll('[data-at]').forEach(n => { n.textContent = rel(+n.dataset.at); });
+}, 1000);
+window.addEventListener('resize', () => M.open && drawExpanded());
+const arm = () => { if (M.working) { clearTimeout(timer); timer = setTimeout(() => { finish(); render(); }, WORK_MS); } };
+window.onerror = (m, s, l) => { document.title = 'ERR ' + m + ' @' + l; };
+seed(); arm(); render();
+if (location.hash.startsWith('#t')) { const steps = location.hash.slice(2).split(','); for (const s of steps) { if (s === 'fin') finish(); else if (s === 'nq') { M.openT = 'tab:7'; M.tab = 'threads'; M.nq = 7; } else if (acts[s]) acts[s]({}); } render(); }
+</script>
+</body>
+</html>

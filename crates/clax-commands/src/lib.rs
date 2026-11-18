@@ -121,6 +121,7 @@ pub(crate) fn reserved_names() -> clax_surface::Reserved {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod test_bundle {
     use clax_core::embedded::{Bundle, FileTree, MemTree};
 

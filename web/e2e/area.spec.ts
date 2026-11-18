@@ -1,5 +1,5 @@
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, clipStats, colorStats, expectVisibleClip, last, openArtifact, publish, record } from "./fixtures";
+import { test, expect, type Daemon, api, bridgeFence, clipStats, colorStats, expectVisibleClip, last, openArtifact, publish, record } from "./fixtures";
 import { settle } from "./time";
 
 let d: Daemon;
@@ -376,14 +376,18 @@ async function post(page: Page, text: string) {
     await commentMode(page, frame);
     // Focus on the shell's Comment button, as after clicking it (the press moves it into the page).
     await button.focus();
-    const picks = await page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.type === "clax:pick").length);
+    const picking = () => page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.type === "clax:pick" || m.type === "clax:pick-start").length);
+    const picks = await picking();
     await page.mouse.move(fb.x + panel.x + 30, fb.y + panel.y + 100);
     await page.mouse.down();
     await page.mouse.move(fb.x + panel.x + 200, fb.y + panel.y + 180, { steps: 5 });
     await page.keyboard.press("Escape");
     await page.mouse.up();
+    // A pick starts as the button comes up: one would have reached the shell
+    // before the bridge's answer to a later request.
+    await bridgeFence(page);
     await settle(page);
-    expect(await page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.type === "clax:pick").length)).toBe(picks);
+    expect(await picking()).toBe(picks);
     await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "false");

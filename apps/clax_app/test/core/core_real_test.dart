@@ -12,6 +12,7 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/paths.dart';
+import '../support/settle.dart' show stuckAfter;
 
 typedef _OpenC =
     Uint64 Function(Pointer<Uint8>, Size, Pointer<Void>, Int64);
@@ -76,7 +77,7 @@ void main() {
 
     // A call made before `ready` waits for it.
     final early = core.call(const CoreRequest('GET', '/api/artifacts')).answer;
-    await ready.future.timeout(const Duration(minutes: 1));
+    await ready.future.timeout(stuckAfter);
     final migrating = states.whereType<CoreOpening>().where(
       (s) => s.phase == 'migrating',
     );
@@ -140,7 +141,7 @@ void main() {
       return firstStates.current;
     }
 
-    while (await next().timeout(const Duration(minutes: 1)) is! CoreReady) {}
+    while (await next().timeout(stuckAfter) is! CoreReady) {}
 
     // A second client, beside the first in this live isolate.
     final second = openHome();
@@ -163,7 +164,7 @@ void main() {
     };
     expect(r.status, 200, reason: utf8.decode(r.body));
     first.close();
-    expect(await next().timeout(const Duration(minutes: 1)), const CoreClosed());
+    expect(await next().timeout(stuckAfter), const CoreClosed());
   }, skip: skip);
 
   test('an open of a home whose isolate is gone re-attaches to its core', () async {
@@ -180,10 +181,10 @@ void main() {
       (lib: path, home: home.path, opened: opened.sendPort),
       onExit: exited.sendPort,
     );
-    final handle = await opened.first.timeout(const Duration(minutes: 1)) as int;
+    final handle = await opened.first.timeout(stuckAfter) as int;
     expect(handle, isNot(0));
     isolate.kill(priority: Isolate.immediate);
-    await exited.first.timeout(const Duration(minutes: 1));
+    await exited.first.timeout(stuckAfter);
 
     final again = CoreClient.open(
       home.path,
@@ -199,7 +200,7 @@ void main() {
       if (s is CoreReady && !ready.isCompleted) ready.complete();
       if (s is CoreClosed) closed.complete();
     });
-    await ready.future.timeout(const Duration(minutes: 1));
+    await ready.future.timeout(stuckAfter);
     expect(states, [const CoreReady()], reason: 'only the latest event');
 
     final r = switch (await again.call(
@@ -211,7 +212,7 @@ void main() {
     expect(r.status, 200, reason: utf8.decode(r.body));
 
     again.close();
-    await closed.future.timeout(const Duration(minutes: 1));
+    await closed.future.timeout(stuckAfter);
     expect(states.last, const CoreClosed());
   }, skip: skip);
 }

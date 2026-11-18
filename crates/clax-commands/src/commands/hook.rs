@@ -1243,6 +1243,7 @@ fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -1351,6 +1352,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod join_tests {
     use super::*;
     use std::cell::RefCell;
@@ -1436,6 +1438,7 @@ mod join_tests {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod remote_session_tests {
     use super::*;
 

@@ -430,5 +430,6 @@ pub(crate) fn prune_run_in(c: &Connection, run: &str, all: bool, limit: usize) -
     .execute(params![run, all, i64::try_from(limit).unwrap_or(i64::MAX)])?)
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests;

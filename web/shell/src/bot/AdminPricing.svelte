@@ -21,6 +21,7 @@
   import { RATE_SOURCES, TOKEN_UNITS, UNITS, credits, money, percent, perUnitMilli, readOnlySource } from "./model";
   import RateCard from "./RateCard.svelte";
   import SourceBadge from "./SourceBadge.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   type Note = { ok: boolean; text: string } | null;
   /** The write in flight: one at a time, each button saying when it is its own. */
@@ -139,7 +140,9 @@
   const lookUp = () => add("lookup", model => priceFromTokenulator(model, aProvider.trim() || undefined), "Priced {} from tokenulator.dev.");
   const addCard = (units: Record<TokenUnit, UnitRate>) => add("add", model => setModelRates({ model, ...(aName.trim() ? { name: aName.trim() } : {}), ...units }), "Added {} with the rates set.");
 
-  onMount(() => { void pricing().then(x => take(x, true), e => { err = refusal(e); }); });
+  // Shown in Settings, the screen waits for the pricing.
+  const release = holdReveal();
+  onMount(() => { void pricing().then(x => take(x, true), e => { err = refusal(e); }).finally(release); });
 </script>
 
 {#snippet badge(m: ModelPricing, s: RateSource, units: TokenUnit[])}<span class="bsrc" title={s === "line" ? lineSource(m, units) : undefined}>{RATE_SOURCES[s]}</span>{/snippet}

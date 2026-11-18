@@ -2035,6 +2035,7 @@ fn instructions(def: &Definition, notation: Notation) -> Result<(), Problem> {
 /// lists more than `def`'s limits allow, or names an interface `def`
 /// lacks. It does not recurse, so a type built anywhere is safe to ask
 /// about.
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 pub(crate) fn foreign(def: &Definition, t: &Ty) -> Option<String> {
     if let Some(m) = shape(t, &def.limits) {

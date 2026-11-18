@@ -482,6 +482,7 @@ fn read_map(st: &Store) -> clax_core::Result<HashMap<String, Entry>> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_core::Home;

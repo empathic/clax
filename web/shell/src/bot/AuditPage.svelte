@@ -17,6 +17,7 @@
   import { isAdmin, myBot, myRole } from "./me";
   import { GROUPS, RANGES, type Range, actorLabel, rangeFrom } from "./model";
   import BotPage from "./BotPage.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   let { now }: { now?: () => Date } = $props();
   const url = new URLSearchParams(location.search);
@@ -87,12 +88,17 @@
   const time = (iso: string) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const title = (id: string | null) => (id ? artifacts.find(a => a.id === id)?.title ?? id : null);
   const body = (b: unknown) => JSON.stringify(b, null, 2);
+  // Shown in Settings, the screen waits for the first page of events, the
+  // artifacts' titles, whether it may export, and an admin's people to filter by.
+  const release = holdReveal();
   onMount(() => {
     document.title = "Audit log · Settings · Clax";
-    void load();
-    void listArtifacts().then(l => { artifacts = l.map(a => ({ id: a.id, title: a.title })); }, () => {});
-    void myBot().then(b => { canExport = !!b?.can_export; });
-    void myRole().then(r => { if (isAdmin(r)) void adminPeople().then(p => { people = p; }, () => {}); });
+    void Promise.allSettled([
+      load(),
+      listArtifacts().then(l => { artifacts = l.map(a => ({ id: a.id, title: a.title })); }, () => {}),
+      myBot().then(b => { canExport = !!b?.can_export; }),
+      myRole().then(r => isAdmin(r) ? adminPeople().then(p => { people = p; }, () => {}) : undefined),
+    ]).then(release);
     return () => clearTimeout(typing);
   });
 </script>
