@@ -1364,7 +1364,11 @@ pub async fn patch(
     // A blank title: the artifact is untitled, and shows its page's. Line
     // breaks and tabs are refused in it as in any title.
     let untitled = b.title.as_deref().is_some_and(|t| t.trim().is_empty());
-    if untitled && b.title.as_deref().is_some_and(|t| t.chars().any(char::is_control)) {
+    if untitled
+        && b.title
+            .as_deref()
+            .is_some_and(|t| t.chars().any(char::is_control))
+    {
         return Err(ApiError::bad_request(
             "invalid_args",
             "title holds a control character",

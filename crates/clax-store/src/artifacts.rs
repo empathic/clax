@@ -2402,7 +2402,9 @@ impl Store {
     pub async fn page_title_async(&self, id: &ArtifactId) -> Result<String> {
         let n = self.current_version_of(id)?.ok_or(CoreError::NotFound)?;
         let page = self.read_file_async(id, n, INDEX).await?;
-        Ok(clax_core::publish::shown_title(page.as_ref().map(|(b, _)| b.as_slice())))
+        Ok(clax_core::publish::shown_title(
+            page.as_ref().map(|(b, _)| b.as_slice()),
+        ))
     }
 
     /// [`Store::read_file`], awaiting its content store.
@@ -2915,7 +2917,11 @@ mod tests {
             p
         };
         let (a, _) = store
-            .create_artifact(DAEMON, untitled(&[("index.html", Some("<p>none"))], None), None)
+            .create_artifact(
+                DAEMON,
+                untitled(&[("index.html", Some("<p>none"))], None),
+                None,
+            )
             .unwrap();
         assert_eq!((a.title.as_str(), a.untitled), ("Untitled", true));
         let id = clax_core::ArtifactId::parse(&a.id).unwrap();
@@ -2927,8 +2933,21 @@ mod tests {
         };
         // A page that names a title names it; the same page again, or one
         // that names none, keeps it.
-        assert_eq!(step(1, &[("index.html", Some("<title>Named</title>"))]).title, "Named");
-        assert_eq!(step(2, &[("index.html", Some("<title>Named</title>")), ("app.js", Some("1"))]).title, "Named");
+        assert_eq!(
+            step(1, &[("index.html", Some("<title>Named</title>"))]).title,
+            "Named"
+        );
+        assert_eq!(
+            step(
+                2,
+                &[
+                    ("index.html", Some("<title>Named</title>")),
+                    ("app.js", Some("1"))
+                ]
+            )
+            .title,
+            "Named"
+        );
         assert_eq!(step(3, &[("index.html", Some("<p>bare"))]).title, "Named");
         let a = step(4, &[("index.html", Some("<title>Again</title>"))]);
         assert_eq!((a.title.as_str(), a.untitled), ("Again", true));
@@ -2944,7 +2963,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!((a.title.as_str(), a.untitled), ("Own", false));
-        assert_eq!(step(5, &[("index.html", Some("<title>Ignored</title>"))]).title, "Own");
+        assert_eq!(
+            step(5, &[("index.html", Some("<title>Ignored</title>"))]).title,
+            "Own"
+        );
         assert_eq!(
             clax_core::content::wait(store.page_title_async(&id)).unwrap(),
             "Ignored"
@@ -2961,7 +2983,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!((a.title.as_str(), a.untitled), ("Ignored", true));
-        assert_eq!(step(6, &[("index.html", Some("<title>Followed</title>"))]).title, "Followed");
+        assert_eq!(
+            step(6, &[("index.html", Some("<title>Followed</title>"))]).title,
+            "Followed"
+        );
         // The edit is recorded with its title as null: it has none.
         let fields: Vec<serde_json::Value> = store
             .with_read(|c| {
@@ -2980,7 +3005,10 @@ mod tests {
             .collect();
         assert_eq!(
             fields,
-            [serde_json::json!({"title": "Own"}), serde_json::json!({"title": null})]
+            [
+                serde_json::json!({"title": "Own"}),
+                serde_json::json!({"title": null})
+            ]
         );
     }
 

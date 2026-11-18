@@ -625,7 +625,10 @@ mod tests {
             title: "Q3 <plan> & more".into(),
         };
         let out = inject(t, Some(&i));
-        assert!(out.contains("<title>Q3 &lt;plan&gt; &amp; more · Clax</title>"), "{out}");
+        assert!(
+            out.contains("<title>Q3 &lt;plan&gt; &amp; more · Clax</title>"),
+            "{out}"
+        );
         assert!(out.contains("<h1>Q3 &lt;plan&gt; &amp; more</h1>"), "{out}");
         assert!(inject(t, None).contains("<title>Clax</title>"));
     }
