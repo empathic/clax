@@ -324,7 +324,7 @@ async fn queue_list_filters_by_read_and_a_grant_never_passes_membership() {
     r.grant(Some(&r.sam_cookie), access(&["read"], &[&r.q1]))
         .await;
     let (_, v) = r.agent("GET", "/api/queues", None).await;
-    assert_eq!(ids(&v), [r.q1.clone()]);
+    assert_eq!(ids(&v), std::slice::from_ref(&r.q1));
     // Every queue Sam holds: q1 and q2, not q3.
     r.grant(Some(&r.sam_cookie), access(&["read"], &["*"]))
         .await;
