@@ -6,11 +6,13 @@
   // the page uses changed under it; Comment, Threads, the version control
   // (`Latest ▾`, or a split button whose main part reads `Reload for latest`
   // once a newer version is out, or `v12 of 46` on an older version, and
-  // goes to the latest, beside the ▾ that opens its changelog menu), Clone where the viewer may clone the artifact with git (loaded
-  // after the first paint; at phone width the more menu lists it), and the
-  // more menu with open raw and copy link, and the theme switch), and Share
-  // on a hosted Clax where the viewer may share the artifact (loaded after
-  // the first paint; at phone width the more menu lists it),
+  // goes to the latest, beside the ▾ that opens its changelog menu), Share
+  // (an icon) on a hosted Clax where the viewer may share the artifact
+  // (loaded after the first paint; at phone width the more menu lists it),
+  // and the more menu with open raw and copy link, Clone with git where the
+  // viewer may clone the artifact (the bar has no Clone button; the Clone
+  // dialog's host loads after the first paint), Usage with the week's
+  // ClaxBot credits while ClaxBot is on for the viewer, and the theme switch,
   // once the artifact is loaded and the frame mode decided. At phone width the
   // bar keeps the mark, the title, Comment and the more menu, whose Versions
   // item opens the version menu as a sheet. On a live page, whose versions
@@ -21,7 +23,7 @@
   // (an artifact a version of which carries an app bundle), Get in Clax, its
   // own lazy chunk, links to the app's get page (on a phone, a more menu item),
   // drawn as a ghost for the owner's shell and whoever may share the app.
-  // Fork (the shown version, into an artifact of the viewer's) comes with the
+  // Fork (an icon, its own lazy chunk: the shown version, into an artifact of the viewer's) comes with the
   // more menu, for the owner's shell and a viewer who may fork (`may_fork`); on a phone it is a more
   // menu item. Neither shows on a live page or a deleted one; a spectator,
   // who reads, forks too. Publish (to a public Clax this Clax is signed in
@@ -34,7 +36,7 @@
   import { getToken } from "../api";
   import { COMMENTS_OFF } from "../failure";
   import { type ArtifactController, commentsOff, viewReady } from "../view/artifact-controller";
-  import { clone, cloneOpen, legal, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, who } from "./more-menu.svelte";
+  import { clone, cloneOpen, forkButton, legal, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, usage, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
   import { feedbackMenu } from "../feedback/slot.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
@@ -48,6 +50,7 @@
   const MoreMenu = $derived(moreMenu.current);
   const Who = $derived(who.current);
   const Clone = $derived(clone.current);
+  const Fork = $derived(forkButton.current);
   const Share = $derived(share.current);
   const Publish = $derived(publish.current);
   const Permissions = $derived(permissions.current);
@@ -79,7 +82,7 @@
     input={() => ({ versions: s.data.versions, latest, shown, now: new Date(), threads: s.threads, numbers: ctl.numbers(s), me: s.me?.public_id ?? null, live: !!live })}
     hrefFor={n => ctl.here(n === latest ? null : n, s)} onChoose={n => { ctl.closeMenu(); ctl.chooseVersion(n); }} />
   {@const forkable = !!MoreMenu && (ownerShell || !!s.data.artifact.may_fork) && !live && !s.deleted}
-  {#if forkable}<button class="fork hide-sm" data-shell-control="fork" disabled={forking} title={`Fork v${shown} into an artifact of your own`} onclick={() => fork(shown)}>Fork</button>{/if}
+  {#if forkable && Fork}<Fork {shown} disabled={forking} onFork={() => fork(shown)} />{/if}
   {#if s.data.artifact.app && !s.deleted}
     {#await import("./GetInClax.svelte") then { default: GetInClax }}<GetInClax id={ctl.id} ghost={ownerShell || !!shareOpen.current} />{/await}
   {/if}
@@ -90,7 +93,7 @@
   {#if Permissions && mayApprove}<Permissions {ctl} />{/if}
   {#if feedbackMenu.current}<feedbackMenu.current />{/if}
   {#if MoreMenu}
-    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} getHref={s.data.artifact.app && !s.deleted ? `/a/${encodeURIComponent(ctl.id)}/get` : null} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} onPermissions={mayApprove ? permissionsOpen.current : null} legal={legal.current} />
+    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} getHref={s.data.artifact.app && !s.deleted ? `/a/${encodeURIComponent(ctl.id)}/get` : null} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} onPermissions={mayApprove ? permissionsOpen.current : null} usage={usage.current} legal={legal.current} />
   {:else}
     <span class="more-slot"></span>
   {/if}

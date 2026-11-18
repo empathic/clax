@@ -200,9 +200,10 @@ test("the demo on the Worker: two people live, agents drafting and publishing, c
     await shot(mia, "answered-1280-dark");
 
     // A real git clone of the brief, with the token Rae's Clone dialog
-    // makes: one commit per version, each agent's naming it and the person
-    // it works for.
-    await rae.locator("button.clone").click();
+    // makes (from the more menu's Clone with git): one commit per version,
+    // each agent's naming it and the person it works for.
+    await rae.locator(".topbar button[aria-label=More]").click();
+    await rae.getByRole("menuitem", { name: "Clone with git…" }).click();
     const dialog = rae.getByRole("dialog", { name: "Clone with git or jj" });
     await expect(dialog.locator("input[type=radio]")).toHaveCount(2);
     await dialog.getByRole("button", { name: "Make a token" }).click();

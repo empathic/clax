@@ -108,6 +108,10 @@ describe("Share", () => {
     const m = mount(Share, { id: ID, title: "Plan" });
     const b = await until(() => m.root.querySelector<HTMLButtonElement>("button.share"));
     expect(b.classList.contains("hide-sm")).toBe(true);
+    expect(b.classList.contains("icon"), "an icon button").toBe(true);
+    expect(b.getAttribute("aria-label")).toBe("Share");
+    expect(b.title).toBe("Share this artifact");
+    expect(b.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(shareOpen.current).not.toBeNull();
     flush(() => b.click());
     const dialog = await until(() => document.querySelector("[role=dialog]"));

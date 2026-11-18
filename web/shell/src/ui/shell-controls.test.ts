@@ -114,8 +114,9 @@ describe("the shell's marked controls", () => {
       expect(threads.map(t => t.matches("button.threads") ? "bar" : t.closest(".phone-tabs") ? "tab" : "other")).toEqual(["bar", "tab"]);
       expect(threads[0].textContent).toContain("Threads");
       expect(only(bar, "versions").matches("button.vbtn")).toBe(true);
-      expect(only(bar, "fork").matches("button.fork")).toBe(true);
-      expect(only(bar, "fork").textContent).toBe("Fork");
+      expect(only(bar, "fork").matches("button.icon.fork")).toBe(true);
+      expect(only(bar, "fork").getAttribute("aria-label")).toBe("Fork");
+      expect(only(bar, "fork").title).toMatch(/^Fork v\d+ into an artifact of your own$/);
     });
 
     it("finds the mounted Comment button, and not while it is disabled", async () => {

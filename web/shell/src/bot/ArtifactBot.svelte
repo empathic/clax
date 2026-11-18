@@ -7,9 +7,10 @@
   // lists ClaxBot to the Send menu (`botView`): as the artifact's agents list
   // it (`builtin`), else as this person's ClaxBot says. It shows a ClaxBot
   // button while the artifact has runs (marked while one is active) that
-  // opens the run panel, the week's meter beside it (marked "your key" on
-  // the person's own model key: `meterWords`), and, from 80 % of the
-  // week's credits, the usage banner under the top bar. The panel opens by
+  // opens the run panel; it gives the more menu its Usage item, the week's
+  // meter (marked "your key" on the person's own model key: `meterWords`),
+  // and, from 80 % of the week's credits, shows the usage banner under the
+  // top bar. The panel opens by
   // itself on a run this browser starts, and on `#run=<ID>` (or `#run`, the
   // newest active run) in the address, which the New dialog and the audit
   // log link with; a run the artifact's list does not hold is read on its
@@ -25,6 +26,7 @@
   import { botView } from "./send.svelte";
   import RunPanel from "./RunPanel.svelte";
   import UsageBanner from "./UsageBanner.svelte";
+  import { setUsage } from "../ui/more-menu.svelte";
 
   let { ctl }: { ctl: ArtifactController } = $props();
   // svelte-ignore state_referenced_locally
@@ -34,6 +36,11 @@
   const week = $derived(botView.me?.enabled ? meter(botView.me.week) : null);
   const weekWords = $derived(botView.me?.enabled ? meterWords(botView.me) : null);
   const shown = $derived(runs.length > 0 || botView.started.length > 0);
+  // The more menu's Usage item follows the week's meter.
+  $effect(() => {
+    setUsage(week && weekWords ? { href: "/settings/claxbot", text: `${weekWords.own ? "your key · " : ""}${credits(week.spent)} / ${credits(week.total)}`, label: weekWords.label, title: weekWords.title, warn: week.warn, out: week.exhausted } : null);
+    return () => setUsage(null);
+  });
   // The first lines of the threads a run answers, as the view holds them.
   const quotes = (ids: string[]) => ids.flatMap(id => {
     const t = view.current.threads.find(x => x.id === id);
@@ -133,7 +140,6 @@
     <span class="dot" aria-hidden="true"></span>ClaxBot<span class="bot-sr">{active ? ", working" : ", runs"}</span>
   </button>
 {/if}
-{#if week && weekWords}<a class="botwk hide-sm" class:warn={week.warn} class:out={week.exhausted} href="/settings/claxbot" title={weekWords.title} aria-label={weekWords.label}>{weekWords.own ? "your key · " : ""}{credits(week.spent)} / {credits(week.total)}</a>{/if}
 
 <style>
   :global {
@@ -142,9 +148,6 @@
     .botbtn.on .dot { background: var(--agent); }
     .botbtn.on { color: var(--agent-ink); }
     .topbar .botbtn[aria-expanded="true"] { background: var(--hover); }
-    .botwk { flex: none; font: 500 12.5px var(--font); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; padding: 0 4px; }
-    .botwk.warn { color: var(--tag-yellow-fg); }
-    .botwk.out { color: var(--danger); }
     .bot-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .bot-banner-at { flex: none; }
     .bot-banner-at .bbanner { margin: 0; border-radius: 0; border-width: 0 0 1px; padding: 8px var(--gutter); }

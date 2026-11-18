@@ -117,6 +117,30 @@ describe("Echo top bar parts", () => {
     m.unmount();
   });
 
+  it("the more menu lists Usage, the week's ClaxBot credits, linking to their page", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    const usage = { href: "/settings/claxbot", text: "310 / 2,000", label: "ClaxBot: 310 of 2,000 credits used this week", title: "Your ClaxBot credits this week", warn: true, out: false };
+    const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), usage });
+    const b = m.root.querySelector("button.icon") as HTMLButtonElement;
+    flush(() => b.click());
+    const item = [...m.root.querySelectorAll<HTMLAnchorElement>("[role=menuitem]")].at(-1)!;
+    expect(item.textContent!.replace(/\s+/g, " ")).toBe("Usage 310 / 2,000");
+    expect(item.getAttribute("href")).toBe("/settings/claxbot");
+    expect(item.getAttribute("aria-label")).toBe("Usage: ClaxBot: 310 of 2,000 credits used this week");
+    expect(item.title).toBe("Your ClaxBot credits this week");
+    expect(item.classList.contains("warn")).toBe(true);
+    item.addEventListener("click", e => e.preventDefault());
+    flush(() => item.click());
+    expect(m.root.querySelector("[role=menu]")).toBeNull();
+    m.unmount();
+    // Without ClaxBot there is no Usage item.
+    const bare = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn() });
+    flush(() => (bare.root.querySelector("button.icon") as HTMLButtonElement).click());
+    expect([...bare.root.querySelectorAll("[role=menuitem]")].map(i => i.textContent)).toEqual(["Open raw", "Copy link"]);
+    bare.unmount();
+    vi.unstubAllGlobals();
+  });
+
   it("the more menu keeps a disabled, focusable open raw for a deleted artifact", async () => {
     const m = mount(MoreMenu, { rawHref: null, canCopy: false, onCopy: vi.fn() });
     flush(() => (m.root.querySelector("button.icon") as HTMLButtonElement).click());
