@@ -1759,6 +1759,7 @@ pub(crate) fn record_end_in(
     Ok(KeptEnd::New(id))
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1823,7 +1824,7 @@ mod tests {
             key: &str,
         ) -> Result<Option<PendingCall>> {
             Ok(self
-                .calls_for(registration, Utc::now())?
+                .calls_for(registration, DateTime::<Utc>::UNIX_EPOCH)?
                 .into_iter()
                 .find(|c| c.run_id == run_id && c.key == key))
         }

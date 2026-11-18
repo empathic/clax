@@ -961,6 +961,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{Claim, MAX_NAME_CHARS, MAX_SEARCH_SCAN};
     use crate::test_util::{DAEMON, artifact, store};

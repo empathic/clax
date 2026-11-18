@@ -10,6 +10,23 @@ let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
 const PAGE = "<main><h2>Quarterly goals</h2></main>";
 
+/** Keeps a follower of session `sid` connected until the abort it returns:
+ * a notices long poll (`via`, as the Claude Code shim's channel polls),
+ * asked again each time one ends (each holds up to 30 s), so the test's
+ * checks see the follower however long they take. A refused poll ends it. */
+function follow(sid: string, via?: "channel"): AbortController {
+  const poll = new AbortController();
+  const url = `${d.base}/api/sessions/${sid}/notices?wait=30${via ? `&via=${via}` : ""}`;
+  void (async () => {
+    while (!poll.signal.aborted) {
+      const r = await fetch(url, { headers: { authorization: `Bearer ${d.token}` }, signal: poll.signal }).catch(() => null);
+      if (!r?.ok) return;
+      await r.text().catch(() => undefined);
+    }
+  })();
+  return poll;
+}
+
 test("an agent no comment wakes is marked until a follower connects", async ({ page }) => {
   const s = await registerSession(d.base, d.token, "claude", `wake-${Math.random().toString(36).slice(2)}`);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Wake", { "index.html": PAGE });
@@ -26,8 +43,7 @@ test("an agent no comment wakes is marked until a follower connects", async ({ p
   await page.locator(".people").getByRole("button", { name: "Close" }).click();
   // The view's topics are live, so the follower's connection reaches it as an event.
   await expect.poll(() => page.evaluate(() => (window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0)).toBeGreaterThan(0);
-  const poll = new AbortController();
-  void fetch(`${d.base}/api/sessions/${s.id}/notices?wait=30`, { headers: { authorization: `Bearer ${d.token}` }, signal: poll.signal }).catch(() => undefined);
+  const poll = follow(s.id);
   try {
     await expect(token).not.toHaveClass(/nowake/);
     await expect(token).not.toHaveAttribute("title", /won't be woken/);
@@ -46,8 +62,7 @@ test("an agent woken only through its Claude Code channel is marked unsure", asy
   const token = page.locator(".who .agt .tok.a");
   await expect(token).toHaveClass(/nowake/);
   await expect.poll(() => page.evaluate(() => (window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0)).toBeGreaterThan(0);
-  const poll = new AbortController();
-  void fetch(`${d.base}/api/sessions/${s.id}/notices?wait=30&via=channel`, { headers: { authorization: `Bearer ${d.token}` }, signal: poll.signal }).catch(() => undefined);
+  const poll = follow(s.id, "channel");
   try {
     await expect(token).toHaveClass(/maywake/);
     await expect(token).toHaveAttribute("title", /may not be woken by comments: Claude Code does not confirm its channel$/);
@@ -79,8 +94,7 @@ for (const theme of ["light", "dark"] as const) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
       // Woken only through its channel: unsure.
       await expect.poll(() => page.evaluate(() => (window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0)).toBeGreaterThan(0);
-      const poll = new AbortController();
-      void fetch(`${d.base}/api/sessions/${s.id}/notices?wait=30&via=channel`, { headers: { authorization: `Bearer ${d.token}` }, signal: poll.signal }).catch(() => undefined);
+      const poll = follow(s.id, "channel");
       try {
         await expect(page.locator(".who .agt .tok.a.maywake")).toHaveCount(1);
         await expect(page.locator(".people .prow.agent .nowake")).toHaveText(/^May not be woken/);

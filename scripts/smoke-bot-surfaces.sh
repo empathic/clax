@@ -122,16 +122,16 @@ def ok(msg):
     print(f"PASS: {msg}", flush=True)
 
 
-def until(what, cond, timeout):
-    """cond()'s first true value, tried every 100 ms for `timeout` seconds."""
-    deadline = time.monotonic() + timeout
-    while True:
+def until(what, cond):
+    """cond()'s first true value, polled every 0.05 s. A hang guard of
+    2400 polls (about 120 s on an idle machine, longer on a loaded one)
+    fails a condition that never comes; it never decides one that passes."""
+    for _ in range(2400):
         v = cond()
         if v:
             return v
-        if time.monotonic() > deadline:
-            fail(f"{what}: not within {timeout} s")
-        time.sleep(0.1)
+        time.sleep(0.05)  # timing: the poll of a condition, bounded by until's poll count
+    fail(f"{what}: never came")
 
 
 def write(path, text):
@@ -180,7 +180,7 @@ def start_daemon(port):
         except (FileNotFoundError, json.JSONDecodeError):
             return None
 
-    i = until(f"daemon {n}'s daemon.json", info, 60)
+    i = until(f"daemon {n}'s daemon.json", info)
 
     def healthy():
         try:
@@ -190,7 +190,7 @@ def start_daemon(port):
             if p.poll() is not None:
                 fail(f"daemon {n} exited ({p.returncode}); see daemon-{n}.log")
             return False
-    until(f"daemon {n}'s health check", healthy, 60)
+    until(f"daemon {n}'s health check", healthy)
     write(TOKEN_FILE, i["token"] + "\n")
     return p, i
 
@@ -235,14 +235,13 @@ class Host:
     def seen(self):
         return lines(self.path("deliveries.jsonl"))
 
-    def registered(self, timeout=60):
+    def registered(self):
         return until(f"{self.name} registers",
-                     lambda: self.alive() and next((l for l in self.out() if "registration" in l), None),
-                     timeout)
+                     lambda: self.alive() and next((l for l in self.out() if "registration" in l), None))
 
-    def sees(self, what, pred, timeout=60):
+    def sees(self, what, pred):
         return until(f"{self.name} is sent {what}",
-                     lambda: self.alive() and next((d for d in self.seen() if pred(d)), None), timeout)
+                     lambda: self.alive() and next((d for d in self.seen() if pred(d)), None))
 
     def stop(self):
         """Stops it by its stop file: what it applied and was delivered."""
@@ -266,7 +265,7 @@ def ended_of(run):
     return lambda d: d.get("call") == "ended" and d.get("run") == run
 
 
-def status_is(base, run, want, timeout):
+def status_is(base, run, want):
     ended = {"finished", "gave_up", "stopped", "failed"}
 
     def check():
@@ -276,7 +275,7 @@ def status_is(base, run, want, timeout):
         if v["status"] in ended and v["status"] != want:
             fail(f"run {run} ended {v['status']}, not {want}: {json.dumps(v)}")
         return v if v["status"] == want else None
-    return until(f"run {run} is {want}", check, timeout)
+    return until(f"run {run} is {want}", check)
 
 
 def start_run(base, registration):
@@ -327,12 +326,12 @@ def main():
     ok(f"host-1 (pid {first.p.pid}) registered desk as {reg} and kept the ID in its file")
 
     run1 = start_run(base, reg)
-    v = status_is(base, run1, "parked", 60)
+    v = status_is(base, run1, "parked")
     if v["waiting_on"]["op"] != "desk.ask":
         fail(f"run {run1} parked on {v['waiting_on']}, not desk.ask")
     ok(f"run {run1} parked on desk.ask while host-1 holds the question it accepted")
-    status_is(base, run1, "finished", 90)
-    first.sees(f"run {run1}'s end", ended_of(run1), 30)
+    status_is(base, run1, "finished")
+    first.sees(f"run {run1}'s end", ended_of(run1))
     done1 = first.stop()
     # A run's calls have keys; its end and its progress events have none.
     keys1 = {d["key"] for d in done1["deliveries"] if d.get("run") == run1 and d.get("call") not in ("ended", "event")}
@@ -347,7 +346,7 @@ def main():
         fail(f"host-2 did not go on as {reg}: {second.out()}")
     run2 = start_run(base, reg)
     ask = second.sees(f"run {run2}'s question", call_of("ask", run2))
-    status_is(base, run2, "parked", 60)
+    status_is(base, run2, "parked")
     done2 = second.stop()
     if any(ended_of(run1)(d) for d in done2["deliveries"]):
         fail(f"host-2 was sent run {run1}'s end, which host-1 acknowledged")
@@ -372,8 +371,8 @@ def main():
     if again["id"] != ask["id"] or again["key"] != ask["key"]:
         fail(f"host-3 was sent {again}, not the question host-2 held ({ask})")
     ok(f"host-3 (pid {third.p.pid}) waited for the daemon, went on as {reg}, and was sent the question that waited")
-    status_is(base, run2, "finished", 90)
-    third.sees(f"run {run2}'s end", ended_of(run2), 30)
+    status_is(base, run2, "finished")
+    third.sees(f"run {run2}'s end", ended_of(run2))
     done3 = third.stop()
     if any(call_of("lamps", run2)(d) or ended_of(run1)(d) for d in done3["deliveries"]):
         fail(f"host-3 was sent what was settled before: {done3['deliveries']}")

@@ -338,6 +338,7 @@ pub fn store(dir: &Path, aid: &str, tid: &str, bytes: &[u8]) -> std::io::Result<
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

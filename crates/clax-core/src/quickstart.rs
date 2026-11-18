@@ -127,6 +127,7 @@ impl Release {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::embedded::{DiskTree, MemTree};

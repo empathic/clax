@@ -263,6 +263,7 @@ fn session_of(got: &serde_json::Value, n: &serde_json::Value) -> Option<String> 
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

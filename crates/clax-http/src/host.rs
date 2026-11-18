@@ -172,6 +172,7 @@ pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next:
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{SiteHosts, artifact_host, site_request};
 

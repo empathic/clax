@@ -245,6 +245,7 @@ impl Reports {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -301,6 +302,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod measure {
     use super::*;
 
@@ -310,6 +312,10 @@ mod measure {
     /// call_scope_cost --nocapture`.
     #[test]
     #[ignore = "a measurement, not a check"]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "measures the real time a call scope costs, run by hand; it gates nothing"
+    )]
     fn call_scope_cost() {
         let small = serde_json::json!({"url_or_id": "k3m9q2w8x1ab", "limit": 5});
         let page = format!(

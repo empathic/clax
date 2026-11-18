@@ -8,12 +8,12 @@
 // shows the raise and who gave it, and Sam's connect-time approval of the
 // owner's content; the owner removes Sam's raise from Mia's card. On a machine with no LAN address the daemon refuses
 // invites (`not_on_lan`) and the test says so and skips.
-import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { api, expect, publish, startDaemon, test } from "./fixtures";
+import { api, expect, publish, run, startDaemon, test } from "./fixtures";
 import { ownerCookie } from "./questions-helpers";
 
 /** The environment of a CLI run as a person, on their scratch home, outside any agent channel. */
@@ -74,7 +74,7 @@ test("a creator raises another person's agent on their artifact from its People 
       expect(made.status, JSON.stringify(invite)).toBe(201);
       // Sam answers yes to the owner's content reaching his agents; Mia no.
       const args = ["connect", invite.invite.command.replace(/^clax connect /, ""), "--name", `${name.toLowerCase()}-laptop`, "--no-browser", ...(name === "Sam" ? ["--yes"] : [])];
-      const out = spawnSync(bin, args, { env: personEnv(home), input: "n\n", encoding: "utf8", timeout: 20_000 });
+      const out = await run(bin, args, { env: personEnv(home), input: "n\n" });
       expect(out.status, out.stderr).toBe(0);
       links[name] = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)![0];
     }

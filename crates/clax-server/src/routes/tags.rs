@@ -355,6 +355,7 @@ pub(crate) fn tag_params(query: Option<&str>) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

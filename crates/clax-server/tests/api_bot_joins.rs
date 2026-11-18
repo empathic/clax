@@ -209,9 +209,8 @@ async fn events_until(d: &Daemon, run: &str, cookie: &str, until: &str) -> Strin
             .unwrap();
     let mut body = String::new();
     while !body.contains(until) {
-        let chunk = tokio::time::timeout(clax_testkit::HANG, r.chunk())
+        let chunk = clax_testkit::within("the stream goes on", r.chunk())
             .await
-            .expect("the stream goes on")
             .unwrap()
             .unwrap_or_else(|| panic!("the stream ended without {until:?}: {body}"));
         body.push_str(&String::from_utf8_lossy(&chunk));
@@ -358,9 +357,8 @@ async fn a_thread_run_on_a_joined_artifact_calls_its_host_and_gets_its_answer() 
             .send()
             .await
             .unwrap();
-    let body = tokio::time::timeout(clax_testkit::HANG, r.text())
+    let body = clax_testkit::within("the run's events", r.text())
         .await
-        .unwrap()
         .unwrap();
     assert!(body.contains("event: run_end"), "{body}");
     assert!(

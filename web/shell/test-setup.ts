@@ -1,5 +1,10 @@
 import { afterAll, afterEach, expect, vi } from "vitest";
+import { trackWork } from "./src/test/settled";
 import { WAIT_MS } from "./src/test/timeouts";
+
+// `settled()` (src/test/settled.ts) waits for the zero-delay timers and
+// response reads the code under test starts: track them from the first.
+trackWork();
 
 // `vi.waitFor` and `vi.waitUntil` give up after one second unless told
 // otherwise, which a loaded machine can take to load one lazy module. Here

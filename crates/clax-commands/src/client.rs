@@ -1658,8 +1658,54 @@ impl Client {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) mod tests {
     use super::*;
+
+    /// How long a wait of these tests on a condition may take before it is
+    /// called a hang: a guard only, never what decides a result (as
+    /// `clax_testkit::HANG`, which unit tests do not depend on).
+    pub(crate) const HANG: Duration = Duration::from_secs(120);
+
+    /// The next value on `rx`, bounded by the [`HANG`] guard: panics naming
+    /// `what` past it, or when every sender is gone first.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "recv_within is the HANG guard on a wait"
+    )]
+    pub(crate) fn recv_within<T>(what: &str, rx: &std::sync::mpsc::Receiver<T>) -> T {
+        rx.recv_timeout(HANG)
+            .unwrap_or_else(|e| panic!("{what}: {e} (hang guard {HANG:?})"))
+    }
+
+    /// Returns once `done` holds, checked every 50 ms; panics naming `what`
+    /// past the [`HANG`] guard.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "wait_until polls its condition under the HANG guard; nothing is decided by how long it takes"
+    )]
+    pub(crate) fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let started = Instant::now();
+        while !done() {
+            assert!(
+                started.elapsed() < HANG,
+                "{what}: not after {HANG:?} (hang guard)"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Reinstalls the file of its own at `exe` with `text`, as a rebuild
+    /// does, its modification time a second past the old one's: a new
+    /// identity however coarse the file system's times are.
+    fn rebuild(exe: &std::path::Path, text: &str) {
+        let was = std::fs::metadata(exe).unwrap().modified().unwrap();
+        clax_fake_exe::install_own(exe, text);
+        std::fs::File::open(exe)
+            .unwrap()
+            .set_modified(was + Duration::from_secs(1))
+            .unwrap();
+    }
 
     /// A remote daemon's redirect is an answer, never followed: a signed
     /// request and its body go nowhere else.
@@ -1897,7 +1943,7 @@ class H(BaseHTTPRequestHandler):
         self.reply({{"version": "{version}", "pid": os.getpid()}})
     def do_POST(self):
         if {hang}:
-            time.sleep(3600)
+            threading.Event().wait()
         self.reply({{}})
         self.wfile.flush()
         def stop():
@@ -1988,10 +2034,7 @@ srv.serve_forever()
     fn stop(home: &Home) {
         if let Some(c) = Client::discover(home) {
             let _ = c.shutdown();
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline && pid_alive(c.info.pid) {
-                std::thread::sleep(Duration::from_millis(50));
-            }
+            wait_until("the fake daemon's exit", || !pid_alive(c.info.pid));
         }
     }
 
@@ -2067,7 +2110,7 @@ srv.serve_forever()
         let slow = script_own(
             dir.path(),
             "slow",
-            "d=\"$(dirname \"$0\")\"\necho $$ > \"$d/slow.pid\"\ntouch \"$d/pids/$$\"\nexec sleep 60",
+            "d=\"$(dirname \"$0\")\"\ntouch \"$d/pids/$$\"\necho $$ > \"$d/slow.pid.tmp\"\nmv \"$d/slow.pid.tmp\" \"$d/slow.pid\"\nexec sleep 60",
         );
         let e = format!(
             "{:#}",
@@ -2134,7 +2177,7 @@ srv.serve_forever()
             "0.0.2",
             false,
             None,
-            "starting('recording', 3, 10)\ntime.sleep(60)",
+            "starting('recording', 3, 10)\nthreading.Event().wait()",
         );
         let e = format!(
             "{:#}",
@@ -2259,7 +2302,7 @@ srv.serve_forever()
             })
             .map(drop)
         });
-        let said = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let said = recv_within("the lock-wait message", &rx);
         assert!(
             said.contains("waiting for the daemon's first start"),
             "{said}"
@@ -2270,18 +2313,12 @@ srv.serve_forever()
     }
 
     #[test]
-    fn an_old_daemon_that_ignores_shutdown_is_terminated_promptly() {
+    fn an_old_daemon_that_ignores_shutdown_is_terminated() {
         let dir = Scratch::new();
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", true, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
-        let started = Instant::now();
         let c = Client::replace(&home, &old, &new_exe, |_| false, None).unwrap();
-        assert!(
-            started.elapsed() < Duration::from_secs(15),
-            "{:?}",
-            started.elapsed()
-        );
         assert_eq!(c.info.version, "0.0.2");
         assert!(!pid_alive(old.info.pid));
         assert!(log(&home).contains("SIGTERM"), "{}", log(&home));
@@ -2338,14 +2375,14 @@ srv.serve_forever()
         gone.port = port;
         let old = Client::from_info(gone);
         let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
-        let started = Instant::now();
         let c = Client::replace(&home, &old, &new_exe, |_| false, None).unwrap();
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "{:?}",
-            started.elapsed()
-        );
         assert_eq!(c.info.version, "0.0.2");
+        let log = log(&home);
+        assert!(
+            log.contains(&format!("nothing listens on port {port}; taking pid")),
+            "not waited on: {log}"
+        );
+        assert!(!log.contains("SIGTERM"), "not signalled: {log}");
         assert!(
             other.0.try_wait().unwrap().is_none(),
             "the unrelated process is untouched"
@@ -2425,8 +2462,7 @@ srv.serve_forever()
         assert_eq!(replacements(&home), 1, "not retried");
 
         // A rebuilt executable is tried at once.
-        std::thread::sleep(Duration::from_millis(20));
-        clax_fake_exe::install_own(&bad, "#!/bin/sh\n# rebuilt\nexit 1\n");
+        rebuild(&bad, "#!/bin/sh\n# rebuilt\nexit 1\n");
         assert!(Client::connect_matching(&home, 0, lo, "0.0.2", &bad).is_err());
         assert_eq!(
             replacements(&home),
@@ -2485,8 +2521,7 @@ srv.serve_forever()
         let exe = script_own(dir.path(), "new", "exit 1");
         write_hold(&home, "0.0.2", &exe, "why");
         assert_eq!(upgrade_hold(&home).unwrap().reason, "why");
-        std::thread::sleep(Duration::from_millis(20));
-        clax_fake_exe::install_own(&exe, "#!/bin/sh\n# rebuilt\nexit 1\n");
+        rebuild(&exe, "#!/bin/sh\n# rebuilt\nexit 1\n");
         assert!(
             upgrade_hold(&home).is_none(),
             "a rebuilt executable lifts it"

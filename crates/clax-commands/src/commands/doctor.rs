@@ -912,6 +912,7 @@ fn report(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{
         codex_approvals_check, codex_push_check, config_check, config_check_with,

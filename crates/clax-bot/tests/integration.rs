@@ -1,6 +1,7 @@
 //! ClaxBot runs end to end: a scripted Messages API on 127.0.0.1, the
 //! QuickJS sandbox, a fake host and a store on a scratch home with an
 //! injected clock. No test reaches the network or sleeps for a condition.
+#![warn(clippy::disallowed_methods)]
 
 mod common;
 

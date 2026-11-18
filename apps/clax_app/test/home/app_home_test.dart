@@ -11,6 +11,7 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_cover.dart';
 import 'package:clax_app/ui/comment_bar.dart';
 import 'package:clax_app/ui/host_protocol.dart';
+import 'package:clax_app/ui/settings_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -19,6 +20,7 @@ import '../agent/loop_support.dart';
 import '../support/fake_core.dart';
 import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
+import '../support/settle.dart';
 
 const _page = {'index.html': '<h1>x</h1>'};
 
@@ -30,15 +32,9 @@ class _Key implements SecureKey {
   Future<void> write(String? key) async {}
 }
 
-/// Pumps until the app's async work settles; app pages are given their
-/// `ready` so no progress indicator keeps [WidgetTester.pumpAndSettle]
-/// from ending.
-Future<void> _settle(WidgetTester tester) async {
-  for (var i = 0; i < 20; i++) {
-    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-    await tester.pump(const Duration(milliseconds: 50));
-  }
-}
+/// Whether [page] has been answered its device request [id].
+bool _answered(FakeAppSurface page, String id) =>
+    page.hostCalls.whereType<DeviceResult>().any((r) => r.id == id);
 
 /// Ends the app, and lets the home route's 10 s wait for `shown` run out.
 Future<void> _finish(WidgetTester tester) async {
@@ -103,13 +99,17 @@ void main() {
       ),
     );
     coreHost.set(const CoreReady());
-    await _settle(tester);
+    await settleUntil(tester, () => surfaces.isNotEmpty, what: 'the home page');
     final page = surfaces.single;
     page.push(Ready(artifact: home, version: 1, latest: 1, file: 'index.html'));
     page.push(
       const DeviceRequest(id: 'r1', cap: 'home', method: 'apps', args: []),
     );
-    await _settle(tester);
+    await settleUntil(
+      tester,
+      () => _answered(page, 'r1'),
+      what: 'the home page’s apps answered',
+    );
     return page;
   }
 
@@ -126,16 +126,14 @@ void main() {
         ],
       ),
     );
-    await _settle(tester);
-    expect(surfaces, hasLength(2), reason: 'Notes opened over home');
+    await settleUntil(tester, () => surfaces.length == 2, what: 'Notes opened');
     final notesPage = surfaces[1];
     notesPage.push(
       Ready(artifact: notes, version: 1, latest: 1, file: 'index.html'),
     );
-    await _settle(tester);
 
     notesPage.navigateElsewhere(home);
-    await _settle(tester);
+    await settleUntil(tester, () => notesPage.disposed, what: 'Notes closed');
     expect(surfaces, hasLength(2), reason: 'no second home page');
     expect(notesPage.disposed, isTrue, reason: 'Notes closed');
     expect(page.disposed, isFalse);
@@ -153,7 +151,7 @@ void main() {
         args: [],
       ),
     );
-    await _settle(tester);
+    await settle(tester, find.byType(SettingsScreen));
     expect(find.byType(CommentBar), findsNothing);
     await tester.scrollUntilVisible(
       find.text('Reset to Clax’s home screen'),
@@ -162,7 +160,7 @@ void main() {
     );
     expect(find.text('Home screen'), findsOneWidget);
     await tester.tap(find.text('Open in comment mode'));
-    await _settle(tester);
+    await settle(tester, find.byType(CommentBar));
     expect(find.text('Home screen'), findsNothing, reason: 'Settings closed');
     expect(surfaces, hasLength(1), reason: 'no second home page');
     expect(find.byType(CommentBar), findsOneWidget);
@@ -179,7 +177,7 @@ void main() {
     File('${dir.path}/${HomeSettings.fileName}').writeAsStringSync('{}');
     await tester.pumpWidget(AppRoot(services: services(homeSettings: early)));
     coreHost.set(const CoreReady());
-    await _settle(tester);
+    await settleUntil(tester, () => surfaces.isNotEmpty, what: 'the home page');
     expect(surfaces, isNotEmpty, reason: 'the home app''s page');
     expect(surfaces.first.loads.single.path, contains(home));
     await _finish(tester);
@@ -193,14 +191,18 @@ void main() {
     await tester.pumpWidget(AppRoot(services: services()));
     expect(find.byType(Image), findsNothing);
     coreHost.set(const CoreReady());
-    await _settle(tester);
+    await settleUntil(tester, () => surfaces.isNotEmpty, what: 'the home page');
     expect(find.byKey(const ValueKey('app-cover')), findsOneWidget);
     final page = surfaces.single;
     page.push(Ready(artifact: home, version: 1, latest: 1, file: 'index.html'));
     page.push(
       const DeviceRequest(id: 'r1', cap: 'home', method: 'shown', args: []),
     );
-    await _settle(tester);
+    await settleUntil(
+      tester,
+      () => timings.stopped.isNotEmpty,
+      what: 'home-usable timed',
+    );
     await tester.pump(AppCover.markHold);
     expect(find.byKey(const ValueKey('app-cover')), findsNothing);
     expect(timings.stopped.single.name, homeUsable);
@@ -214,16 +216,19 @@ void main() {
     timings.start(homeUsable);
     await tester.pumpWidget(AppRoot(services: services()));
     coreHost.set(const CoreReady());
-    await _settle(tester);
+    await settleUntil(tester, () => surfaces.isNotEmpty, what: 'the home page');
     final page = surfaces.single;
     page.push(Ready(artifact: home, version: 1, latest: 1, file: 'index.html'));
     // No shown within 10 s: the built-in home screen.
     await tester.pump(const Duration(seconds: 11));
-    await _settle(tester);
     page.push(
       const DeviceRequest(id: 'r1', cap: 'home', method: 'shown', args: []),
     );
-    await _settle(tester);
+    await settleUntil(
+      tester,
+      () => _answered(page, 'r1'),
+      what: 'the shown request answered',
+    );
     expect(timings.stopped.where((r) => r.name == homeUsable), isEmpty);
     await _finish(tester);
   });

@@ -2,10 +2,10 @@
 
 use clax_mcp::tools::{Opener, PublishArgs, TargetArgs};
 use clax_mcp::{ClaxTools, DaemonClient};
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, within};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::Value;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn text(r: &rmcp::model::CallToolResult) -> Value {
     serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap()
@@ -14,12 +14,13 @@ fn text(r: &rmcp::model::CallToolResult) -> Value {
 #[tokio::test]
 async fn opened_follows_the_openers_exit_status() {
     // A fake opener that behaves as the file `mode` beside it says: exit
-    // with the code it holds, or keep running when it says `hang`.
+    // with the code it holds, or, when it says `hang`, keep running until
+    // the test's directory is gone.
     let dir = tempfile::tempdir().unwrap();
     let mode = dir.path().join("mode");
     let opener = clax_fake_exe::install(
         &dir.path().join("open"),
-        "#!/bin/sh\nm=$(cat \"$(dirname \"$0\")/mode\")\nif [ \"$m\" = hang ]; then sleep 5; exit 0; fi\nexit \"$m\"\n",
+        "#!/bin/sh\nm=\"$(dirname \"$0\")/mode\"\nif [ \"$(cat \"$m\")\" = hang ]; then while [ -e \"$m\" ]; do sleep 1; done; exit 0; fi\nexit \"$(cat \"$m\")\"\n",
     );
 
     let ts = TestServer::spawn().await;
@@ -61,12 +62,14 @@ async fn opened_follows_the_openers_exit_status() {
     assert_eq!(open(&t, &id).await["opened"], true);
 
     // An opener still running after the wait counts as opened, without
-    // waiting for it to exit.
+    // waiting for it to exit: this one exits only once the test has ended.
     std::fs::write(&mode, "hang").unwrap();
-    let t0 = Instant::now();
-    assert_eq!(open(&hanging, &id).await["opened"], true);
-    let took = t0.elapsed();
-    assert!(took >= short && took < Duration::from_secs(4), "{took:?}");
+    let o = within(
+        "open with an opener that keeps running",
+        open(&hanging, &id),
+    )
+    .await;
+    assert_eq!(o["opened"], true, "{o}");
 }
 
 #[tokio::test]

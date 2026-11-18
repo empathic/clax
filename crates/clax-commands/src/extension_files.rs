@@ -98,6 +98,7 @@ pub fn host_dirs(env: &dyn Fn(&str) -> Option<String>) -> Vec<HostDir> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

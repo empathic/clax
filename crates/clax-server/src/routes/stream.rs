@@ -594,6 +594,7 @@ fn live_only_refusal() -> ApiError {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::socket_origin_allowed;
     use axum::http::{HeaderMap, HeaderName, HeaderValue};

@@ -291,7 +291,11 @@ test("a comment waiting for Sam's agent is held while the agent has no access, a
     const row = sam.page.locator(".agent").filter({ has: sam.page.locator(".aname", { hasText: /^sam-notes$/ }) });
     await row.locator(".narrow summary").click();
     const read = row.locator(".narrow .caps label", { hasText: "Read artifacts" }).locator("input");
+    // The box shows the change at once; the daemon holds the comment once
+    // the narrowing's PUT has been answered, so the agent reads after that.
+    const narrowed = sam.page.waitForResponse(r => r.request().method() === "PUT" && /\/api\/agents\/[^/]+\/narrow$/.test(new URL(r.url()).pathname));
     await read.uncheck();
+    expect((await narrowed).status()).toBe(200);
     await expect(read).not.toBeChecked();
 
     // The agent is told it no longer has access; the owner and Sam read the hold.

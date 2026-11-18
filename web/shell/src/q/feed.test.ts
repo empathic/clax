@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StreamEvent } from "../stream";
 import { InboxFeed, LEAVE_MS, QuestionFeed, SUMMARY_MS } from "./feed.svelte";
 import { item, view } from "./fixtures";
+import { settled } from "../test/settled";
 
 /** An event stream the test drives: what was watched, and its events handed back. */
 function fakeStream() {
@@ -29,7 +30,7 @@ function stubFetch(answer: (url: string, init?: RequestInit) => [number, unknown
   }));
   return calls;
 }
-const settle = () => new Promise(r => setTimeout(r, 0));
+const settle = settled;
 
 /** A clock the test moves by hand. */
 function fakeClock() {

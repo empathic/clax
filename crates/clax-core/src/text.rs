@@ -40,6 +40,7 @@ pub fn is_hidden_char(c: char) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

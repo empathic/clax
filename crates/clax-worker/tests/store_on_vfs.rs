@@ -2,6 +2,7 @@
 //! Object opens it (`Store::open_on`): its migrations, maintenance and
 //! writes pass the connection's authorizer, every commit reaches the page
 //! store, and a store reopened on the page store sees them.
+#![warn(clippy::disallowed_methods)]
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};

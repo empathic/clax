@@ -395,6 +395,7 @@ pub(crate) async fn redeliver(deps: &Deps) -> usize {
     told
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     /// The run loop's part of a run's end reads nothing of Clax's own

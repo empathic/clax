@@ -881,4 +881,5 @@ pub fn platform_error(message: &str, limits: &Limits) -> ScriptError {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests;

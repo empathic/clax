@@ -6,7 +6,7 @@ use clax_core::audit::AuditCtx;
 use clax_core::queue::{LEASE_SECS, ReportersSee, Role};
 use clax_core::working::ManualClock;
 use clax_store::queues::{ExternalScope, NewQueue, NewReport, ReporterToken};
-use clax_testkit::{FAKE_PNG, TestServer, element_anchor};
+use clax_testkit::{FAKE_PNG, TestServer, element_anchor, within};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -1320,9 +1320,8 @@ async fn watch_then_file_delivers_through_wait_for_feedback() {
         )
         .await;
     assert_eq!(s, 200, "{v}");
-    let got = tokio::time::timeout(clax_testkit::HANG, waiter)
+    let got = within("the reopen's wake of the proposer's wait", waiter)
         .await
-        .expect("the reopen wakes the proposer's wait")
         .unwrap();
     let items = got["feedback"].as_array().unwrap();
     assert_eq!(items.len(), 1, "{got}");
@@ -1646,9 +1645,7 @@ async fn stream_with(
 /// The next `report` event `r` carries: its report ID and state; panics
 /// past the hang guard (keep-alives never end `EventReader::next`'s wait).
 async fn next_report(r: &mut clax_testkit::EventReader) -> (String, String) {
-    tokio::time::timeout(clax_testkit::HANG, next_report_unbounded(r))
-        .await
-        .expect("a report event within the hang guard")
+    within("a report event", next_report_unbounded(r)).await
 }
 
 async fn next_report_unbounded(r: &mut clax_testkit::EventReader) -> (String, String) {

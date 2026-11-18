@@ -1,4 +1,5 @@
 //! clax-content-git integration tests: one binary, a module per file.
+#![warn(clippy::disallowed_methods)]
 
 mod common;
 mod contract;

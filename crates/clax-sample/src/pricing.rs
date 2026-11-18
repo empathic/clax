@@ -85,6 +85,7 @@ pub fn micro(usd: f64) -> u64 {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

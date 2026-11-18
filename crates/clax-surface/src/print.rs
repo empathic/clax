@@ -59,6 +59,7 @@ fn ty(t: &Ty, s: Style<'_>) -> String {
 }
 
 /// A type as the model reads it, whole.
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 pub(crate) fn model_text(t: &Ty) -> String {
     ty(

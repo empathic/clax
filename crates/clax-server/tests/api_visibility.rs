@@ -2708,9 +2708,8 @@ async fn the_codex_queue_sends_only_filtered_visible_rows() {
         let fifo = fifo.clone();
         async move {
             let read = tokio::task::spawn_blocking(move || std::fs::read_to_string(fifo));
-            tokio::time::timeout(std::time::Duration::from_secs(60), read)
+            clax_testkit::within("codex queue's run", read)
                 .await
-                .expect("codex queue ran")
                 .unwrap()
                 .unwrap()
         }

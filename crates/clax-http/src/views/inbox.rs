@@ -683,6 +683,7 @@ pub fn listen(s: &AppState) -> Vec<clax_rt::JoinHandle<()>> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_store::inbox::AgentRef;

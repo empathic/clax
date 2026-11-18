@@ -47,10 +47,13 @@
 //! (`{kind}` in a brief) reaches the model as that text.
 
 pub(crate) mod file;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod joined;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod live;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod request_words;
 pub(crate) mod standard;
@@ -910,6 +913,7 @@ pub fn request_message(request: RequestKind, cx: &RequestContext) -> String {
     PROMPT.request(request.as_str(), &written, &[])
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

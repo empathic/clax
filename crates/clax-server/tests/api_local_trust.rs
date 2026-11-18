@@ -939,7 +939,7 @@ async fn the_daemons_own_mcp_open_hands_the_opener_a_login_link() {
     // The `/mcp` adapter's tool set, acting for a caller with the token.
     let tools = clax_server::routes::mcp_http::tools(&ts.state)
         .with_opener(Opener::Program(opener))
-        .with_open_wait(std::time::Duration::from_secs(30))
+        .with_open_wait(clax_testkit::HANG)
         .for_caller(Some(format!("Bearer {}", ts.token).parse().unwrap()));
     let text = |r: rmcp::model::CallToolResult| -> Value {
         serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap()
@@ -1168,7 +1168,6 @@ async fn logging_out_ends_the_streams_and_sockets_opened_with_a_session() {
     // The owner's viewer row, made on first use, which a live socket needs.
     ts.owner_public_id().await;
     let proof = ts.owner_proof();
-    let wait = std::time::Duration::from_secs(20);
     let mut streams = Vec::new();
     for path in ["/api/events", "/api/stream"] {
         let res = reqwest::Client::new()
@@ -1180,9 +1179,8 @@ async fn logging_out_ends_the_streams_and_sockets_opened_with_a_session() {
             .unwrap();
         assert_eq!(res.status(), 200, "{path}");
         let mut body = res.bytes_stream();
-        let first = tokio::time::timeout(wait, body.next())
+        let first = clax_testkit::within("the stream's ready", body.next())
             .await
-            .expect("the stream's ready within 20 s")
             .expect("open")
             .unwrap();
         assert!(
@@ -1209,9 +1207,8 @@ async fn logging_out_ends_the_streams_and_sockets_opened_with_a_session() {
         let (mut s, _) = tokio_tungstenite::connect_async(req)
             .await
             .unwrap_or_else(|e| panic!("{what}: {e}"));
-        let hello = tokio::time::timeout(wait, s.next())
+        let hello = clax_testkit::within("a welcome", s.next())
             .await
-            .expect("a welcome within 20 s")
             .expect("open")
             .unwrap();
         assert!(hello.to_text().unwrap().contains("welcome"), "{what}");
@@ -1224,7 +1221,7 @@ async fn logging_out_ends_the_streams_and_sockets_opened_with_a_session() {
         .unwrap();
     assert_eq!(res.status(), 200);
     for (path, mut body) in streams {
-        let ended = tokio::time::timeout(wait, async {
+        clax_testkit::within(&format!("{path}'s end at logout"), async {
             while let Some(chunk) = body.next().await {
                 if chunk.is_err() {
                     break;
@@ -1232,10 +1229,9 @@ async fn logging_out_ends_the_streams_and_sockets_opened_with_a_session() {
             }
         })
         .await;
-        assert!(ended.is_ok(), "{path} ends at logout");
     }
     for (what, mut s) in sockets {
-        let closed = tokio::time::timeout(wait, async {
+        let closed = clax_testkit::within(&format!("{what}'s close at logout"), async {
             loop {
                 match s.next().await {
                     Some(Ok(Message::Close(c))) => return c.map(|c| u16::from(c.code)),
@@ -1244,8 +1240,7 @@ async fn logging_out_ends_the_streams_and_sockets_opened_with_a_session() {
                 }
             }
         })
-        .await
-        .expect("closed within 20 s");
+        .await;
         assert_eq!(closed, Some(4403), "{what}");
     }
 }

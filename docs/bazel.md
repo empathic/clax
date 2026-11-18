@@ -90,7 +90,9 @@ never runs `cargo check` into a `target/`; for VS Code, in
 
 Use `scripts/bazel-test.sh` rather than `--config=clippy` by hand: it gives
 `crates/clax-commands` its own `clippy.toml`, which Bazel takes only one of per
-command. It holds off idle sleep on macOS while it runs; a plain
+command, with the `clippy::disallowed_methods` lint that `--config=clippy`
+allows for the timing rules (the root `clippy.toml`'s, for test code only:
+docs/usage.md, "Developing Clax") turned back on. It holds off idle sleep on macOS while it runs; a plain
 `bazelisk test` does not (`caffeinate -i bazelisk test …` does).
 
 ## Keeping Bazel in step with Cargo
@@ -199,6 +201,13 @@ which declares, with `<lib>` the library's crate name:
   module made a clax-core edit compile eight times as much. The root gates
   each module with `#[cfg(any(not(clax_split), clax_split = "<module>"))]`;
   Cargo sets no `clax_split` and builds them all into one binary, as before;
+- for clax-store's unit tests, one test binary run as several targets
+  (`split_lib_test`): `//crates/clax-store:clax_store_lib_test` and
+  `clax_store_lib_test__2` … `__6`, each given its share of the modules by
+  libtest's filters and `--skip`, so that every test runs in exactly one;
+  and the same shares again on one connection,
+  `clax_store_one_connection_test__1` … `__6`. `//crates/clax-store:all`
+  runs them all;
 - `build_script` when the crate has one;
 - for a crate the hosted Worker builds, `<lib>_wasm` (and, with `cdylib`,
   `<lib>_wasm_shared`): the library for wasm32, its third-party
@@ -623,7 +632,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | build clax, build tests | the build of `//crates/...` in the one `bazel test` |
 | cargo nextest (or cargo test) | every Rust test target, `tests(//crates/...)`, the integration tests in a few targets per crate |
 | cargo fmt --check | `--config=fmt` over `//crates/...` |
-| cargo clippy | `--config=clippy` over `//crates/...`: each library, binary and test target; `crates/clax-commands` again with its own `clippy.toml` |
+| cargo clippy | `--config=clippy` over `//crates/...`: each library, binary and test target, the timing rules in test code only; `crates/clax-commands` again with its own `clippy.toml` and its disallowed methods errors |
 | release build | `//crates/clax-cli:clax_opt` |
 | justfile | `scripts/test-justfile.sh`, outside Bazel |
 | release scripts | `//scripts:release` |

@@ -728,6 +728,7 @@ impl Store {
     }
 }
 
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

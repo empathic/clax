@@ -4,18 +4,17 @@
 // as `<name> (<person>'s agent, via <harness>)`, in a thread's card and in
 // the inbox. The daemon listens on every interface, so its invites name
 // this machine's LAN address; on a machine with none the test skips.
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
-import { api, expect, publish, registerSession, setName, startDaemon, test } from "./fixtures";
+import { api, expect, publish, registerSession, run, setName, startDaemon, test } from "./fixtures";
 
 /** Runs the CLI as the person, on their scratch home, outside any agent channel. */
 function asPerson(home: string, args: string[], input?: string, cwd?: string, env: NodeJS.ProcessEnv = {}) {
   const all: NodeJS.ProcessEnv = { ...process.env, CLAX_HOME: home, ...env };
   for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "CLAX_PORT"]) if (!(k in env)) delete all[k];
-  return spawnSync(process.env.CLAX_E2E_BIN!, args, { env: all, input, cwd, encoding: "utf8", timeout: 20_000 });
+  return run(process.env.CLAX_E2E_BIN!, args, { env: all, input, cwd });
 }
 
 /** A thread on `aid` made in `page`'s browser (its viewer), sent to the agents. */
@@ -51,14 +50,14 @@ test("each reader reads its own person's agent's reply as its agent's, and anoth
     const refused = (await alert.count()) ? await alert.textContent() : null;
     test.skip(!!refused && refused.includes("LAN"), `no LAN address here: ${refused}`);
     const command = (await owner.locator(".invite code").textContent())!;
-    const out = asPerson(sam, ["connect", command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--yes", "--no-browser"]);
+    const out = await asPerson(sam, ["connect", command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--yes", "--no-browser"]);
     expect(out.status, out.stderr).toBe(0);
     const link = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)![0];
     // Sam's agent, named after its checkout (sam-notes), and the owner's.
     const project = join(sam, "work", "sam-notes");
     mkdirSync(join(project, ".git"), { recursive: true });
     writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
-    const hook = asPerson(sam, ["hook", "--agent", "claude", "session-start"], JSON.stringify({ session_id: "e2e-sam-1", cwd: project, hook_event_name: "SessionStart", source: "startup" }), project);
+    const hook = await asPerson(sam, ["hook", "--agent", "claude", "session-start"], JSON.stringify({ session_id: "e2e-sam-1", cwd: project, hook_event_name: "SessionStart", source: "startup" }), project);
     expect(hook.status, hook.stderr).toBe(0);
     const mine = await registerSession(d.base, d.token, "claude");
 
@@ -75,7 +74,7 @@ test("each reader reads its own person's agent's reply as its agent's, and anoth
       { jsonrpc: "2.0", method: "notifications/initialized" },
       { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "comments_reply", arguments: { url_or_id: aid, thread_id: second, text: "Done there" } } },
     ].map(m => JSON.stringify(m)).join("\n") + "\n";
-    const shim = asPerson(sam, ["mcp", "--agent", "claude"], rpc, project, { CLAUDE_CODE_SESSION_ID: "e2e-sam-1", CLAX_CHANNEL: "agent" });
+    const shim = await asPerson(sam, ["mcp", "--agent", "claude"], rpc, project, { CLAUDE_CODE_SESSION_ID: "e2e-sam-1", CLAX_CHANNEL: "agent" });
     expect(shim.stdout, shim.stderr).toContain('\\"replied\\": true');
     const name = (await api(d.base, d.token, "/api/agents")).agents.find((a: { handle: string; harness: string; person: string | null }) => a.person === null && a.handle && a.harness === "claude")?.name ?? mine.name;
 

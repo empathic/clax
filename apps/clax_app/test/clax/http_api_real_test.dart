@@ -8,6 +8,7 @@ import 'package:clax_app/clax/http_api.dart';
 import 'package:cryptography/dart.dart' show DartSha256;
 import 'package:flutter_test/flutter_test.dart';
 import '../support/real_core.dart';
+import '../support/settle.dart' show stuckAfter;
 
 /// The `clax.json` the daemon writes for the declaration `{db: {}}`.
 const dbManifest = '{\n  "capabilities": {\n    "db": {}\n  }\n}\n';
@@ -643,7 +644,7 @@ Future<Map<String, Object?>> _owner(
     path,
     headers: {'content-type': ?type},
     body: body,
-    timeout: const Duration(seconds: 35),
+    timeout: stuckAfter,
   );
   final text = utf8.decode(r.body);
   expect(r.status, inInclusiveRange(200, 299), reason: '$method $path: $text');

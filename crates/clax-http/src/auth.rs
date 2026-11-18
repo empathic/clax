@@ -539,6 +539,7 @@ pub fn is_local_host(host: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
 
     #[test]

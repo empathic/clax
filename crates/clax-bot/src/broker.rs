@@ -802,5 +802,6 @@ impl<S: BrokerStore + Send + 'static> CallBroker for HubBroker<S> {
 }
 
 pub mod stored;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests;

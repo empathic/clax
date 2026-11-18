@@ -22,7 +22,7 @@
 // report view and the triage report view go where queues.spec.ts's go
 // ($CLAX_QUEUES_SHOTS_DIR, else the test's output directory).
 import type { Page } from "@playwright/test";
-import { McpAgent, NATIVE_MCP_PATH } from "../../demo/lib/http";
+import { McpAgent, NATIVE_MCP_PATH, type ToolAnswer } from "../../demo/lib/http";
 import type { Report } from "../sdk/src/types";
 import { startDeployerSite } from "./deployer-site/server";
 import { expect, test } from "./fixtures";
@@ -49,8 +49,17 @@ async function drag(page: Page, a: { x: number; y: number }, b: { x: number; y: 
   await page.mouse.up();
 }
 
+/** What `agent`'s `wait_for_feedback` reads once it names `text`. Its first
+ * wait starts with the call; a wait that ends without it (each holds up to
+ * 60 s, and a loaded machine can take longer to deliver) is followed by
+ * another, until the test's hang guard. */
+async function feedbackNaming(agent: McpAgent, text: string): Promise<ToolAnswer> {
+  let got = await agent.ok("wait_for_feedback", { timeout_s: 60 });
+  while (!got.text.includes(text)) got = await agent.ok("wait_for_feedback", { timeout_s: 60 });
+  return got;
+}
+
 test("a report with context and recent errors goes from capture to an agent's fix, is still broken, and is verified on the second fix", async ({ browser }, info) => {
-  test.setTimeout(120_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   let agent: McpAgent | null = null;
@@ -107,8 +116,7 @@ test("a report with context and recent errors goes from capture to an agent's fi
     expect(site.minted).toHaveLength(minted);
 
     // The filing wakes the agent's wait, naming the report.
-    const woke = await agent.ok("wait_for_feedback", { timeout_s: 60 });
-    expect(woke.text).toContain(`This is a new report in queue ${qid}`);
+    const woke = await feedbackNaming(agent, `This is a new report in queue ${qid}`);
 
     // The agent lists the queue's active reports: the release and the diagnostics count.
     const listed = (await agent.ok("queue_list", { queue: qid, state: "active" })).data as { reports: (Report & { context_summary?: { release?: unknown; mode?: string } })[] };
@@ -160,11 +168,10 @@ test("a report with context and recent errors goes from capture to an agent's fi
     await drag(emp1, { x: req2.x - 4, y: req2.y - 4 }, { x: req2.x + req2.width + 4, y: req2.y + req2.height + 4 });
     await expect(reopen.getByRole("img", { name: /^Screenshot of/ })).toBeVisible();
     await reopen.getByRole("textbox", { name: "What is still broken" }).fill("It still fails on this one.");
-    const reopenWait = agent.ok("wait_for_feedback", { timeout_s: 60 });
+    const reopenWait = feedbackNaming(agent, id);
     await reopen.getByRole("button", { name: "Send" }).click();
     await expect(reopen).toHaveCount(0);
     const reopened = await reopenWait;
-    expect(reopened.text).toContain(id);
     expect(JSON.stringify(reopened.data)).toContain("reopened");
 
     const after = (await agent.ok("queue_get", { queue: qid, report_id: id })).data as unknown as QueueGet;

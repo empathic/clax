@@ -12,12 +12,12 @@
 // card above that thread; he allows it there. The daemon listens on every
 // interface; on a machine with no LAN address it refuses invites
 // (`not_on_lan`) and the test says so and skips.
-import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { api, asLocalViewer, expect, publishAs, registerSession, startDaemon, test } from "./fixtures";
+import { api, asLocalViewer, expect, publishAs, registerSession, run, startDaemon, test } from "./fixtures";
 import { ask, ownerCookie } from "./questions-helpers";
 
 /** The environment of a CLI run as a person, on their scratch home, outside any agent channel. */
@@ -66,7 +66,7 @@ test("the inbox groups by agent, threads name their owners and wait for approval
     const invite = await made.json();
     test.skip(made.status === 409 && invite.error?.code === "not_on_lan", `no LAN address here: ${invite.error?.message}`);
     expect(made.status, JSON.stringify(invite)).toBe(201);
-    const out = spawnSync(bin, ["connect", invite.invite.command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--no-browser"], { env: personEnv(sam), encoding: "utf8", timeout: 20_000 });
+    const out = await run(bin, ["connect", invite.invite.command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--no-browser"], { env: personEnv(sam) });
     expect(out.status, out.stderr).toBe(0);
     const link = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)![0];
     const lan = new URL(link).origin;

@@ -33,6 +33,7 @@ pub fn loopback_return(url: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::loopback_return;
 

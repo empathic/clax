@@ -158,6 +158,7 @@ fn parts(role: Role, content: &[Block], names: &mut HashMap<String, String>) -> 
 /// The streaming request body of `req`.
 /// The `generateContent` body of `req`, each tool's schema its
 /// [`super::Tool::input_schema`].
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 pub(super) fn body(req: &MessagesRequest) -> Value {
     body_marked(req, false)

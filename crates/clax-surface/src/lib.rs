@@ -689,6 +689,7 @@ mod model;
 mod plan;
 mod print;
 mod run_ops;
+#[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests;
 mod value;

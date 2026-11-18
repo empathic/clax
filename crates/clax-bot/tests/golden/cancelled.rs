@@ -99,10 +99,12 @@ async fn cancelled(code: &str, when: When) -> Pins {
         cancel: token,
         events: &on_call,
     };
-    let out = tokio::time::timeout(PROMPTLY, clax_bot::tick(&deps, &run, &driver, opts))
-        .await
-        .expect("the cancel ends the script")
-        .unwrap();
+    let out = within(
+        "the cancel ends the script",
+        clax_bot::tick(&deps, &run, &driver, opts),
+    )
+    .await
+    .unwrap();
     assert_eq!(out.next, Next::Done(RunStatus::Stopped));
     Pins::new(env, run)
 }

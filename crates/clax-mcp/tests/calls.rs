@@ -30,9 +30,8 @@ async fn connect(tools: ClaxTools) -> RunningService<RoleClient, ()> {
 async fn call(c: &RunningService<RoleClient, ()>, name: &str, args: Value) -> CallToolResult {
     let mut p = CallToolRequestParams::new(name.to_string());
     p.arguments = args.as_object().cloned();
-    tokio::time::timeout(Duration::from_secs(30), c.call_tool(p))
+    clax_testkit::within("the tool's answer", c.call_tool(p))
         .await
-        .expect("the tool answers")
         .expect("a tool result")
 }
 
@@ -411,9 +410,8 @@ async fn tool_call_post_does_not_delay_result() {
     // The report is held at the daemon, yet the result comes back.
     let r = call(&c, "list", json!({})).await;
     assert_ne!(r.is_error, Some(true), "{r:?}");
-    let report = tokio::time::timeout(Duration::from_secs(30), f.reports.recv())
+    let report = clax_testkit::within("the call's report", f.reports.recv())
         .await
-        .unwrap()
         .unwrap();
     assert_eq!(report["tool"], "list");
     assert_eq!(report["outcome"], "ok");
@@ -425,9 +423,7 @@ async fn tool_call_post_does_not_delay_result() {
     let r = call(&c, "list", json!({"limit": 1})).await;
     assert_ne!(r.is_error, Some(true), "{r:?}");
     f.release.add_permits(2);
-    tokio::time::timeout(Duration::from_secs(30), tools.settle_reports())
-        .await
-        .unwrap();
+    clax_testkit::within("the reports sent", tools.settle_reports()).await;
     c.cancel().await.unwrap();
 }
 
