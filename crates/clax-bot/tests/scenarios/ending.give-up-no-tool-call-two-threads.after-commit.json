@@ -311,7 +311,7 @@
           ]
         },
         "stop_reason": "end_turn",
-        "system": "<12759 bytes, sha256 36877134d2ba8d96487a6a0ad935e548ede2f4fa20673875ec75e647f9decef6, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
+        "system": "<12802 bytes, sha256 cc8946d4dffecaeb5cf497042335362aaa57e29ea790d82a044f00dd503e863f, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
         "usage": {
           "cache_creation_input_tokens": 500,
           "cache_read_input_tokens": 2000,
