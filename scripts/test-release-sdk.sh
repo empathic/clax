@@ -366,9 +366,7 @@ case_8() {
     refuse "a first publish with npm signed out" "@empathic/clax-client-sdk is not on npm yet, so step 4 publishes its first version from here: sign in first"
     new_case
     : > "$FAKE_STATE/npm-absent"
-    CASE_PATH="$T/no-pnpm:/usr/bin:/bin"
-    mkdir -p "$T/no-pnpm"
-    for t in gh npm; do [ -e "$T/no-pnpm/$t" ] || ln -s "$(readlink "$T/bin/$t")" "$T/no-pnpm/$t"; done
+    CASE_PATH="$(PATH="$FAKE_PATH" path_without "$T/no-pnpm" pnpm)"
     refuse "a first publish without pnpm" "pnpm is not on PATH"
     unset CASE_PATH
 }

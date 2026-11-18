@@ -24,6 +24,17 @@ pub fn as_clax(text: &str) -> String {
     text.replace(&*resolved.to_string_lossy(), &me.to_string_lossy())
 }
 
+/// The harness CLIs `clax init` and `clax doctor` look for on PATH.
+#[allow(dead_code)]
+pub const HARNESSES: [&str; 4] = ["claude", "codex", "grok", "pi"];
+
+/// `/usr/bin:/bin` with each program in `hide` absent. The directories it
+/// makes go under `scratch`.
+#[allow(dead_code)]
+pub fn system_path_without(scratch: &std::path::Path, hide: &[&str]) -> std::ffi::OsString {
+    clax_fake_exe::path_without("/usr/bin:/bin", &scratch.join("system-path"), hide)
+}
+
 /// `f`'s value once it has one, checked again every 20 ms: the thread's
 /// twin of [`clax_testkit::until`], for tests that drive child processes
 /// without a runtime. Bounded only by the [`clax_testkit::HANG`] guard, so

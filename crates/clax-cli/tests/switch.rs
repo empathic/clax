@@ -408,7 +408,10 @@ fn serve_status_and_doctor_say_when_a_failed_upgrade_keeps_an_older_daemon() {
 
     let out = clax(dir.path())
         .args(["doctor", "--agent", "claude", "--json"])
-        .env("PATH", "/usr/bin:/bin")
+        .env(
+            "PATH",
+            crate::common::system_path_without(dir.path(), &["clax"]),
+        )
         .output()
         .unwrap();
     let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();

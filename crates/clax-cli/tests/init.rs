@@ -52,7 +52,13 @@ impl Env {
             )
             .env(
                 "PATH",
-                format!("{}:/usr/bin:/bin", self.p("fakebin").display()),
+                std::env::join_paths(std::iter::once(self.p("fakebin")).chain(
+                    std::env::split_paths(&crate::common::system_path_without(
+                        self.dir.path(),
+                        &crate::common::HARNESSES,
+                    )),
+                ))
+                .unwrap(),
             )
             .env_remove("CLAX_BIN");
         c

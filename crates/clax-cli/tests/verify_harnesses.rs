@@ -204,9 +204,15 @@ impl Run {
             .env(
                 "PATH",
                 format!(
-                    "{}:{}:/usr/bin:/bin",
+                    "{}:{}:{}",
                     self.p("fakebin").display(),
-                    self.p("decoybin").display()
+                    self.p("decoybin").display(),
+                    clax_fake_exe::path_without("/usr/bin:/bin", &self.p("system-path"), &{
+                        let mut hide = crate::common::HARNESSES.to_vec();
+                        hide.push("clax");
+                        hide
+                    })
+                    .to_string_lossy()
                 ),
             );
         for (k, v) in HOSTILE {

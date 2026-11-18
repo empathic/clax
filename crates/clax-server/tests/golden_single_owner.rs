@@ -138,7 +138,14 @@ impl Minted {
         let mut c = tokio::process::Command::new(clax_fake_exe::clax_bin(None));
         c.args(args)
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .env(
+                "PATH",
+                clax_fake_exe::path_without(
+                    "/usr/bin:/bin",
+                    &self.scratch.path().join("system-path"),
+                    &["clax"],
+                ),
+            )
             .env("HOME", self.scratch.path())
             .env("TMPDIR", self.scratch.path())
             .env("CLAX_HOME", home)

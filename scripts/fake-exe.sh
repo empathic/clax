@@ -103,6 +103,70 @@ fake_exe() {
     "$FAKE_EXE_LN" -s "$shared" "$at"
 }
 
+# `path_without DIR TOOL...` prints $PATH with each TOOL absent. Each
+# directory on $PATH that holds a TOOL is replaced by a directory under DIR
+# with symbolic links to its other entries.
+path_without() {
+    local out="$1"
+    shift
+    local new_path="" dir n=0
+    local IFS=:
+    for dir in $PATH; do
+        if _holds_any "$dir" "$@"; then
+            n=$((n + 1))
+            _link_all_except "$dir" "$out/$n" "$@" || return 1
+            dir="$out/$n"
+        fi
+        new_path="${new_path:+$new_path:}$dir"
+    done
+    printf '%s\n' "$new_path"
+}
+
+# `_holds_any DIR NAME...`: true when DIR holds an entry named NAME.
+_holds_any() {
+    local dir="$1" name
+    shift
+    for name in "$@"; do
+        if [ -e "$dir/$name" ] || [ -L "$dir/$name" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# `_link_all_except DIR TO NAME...`: makes TO, with a symbolic link to each
+# entry of DIR except the NAMEs.
+_link_all_except() {
+    local dir="$1" to="$2" entry
+    shift 2
+    local keep=()
+    for entry in "$dir"/*; do
+        if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
+            continue
+        fi
+        if _is_one_of "${entry##*/}" "$@"; then
+            continue
+        fi
+        keep+=("$entry")
+    done
+    "$FAKE_EXE_MKDIR" -p "$to" || return 1
+    if [ "${#keep[@]}" -gt 0 ]; then
+        "$FAKE_EXE_LN" -s "${keep[@]}" "$to/" || return 1
+    fi
+}
+
+# `_is_one_of WORD NAME...`: true when WORD is one of the NAMEs.
+_is_one_of() {
+    local word="$1" name
+    shift
+    for name in "$@"; do
+        if [ "$word" = "$name" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # `fake_exe_own PATH`: like fake_exe, but PATH is a read-only file of its
 # own, already run once, for a program the code under test identifies by its
 # file (its resolved path, as `just install` does an installed clax).
