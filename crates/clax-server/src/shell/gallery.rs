@@ -452,6 +452,7 @@ pub async fn assemble(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -579,6 +580,27 @@ mod tests {
         ));
     }
 
+    /// The time on tokio's paused clock: every test that reads it runs
+    /// under `start_paused`, so this is the test's own time, never the
+    /// wall's.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "reads tokio's paused clock (start_paused), not real time"
+    )]
+    fn now() -> clax_rt::time::Instant {
+        clax_rt::time::Instant::now()
+    }
+
+    /// A route's delay on tokio's paused clock: [`timed`]'s routes are
+    /// asked only under `start_paused`, where it passes without a wait.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a delay on tokio's paused clock (start_paused), not a real wait"
+    )]
+    async fn delay(d: Duration) {
+        clax_rt::time::sleep(d).await;
+    }
+
     /// A router whose `/fast` answers at once, `/at/{ms}` after `ms`
     /// milliseconds, `/never` never, `/trickle/{ms}` sends its headers at
     /// once and its body after `ms`, and `/cookie/{ms}` sets a cookie after
@@ -591,7 +613,7 @@ mod tests {
             .route(
                 "/at/{ms}",
                 get(move |p: axum::extract::Path<u64>| async move {
-                    clax_rt::time::sleep(ms(p)).await;
+                    delay(ms(p)).await;
                     axum::Json(json!({"ok": true}))
                 }),
             )
@@ -601,7 +623,7 @@ mod tests {
                 get(move |p: axum::extract::Path<u64>| async move {
                     let wait = ms(p);
                     let body = futures::stream::once(async move {
-                        clax_rt::time::sleep(wait).await;
+                        delay(wait).await;
                         Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(b"{}"))
                     });
                     (
@@ -613,7 +635,7 @@ mod tests {
             .route(
                 "/cookie/{ms}",
                 get(move |p: axum::extract::Path<u64>| async move {
-                    clax_rt::time::sleep(ms(p)).await;
+                    delay(ms(p)).await;
                     ([(header::SET_COOKIE, "c=1")], axum::Json(json!({})))
                 }),
             )
@@ -640,7 +662,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_route_slower_than_the_budget_is_late_and_the_others_answer() {
         let budget = Duration::from_millis(300);
-        let start = clax_rt::time::Instant::now();
+        let start = now();
         let answers = asked(&["/fast", "/at/299", "/at/301", "/never", "/fast"], budget).await;
         assert_eq!(
             start.elapsed(),
@@ -667,12 +689,12 @@ mod tests {
     async fn the_budget_is_the_whole_assemblys_not_each_routes() {
         let budget = Duration::from_millis(300);
         // Nine routes that never answer take one budget together, not nine.
-        let start = clax_rt::time::Instant::now();
+        let start = now();
         let answers = asked(&["/never"; 9], budget).await;
         assert_eq!(start.elapsed(), budget);
         assert!(answers.iter().all(|a| matches!(a, Err(Miss::Late))));
         // Every route just inside the budget answers: they run at once.
-        let start = clax_rt::time::Instant::now();
+        let start = now();
         let answers = asked(&["/at/290"; 9], budget).await;
         assert_eq!(start.elapsed(), Duration::from_millis(290));
         assert!(

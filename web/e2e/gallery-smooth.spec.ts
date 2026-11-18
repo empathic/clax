@@ -157,7 +157,7 @@ async function stagedVisit(page: Page, d: Daemon, path: string, missing: (p: Pag
   await page.addInitScript(() => { Reflect.deleteProperty(window, "SharedWorker"); });
   if (again) {
     await page.goto(`${d.base}${path}`);
-    await expect.poll(() => missing(page), { timeout: 20_000 }).toEqual([]);
+    await expect.poll(() => missing(page)).toEqual([]);
     // Its shape kept once its first render is painted (view/gallery-shape.ts).
     const top = path.replace(/^\/(queues|settings)\/.+/, "/$1");
     await expect.poll(() => quietEval<boolean>(page, `(() => { try { return ${JSON.stringify(top)} in JSON.parse(localStorage.getItem("clax.shape") ?? "{}"); } catch { return false; } })()`)).toBe(true);

@@ -77,7 +77,7 @@ export async function stageLoad(page: Page, order: StageRule[], opts: { hold?: (
   };
   // The page is quiet once every released response has finished and two
   // painted frames in a row asked for nothing new.
-  const finished = () => expect.poll(() => [...open.values()], { message: "released responses to finish", timeout: 20_000 }).toEqual([]);
+  const finished = () => expect.poll(() => [...open.values()], { message: "released responses to finish" }).toEqual([]);
   const quiet = async () => {
     await finished();
     for (;;) {
@@ -105,7 +105,7 @@ export async function stageLoad(page: Page, order: StageRule[], opts: { hold?: (
       }
       if (await done()) return released;
       // Nothing held and not done yet: wait for the page to ask for more.
-      await expect.poll(async () => held.length > 0 || await done(), { message: `the page to settle; released so far:\n  ${released.join("\n  ")}`, timeout: 20_000 }).toBe(true);
+      await expect.poll(async () => held.length > 0 || await done(), { message: `the page to settle; released so far:\n  ${released.join("\n  ")}` }).toBe(true);
     }
   };
   return { drive, released };
