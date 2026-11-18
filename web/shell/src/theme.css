@@ -249,6 +249,8 @@ code { font: 12.5px var(--mono); background: var(--hover); border: 1px solid var
   .ttl .by.app .lineage { display: inline; font-size: inherit; }
   .topbar .version-menu { display: contents; }
   .ttl h1 { font-size: 15px; }
+  /* The title asks for 80px before the roster gets any (the roster gives way first, Who.svelte), and however narrow it gets, its tags never spill over the controls beside it. */
+  .ttl { flex: 1 1 80px; overflow: clip; overflow-clip-margin: 3px; }
   /* Above the home indicator on a phone with no bottom bezel. */
   .phone-tabs { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 12; padding-bottom: env(safe-area-inset-bottom); background: var(--card); border-top: 1px solid var(--border); }
   .phone-tabs button { flex: 1; border: 0; border-radius: 0; background: none; font-size: 15px; color: var(--muted); min-height: 52px; }

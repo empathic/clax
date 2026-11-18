@@ -16,7 +16,7 @@ export type PublishOpener = { label: string; open(): void };
 export type UsageItem = { href: string; text: string; label: string; title: string; warn: boolean; out: boolean };
 /** A hosted Clax's Terms of Service and Privacy Policy, which the more menu links. */
 export type LegalLinks = { terms_url: string; privacy_url: string };
-type More = Component<{ rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: PublishOpener | null; onPermissions?: (() => void) | null; usage?: UsageItem | null; legal?: LegalLinks | null }>;
+type More = Component<{ rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: PublishOpener | null; onPermissions?: (() => void) | null; onPeople?: (() => void) | null; onBot?: PublishOpener | null; usage?: UsageItem | null; legal?: LegalLinks | null }>;
 type CloneT = Component<{ id: string }>;
 type ForkT = Component<{ shown: number; disabled: boolean; onFork(): void }>;
 type ShareT = Component<{ id: string; title: string; onComments?(on: boolean): void }>;
@@ -36,6 +36,7 @@ let permissionsLoaded: PermissionsT | null = $state(null);
 let permissionsOpener: PermissionsOpener | null = $state(null);
 let legalLinks: LegalLinks | null = $state(null);
 let usageItem: UsageItem | null = $state(null);
+let botOpener: PublishOpener | null = $state(null);
 
 /** The more menu's component once `loadMoreMenu` has loaded it, else null. */
 export const moreMenu = { get current(): More | null { return loaded; } };
@@ -83,6 +84,12 @@ export const usage = { get current(): UsageItem | null { return usageItem; } };
 /** Sets the Usage item (the artifact view's ClaxBot part sets it from the
  * week's meter; null clears it). */
 export function setUsage(u: UsageItem | null): void { usageItem = u; }
+
+/** The more menu's ClaxBot item at phone width (the bar's ClaxBot button
+ * is hidden there) while the artifact has runs, else null. */
+export const botOpen = { get current(): PublishOpener | null { return botOpener; } };
+/** Sets the ClaxBot item (the artifact view's ClaxBot part sets it; null clears it). */
+export function setBotOpener(o: PublishOpener | null): void { botOpener = o; }
 
 /** The hosted Clax's documents once `loadMoreMenu` has asked for them, else null. */
 export const legal = { get current(): LegalLinks | null { return legalLinks; } };

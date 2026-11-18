@@ -14,8 +14,10 @@
   // dialog's host loads after the first paint), Usage with the week's
   // ClaxBot credits while ClaxBot is on for the viewer, and the theme switch,
   // once the artifact is loaded and the frame mode decided. At phone width the
-  // bar keeps the mark, the title, Comment and the more menu, whose Versions
-  // item opens the version menu as a sheet. On a live page, whose versions
+  // bar keeps the mark, the title, Comment, the feedback menu and the more
+  // menu, whose Versions item opens the version menu as a sheet and whose
+  // People and agents and ClaxBot items stand in for the roster and the
+  // ClaxBot button. On a live page, whose versions
   // are snapshots, Comment is off (comments on it come from Chrome with the
   // Clax extension) and Open page, the page itself, comes with the roster (on a
   // phone, in the more menu). For a spectator (no live seat free), Comment is off,
@@ -36,7 +38,7 @@
   import { getToken } from "../api";
   import { COMMENTS_OFF } from "../failure";
   import { type ArtifactController, commentsOff, viewReady } from "../view/artifact-controller";
-  import { clone, cloneOpen, forkButton, legal, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, usage, who } from "./more-menu.svelte";
+  import { botOpen, clone, cloneOpen, forkButton, legal, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, usage, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
   import { feedbackMenu } from "../feedback/slot.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
@@ -93,7 +95,7 @@
   {#if Permissions && mayApprove}<Permissions {ctl} />{/if}
   {#if feedbackMenu.current}<feedbackMenu.current />{/if}
   {#if MoreMenu}
-    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} getHref={s.data.artifact.app && !s.deleted ? `/a/${encodeURIComponent(ctl.id)}/get` : null} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} onPermissions={mayApprove ? permissionsOpen.current : null} usage={usage.current} legal={legal.current} />
+    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} getHref={s.data.artifact.app && !s.deleted ? `/a/${encodeURIComponent(ctl.id)}/get` : null} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} onPermissions={mayApprove ? permissionsOpen.current : null} onPeople={Who ? () => ctl.openMenu("people") : null} onBot={botOpen.current} usage={usage.current} legal={legal.current} />
   {:else}
     <span class="more-slot"></span>
   {/if}

@@ -7,7 +7,8 @@
   // lists ClaxBot to the Send menu (`botView`): as the artifact's agents list
   // it (`builtin`), else as this person's ClaxBot says. It shows a ClaxBot
   // button while the artifact has runs (marked while one is active) that
-  // opens the run panel; it gives the more menu its Usage item, the week's
+  // opens the run panel (hidden at phone width, where the more menu's ClaxBot
+  // item stands in: `setBotOpener`); it gives the more menu its Usage item, the week's
   // meter (marked "your key" on the person's own model key: `meterWords`),
   // and, from 80 % of the week's credits, shows the usage banner under the
   // top bar. The panel opens by
@@ -26,7 +27,7 @@
   import { botView } from "./send.svelte";
   import RunPanel from "./RunPanel.svelte";
   import UsageBanner from "./UsageBanner.svelte";
-  import { setUsage } from "../ui/more-menu.svelte";
+  import { setBotOpener, setUsage } from "../ui/more-menu.svelte";
 
   let { ctl }: { ctl: ArtifactController } = $props();
   // svelte-ignore state_referenced_locally
@@ -36,6 +37,14 @@
   const week = $derived(botView.me?.enabled ? meter(botView.me.week) : null);
   const weekWords = $derived(botView.me?.enabled ? meterWords(botView.me) : null);
   const shown = $derived(runs.length > 0 || botView.started.length > 0);
+  // The bar's ClaxBot button opens the newest active run's panel (else the
+  // newest run's), or closes the panel; at phone width, where the button is
+  // hidden, the more menu's ClaxBot item does the same.
+  const toggleRuns = () => { if (botView.run) botView.close(); else { const id = (runs.find(r => !ended(r)) ?? runs[0])?.id ?? botView.started[0]; if (id) botView.open(id); } };
+  $effect(() => {
+    setBotOpener(shown ? { label: active ? "ClaxBot, working" : "ClaxBot runs", open: toggleRuns } : null);
+    return () => setBotOpener(null);
+  });
   // The more menu's Usage item follows the week's meter.
   $effect(() => {
     setUsage(week && weekWords ? { href: "/settings/claxbot", text: `${weekWords.own ? "your key · " : ""}${credits(week.spent)} / ${credits(week.total)}`, label: weekWords.label, title: weekWords.title, warn: week.warn, out: week.exhausted } : null);
@@ -135,8 +144,7 @@
 </script>
 
 {#if shown}
-  <button type="button" class="botbtn" class:on={active} aria-expanded={!!botView.run} aria-controls="bot-run-panel"
-    onclick={() => { if (botView.run) botView.close(); else { const id = (runs.find(r => !ended(r)) ?? runs[0])?.id ?? botView.started[0]; if (id) botView.open(id); } }}>
+  <button type="button" class="botbtn hide-sm" class:on={active} aria-expanded={!!botView.run} aria-controls="bot-run-panel" onclick={toggleRuns}>
     <span class="dot" aria-hidden="true"></span>ClaxBot<span class="bot-sr">{active ? ", working" : ", runs"}</span>
   </button>
 {/if}

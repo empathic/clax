@@ -141,6 +141,31 @@ describe("Echo top bar parts", () => {
     vi.unstubAllGlobals();
   });
 
+  it("the more menu stands in at phone width for the roster and the ClaxBot button, and at full width does not", () => {
+    const onPeople = vi.fn();
+    const onBot = { label: "ClaxBot, working", open: vi.fn() };
+    const names = (phone: boolean) => {
+      vi.stubGlobal("matchMedia", (q: string) => ({ matches: phone && q === "(max-width: 700px)" }));
+      const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), onPeople, onBot });
+      flush(() => (m.root.querySelector("button.icon") as HTMLButtonElement).click());
+      const items = [...m.root.querySelectorAll<HTMLElement>("[role=menuitem]")];
+      return { m, items, text: items.map(i => i.textContent) };
+    };
+    const wide = names(false);
+    expect(wide.text).toEqual(["Open raw", "Copy link"]);
+    wide.m.unmount();
+    const phone = names(true);
+    expect(phone.text).toEqual(["Versions", "People and agents", "ClaxBot, working", "Open raw", "Copy link"]);
+    flush(() => phone.items[1].click());
+    expect(onPeople).toHaveBeenCalledTimes(1);
+    expect(phone.m.root.querySelector("[role=menu]")).toBeNull();
+    flush(() => (phone.m.root.querySelector("button.icon") as HTMLButtonElement).click());
+    flush(() => phone.m.root.querySelectorAll<HTMLElement>("[role=menuitem]")[2].click());
+    expect(onBot.open).toHaveBeenCalledTimes(1);
+    phone.m.unmount();
+    vi.unstubAllGlobals();
+  });
+
   it("the more menu keeps a disabled, focusable open raw for a deleted artifact", async () => {
     const m = mount(MoreMenu, { rawHref: null, canCopy: false, onCopy: vi.fn() });
     flush(() => (m.root.querySelector("button.icon") as HTMLButtonElement).click());

@@ -11,7 +11,10 @@
   // where the viewer may share the artifact on a hosted Clax (`onShare`),
   // phone width lists Share; where the owner may publish the artifact to a
   // public Clax (`onPublish`), it lists Publish; on an app's page
-  // (`getHref`, its get page), it lists Get in Clax first. While ClaxBot is
+  // (`getHref`, its get page), it lists Get in Clax first. Phone width, where
+  // the bar hides the roster and the ClaxBot button, lists People and agents
+  // (`onPeople`, the people panel) and, while the artifact has runs, ClaxBot
+  // (`onBot`, the run panel). While ClaxBot is
   // on for the viewer (`usage`), it lists Usage at every width, with the
   // week's credits, linking to the page that details them. On a hosted
   // Clax that shows Terms of Service and a Privacy Policy (`legal`), it ends
@@ -27,9 +30,9 @@
   // shows at phone width only, where it holds the bar's hidden items.
   import { tick } from "svelte";
   import { onHost } from "../transport";
-  import type { UsageItem } from "./more-menu.svelte";
+  import type { PublishOpener, UsageItem } from "./more-menu.svelte";
 
-  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, getHref = null, onFork, onClone = null, onShare = null, onPublish = null, onPermissions = null, usage = null, legal = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null; onPermissions?: (() => void) | null; usage?: UsageItem | null; legal?: { terms_url: string; privacy_url: string } | null } = $props();
+  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, getHref = null, onFork, onClone = null, onShare = null, onPublish = null, onPermissions = null, onPeople = null, onBot = null, usage = null, legal = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null; onPermissions?: (() => void) | null; onPeople?: (() => void) | null; onBot?: PublishOpener | null; usage?: UsageItem | null; legal?: { terms_url: string; privacy_url: string } | null } = $props();
   let open = $state(false);
   const app = onHost();
   // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
@@ -79,6 +82,8 @@
     <div class="more-menu" role="menu" bind:this={menu}>
       {#if phone && getHref}<a role="menuitem" tabindex="-1" href={getHref} onclick={close}>Get in Clax</a>{/if}
       {#if phone && onVersions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onVersions(); }}>{pageHref ? "Snapshots" : "Versions"}</button>{/if}
+      {#if phone && onPeople}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPeople(); }}>People and agents</button>{/if}
+      {#if phone && onBot}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onBot.open(); }}>{onBot.label}</button>{/if}
       {#if phone && onFork}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onFork(); }}>Fork</button>{/if}
       {#if phone && pageHref && /^https?:\/\//.test(pageHref)}<a role="menuitem" tabindex="-1" href={pageHref} target="_blank" rel="noopener noreferrer" onclick={close}>Open page</a>{/if}
       {#if app}
