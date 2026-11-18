@@ -1007,7 +1007,12 @@ async fn a_browser_that_may_edit_renames_from_the_shell_and_no_one_else() {
     let path = format!("/api/artifacts/{aid}");
     let mut rx = site.ts.events.subscribe();
     let (s, v) = site
-        .send(&sam, reqwest::Method::PATCH, &path, json!({"title": "Sam's plan"}))
+        .send(
+            &sam,
+            reqwest::Method::PATCH,
+            &path,
+            json!({"title": "Sam's plan"}),
+        )
         .await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["artifact"]["title"], "Sam's plan");
@@ -1024,7 +1029,12 @@ async fn a_browser_that_may_edit_renames_from_the_shell_and_no_one_else() {
     // A commenter may not; nor may an editor's browser change more than
     // the title without the token.
     let (s, v) = site
-        .send(&kim, reqwest::Method::PATCH, &path, json!({"title": "Kim's"}))
+        .send(
+            &kim,
+            reqwest::Method::PATCH,
+            &path,
+            json!({"title": "Kim's"}),
+        )
         .await;
     assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
     let (s, v) = site

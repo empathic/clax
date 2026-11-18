@@ -386,7 +386,10 @@ async fn an_artifact_made_without_a_title_shows_its_pages_until_it_has_its_own()
         .iter()
         .map(|a| a["title"].as_str().unwrap())
         .collect();
-    assert_eq!(titles.iter().filter(|t| **t == "From & the page").count(), 3);
+    assert_eq!(
+        titles.iter().filter(|t| **t == "From & the page").count(),
+        3
+    );
     assert!(titles.contains(&"Own"), "{titles:?}");
 }
 

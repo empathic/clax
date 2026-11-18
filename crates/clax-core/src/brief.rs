@@ -113,7 +113,10 @@ mod tests {
 
     #[test]
     fn a_title_is_trimmed_bounded_and_one_line() {
-        assert_eq!(check_title("  Q3 plan ").unwrap().as_deref(), Some("Q3 plan"));
+        assert_eq!(
+            check_title("  Q3 plan ").unwrap().as_deref(),
+            Some("Q3 plan")
+        );
         let code = |r: Result<Option<String>>| match r {
             Err(CoreError::Invalid { code, .. }) => code,
             other => panic!("{other:?}"),
@@ -137,7 +140,10 @@ mod tests {
         assert!(check_title(&"é".repeat(MAX_TITLE_CHARS)).is_ok());
         assert!(matches!(
             check_brief(" \n "),
-            Err(CoreError::Invalid { code: "invalid_brief", .. })
+            Err(CoreError::Invalid {
+                code: "invalid_brief",
+                ..
+            })
         ));
         assert_eq!(check_brief(" build it\n").unwrap(), "build it");
     }
