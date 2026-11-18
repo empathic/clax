@@ -259,8 +259,10 @@ impl Store {
     }
 
     /// Live artifacts (not deleted, at least one version, not hidden
-    /// drafts, not followed remote artifacts' mirrors): pinned first, then
-    /// most recently updated, ties broken by ID.
+    /// drafts, not followed remote artifacts' mirrors, not external
+    /// artifacts: the records a report queue files reports on, read through
+    /// their queue alone): pinned first, then most recently updated, ties
+    /// broken by ID.
     /// Rows with a malformed JSON column are logged and left out (see
     /// [`Store::corrupt_rows`]).
     pub fn list_artifacts(&self) -> Result<Vec<Artifact>> {
@@ -268,6 +270,8 @@ impl Store {
             let mut stmt = c.prepare(&format!(
                 "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0
                    AND remote_mirror = 0
+                   AND NOT EXISTS (SELECT 1 FROM external_artifacts x
+                                    WHERE x.artifact_id = artifacts.id)
                  ORDER BY pinned DESC, updated_at DESC, id"
             ))?;
             let rows = stmt.query_map([], row_to_artifact)?;
