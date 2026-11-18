@@ -1026,7 +1026,7 @@ test("the panel shows the live page's questions above its threads, answers one, 
   await panel.send("Emulation.setDeviceMetricsOverride", { width: 360, height: 900, deviceScaleFactor: 2, mobile: false });
   const shot = async (name: string) => {
     // Once the colours' transitions (a scheme just switched) have run.
-    await panel.eval<void>("Promise.all(document.getAnimations().map(a => a.finished)).then(() => {})");
+    await panel.eval<void>("Promise.all(document.getAnimations().map(a => a.finished.catch(() => {}))).then(() => {})");
     const { data } = await panel.send<{ data: string }>("Page.captureScreenshot", { format: "png" });
     const path = testInfo.outputPath(`${name}.png`);
     writeFileSync(path, Buffer.from(data, "base64"));
@@ -1179,7 +1179,7 @@ test.describe("with a person connected on the LAN", () => {
         for (const width of [320, 520]) for (const v of ["light", "dark"] as const) {
           await panel.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 2, mobile: false });
           await scheme(v);
-          await panel.eval<void>("Promise.all(document.getAnimations().map(a => a.finished)).then(() => {})");
+          await panel.eval<void>("Promise.all(document.getAnimations().map(a => a.finished.catch(() => {}))).then(() => {})");
           await panel.shot(`${name}-${width}-${v}`);
         }
         await scheme("light");
