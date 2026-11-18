@@ -30,6 +30,7 @@ use clax_store::Store;
 use clax_store::app_data::{AppDataOp, WireCaller};
 use clax_store::bot_runs::CallEntry;
 use clax_store::bot_runs::{RequestKind, Run};
+use clax_store::people::RunRightsInput;
 use clax_store::roles::OWNER;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -99,8 +100,7 @@ fn bot_guard<'a>(
     move |tx: &clax_store::Tx<'_>| {
         st.check_bot_write_in(
             tx,
-            &run.person,
-            run.agent_grant.as_deref(),
+            RunRightsInput::from(run),
             Some(&run.artifact_id),
             RightType::Db,
             "write",
@@ -149,7 +149,7 @@ fn db_caller(
     use clax_core::db::Level;
     use clax_core::visibility::Author;
     let rights = st
-        .bot_rights(&run.person, run.agent_grant.as_deref())
+        .bot_rights(RunRightsInput::from(run))
         .map_err(|e| host_error(&e))?;
     let owner = run.person == OWNER;
     let maker = (!owner).then_some(run.person.as_str());
@@ -456,7 +456,7 @@ impl ServerHost {
             }
         }
         let rights = st
-            .bot_rights(&run.person, run.agent_grant.as_deref())
+            .bot_rights(RunRightsInput::from(run))
             .map_err(|e| host_error(&e))?;
         let Some(rights) = rights else {
             return Ok(true);
@@ -544,8 +544,7 @@ impl ServerHost {
                         let guard = |tx: &clax_store::Tx<'_>| {
                             st.check_bot_write_in(
                                 tx,
-                                &run.person,
-                                run.agent_grant.as_deref(),
+                                RunRightsInput::from(&run),
                                 Some(&run.artifact_id),
                                 RightType::Comments,
                                 "reply",
@@ -708,8 +707,7 @@ impl BotHost for ServerHost {
                                 let guard = |tx: &clax_store::Tx<'_>| {
                                     st.check_bot_write_in(
                                         tx,
-                                        &run.person,
-                                        run.agent_grant.as_deref(),
+                                        RunRightsInput::from(&run),
                                         Some(&run.artifact_id),
                                         RightType::Comments,
                                         "resolve",
@@ -858,12 +856,10 @@ impl BotHost for ServerHost {
                             .store
                             .call_async(move |st| async move {
                                 let st2 = st.clone();
-                                let (person, grant) = (run.person.clone(), run.agent_grant.clone());
                                 let guard = move |tx: &clax_store::Tx<'_>| {
                                     st2.check_bot_write_in(
                                         tx,
-                                        &person,
-                                        grant.as_deref(),
+                                        RunRightsInput::from(&run),
                                         None,
                                         RightType::Artifacts,
                                         "create",
@@ -978,17 +974,11 @@ impl BotHost for ServerHost {
                     .call_async(move |st| async move {
                         let id = ArtifactId::parse(&run.artifact_id)?;
                         let st2 = st.clone();
-                        let (person, aid, grant) = (
-                            run.person.clone(),
-                            run.artifact_id.clone(),
-                            run.agent_grant.clone(),
-                        );
                         let guard = move |tx: &clax_store::Tx<'_>| {
                             st2.check_bot_write_in(
                                 tx,
-                                &person,
-                                grant.as_deref(),
-                                Some(&aid),
+                                RunRightsInput::from(&run),
+                                Some(&run.artifact_id),
                                 RightType::Artifacts,
                                 "update",
                             )

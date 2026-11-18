@@ -642,6 +642,52 @@ impl Rights {
         Rights(merge(out))
     }
 
+    /// Limits these rights to the one artifact `aid`.
+    ///
+    /// The result allows at `aid` what these rights allow there. It allows
+    /// nothing at another artifact, and nothing that is at no artifact.
+    ///
+    /// - A `*` location becomes `aid`.
+    /// - An `own` location becomes `own:<aid>`: it still holds only when
+    ///   the person made `aid`.
+    /// - A location that names `aid` stays. A location that names another
+    ///   artifact goes.
+    /// - The `create` action of `clax-artifacts` goes, because it is at no
+    ///   artifact.
+    /// - Only the types `clax-artifacts`, `clax-comments`, and `clax-db`
+    ///   stay. Every other type goes, `clax-ask` among them, because it
+    ///   has no location.
+    /// - An entry left with no action or no location goes.
+    pub fn only_at(&self, aid: &str) -> Rights {
+        let at = Location::Artifact(aid.to_string());
+        let out = self
+            .0
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a.kind,
+                    RightType::Artifacts | RightType::Comments | RightType::Db
+                )
+            })
+            .filter_map(|a| {
+                let actions: BTreeSet<String> = a
+                    .actions
+                    .iter()
+                    .filter(|act| !(a.kind == RightType::Artifacts && *act == "create"))
+                    .cloned()
+                    .collect();
+                let locations: Vec<Location> =
+                    a.locations.iter().filter_map(|l| l.and(&at)).collect();
+                (!actions.is_empty() && !locations.is_empty()).then(|| Access {
+                    actions,
+                    locations: canonical_locations(locations),
+                    ..a.clone()
+                })
+            })
+            .collect();
+        Rights(merge(out))
+    }
+
     /// These rights where `own` is known to hold (a person's rights at the
     /// artifacts they created): `own` reads as `*` and `own:<id>` as `<id>`.
     fn where_own_holds(&self) -> Rights {
@@ -1479,5 +1525,67 @@ mod tests {
         };
         assert!(with(MAX_ACCESS - 7).is_ok());
         assert!(with(MAX_ACCESS - 6).is_err());
+    }
+
+    #[test]
+    fn rights_limited_to_one_artifact_allow_nothing_elsewhere() {
+        use RightType::*;
+        let anyone = |_: &str| true;
+        let nobody = |_: &str| false;
+        // A collaborator: reads everywhere, updates their own, creates.
+        let limited = Rights::preset(PRESET_COLLABORATOR)
+            .unwrap()
+            .only_at("tides");
+        assert!(limited.allows(Artifacts, "read", Some("tides"), &nobody));
+        assert!(limited.allows(Comments, "write", Some("tides"), &nobody));
+        assert_eq!(
+            limited.db_level("tides", "read", &nobody),
+            Some(Level::Interact)
+        );
+        // `own` still asks who made it.
+        assert!(limited.allows(Artifacts, "update", Some("tides"), &own_is("tides")));
+        assert!(!limited.allows(Artifacts, "update", Some("tides"), &nobody));
+        assert_eq!(
+            limited.db_level("tides", "write", &own_is("tides")),
+            Some(Level::Admin)
+        );
+        // Nothing at another artifact, whoever made it, and nothing at none.
+        for kind in [Artifacts, Comments, Db] {
+            for action in kind.actions() {
+                assert!(
+                    !limited.allows(kind, action, Some("diary"), &anyone),
+                    "{action}"
+                );
+                assert!(!limited.allows(kind, action, None, &anyone), "{action}");
+            }
+        }
+        assert!(!limited.allows(Artifacts, "create", Some("tides"), &anyone));
+        assert!(!limited.allows_somewhere(Artifacts, "create"));
+        assert!(!limited.allows(Ask, "ask", None, &anyone));
+        assert_eq!(
+            limited.artifact_ids(),
+            Some(BTreeSet::from(["tides".to_string()]))
+        );
+        // Rights that name artifacts keep the one, and only it.
+        let named = Rights::parse(&json!([
+            {"type": "clax-artifacts", "actions": ["read"], "locations": ["diary", "tides"]},
+            {"type": "clax-comments", "actions": ["read"], "locations": ["diary"]}]))
+        .unwrap();
+        let limited = named.only_at("tides");
+        assert!(limited.allows(Artifacts, "read", Some("tides"), &nobody));
+        assert!(!limited.allows(Artifacts, "read", Some("diary"), &anyone));
+        assert!(!limited.allows_somewhere(Comments, "read"));
+        // It only takes away, and reads back as stored rights do.
+        let full = Rights::full();
+        assert!(full.only_at("tides").is_narrower_or_equal(&full));
+        let limited = Rights::preset(PRESET_COLLABORATOR)
+            .unwrap()
+            .only_at("tides");
+        assert_eq!(Rights::parse_internal(&limited.to_json()).unwrap(), limited);
+        assert!(Rights::default().only_at("tides").is_empty());
+    }
+
+    fn own_is(id: &'static str) -> impl Fn(&str) -> bool {
+        move |a: &str| a == id
     }
 }
