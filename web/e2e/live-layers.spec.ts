@@ -62,6 +62,10 @@ async function tagAt(page: Page) {
   });
 }
 
+/** A tag's y, rounded as a transform string carries it: the string has no
+ * signed zero, so -0 reads back as 0. */
+const tagRow = (y: number) => Math.round(y) || 0;
+
 /** The boxes (page coordinates) of what the live layers drew of kind `cls` in `frame`'s page. */
 async function boxes(frame: Frame, cls: string) {
   return frame.evaluate(c => Array.from(document.querySelector("clax-live")!.shadowRoot!.querySelectorAll<HTMLElement>(`.${c}`), el => ({
@@ -128,10 +132,10 @@ test("one person's pointer, selection, pick, typing and drafts show in the other
   // Alex scrolls his page: the arrow stays on the paragraph, and the tag moves up with it.
   const before = await arrowAt(af);
   await af.evaluate(() => scrollTo(0, 120));
-  await expect.poll(async () => (await tagAt(alex)).y).toBe(Math.round(before.y - 120));
+  await expect.poll(async () => (await tagAt(alex)).y).toBe(tagRow(before.y - 120));
   expect(await arrowAt(af)).toEqual(before);
   await af.evaluate(() => scrollTo(0, 0));
-  await expect.poll(async () => (await tagAt(alex)).y).toBe(Math.round(before.y));
+  await expect.poll(async () => (await tagAt(alex)).y).toBe(tagRow(before.y));
   // Alex's window narrows: the page reflows, and the arrow follows the
   // paragraph's text to where it is laid out now.
   const pLeft = () => af.evaluate(() => document.querySelector("#p")!.getBoundingClientRect().left);
