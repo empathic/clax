@@ -1,30 +1,33 @@
-//! The switches that widen what an artifact's site may do or who may open
-//! it, and the one way either is turned: its site open to the world
-//! (`site_access`, [`super::world`]) and its site served without Clax's
-//! Content Security Policy (`content_security_policy`,
-//! [`super::content_security_policy`]), both fields of `PATCH
+//! A change to one of an artifact's settings that some changes need
+//! approval to make, and the one way it is made: who may load its site
+//! (`site_access`, [`super::world`]) and the `Content-Security-Policy` Clax
+//! sends on its own content (`content_security_policy`,
+//! [`super::content_security_policy`]), each a field of `PATCH
 //! /api/artifacts/<aid>` ([`super::artifacts::patch`]).
 //!
-//! A turn is admitted first ([`admit`]) and applied only with what
+//! A change is admitted first ([`admit`]) and applied only with what
 //! admitting it returned ([`apply`] takes an [`Admitted`], which nothing
-//! else makes), so the switch, the direction and the artifact that were
-//! admitted are the ones written.
+//! else makes), so the change and the artifact that were admitted are the
+//! ones written.
 //!
-//! - Who may manage the artifact turns a switch
+//! - Who may manage the artifact makes a change
 //!   ([`clax_http::agent::administers`]); anyone else 403 `admin_only`.
-//! - An agent (the owner's with a session, or a person's) widens one only
-//!   with its person's approval: its first call asks them a question this
-//!   daemon writes and answers 202 `{status: "approval_pending",
-//!   question_id, inbox_url}`; called again with that `question_id`, the
-//!   turn is admitted once they chose to, from Clax's browser or the
-//!   extension, and is 403 `not_approved` when they did not. An approval
-//!   is a `push_approvals` row of `remote_id` [`Switch::kind`], spent once
-//!   used (409 `approval_used`). An agent without a session is 400
-//!   `no_session`.
-//! - Narrowing a switch, and widening one that is widened already, ask no
-//!   one.
-//! - The owner's widening made with the token alone while an agent session
-//!   is live waits for a click in their browser ([`confirm`]).
+//! - An agent (the owner's with a session, or a person's) makes a change
+//!   that needs approval ([`SettingChange::needs_approval`]: `site_access:
+//!   world`, `content_security_policy: unrestricted`) only with its
+//!   person's approval: its first call asks them a question this daemon
+//!   writes and answers 202 `{status: "approval_pending", question_id,
+//!   inbox_url}`; called again with that `question_id`, the change is
+//!   admitted once they chose to, from Clax's browser or the extension,
+//!   and is 403 `not_approved` when they did not. An approval is a
+//!   `push_approvals` row of `remote_id` [`SettingChange::approval_kind`],
+//!   spent once used (409 `approval_used`). An agent without a session is
+//!   400 `no_session`.
+//! - Any other change, and one to the value the setting already has, asks
+//!   no one.
+//! - The owner's change that needs approval made with the token alone
+//!   while an agent session is live waits for a click in their browser
+//!   ([`confirm`]).
 
 use clax_core::audit::AuditCtx;
 use clax_core::questions::{QOption, Question};
@@ -37,26 +40,20 @@ use clax_store::questions::{NewQuestion, Source, Status};
 use clax_store::site_sessions::{ContentSecurityPolicy, OPEN_TO_WORLD, UNRESTRICT_CSP};
 use serde_json::{Value, json};
 
-/// A switch of an artifact's site.
+use super::world::SiteAccess;
+
+/// One change to one of an artifact's settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Switch {
-    /// Anyone may load the site (`site_access: world`).
-    OpenToWorld,
-    /// Clax sends no source restrictions on the site's own content
-    /// (`content_security_policy: unrestricted`).
-    ContentSecurityPolicy,
+pub enum SettingChange {
+    /// Who may load its site becomes this (`site_access`).
+    SiteAccess(SiteAccess),
+    /// The `Content-Security-Policy` Clax sends on its own content becomes
+    /// this (`content_security_policy`).
+    ContentSecurityPolicy(ContentSecurityPolicy),
 }
 
-/// The direction a switch is turned.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Turn {
-    /// To `world`, or to `unrestricted`.
-    Widen,
-    /// To `private`, or to `self`.
-    Narrow,
-}
-
-/// What a switch says to the people it refuses and asks.
+/// What the settings whose changes may need approval say to the people
+/// they refuse and ask.
 struct Wording {
     /// 403 `admin_only`'s message.
     admin_only: &'static str,
@@ -74,42 +71,81 @@ struct Wording {
     declined: &'static str,
 }
 
-impl Switch {
-    /// Its approvals' `remote_id` (`clax_store::site_sessions`).
-    const fn kind(self) -> &'static str {
+const SITE_ACCESS: Wording = Wording {
+    admin_only: "only the page's maker (on a local Clax, the owner too) opens its site to the world or closes it",
+    no_session: "an agent opens a site to the world with publish_public's site_access, which asks the person first",
+    header: "Open site",
+    approve: (
+        super::world::OPEN,
+        "Anyone may load its site; close it again at any time",
+    ),
+    decline: (super::world::KEEP_PRIVATE, "Only those it is shared with"),
+    what: "opening this site to the world",
+    declined: "they chose to keep it private",
+};
+
+const CONTENT_SECURITY_POLICY: Wording = Wording {
+    admin_only: "only the page's maker (on a local Clax, the owner too) sets its site's Content Security Policy",
+    no_session: "an agent serves a site without Clax's Content Security Policy with publish_public's content_security_policy, which asks the person first",
+    header: "Content Security Policy",
+    approve: (
+        super::content_security_policy::SERVE_UNRESTRICTED,
+        "Its pages, and every later version's, load and connect where they choose; restore the policy at any time",
+    ),
+    decline: (
+        super::content_security_policy::KEEP_TO_ITS_SITE,
+        "Its pages load and connect to its own site alone",
+    ),
+    what: "serving this site without Clax's Content Security Policy",
+    declined: "they chose to keep it to its own site",
+};
+
+impl SettingChange {
+    /// Whether it is one an agent needs its person's approval to make, and
+    /// the owner's token alone a browser confirmation: opening a site to
+    /// the world, and serving it unrestricted.
+    const fn needs_approval(self) -> bool {
+        matches!(
+            self,
+            SettingChange::SiteAccess(SiteAccess::World)
+                | SettingChange::ContentSecurityPolicy(ContentSecurityPolicy::Unrestricted)
+        )
+    }
+
+    /// Its setting's approvals' `remote_id` (`clax_store::site_sessions`).
+    const fn approval_kind(self) -> &'static str {
         match self {
-            Switch::OpenToWorld => OPEN_TO_WORLD,
-            Switch::ContentSecurityPolicy => UNRESTRICT_CSP,
+            SettingChange::SiteAccess(_) => OPEN_TO_WORLD,
+            SettingChange::ContentSecurityPolicy(_) => UNRESTRICT_CSP,
         }
     }
 
-    /// Its widened value, the confirmed decision's `to`
+    /// The value it sets, the confirmed decision's `to`
     /// ([`clax_http::confirm::Decision::Widen`]).
-    const fn widened_to(self) -> &'static str {
+    const fn value(self) -> &'static str {
         match self {
-            Switch::OpenToWorld => "world",
-            Switch::ContentSecurityPolicy => ContentSecurityPolicy::Unrestricted.as_str(),
+            SettingChange::SiteAccess(SiteAccess::World) => "world",
+            SettingChange::SiteAccess(SiteAccess::Private) => "private",
+            SettingChange::ContentSecurityPolicy(p) => p.as_str(),
         }
     }
 
-    /// Whether artifact `id`'s is widened.
-    fn widened(self, st: &clax_store::Store, id: &ArtifactId) -> clax_core::Result<bool> {
-        match self {
-            Switch::OpenToWorld => st.site_open_to_world(id),
-            Switch::ContentSecurityPolicy => {
-                Ok(st.content_security_policy(id)? == ContentSecurityPolicy::Unrestricted)
-            }
-        }
+    /// Whether artifact `id`'s setting already has the value it sets.
+    fn already(self, st: &clax_store::Store, id: &ArtifactId) -> clax_core::Result<bool> {
+        Ok(match self {
+            SettingChange::SiteAccess(a) => st.site_open_to_world(id)? == (a == SiteAccess::World),
+            SettingChange::ContentSecurityPolicy(p) => st.content_security_policy(id)? == p,
+        })
     }
 
     /// The question an agent's person is asked about the artifact titled
     /// `title`.
     fn question(self, title: &str) -> String {
         match self {
-            Switch::OpenToWorld => format!(
+            SettingChange::SiteAccess(_) => format!(
                 "Open \"{title}\" to the world? Anyone with its site's address can then load it and use its data as a visitor, as its rules allow, without signing in."
             ),
-            Switch::ContentSecurityPolicy => format!(
+            SettingChange::ContentSecurityPolicy(_) => format!(
                 "Serve \"{title}\" without Clax's Content Security Policy? Its pages may then load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website."
             ),
         }
@@ -117,46 +153,20 @@ impl Switch {
 
     const fn wording(self) -> &'static Wording {
         match self {
-            Switch::OpenToWorld => &Wording {
-                admin_only: "only the page's maker (on a local Clax, the owner too) opens its site to the world or closes it",
-                no_session: "an agent opens a site to the world with publish_public's site_access, which asks the person first",
-                header: "Open site",
-                approve: (
-                    super::world::OPEN,
-                    "Anyone may load its site; close it again at any time",
-                ),
-                decline: (super::world::KEEP_PRIVATE, "Only those it is shared with"),
-                what: "opening this site to the world",
-                declined: "they chose to keep it private",
-            },
-            Switch::ContentSecurityPolicy => &Wording {
-                admin_only: "only the page's maker (on a local Clax, the owner too) sets its site's Content Security Policy",
-                no_session: "an agent serves a site without Clax's Content Security Policy with publish_public's content_security_policy, which asks the person first",
-                header: "Content Security Policy",
-                approve: (
-                    super::content_security_policy::SERVE_UNRESTRICTED,
-                    "Its pages, and every later version's, load and connect where they choose; restore the policy at any time",
-                ),
-                decline: (
-                    super::content_security_policy::KEEP_TO_ITS_SITE,
-                    "Its pages load and connect to its own site alone",
-                ),
-                what: "serving this site without Clax's Content Security Policy",
-                declined: "they chose to keep it to its own site",
-            },
+            SettingChange::SiteAccess(_) => &SITE_ACCESS,
+            SettingChange::ContentSecurityPolicy(_) => &CONTENT_SECURITY_POLICY,
         }
     }
 }
 
-/// A turn of a switch that its caller may make now. Only [`admit`] makes
-/// one, and [`apply`] writes what it names.
+/// A change its caller may make now. Only [`admit`] makes one, and
+/// [`apply`] writes it.
 pub struct Admitted {
-    switch: Switch,
-    turn: Turn,
+    change: SettingChange,
     artifact: ArtifactId,
 }
 
-/// What asking to turn a switch came to.
+/// What asking to make a change came to.
 pub enum Admission {
     /// The caller may make it.
     Admitted(Admitted),
@@ -164,10 +174,11 @@ pub enum Admission {
     Pending(Value),
 }
 
-/// Holds the owner's widening of `switch` on `id` made with the token
-/// alone while an agent session is live for a click in their browser
-/// ([`clax_http::confirm::require_confirmation`], decision 4), unless it
-/// is widened already.
+/// Holds the owner's `change` of `id` that needs approval
+/// ([`SettingChange::needs_approval`]), made with the token alone while an
+/// agent session is live, for a click in their browser
+/// ([`clax_http::confirm::require_confirmation`], decision 4), unless the
+/// setting already has that value. Any other change passes.
 ///
 /// # Errors
 /// 202 `confirmation_pending` and the confirmation's refusals, and the
@@ -177,15 +188,18 @@ pub async fn confirm(
     caller: &Caller,
     confirming: &clax_http::confirm::Confirming,
     id: &ArtifactId,
-    switch: Switch,
+    change: SettingChange,
 ) -> Result<(), ApiError> {
+    if !change.needs_approval() {
+        return Ok(());
+    }
     let i2 = id.clone();
-    if s.store_call(move |st| switch.widened(st, &i2)).await? {
+    if s.store_call(move |st| change.already(st, &i2)).await? {
         return Ok(());
     }
     let decision = clax_http::confirm::Decision::Widen {
         artifact_id: id.as_str().to_string(),
-        to: switch.widened_to().into(),
+        to: change.value().into(),
         remote_id: None,
         body: None,
     };
@@ -193,10 +207,10 @@ pub async fn confirm(
     Ok(())
 }
 
-/// Whether `caller` may turn `switch` of `id` now: the turn admitted, or
-/// the 202 body while an agent's widening waits on its person's answer to
-/// question `qid`, asking them first when `qid` is `None` (the module
-/// docs).
+/// Whether `caller` may make `change` of `id` now: the change admitted,
+/// or the 202 body while an agent's change that needs approval waits on
+/// its person's answer to question `qid`, asking them first when `qid` is
+/// `None` (the module docs).
 ///
 /// # Errors
 /// 404 for an artifact that is gone, 403 `admin_only`, 400 `no_session`,
@@ -207,8 +221,7 @@ pub async fn admit(
     caller: &Caller,
     audit: DeferredAudit,
     id: &ArtifactId,
-    switch: Switch,
-    turn: Turn,
+    change: SettingChange,
     qid: Option<String>,
 ) -> Result<Admission, ApiError> {
     let (c2, i2, hosted) = (caller.clone(), id.clone(), s.hosted.is_some());
@@ -217,14 +230,14 @@ pub async fn admit(
             st.get_artifact(&i2)?.ok_or(CoreError::NotFound)?;
             Ok((
                 clax_http::agent::administers(st, &c2, i2.as_str(), hosted)?,
-                switch.widened(st, &i2)?,
+                change.already(st, &i2)?,
             ))
         })
         .await?;
     if !manages {
         return Err(ApiError::forbidden(
             "admin_only",
-            switch.wording().admin_only,
+            change.wording().admin_only,
         ));
     }
     let agent = match caller {
@@ -232,60 +245,51 @@ pub async fn admit(
         Caller::PersonAgent { session, .. } => Some(session.clone()),
         _ => None,
     };
-    if turn == Turn::Widen
+    if change.needs_approval()
         && !already
         && let Some(session) = agent
     {
         let Some(sid) = session else {
             return Err(ApiError::bad_request(
                 "no_session",
-                switch.wording().no_session,
+                change.wording().no_session,
             ));
         };
         let waiting = match qid {
-            None => Some(ask(s, audit, id, &sid, switch).await?),
-            Some(q) => approved(s, id, &sid, q, switch).await?,
+            None => Some(ask(s, audit, id, &sid, change).await?),
+            Some(q) => approved(s, id, &sid, q, change).await?,
         };
         if let Some(body) = waiting {
             return Ok(Admission::Pending(body));
         }
     }
     Ok(Admission::Admitted(Admitted {
-        switch,
-        turn,
+        change,
         artifact: id.clone(),
     }))
 }
 
-/// Makes the turn `admitted` names. A Content Security Policy change is recorded
-/// as `ctx`'s; a site's opening or closing publishes `Event::SiteAccess`,
-/// on which its room sockets of visitors close when it closes.
+/// Makes the change `admitted` names. A Content Security Policy change is
+/// recorded as `ctx`'s; a site's opening or closing publishes
+/// `Event::SiteAccess`, on which its room sockets of visitors close when it
+/// closes.
 ///
 /// # Errors
 /// The store's.
 pub async fn apply(s: &AppState, ctx: AuditCtx, admitted: Admitted) -> Result<(), ApiError> {
-    let Admitted {
-        switch,
-        turn,
-        artifact,
-    } = admitted;
-    let widen = turn == Turn::Widen;
-    match switch {
-        Switch::OpenToWorld => {
+    let Admitted { change, artifact } = admitted;
+    match change {
+        SettingChange::SiteAccess(access) => {
+            let world = access == SiteAccess::World;
             let id = artifact.clone();
-            s.store_call(move |st| st.set_site_open_to_world(&id, widen))
+            s.store_call(move |st| st.set_site_open_to_world(&id, world))
                 .await?;
             s.events.publish(clax_core::Event::SiteAccess {
                 artifact_id: artifact.as_str().to_string(),
-                world: widen,
+                world,
             });
         }
-        Switch::ContentSecurityPolicy => {
-            let policy = if widen {
-                ContentSecurityPolicy::Unrestricted
-            } else {
-                ContentSecurityPolicy::SelfOnly
-            };
+        SettingChange::ContentSecurityPolicy(policy) => {
             s.store_call(move |st| st.set_content_security_policy(&ctx, &artifact, policy))
                 .await?;
         }
@@ -293,24 +297,24 @@ pub async fn apply(s: &AppState, ctx: AuditCtx, admitted: Admitted) -> Result<()
     Ok(())
 }
 
-/// Asks session `sid`'s person whether to widen `switch` of `aid` (one
-/// question per session, artifact and switch while it waits): the 202
+/// Asks session `sid`'s person whether to make `change` of `aid` (one
+/// question per session, artifact and setting while it waits): the 202
 /// body.
 async fn ask(
     s: &AppState,
     audit: DeferredAudit,
     aid: &ArtifactId,
     sid: &str,
-    switch: Switch,
+    change: SettingChange,
 ) -> Result<Value, ApiError> {
     let (id, sid, st8) = (aid.clone(), sid.to_string(), s.clone());
     let qid = s
         .store_call(move |db| {
-            if let Some(q) = db.open_push_approval(&sid, id.as_str(), switch.kind())? {
+            if let Some(q) = db.open_push_approval(&sid, id.as_str(), change.approval_kind())? {
                 return Ok(q);
             }
             let a = db.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let w = switch.wording();
+            let w = change.wording();
             let opt = |(label, description): (&str, &str)| QOption {
                 label: label.to_string(),
                 description: Some(description.to_string()),
@@ -318,7 +322,7 @@ async fn ask(
                 recommended: false,
             };
             let questions = vec![Question {
-                question: switch.question(&a.title),
+                question: change.question(&a.title),
                 header: w.header.to_string(),
                 options: vec![opt(w.approve), opt(w.decline)],
                 multi_select: false,
@@ -338,7 +342,13 @@ async fn ask(
                     in_terminal: false,
                 },
             )?;
-            db.create_push_approval(&row.id, id.as_str(), switch.kind(), &sid, a.current_version)?;
+            db.create_push_approval(
+                &row.id,
+                id.as_str(),
+                change.approval_kind(),
+                &sid,
+                a.current_version,
+            )?;
             let v = clax_http::views::question::view(db, &row)?;
             clax_http::views::question::announce(&st8, db, &row, v);
             Ok(row.id)
@@ -347,15 +357,14 @@ async fn ask(
     Ok(pending(s, &qid))
 }
 
-/// Whether question `qid` approves session `sid`'s widening of `switch` of
-/// `aid`: `None` when it does (and is now spent), the 202 body while it
-/// waits.
+/// Whether question `qid` approves session `sid`'s `change` of `aid`:
+/// `None` when it does (and is now spent), the 202 body while it waits.
 async fn approved(
     s: &AppState,
     aid: &ArtifactId,
     sid: &str,
     qid: String,
-    switch: Switch,
+    change: SettingChange,
 ) -> Result<Option<Value>, ApiError> {
     use axum::http::StatusCode;
     let (q2, sid2) = (qid.clone(), sid.to_string());
@@ -367,7 +376,7 @@ async fn approved(
             ))
         })
         .await?;
-    let (Some(pa), Some(q)) = (pa.filter(|p| p.remote_id == switch.kind()), q) else {
+    let (Some(pa), Some(q)) = (pa.filter(|p| p.remote_id == change.approval_kind()), q) else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "unknown_question",
@@ -397,7 +406,7 @@ async fn approved(
     if !s.store_call(move |st| st.use_push_approval(&q3)).await? {
         return Err(used());
     }
-    let w = switch.wording();
+    let w = change.wording();
     let refuse = |why: &str| {
         Err(ApiError::forbidden(
             "not_approved",

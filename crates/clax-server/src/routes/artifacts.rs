@@ -30,7 +30,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use super::site_switch::{Admission, Switch, Turn};
+use super::setting_change::{Admission, SettingChange};
 
 /// The JSON body of a route with axum's default body limit; see [`body_within`].
 pub(crate) fn body<T>(r: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
@@ -1269,14 +1269,20 @@ pub async fn patch(
         .take()
         .map(|v| super::content_security_policy::parse(&v))
         .transpose()?;
-    if world.is_some() && csp.is_some() {
-        return Err(ApiError::bad_request(
-            "invalid_args",
-            "site_access and content_security_policy are changed one at a time",
-        ));
-    }
+    // At most one setting's change per request.
+    let change = match (world, csp) {
+        (Some(_), Some(_)) => {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                "site_access and content_security_policy are changed one at a time",
+            ));
+        }
+        (Some(a), None) => Some(SettingChange::SiteAccess(a)),
+        (None, Some(p)) => Some(SettingChange::ContentSecurityPolicy(p)),
+        (None, None) => None,
+    };
     let qid = b.question_id.take();
-    if world.is_none() && csp.is_none() && qid.is_some() {
+    if change.is_none() && qid.is_some() {
         return Err(ApiError::bad_request(
             "invalid_args",
             "question_id goes with site_access or content_security_policy",
@@ -1291,13 +1297,15 @@ pub async fn patch(
         _ => clax_core::visibility::Author::Owner,
     };
     let via_page = page_marker(&a.caller, &headers)?;
-    if via_page && (world.is_some() || csp.is_some()) {
+    if via_page && change.is_some() {
         return Err(ApiError::forbidden(
             "not_for_pages",
             "who may open a page's site, and its Content Security Policy, are set in Clax, never by the page",
         ));
     }
-    if csp.is_some() && s.store.is_hidden(id.as_str()) {
+    if matches!(change, Some(SettingChange::ContentSecurityPolicy(_)))
+        && s.store.is_hidden(id.as_str())
+    {
         // A draft follows its live app's setting
         // (`Store::content_security_policy`), so it takes none of its own.
         return Err(crate::routes::app_drafts::refused(
@@ -1313,26 +1321,22 @@ pub async fn patch(
         b.description.as_deref(),
         b.icon.as_deref(),
     )?;
-    // One switch at most (checked above), and the direction it is turned.
-    let turning = world
-        .map(|t| (Switch::OpenToWorld, t))
-        .or(csp.map(|t| (Switch::ContentSecurityPolicy, t)));
-    // Widening either switch is a confirmed decision; narrowing never is.
-    if let Some((switch, Turn::Widen)) = turning {
-        super::site_switch::confirm(&s, &a.caller, &confirming, &id, switch).await?;
+    // A change that needs approval is a confirmed decision.
+    if let Some(change) = change {
+        super::setting_change::confirm(&s, &a.caller, &confirming, &id, change).await?;
     }
     if let Some(caps) = b.capabilities.clone() {
         manifest_owned(&s, &id, caps).await?;
     }
     admin_change(&s, &a.caller, &id, b.pinned, b.capabilities.clone()).await?;
-    if let Some((switch, turn)) = turning {
-        match super::site_switch::admit(&s, &a.caller, deferred, &id, switch, turn, qid).await? {
+    if let Some(change) = change {
+        match super::setting_change::admit(&s, &a.caller, deferred, &id, change, qid).await? {
             // Waiting on the person: nothing of the patch is applied.
             Admission::Pending(body) => {
                 return Ok((StatusCode::ACCEPTED, Json(body)).into_response());
             }
             Admission::Admitted(admitted) => {
-                super::site_switch::apply(&s, audit.clone(), admitted).await?;
+                super::setting_change::apply(&s, audit.clone(), admitted).await?;
             }
         }
     }

@@ -20,34 +20,29 @@
 //!   ([`clax_http::agent::administers`]); anyone else 403 `admin_only`.
 //!   Never a page (403 `not_for_pages`, for a request carrying
 //!   `x-clax-via: page`). An agent's `unrestricted` waits on its person, as
-//!   its opening of a site to the world does: it is one of a site's
-//!   switches ([`super::site_switch::Switch::ContentSecurityPolicy`]);
-//!   `self` never asks.
+//!   its opening of a site to the world does
+//!   ([`super::setting_change::SettingChange`]); `self` never asks.
 
 use clax_core::ArtifactId;
 use clax_http::error::ApiError;
 use clax_store::site_sessions::ContentSecurityPolicy;
 
-use super::site_switch::Turn;
-
 /// The approval question's options.
 pub const SERVE_UNRESTRICTED: &str = "Serve it unrestricted";
 pub const KEEP_TO_ITS_SITE: &str = "Keep it to its own site";
 
-/// Parses `content_security_policy`: `unrestricted` widens, `self`
-/// narrows; 400 `invalid_argument` for anything else.
+/// Parses `content_security_policy`: `self` or `unrestricted`; 400
+/// `invalid_argument` for anything else.
 ///
 /// # Errors
 /// As above.
-pub fn parse(v: &str) -> Result<Turn, ApiError> {
-    match ContentSecurityPolicy::parse(v) {
-        Some(ContentSecurityPolicy::Unrestricted) => Ok(Turn::Widen),
-        Some(ContentSecurityPolicy::SelfOnly) => Ok(Turn::Narrow),
-        None => Err(ApiError::bad_request(
+pub fn parse(v: &str) -> Result<ContentSecurityPolicy, ApiError> {
+    ContentSecurityPolicy::parse(v).ok_or_else(|| {
+        ApiError::bad_request(
             "invalid_argument",
             format!("content_security_policy is self or unrestricted, not '{v}'"),
-        )),
-    }
+        )
+    })
 }
 
 /// Artifact `id`'s `content_security_policy`: `self` or `unrestricted`.

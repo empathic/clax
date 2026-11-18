@@ -13,27 +13,34 @@
 //!   and their agents); anyone else 403 `admin_only`.
 //! - An agent (the owner's with a session, or a person's) opens a site to
 //!   the world only with its person's approval, as `publish_public`
-//!   publishes ([`super::remotes`]); closing never asks. It is one of a
-//!   site's switches ([`super::site_switch::Switch::OpenToWorld`]), turned
-//!   as that module says.
+//!   publishes ([`super::remotes`]); closing never asks. The change is a
+//!   [`super::setting_change::SettingChange::SiteAccess`], admitted and
+//!   applied as that module says.
 
 use clax_http::error::ApiError;
-
-use super::site_switch::Turn;
 
 /// The approval question's options.
 pub const OPEN: &str = "Open to the world";
 pub const KEEP_PRIVATE: &str = "Keep it private";
 
-/// Parses `site_access`: `world` widens, `private` narrows; 400
-/// `invalid_argument` for anything else.
+/// Who may load an artifact's site (`site_access`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SiteAccess {
+    /// `private`: those it is shared with.
+    Private,
+    /// `world`: anyone, as a visitor.
+    World,
+}
+
+/// Parses `site_access`: `private` or `world`; 400 `invalid_argument` for
+/// anything else.
 ///
 /// # Errors
 /// As above.
-pub fn parse(v: &str) -> Result<Turn, ApiError> {
+pub fn parse(v: &str) -> Result<SiteAccess, ApiError> {
     match v {
-        "world" => Ok(Turn::Widen),
-        "private" => Ok(Turn::Narrow),
+        "world" => Ok(SiteAccess::World),
+        "private" => Ok(SiteAccess::Private),
         _ => Err(ApiError::bad_request(
             "invalid_argument",
             format!("site_access is private or world, not '{v}'"),
