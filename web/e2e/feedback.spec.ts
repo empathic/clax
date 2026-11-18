@@ -38,6 +38,11 @@ test("on a hosted instance with nothing configured everyone files a report about
     const owner = await ownerOf(browser, origin);
     const agentToken = await call(owner, "POST", "/api/hosted/agent-tokens", { label: "triage" });
     expect(agentToken.status).toBeLessThan(300);
+    // A token has no queue access until it is granted: every action on the owner's queues.
+    const granted = await call(owner, "PUT", `/api/people/grants/${agentToken.json.id}/elevate`, {
+      access: [{ type: "clax-queues", actions: ["read", "claim", "reply", "fix", "resolve"], locations: ["*"] }],
+    });
+    expect(granted.status, JSON.stringify(granted.json)).toBeLessThan(300);
     const auth = { authorization: `Bearer ${agentToken.json.token}` };
     const agent = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
       const r = await fetch(`${origin}${path}`, { method, headers: { ...auth, ...(body === undefined ? {} : { "content-type": "application/json" }) }, body: body === undefined ? undefined : JSON.stringify(body) });
