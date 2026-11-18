@@ -44,11 +44,11 @@ export class QuestionFeed {
   // The questions this page is closing (its request sent, no answer yet):
   // a list read after the daemon closed one does not take its card away
   // before the answer says what closed it.
-  declare private closing: Set<string>;
+  declare private sent: Set<string>;
 
   constructor(opts: { after?: After } = {}) {
     this.s = reactive({ open: [], recent: [] });
-    this.closing = new Set();
+    this.sent = new Set();
     this.changed = new Set();
     this.leave = new Map();
     this.unwatch = null;
@@ -143,8 +143,8 @@ export class QuestionFeed {
   }
 
   private async close(id: string, p: Promise<Closing | Forbidden>): Promise<void> {
-    this.closing.add(id);
-    const r = await p.finally(() => { this.closing.delete(id); });
+    this.sent.add(id);
+    const r = await p.finally(() => { this.sent.delete(id); });
     if (r === "forbidden") throw forbidden();
     this.upsert("question" in r ? r.question : r.closed);
   }
@@ -166,7 +166,7 @@ export class QuestionFeed {
     if (!r) return;
     // Those that closed unheard leave at once; a card closing now keeps its time.
     const listed = r === "forbidden" ? [] : (r.questions ?? []).filter(q => !this.recent.some(x => x.id === q.id));
-    const mine = this.open.filter(q => this.closing.has(q.id) && !listed.some(x => x.id === q.id));
+    const mine = this.open.filter(q => this.sent.has(q.id) && !listed.some(x => x.id === q.id));
     this.open = [...listed, ...mine].sort(byCreated);
     if (r !== "forbidden") for (const q of heard) this.upsert(q);
   }
