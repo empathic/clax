@@ -14,10 +14,11 @@
   // picking one sends it the brief,
   // which gives it a watch on the artifact (another person's agent waits
   // for that person's approval). With no live agent, a prompt to paste into
-  // one, and the list appears as soon as an agent connects. Every way out
-  // of the second step lands on the new artifact. A modal dialog:
-  // everything else is inert while it is open, Tab stays inside, Escape or
-  // Close closes it and focus goes back.
+  // one, and the list appears as soon as an agent connects. The second
+  // step's actions are "Leave it for now", which only closes the dialog
+  // (the gallery lists the artifact made), and "Open the artifact". A modal
+  // dialog: everything else is inert while it is open, Tab stays inside,
+  // Escape closes it (never opening the artifact) and focus goes back.
   import { onMount } from "svelte";
   import { nav } from "../nav";
   import type { MeBot } from "../bot/api";
@@ -140,10 +141,6 @@
     }
   }
 
-  /** Every way out once the artifact exists lands on it; a Close while
-   * Create is in flight lands on it once it is made. */
-  function close() { if (started) open(); else onClose(); }
-
   function copy() {
     void navigator.clipboard?.writeText(prompt).then(() => {
       copied = true;
@@ -153,7 +150,7 @@
   }
 
   function keydown(e: KeyboardEvent) {
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); return; }
     // The dialog's keys are its own, never the gallery's.
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) e.stopPropagation();
     if (panel) trapTab(e, panel);
@@ -191,7 +188,6 @@
     {:else}
       <header>
         <h2 id="na-title">Who builds it?</h2>
-        <button type="button" class="ghost" onclick={close}>Close</button>
       </header>
       <p class="made">“{started.artifact.title}” is ready for an agent: its brief is its first comment.</p>
       {#if groups === null}
@@ -218,14 +214,20 @@
           {/each}
         </div>
         {#if error}<p class="error" role="alert">{error}</p>{/if}
-        <div class="acts"><button type="button" class="ghost" onclick={open}>Not now: open it</button></div>
+        <div class="acts">
+          <button type="button" class="ghost" onclick={onClose}>Leave it for now</button>
+          <button type="button" class="ghost" onclick={open}>Open the artifact</button>
+        </div>
       {:else}
         <p class="lede"><strong>No agent is connected.</strong> Paste this into one (Claude Code with the Clax plugin, say) and it will watch this artifact and build it from your brief. Once it connects, it is listed here.</p>
         <div class="cf">
           <div class="cf-head"><span class="cf-label">Prompt</span><button type="button" class="small" aria-label="Copy the prompt" onclick={copy}>{copied ? "Copied" : "Copy"}</button></div>
           <pre aria-label="Prompt">{prompt}</pre>
         </div>
-        <div class="acts"><button type="button" class="primary" {@attach focus} onclick={open}>Open the artifact</button></div>
+        <div class="acts">
+          <button type="button" class="ghost" onclick={onClose}>Leave it for now</button>
+          <button type="button" class="primary" {@attach focus} onclick={open}>Open the artifact</button>
+        </div>
         <span class="sr" aria-live="polite">{copied ? "Prompt copied" : ""}</span>
       {/if}
     {/if}
