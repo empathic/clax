@@ -157,7 +157,7 @@ export function followTitle(c: ArtifactController, doc: Document = document): ()
   const off = c.state.subscribe(show);
   return () => {
     off();
-    if (h1?.firstElementChild) h1.textContent = h1.textContent;
+    if (h1?.firstElementChild) h1.replaceChildren(h1.textContent ?? "");
     (hint as HTMLElement | null)?.remove();
   };
 }

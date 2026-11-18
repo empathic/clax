@@ -321,7 +321,7 @@ async fn a_patch_with_an_invalid_field_opens_nothing() {
     };
     for bad in [
         json!({"site_access": "world", "capabilities": {"db": {"rules": "no"}}}),
-        json!({"site_access": "world", "title": ""}),
+        json!({"site_access": "world", "title": "a\nb"}),
         json!({"site_access": "world", "nope": 1}),
     ] {
         let res = patch(bad.clone()).await.unwrap();
