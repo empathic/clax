@@ -3,7 +3,7 @@
 // gives it.
 import { type Anchor, type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
 import { approveCapabilities } from "../caps/approval";
-import { ApiError, type Artifact, type Attention, type ContentPolicy, type PendingCapabilities, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
+import { ApiError, type Artifact, type Attention, type ContentSecurityPolicy, type PendingCapabilities, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, acceptSiteState, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
@@ -174,15 +174,15 @@ export type ViewState = {
   blocked: string[];
   /** The viewer dismissed the blocked notice for this document. */
   blockedDismissed: boolean;
-  /** The artifact's content policy as the switch last set it here; null: as
+  /** The artifact's Content Security Policy as the setting last set it here; null: as
    * `data` says (`policyOf`). Kept apart from `data`, as `tags` is. */
-  policy: ContentPolicy | null;
+  policy: ContentSecurityPolicy | null;
 };
 
-/** The artifact's content policy: as the switch last set it in this view,
- * else as the daemon said (`locked` where it says nothing). */
-export function policyOf(s: ViewState): ContentPolicy {
-  return s.policy ?? s.data?.artifact.content_policy ?? "locked";
+/** The artifact's Content Security Policy: as the setting last set it in
+ * this view, else as the daemon said (`self` where it says nothing). */
+export function policyOf(s: ViewState): ContentSecurityPolicy {
+  return s.policy ?? s.data?.artifact.content_security_policy ?? "self";
 }
 
 /** The artifact's Comments switch is off (spec 2026-10-21-app-push-pull
@@ -1845,9 +1845,9 @@ export class ArtifactController {
     this.blockedSites.clear();
     if (this.s.blocked.length || this.s.blockedDismissed) this.set({ blocked: [], blockedDismissed: false });
   }
-  /** The artifact's site now holds `policy` (the content policy switch's
+  /** The artifact's site now holds `policy` (the Content Security Policy setting's
    * answer): the view says so from now on. */
-  policyChanged(policy: ContentPolicy): void { this.set({ policy }); }
+  policyChanged(policy: ContentSecurityPolicy): void { this.set({ policy }); }
 
   /** The declaration the approval bar shows: what the current version asks
    * for, once the daemon says this viewer may approve it and "Not now" has

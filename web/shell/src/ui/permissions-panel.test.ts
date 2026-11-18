@@ -19,16 +19,16 @@ const answer = (over: Record<string, unknown> = {}) => ({
 });
 
 const mounted: object[] = [];
-type Policy = { content_policy?: "locked" | "own"; may_tag?: boolean; patch?: (body: unknown) => Response };
+type Policy = { content_security_policy?: "self" | "unrestricted"; may_tag?: boolean; patch?: (body: unknown) => Response };
 function setup(a: Record<string, unknown>, policy: Policy = {}) {
   const calls: { method: string; url: string; body?: unknown }[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
     const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
     calls.push({ method: init.method ?? "GET", url, body });
-    if (init.method === "PATCH") return policy.patch?.(body) ?? new Response(JSON.stringify({ artifact: { content_policy: (body as { content_policy: string }).content_policy } }), { status: 200 });
+    if (init.method === "PATCH") return policy.patch?.(body) ?? new Response(JSON.stringify({ artifact: { content_security_policy: (body as { content_security_policy: string }).content_security_policy } }), { status: 200 });
     return new Response(JSON.stringify(init.method === "DELETE" ? { withdrawn: true } : a), { status: 200 });
   }));
-  const state = writable({ data: { artifact: { title: "Forecast", may_approve: true, pending_capabilities: a.pending ?? null, content_policy: policy.content_policy, may_tag: policy.may_tag } }, approving: false, policy: null as string | null });
+  const state = writable({ data: { artifact: { title: "Forecast", may_approve: true, pending_capabilities: a.pending ?? null, content_security_policy: policy.content_security_policy, may_tag: policy.may_tag } }, approving: false, policy: null as string | null });
   const ctl = {
     id: ID,
     state,
@@ -80,52 +80,52 @@ describe("PermissionsPanel", () => {
     expect(sessionStorage.getItem(`clax.permissions.reopen:${ID}`)).toBeNull();
   });
 
-  it("gives whoever administers it the content policy switch, which explains itself before it sends own, and locks at once", async () => {
-    const { ctl, calls } = setup(answer(), { content_policy: "locked", may_tag: true });
+  it("gives whoever administers it the Content Security Policy setting, which explains itself before it sends unrestricted, and returns to self at once", async () => {
+    const { ctl, calls } = setup(answer(), { content_security_policy: "self", may_tag: true });
     permissionsOpen.current!("policy");
-    const box = await vi.waitFor(() => { const b = document.querySelector<HTMLInputElement>("input[name=own_policy]"); expect(b).not.toBeNull(); return b!; });
-    // Opened from the blocked notice, the switch has focus.
+    const box = await vi.waitFor(() => { const b = document.querySelector<HTMLInputElement>("input[name=content_security_policy]"); expect(b).not.toBeNull(); return b!; });
+    // Opened from the blocked notice, the setting has focus.
     await vi.waitFor(() => expect(document.activeElement).toBe(box));
-    expect(box.labels?.[0]?.textContent?.trim()).toBe("Let this clax set its own content policy");
-    expect(document.querySelector(".policy")!.textContent).toContain("Locked: its pages load and connect to its own site only.");
+    expect(box.labels?.[0]?.textContent?.trim()).toBe("Serve this clax without Clax's Content Security Policy");
+    expect(document.querySelector(".policy")!.textContent).toContain("Held to its own site: its pages load and connect to it alone.");
     const patches = () => calls.filter(c => c.method === "PATCH");
     flushSync(() => box.click());
-    const ask = await vi.waitFor(() => { const a = document.querySelector("[data-testid=own-confirm]"); expect(a).not.toBeNull(); return a!; });
-    expect(ask.textContent).toContain("Its pages may then load code from, and send anything they can read to, any site.");
+    const ask = await vi.waitFor(() => { const a = document.querySelector("[data-testid=csp-confirm]"); expect(a).not.toBeNull(); return a!; });
+    expect(ask.textContent).toContain("Clax then sends no Content-Security-Policy holding its pages to their own site: they may load code from, and send anything they can read to, any site.");
     expect(box.checked).toBe(false);
     expect(patches()).toEqual([]);
     flushSync(() => button("Confirm")!.click());
-    await vi.waitFor(() => expect(ctl.policyChanged).toHaveBeenCalledWith("own"));
-    expect(patches()).toEqual([{ method: "PATCH", url: `/api/artifacts/${ID}`, body: { content_policy: "own" } }]);
-    await vi.waitFor(() => expect(document.querySelector("[data-testid=own-note]")?.textContent).toBe("Sets its own content policy: its pages load and send where they choose."));
+    await vi.waitFor(() => expect(ctl.policyChanged).toHaveBeenCalledWith("unrestricted"));
+    expect(patches()).toEqual([{ method: "PATCH", url: `/api/artifacts/${ID}`, body: { content_security_policy: "unrestricted" } }]);
+    await vi.waitFor(() => expect(document.querySelector("[data-testid=csp-note]")?.textContent).toBe("Served without Clax's Content Security Policy: its pages load and send where they choose."));
     expect(box.checked).toBe(true);
     flushSync(() => box.click());
-    await vi.waitFor(() => expect(ctl.policyChanged).toHaveBeenCalledWith("locked"));
-    expect(document.querySelector("[data-testid=own-confirm]")).toBeNull();
-    expect(patches()[1]).toEqual({ method: "PATCH", url: `/api/artifacts/${ID}`, body: { content_policy: "locked" } });
+    await vi.waitFor(() => expect(ctl.policyChanged).toHaveBeenCalledWith("self"));
+    expect(document.querySelector("[data-testid=csp-confirm]")).toBeNull();
+    expect(patches()[1]).toEqual({ method: "PATCH", url: `/api/artifacts/${ID}`, body: { content_security_policy: "self" } });
   });
 
-  it("says why a change of the content policy did not take, and leaves the switch as the daemon holds it", async () => {
-    const refused = () => new Response(JSON.stringify({ error: { code: "admin_only", message: "only the page's maker sets its site's content policy" } }), { status: 403 });
-    const { ctl } = setup(answer(), { content_policy: "locked", may_tag: true, patch: refused });
+  it("says why a change of the Content Security Policy did not take, and leaves the setting as the daemon holds it", async () => {
+    const refused = () => new Response(JSON.stringify({ error: { code: "admin_only", message: "only the page's maker sets its site's Content Security Policy" } }), { status: 403 });
+    const { ctl } = setup(answer(), { content_security_policy: "self", may_tag: true, patch: refused });
     permissionsOpen.current!();
-    const box = await vi.waitFor(() => { const b = document.querySelector<HTMLInputElement>("input[name=own_policy]"); expect(b).not.toBeNull(); return b!; });
+    const box = await vi.waitFor(() => { const b = document.querySelector<HTMLInputElement>("input[name=content_security_policy]"); expect(b).not.toBeNull(); return b!; });
     flushSync(() => box.click());
     await vi.waitFor(() => expect(button("Confirm")).toBeDefined());
     flushSync(() => button("Confirm")!.click());
-    await vi.waitFor(() => expect(document.querySelector("[role=alert]")?.textContent).toBe("Could not change the content policy: only the page's maker sets its site's content policy"));
+    await vi.waitFor(() => expect(document.querySelector("[role=alert]")?.textContent).toBe("Could not change the Content Security Policy: only the page's maker sets its site's Content Security Policy"));
     expect(box.checked).toBe(false);
     expect(ctl.policyChanged).not.toHaveBeenCalled();
   });
 
-  it("shows anyone who does not administer it no switch: a line while it sets its own policy, nothing while it is locked", async () => {
-    setup(answer(), { content_policy: "own", may_tag: false });
+  it("shows anyone who does not administer it no control: a line while it is unrestricted, nothing while it is self", async () => {
+    setup(answer(), { content_security_policy: "unrestricted", may_tag: false });
     permissionsOpen.current!();
-    await vi.waitFor(() => expect(document.querySelector("[data-testid=own-note]")?.textContent).toBe("Sets its own content policy: its pages load and send where they choose."));
-    expect(document.querySelector("input[name=own_policy]")).toBeNull();
+    await vi.waitFor(() => expect(document.querySelector("[data-testid=csp-note]")?.textContent).toBe("Served without Clax's Content Security Policy: its pages load and send where they choose."));
+    expect(document.querySelector("input[name=content_security_policy]")).toBeNull();
     for (const m of mounted.splice(0)) unmount(m);
     document.body.replaceChildren();
-    setup(answer(), { content_policy: "locked", may_tag: false });
+    setup(answer(), { content_security_policy: "self", may_tag: false });
     permissionsOpen.current!();
     await vi.waitFor(() => expect(document.querySelector("[data-permission=net]")).not.toBeNull());
     expect(document.querySelector(".policy")).toBeNull();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NAMED_MAX, blockedNotice } from "./own-policy-model";
+import { NAMED_MAX, blockedNotice } from "./content-security-policy-model";
 
 describe("blockedNotice", () => {
   it("tells an administrator how many sites, and names them", () => {
@@ -15,8 +15,8 @@ describe("blockedNotice", () => {
   it("gives anyone else one line, naming no site", () => {
     expect(blockedNotice(["https://a.example", "https://b.example"], false, false)).toEqual({ text: "This page tried to load from other sites, and Clax blocked it.", sites: null });
   });
-  it("once the clax sets its own policy, asks an administrator to reload and tells anyone else nothing", () => {
-    expect(blockedNotice(["https://a.example"], true, true)).toEqual({ text: "This clax now sets its own content policy. Reload to let it reach these sites.", sites: "https://a.example" });
+  it("once the clax is served unrestricted, asks an administrator to reload and tells anyone else nothing", () => {
+    expect(blockedNotice(["https://a.example"], true, true)).toEqual({ text: "This clax is now served without Clax's Content Security Policy. Reload to let it reach these sites.", sites: "https://a.example" });
     expect(blockedNotice(["https://a.example"], false, true)).toBeNull();
   });
   it("says nothing of nothing", () => {

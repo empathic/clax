@@ -14,7 +14,7 @@
   // last two at Can view or Can comment. Site: Open to the world, with the
   // site's address (when the daemon says them; the comments and history
   // keep the access above), and Serve this clax without Clax's Content
-  // Security Policy (OwnPolicySwitch, as the Permissions panel shows it):
+  // Security Policy (ContentSecurityPolicySetting, as the Permissions panel shows it):
   // turning it on first shows what that lets its pages do, inside the
   // dialog, and sends `unrestricted` only once the person confirms (Cancel
   // sends nothing); turning it off sends `self` at once; a clax served
@@ -25,7 +25,7 @@
   import { onMount, tick } from "svelte";
   import * as api from "../hosted/api";
   import { inertOutside, trapTab } from "./modal";
-  import OwnPolicySwitch from "./OwnPolicySwitch.svelte";
+  import ContentSecurityPolicySetting from "./ContentSecurityPolicySetting.svelte";
   import {
     ACCESS_LABEL, ACCESSES, COMMENTS_LABEL, COMMENTS_NOTE, GENERAL_LABEL, GENERAL_NOTE, GENERALS, LINK_ACCESSES, SITE_NOTE,
     linkRequest, shareDetail, shareName, subject, suggest,
@@ -106,8 +106,8 @@
     if (!(await act(() => api.setSiteAccess(id, box.checked ? "world" : "private")))) box.checked = data.site_access === "world";
   }
 
-  /** The Content Security Policy setting's change (OwnPolicySwitch), which reloads the dialog. */
-  const setOwn = (p: api.ContentSecurityPolicy) => act(() => api.setContentSecurityPolicy(id, p));
+  /** The Content Security Policy setting's change (ContentSecurityPolicySetting), which reloads the dialog. */
+  const setCsp = (p: api.ContentSecurityPolicy) => act(() => api.setContentSecurityPolicy(id, p));
 
   function copy() {
     void navigator.clipboard?.writeText(data.url).then(() => {
@@ -194,7 +194,7 @@
         onchange={e => { void setWorld(e.currentTarget); }} />Open to the world</label>
       <p class="meta" data-testid="site-note">{SITE_NOTE[data.site_access]}<a class="site" href={data.site_url} target="_blank" rel="noopener noreferrer">{data.site_url}</a></p>
       {#if data.content_security_policy}
-        <div class="own"><OwnPolicySwitch held={data.content_security_policy} {busy} set={setOwn} /></div>
+        <div class="csp"><ContentSecurityPolicySetting held={data.content_security_policy} {busy} set={setCsp} /></div>
       {/if}
     {/if}
 
@@ -240,7 +240,7 @@
   .sw input:focus-visible + .track { outline: 2px solid var(--focus); outline-offset: 2px; }
   .general { display: flex; flex-wrap: wrap; gap: 8px; }
   .world { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-  .own { margin-top: 12px; }
+  .csp { margin-top: 12px; }
   .site { overflow-wrap: anywhere; }
   .meta, .none { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
   .none { margin: 0; }

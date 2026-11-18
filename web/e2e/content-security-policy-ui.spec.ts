@@ -1,8 +1,8 @@
-// The content policy switch on a local Clax and the notice that Clax's
-// lockdown blocked a page (docs/contract.md, "Security model" and the
-// bridge's `clax:blocked`): a locked clax whose page loads a script from
+// The Content Security Policy setting on a local Clax and the notice that
+// Clax's lockdown blocked a page (docs/contract.md, "Security model" and the
+// bridge's `clax:blocked`): a clax at `self` whose page loads a script from
 // another origin shows the notice naming that origin; its Permissions…
-// opens the Permissions panel at the switch, which explains itself before
+// opens the Permissions panel at the setting, which explains itself before
 // it sends anything; once the owner turns it on and reloads, the script
 // runs and no notice shows. On a hosted Clax a viewer who does not
 // administer the clax sees one line, with no button. The notice sits over
@@ -31,7 +31,7 @@ const page = (away: string) => `<!doctype html><html><head><title>Blocked</title
 const awayLoaded = (p: Page, id: string) => contentFrame(p, id, 1).then(f => f.evaluate(() => (window as unknown as { awayLoaded?: boolean }).awayLoaded ?? false));
 const frameBox = async (p: Page) => (await p.locator("iframe.frame").boundingBox())!;
 
-test("a locked clax's blocked notice names the site, opens the switch, and goes once the owner lets it set its own policy", async ({ page: tab }) => {
+test("a blocked notice of a clax at self names the site, opens the setting, and goes once the owner serves it unrestricted", async ({ page: tab }) => {
   const away = await scriptHost();
   try {
     const { artifact } = await api(d.base, d.token, "/api/artifacts", {
@@ -47,33 +47,33 @@ test("a locked clax's blocked notice names the site, opens the switch, and goes 
     // Over the frame: the frame's box is the same with the notice and without it.
     const withNotice = await frameBox(tab);
 
-    // Its button opens the Permissions panel at the switch, and turns nothing on.
+    // Its button opens the Permissions panel at the setting, and turns nothing on.
     const patches: string[] = [];
     tab.on("request", r => { if (r.method() === "PATCH") patches.push(r.postData() ?? ""); });
     await notice.getByRole("button", { name: "Permissions…" }).click();
     const panel = tab.getByRole("dialog", { name: "Permissions for “Blocked”" });
-    const sw = panel.getByRole("checkbox", { name: "Let this clax set its own content policy" });
+    const sw = panel.getByRole("checkbox", { name: "Serve this clax without Clax's Content Security Policy" });
     await expect(sw).toBeFocused();
     await expect(sw).not.toBeChecked();
     expect(patches).toEqual([]);
 
     // On: the explanation first, and nothing sent until the owner confirms.
     await sw.click();
-    const ask = panel.getByTestId("own-confirm");
-    await expect(ask).toContainText("Its pages may then load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.");
+    const ask = panel.getByTestId("csp-confirm");
+    await expect(ask).toContainText("Clax then sends no Content-Security-Policy holding its pages to their own site: they may load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.");
     await expect(ask.getByRole("button", { name: "Confirm" })).toBeFocused();
     await expect(sw).not.toBeChecked();
     expect(patches).toEqual([]);
     await ask.getByRole("button", { name: "Confirm" }).click();
     await expect(sw).toBeChecked();
-    await expect(panel.getByTestId("own-note")).toHaveText("Sets its own content policy: its pages load and send where they choose.");
-    expect(patches.map(p => JSON.parse(p))).toEqual([{ content_policy: "own" }]);
-    const got = await api(d.base, d.token, `/api/artifacts/${artifact.id}`) as { artifact: { content_policy: string } };
-    expect(got.artifact.content_policy).toBe("own");
+    await expect(panel.getByTestId("csp-note")).toHaveText("Served without Clax's Content Security Policy: its pages load and send where they choose.");
+    expect(patches.map(p => JSON.parse(p))).toEqual([{ content_security_policy: "unrestricted" }]);
+    const got = await api(d.base, d.token, `/api/artifacts/${artifact.id}`) as { artifact: { content_security_policy: string } };
+    expect(got.artifact.content_security_policy).toBe("unrestricted");
     await panel.getByRole("button", { name: "Close" }).click();
 
     // The notice now asks for a reload; once reloaded the script runs and no notice shows.
-    await expect(notice).toContainText("This clax now sets its own content policy. Reload to let it reach these sites.");
+    await expect(notice).toContainText("This clax is now served without Clax's Content Security Policy. Reload to let it reach these sites.");
     await notice.getByRole("button", { name: "Dismiss" }).click();
     await expect(notice).toHaveCount(0);
     expect(await frameBox(tab)).toEqual(withNotice);
@@ -86,7 +86,7 @@ test("a locked clax's blocked notice names the site, opens the switch, and goes 
   }
 });
 
-test("on a hosted Clax a viewer who does not administer a locked clax sees the blocked notice with no button", async ({ browser }) => {
+test("on a hosted Clax a viewer who does not administer a clax at self sees the blocked notice with no button", async ({ browser }) => {
   const away = await scriptHost();
   const { d: h, origin } = await hostedDaemon();
   try {

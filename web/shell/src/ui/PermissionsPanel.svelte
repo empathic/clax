@@ -11,23 +11,24 @@
   // served, so the view reloads (ArtifactController.permissionsChanged); the
   // panel then opens again on the new document (the flag `reopenKey`). Loaded after the
   // first paint (`more-menu.svelte.ts`), which keeps its opener; opened at
-  // `"policy"` (the blocked notice's Permissions…) it focuses the content
-  // policy switch. Under the rows, the artifact's content policy, where the
-  // daemon says it: for whoever administers it (`may_tag`) the switch the
-  // hosted Share dialog shows too (OwnPolicySwitch, the same control and
-  // words), its change made with the browser's cookie through the shell's
-  // confirmation flow (`hosted/api.ts` `setContentPolicy`, `held.ts`); for
-  // anyone else who opens the panel, a line when the clax sets its own.
+  // `"policy"` (the blocked notice's Permissions…) it focuses the Content
+  // Security Policy setting. Under the rows, the artifact's Content Security
+  // Policy, where the daemon says it: for whoever administers it
+  // (`may_tag`) the control the hosted Share dialog shows too
+  // (ContentSecurityPolicySetting, the same control and words), its change
+  // made with the browser's cookie through the shell's confirmation flow
+  // (`hosted/api.ts` `setContentSecurityPolicy`, `held.ts`); for anyone else
+  // who opens the panel, a line when the clax is served unrestricted.
   import { onMount, tick, untrack } from "svelte";
   import { fromStore } from "svelte/store";
   import { ApiError, getToken } from "../api";
   import type { ArtifactController } from "../view/artifact-controller";
   import { failureText } from "../failure";
-  import { type ContentPolicy, setContentPolicy } from "../hosted/api";
+  import { type ContentSecurityPolicy, setContentSecurityPolicy } from "../hosted/api";
   import { policyOf } from "../view/artifact-controller";
   import ApprovalDialog from "./ApprovalDialog.svelte";
-  import { LOCKED_NOTE, OWN_POLICY_HEADING, OWN_POLICY_NOTE } from "./own-policy-model";
-  import OwnPolicySwitch from "./OwnPolicySwitch.svelte";
+  import { CSP_HEADING, CSP_NOTE, SELF_NOTE } from "./content-security-policy-model";
+  import ContentSecurityPolicySetting from "./ContentSecurityPolicySetting.svelte";
   import { setPermissionsOpener } from "./more-menu.svelte";
   import { type PermissionRow, type PermissionsView, permissionRows } from "./permissions-model";
   import { inertOutside, trapTab } from "./modal";
@@ -73,23 +74,23 @@
     back.el = document.activeElement as HTMLElement | null;
     open = true;
     void load();
-    if (at === "policy") { await tick(); panel?.querySelector<HTMLElement>("input[name=own_policy]")?.focus(); }
+    if (at === "policy") { await tick(); panel?.querySelector<HTMLElement>("input[name=content_security_policy]")?.focus(); }
   }
 
-  // The content policy, where the daemon says it.
-  const policy = $derived(s.data?.artifact.content_policy === undefined ? null : policyOf(s));
+  // The Content Security Policy setting, where the daemon says it.
+  const policy = $derived(s.data?.artifact.content_security_policy === undefined ? null : policyOf(s));
   const admin = $derived(s.data?.artifact.may_tag === true);
   let setting = $state(false);
-  async function setPolicy(p: ContentPolicy): Promise<boolean> {
+  async function setPolicy(p: ContentSecurityPolicy): Promise<boolean> {
     if (setting) return false;
     setting = true;
     try {
-      const r = await setContentPolicy(ctl.id, p);
-      ctl.policyChanged(r.artifact?.content_policy ?? p);
+      const r = await setContentSecurityPolicy(ctl.id, p);
+      ctl.policyChanged(r.artifact?.content_security_policy ?? p);
       error = null;
       return true;
     } catch (e) {
-      error = failureText("Could not change the content policy", e);
+      error = failureText("Could not change the Content Security Policy", e);
       return false;
     } finally {
       setting = false;
@@ -175,13 +176,13 @@
           </li>
         {/each}
       </ul>
-      {#if policy && (admin || policy === "own")}
+      {#if policy && (admin || policy === "unrestricted")}
         <section class="policy" aria-labelledby="perm-policy">
-          <h3 id="perm-policy">{OWN_POLICY_HEADING}</h3>
+          <h3 id="perm-policy">{CSP_HEADING}</h3>
           {#if admin}
-            <OwnPolicySwitch held={policy} busy={setting} set={setPolicy} note={LOCKED_NOTE} />
+            <ContentSecurityPolicySetting held={policy} busy={setting} set={setPolicy} note={SELF_NOTE} />
           {:else}
-            <p class="muted" data-testid="own-note">{OWN_POLICY_NOTE}</p>
+            <p class="muted" data-testid="csp-note">{CSP_NOTE}</p>
           {/if}
         </section>
       {/if}

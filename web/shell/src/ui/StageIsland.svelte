@@ -13,8 +13,8 @@
   // is the notice that offers the page in a tab when the frame could not
   // open it (view/open-in-tab.svelte). The notice that Clax's lockdown
   // blocked the page from other sites (BlockedNotice) sits in the foot too,
-  // loaded the first time a page reports one, for a clax still locked (and,
-  // to whoever may approve, once the switch is on, to reload).
+  // loaded the first time a page reports one, for a clax still at `self`
+  // (and, to whoever may approve, once it is `unrestricted`, to reload).
   import type { Component } from "svelte";
   import { fromStore } from "svelte/store";
   import { INDEX_FILE } from "../../../bridge/src/protocol";
@@ -105,7 +105,7 @@
     {/if}
     {#if blockedShown && Blocked}
       {@const open = permissionsOpen.current}
-      <Blocked origins={s.blocked} admin={s.data.artifact.may_approve === true} own={policyOf(s) === "own"}
+      <Blocked origins={s.blocked} admin={s.data.artifact.may_approve === true} unrestricted={policyOf(s) === "unrestricted"}
         onPermissions={open ? () => open("policy") : null} onReload={() => ctl.reloadHere()} onDismiss={() => ctl.dismissBlocked()} />
     {/if}
   </div>

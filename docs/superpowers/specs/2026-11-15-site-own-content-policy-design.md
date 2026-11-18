@@ -186,23 +186,24 @@ session would hand a private site's files to anyone who sends
 - An artifact that is `unrestricted` shows it wherever the shell shows
   that a site is open to the world.
 
-### The switch on a local Clax
+### The setting on a local Clax
 
-A local Clax's shell has no Share dialog, so the switch also sits in the
+A local Clax's shell has no Share dialog, so the setting also sits in the
 Permissions panel (the more menu's Permissions…), under the capability
 and `net` rows: the panel is where the owner already decides what a clax
 may do, and it opens on a local and a hosted Clax alike, for a viewer who
 may approve what the page uses. It is the Share dialog's control
-(`web/shell/src/ui/OwnPolicySwitch.svelte`, words in
-`own-policy-model.ts`): the same label, the explanation before anything is
-sent, `locked` at once. Its change is the browser's, with its cookie,
-through the shell's confirmation flow (`heldFetch`), as the Share
-dialog's is. A caller who does not administer the artifact sees no
-switch, and reads that it sets its own policy while it does.
+(`web/shell/src/ui/ContentSecurityPolicySetting.svelte`, words in
+`content-security-policy-model.ts`): the same label, the explanation
+before anything is sent, `self` at once. Its change is the browser's,
+with its cookie, through the shell's confirmation flow (`heldFetch`), as
+the Share dialog's is. A caller who does not administer the artifact sees
+no control, and reads that the clax is served without Clax's Content
+Security Policy while it is.
 
 ### Saying what the lockdown blocked
 
-A locked clax that loads from another site used to break silently. The
+A clax at `self` that loads from another site used to break silently. The
 bridge, which is the first script of every HTML page a site serves,
 listens for `securitypolicyviolation`, keeps the violations of the
 lockdown (told apart from a page's `<meta>` policy by `originalPolicy`:
@@ -212,11 +213,11 @@ set, and carries `connect-src 'self'`, `object-src 'none'`, `base-uri
 shell `clax:blocked {directive, origin}` after its welcome: the origin
 alone, each directive and origin once, at most 20 a document. The shell
 treats it as the page's text: it checks the shape, keeps at most 20, shows
-the origins as text and acts on nothing. While the clax is `locked`, a
+the origins as text and acts on nothing. While the clax is at `self`, a
 notice over the bottom of the stage (in its foot, so the page's layout
 never moves) tells an administrator how many sites it tried to reach and
-which, with Permissions…, which opens the panel at the switch and flips
-nothing; anyone else reads one line. Nothing is kept. Not covered: a
+which, with Permissions…, which opens the panel at the setting and
+changes nothing; anyone else reads one line. Nothing is kept. Not covered: a
 same-origin form post (`form-action 'none'`), frames inside the page,
 pages served without the bridge (non-UTF-8 HTML, SVG and XML documents),
 drafts, and a world-open site visited outside the shell, where there is
@@ -266,10 +267,11 @@ Recorded as waivers beside the code that implements each:
   fork and a push start at `self`.
 - Unit: the bridge's lockdown test and log (`web/bridge/test/blocked.test.ts`),
   the shell's check of `clax:blocked` (malformed, oversized, flooding,
-  duplicate), the notice's words, and the panel's switch.
-- End to end (`web/e2e/own-policy-ui.spec.ts`): the notice names a blocked
-  script's origin, its button opens the switch, the switch explains itself
-  first, and after `own` and a reload the script runs with no notice; a
+  duplicate), the notice's words, and the panel's setting.
+- End to end (`web/e2e/content-security-policy-ui.spec.ts`): the notice
+  names a blocked script's origin, its button opens the setting, which
+  explains itself first, and after `unrestricted` and a reload the script
+  runs with no notice; a
   hosted viewer who does not administer the clax sees the notice without
   its button.
 - End to end (`web/e2e`, beside `lockdown.spec.ts`): a page that loads a

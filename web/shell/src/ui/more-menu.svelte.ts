@@ -61,7 +61,7 @@ export function setPublishOpener(o: PublishOpener | null): void { publishOpener 
 
 /** The Permissions panel's component once `loadMoreMenu` has loaded it, else null. */
 export const permissions = { get current(): PermissionsT | null { return permissionsLoaded; } };
-/** Opens the Permissions panel; `"policy"` focuses its content policy switch (the blocked notice's Permissions…). */
+/** Opens the Permissions panel; `"policy"` focuses its Content Security Policy setting (the blocked notice's Permissions…). */
 export type PermissionsOpener = (at?: "policy") => void;
 /** What opens the Permissions panel while it is mounted (the more menu's Permissions… item, the blocked notice's), else null. */
 export const permissionsOpen = { get current(): PermissionsOpener | null { return permissionsOpener; } };

@@ -11722,20 +11722,21 @@ was made; and a run's end, sent until it is acknowledged.
   `unrestricted` lifts the browser's policy, not what the daemon does for
   a page: the `net` capability and the other gated capabilities keep their
   approval and grants.
-- In the shell, the switch is "Let this clax set its own content policy",
-  under the rows of the Permissions panel (the more menu's Permissions…,
-  for a viewer who may approve what the page uses) on a local and a hosted
-  Clax, and in a hosted Clax's Share dialog beside "Open to the world":
-  one control, for a caller who administers the artifact (`may_tag`).
-  Turning it on first shows "Its pages may then load code from, and send
-  anything they can read to, any site. So may every later version,
-  whoever publishes it: you, an editor, or an agent of either. Turn this
-  on for a clax you trust as a website." and sends `own` only once they
-  confirm, from the browser with its cookie, so a decision held for
-  confirmation is confirmed as the shell's others are ("Browser
-  confirmations"); turning it off sends `locked` at once. Anyone else who
-  opens the panel reads that the clax sets its own content policy, while
-  it does.
+- In the shell, the setting is "Serve this clax without Clax's Content
+  Security Policy", under the rows of the Permissions panel (the more
+  menu's Permissions…, for a viewer who may approve what the page uses) on
+  a local and a hosted Clax, and in a hosted Clax's Share dialog beside
+  "Open to the world": one control, for a caller who administers the
+  artifact (`may_tag`). Turning it on first shows "Clax then sends no
+  Content-Security-Policy holding its pages to their own site: they may
+  load code from, and send anything they can read to, any site. So may
+  every later version, whoever publishes it: you, an editor, or an agent
+  of either. Turn this on for a clax you trust as a website." and sends
+  `unrestricted` only once they confirm, from the browser with its
+  cookie, so a decision held for confirmation is confirmed as the shell's
+  others are ("Browser confirmations"); turning it off sends `self` at
+  once. Anyone else who opens the panel reads that the clax is served
+  without Clax's Content Security Policy, while it is.
 - When the lockdown refuses a page something from another origin, the
   shell framing it is told. The bridge, the first script of every HTML
   page a site serves, listens for `securitypolicyviolation` and, framed,
@@ -11761,15 +11762,16 @@ was made; and a run's end, sent until it is acknowledged.
   itself, so the shell takes it only from the greeted document, checks its
   shape (a known directive; an origin a URL parses back to exactly, at
   most 300 characters), keeps at most 20, shows each origin as text, and
-  does nothing because of it. While the artifact is `locked` it shows a
+  does nothing because of it. While the artifact is at `self` it shows a
   notice over the bottom of the page, which moves nothing of it: to a
   viewer who may approve what the page uses, "This clax tried to reach N
   other sites, and Clax blocked it.", the first three origins and how many
   more, and **Permissions…**, which opens the Permissions panel at the
-  switch and changes nothing itself; to anyone else, "This page tried to
-  load from other sites, and Clax blocked it.". Once the switch is on, the
-  first says "This clax now sets its own content policy. Reload to let it
-  reach these sites." with **Reload**, and the second goes. **Dismiss**
+  setting and changes nothing itself; to anyone else, "This page tried to
+  load from other sites, and Clax blocked it.". Once the setting is
+  `unrestricted`, the first says "This clax is now served without Clax's
+  Content Security Policy. Reload to let it reach these sites." with
+  **Reload**, and the second goes. **Dismiss**
   hides it until another document greets; nothing of it is kept. A page
   of a site open to the world visited outside the shell has no shell to
   tell: its viewer sees only what the browser's console says.
