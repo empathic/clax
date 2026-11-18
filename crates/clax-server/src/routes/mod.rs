@@ -62,6 +62,7 @@ pub mod settings;
 pub mod site;
 pub mod site_api;
 pub mod site_signin;
+pub mod site_switch;
 pub mod sites;
 pub mod snapshot;
 pub mod stream;

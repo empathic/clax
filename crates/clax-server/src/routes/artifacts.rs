@@ -30,6 +30,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use super::site_switch::{Admission, Switch, Turn};
+
 /// The JSON body of a route with axum's default body limit; see [`body_within`].
 pub(crate) fn body<T>(r: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
     body_within(r, "the request body limit")
@@ -1306,34 +1308,28 @@ pub async fn patch(
         b.description.as_deref(),
         b.icon.as_deref(),
     )?;
+    // One switch at most (checked above), and the direction it is turned.
+    let turning = world
+        .map(|t| (Switch::OpenToWorld, t))
+        .or(own.map(|t| (Switch::OwnContentPolicy, t)));
     // Widening either switch is a confirmed decision; narrowing never is.
-    if world == Some(true) {
-        super::world::GATE
-            .confirm(&s, &a.caller, &confirming, &id)
-            .await?;
-    }
-    if own == Some(true) {
-        super::own_policy::GATE
-            .confirm(&s, &a.caller, &confirming, &id)
-            .await?;
+    if let Some((switch, Turn::Widen)) = turning {
+        super::site_switch::confirm(&s, &a.caller, &confirming, &id, switch).await?;
     }
     if let Some(caps) = b.capabilities.clone() {
         manifest_owned(&s, &id, caps).await?;
     }
     admin_change(&s, &a.caller, &id, b.pinned, b.capabilities.clone()).await?;
-    let change = match (world, own) {
-        (Some(world), _) => {
-            Some(super::world::change(&s, &a.caller, deferred, &id, world, qid).await?)
+    if let Some((switch, turn)) = turning {
+        match super::site_switch::admit(&s, &a.caller, deferred, &id, switch, turn, qid).await? {
+            // Waiting on the person: nothing of the patch is applied.
+            Admission::Pending(body) => {
+                return Ok((StatusCode::ACCEPTED, Json(body)).into_response());
+            }
+            Admission::Admitted(admitted) => {
+                super::site_switch::apply(&s, audit.clone(), admitted).await?;
+            }
         }
-        (None, Some(own)) => Some(
-            super::own_policy::change(&s, &a.caller, deferred, audit.clone(), &id, own, qid)
-                .await?,
-        ),
-        (None, None) => None,
-    };
-    if let Some(super::world::Change::Pending(body)) = change {
-        // Waiting on the person: nothing of the patch is applied.
-        return Ok((StatusCode::ACCEPTED, Json(body)).into_response());
     }
     let vf = VisFor::of(&a.caller, &s);
     let host = headers
