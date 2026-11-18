@@ -106,6 +106,10 @@ run it through the command the plugin's session context gives.
   earlier builds are reset, not upgraded.
 - Don't change shared git configuration (for example `rerere`), and don't
   use bare `git stash` across worktrees.
+- A pull request branch takes in `main` by a rebase, not by a merge of
+  `main`. This holds also for a branch that has a review. Resolve each
+  conflict in the commit that brought in the conflicting lines, so every
+  commit still builds. Push the result with `--force-with-lease`.
 - Commits are signed by the owner. Agents commit with
   `git -c commit.gpgsign=false commit`; never push unsigned commits, and
   never file, close or comment on issues or pull requests unless asked.
