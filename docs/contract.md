@@ -2690,7 +2690,9 @@ artifact's Send reaches an agent once it watches. Once the artifact is
 made, the dialog offers Leave it for now, which (like Escape) only closes
 it, leaving the person on the gallery that lists the artifact, and Open
 the artifact, which opens it. A Cancel, Close or Escape while Create is in
-flight opens the artifact once Create answers.
+flight closes the dialog the same way: the artifact is still made (and
+built, when ClaxBot was asked to), and the gallery lists it, but nothing
+opens it.
 
 ### Reopening and deleting threads
 

@@ -221,32 +221,39 @@ describe("NewArtifactDialog", () => {
     expect([...m.root.querySelectorAll("button.agent")].map(b => b.querySelector(".nm")!.textContent)).toEqual(["here"]);
   });
 
-  it("closed while Create is in flight, lands on the artifact made and polls nothing", async () => {
-    let answer: (r: Response) => void = () => {};
-    const calls: string[] = [];
-    vi.stubGlobal("fetch", vi.fn((url: string) => {
-      calls.push(url);
-      if (url === "/api/artifacts:new") return new Promise<Response>(r => { answer = r; });
-      return Promise.resolve(new Response("{}", { status: 404 }));
-    }));
-    const setInt = vi.spyOn(globalThis, "setInterval");
-    const assign = vi.fn();
-    (await import("./nav")).nav.assign = assign;
-    const onClose = vi.fn();
-    const m = mount(NewArtifactDialog, { me: { owner: true }, onClose });
-    type(m.root.querySelector<HTMLInputElement>("#na-name")!, "Q3 chart");
-    type(m.root.querySelector<HTMLTextAreaElement>("#na-brief")!, "A bar chart");
-    submit(m.root);
-    await settle();
-    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Cancel")!);
-    expect(onClose).toHaveBeenCalled();
-    m.unmount();
-    answer(new Response(JSON.stringify(started), { status: 201 }));
-    await settle();
-    expect(assign).toHaveBeenCalledWith("/a/abc");
-    expect(setInt).not.toHaveBeenCalled();
-    expect(calls.some(u => u.startsWith("/api/agents"))).toBe(false);
-    setInt.mockRestore();
+  it("dismissed by Cancel, Close or Escape while Create is in flight, opens nothing and polls nothing once the artifact is made", async () => {
+    for (const way of ["Cancel", "Close", "Escape"] as const) {
+      let answer: (r: Response) => void = () => {};
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", vi.fn((url: string) => {
+        calls.push(url);
+        if (url === "/api/artifacts:new") return new Promise<Response>(r => { answer = r; });
+        return Promise.resolve(new Response("{}", { status: 404 }));
+      }));
+      const setInt = vi.spyOn(globalThis, "setInterval");
+      const assign = vi.fn();
+      (await import("./nav")).nav.assign = assign;
+      const onClose = vi.fn();
+      const m = mount(NewArtifactDialog, { me: { owner: true }, onClose });
+      type(m.root.querySelector<HTMLInputElement>("#na-name")!, "Q3 chart");
+      type(m.root.querySelector<HTMLTextAreaElement>("#na-brief")!, "A bar chart");
+      submit(m.root);
+      await settle();
+      expect(m.root.querySelector('button[type="submit"]')!.textContent).toBe("Creating…");
+      if (way === "Escape") flush(() => { m.root.querySelector('[role="dialog"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+      else click([...m.root.querySelectorAll("button")].find(b => b.textContent === way)!);
+      expect(onClose).toHaveBeenCalledTimes(1);
+      m.unmount();
+      answer(new Response(JSON.stringify(started), { status: 201 }));
+      await settle();
+      // The artifact was made (the gallery lists it); nothing opens it.
+      expect(calls.filter(u => u === "/api/artifacts:new")).toHaveLength(1);
+      expect(assign).not.toHaveBeenCalled();
+      expect(setInt).not.toHaveBeenCalled();
+      expect(calls.some(u => u.startsWith("/api/agents"))).toBe(false);
+      setInt.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("retries Create with the same key after a lost answer, and a new one after a refusal", async () => {
@@ -295,6 +302,30 @@ describe("the New dialog with ClaxBot", () => {
     expect(assign).toHaveBeenCalledWith("/a/abc#run=r1");
     // Building with ClaxBot does not choose it for later Sends: that is asked.
     expect(localStorage.getItem("clax.sendTo.abc")).toBeNull();
+  });
+
+  it("dismissed while Create and build is in flight, opens neither the artifact nor its run", async () => {
+    let answer: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url === "/api/me/bot") return Promise.resolve(new Response(JSON.stringify(meBot()), { status: 200, headers: { "content-type": "application/json" } }));
+      if (url === "/api/artifacts:new") return new Promise<Response>(r => { answer = r; });
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    }));
+    const assign = vi.fn();
+    (await import("./nav")).nav.assign = assign;
+    const onClose = vi.fn();
+    const m = mount(NewArtifactDialog, { me: { owner: true }, onClose });
+    await settle();
+    expect(m.root.querySelector('button[type="submit"]')!.textContent).toBe("Create and build");
+    fill(m);
+    submit(m.root);
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Cancel")!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    m.unmount();
+    answer(new Response(JSON.stringify({ ...started, run: { id: "r1" } }), { status: 201 }));
+    await settle();
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("switched off, makes the artifact as before and asks who builds it", async () => {

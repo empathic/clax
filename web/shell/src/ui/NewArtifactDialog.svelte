@@ -47,8 +47,8 @@
   // One key per form: a retry of Create answers the artifact a first
   // request made, if it made one.
   let key = newKey();
-  // Unmounted: nothing more is set or started, and an artifact made after
-  // Close is landed on.
+  // Unmounted: nothing more is set, started or opened; an artifact made
+  // after a dismissal is only listed in the gallery.
   let destroyed = false;
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
   // ClaxBot for this person: null until known, and where the daemon has none.
@@ -107,10 +107,11 @@
     try {
       const built = build && !!bot?.available;
       const made = await start(title, brief, key, built ? "claxbot" : undefined);
+      // Dismissed while Create was in flight: the artifact is made (and
+      // built, with ClaxBot) and the gallery lists it; nothing opens it.
+      if (destroyed) return;
       // ClaxBot builds it: land on it with the run panel open.
       if (built) { nav.assign(withRun(made)); return; }
-      // Closed while Create was in flight: land on what it made.
-      if (destroyed) { nav.assign(made.url); return; }
       started = made;
       await refresh();
       // Agents come and go: the list follows them, so one that connects
