@@ -14,8 +14,7 @@ the same arguments and return the same JSON as the Clax MCP tools.
 pi install npm:@empathic/clax-pi
 ```
 
-Then start a new session. Each release of the package pins the Clax
-release of the same version.
+Then start a new session.
 
 From a clone of the Clax repository (nothing needs building), run
 `pi install <clone>/plugins/pi`. Or run `just install` in the clone: it
