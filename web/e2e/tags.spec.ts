@@ -193,7 +193,7 @@ test("the tag editor shows a refusal past twenty tags and closes on a press outs
   await expect(last).not.toBeChecked();
   await expect(titleChips(page)).toHaveCount(20);
   // A press outside closes it.
-  await page.locator(".topbar h1").click();
+  await page.locator(".topbar").click({ position: { x: 4, y: 4 } });
   await expect(editor).toHaveCount(0);
 
   // On a phone, the title reads "20 tags", which lists them. A local
