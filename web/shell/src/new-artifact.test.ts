@@ -117,7 +117,7 @@ describe("NewArtifactDialog", () => {
     m.unmount();
   });
 
-  it("with no live agent, shows the prompt to paste into one and opens the artifact on Close", async () => {
+  it("with no live agent, shows the prompt to paste into one, and lists an agent that connects", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     stubFetch({ "POST /api/artifacts:new": [201, started], "GET /api/agents?artifact=abc": { agents: [] } });
     const assign = vi.fn();
@@ -136,10 +136,35 @@ describe("NewArtifactDialog", () => {
     vi.advanceTimersByTime(3000);
     await settle();
     expect(m.root.querySelector("button.agent")!.textContent).toContain("late");
-    // Closing after the artifact exists lands on it.
-    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Close")!);
-    expect(assign).toHaveBeenCalledWith("/a/abc");
+    expect(assign).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("once the artifact is made, Leave it for now and Escape only close the dialog, and Open the artifact opens it", async () => {
+    const buttons = (root: Element) => [...root.querySelectorAll("button")].map(b => b.textContent);
+    const button = (root: Element, name: string) => [...root.querySelectorAll("button")].find(b => b.textContent === name)!;
+    for (const [agents, way] of [[[], "Leave it for now"], [[], "Escape"], [[{ handle: "a_mine", name: "clax", person: null, live: true }], "Leave it for now"], [[{ handle: "a_mine", name: "clax", person: null, live: true }], "Escape"]] as const) {
+      stubFetch({ "POST /api/artifacts:new": [201, started], "GET /api/agents?artifact=abc": { agents } });
+      const assign = vi.fn();
+      (await import("./nav")).nav.assign = assign;
+      const onClose = vi.fn();
+      const m = mount(NewArtifactDialog, { me: { owner: true }, onClose });
+      type(m.root.querySelector<HTMLInputElement>("#na-name")!, "Q3 chart");
+      type(m.root.querySelector<HTMLTextAreaElement>("#na-brief")!, "A bar chart");
+      submit(m.root);
+      await settle();
+      expect(m.root.querySelector("h2")!.textContent).toBe("Who builds it?");
+      // The dismissal sits beside Open the artifact; the header has none.
+      expect(m.root.querySelector("header button")).toBeNull();
+      expect(buttons(m.root.querySelector(".acts")!)).toEqual(["Leave it for now", "Open the artifact"]);
+      if (way === "Escape") flush(() => { m.root.querySelector('[role="dialog"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+      else click(button(m.root, way));
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(assign).not.toHaveBeenCalled();
+      click(button(m.root, "Open the artifact"));
+      expect(assign).toHaveBeenCalledWith("/a/abc");
+      m.unmount();
+    }
   });
 
   it("shows the daemon's refusal and stays on the form", async () => {
