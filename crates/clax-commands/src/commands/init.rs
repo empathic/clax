@@ -148,12 +148,26 @@ pub struct Args {
 struct Step {
     args: Vec<String>,
     required: bool,
+    /// The harness's registry was read and does not list what the command
+    /// removes, so its failure is not noted.
+    unlisted: bool,
 }
 
 fn step(required: bool, args: &[&str]) -> Step {
     Step {
         args: args.iter().map(|s| s.to_string()).collect(),
         required,
+        unlisted: false,
+    }
+}
+
+/// A removal that still runs when the registry, read without error, does
+/// not list its target (`listed` false): the harness's files can differ
+/// from what Clax reads.
+fn removal(listed: bool, read: bool, args: &[&str]) -> Step {
+    Step {
+        unlisted: read && !listed,
+        ..step(false, args)
     }
 }
 
@@ -277,14 +291,11 @@ fn claude_removals(ctx: &Ctx) -> Actions {
     let mut a = Actions::default();
     let old_plugin = old_plugin();
     let plugins = ctx.dirs.claude_dir.join("plugins");
-    let installed = read_for_removal(
-        load_json(&plugins.join("installed_plugins.json")),
-        &mut a.notes,
-    );
-    let markets = read_for_removal(
-        load_json(&plugins.join("known_marketplaces.json")),
-        &mut a.notes,
-    );
+    let installed = load_json(&plugins.join("installed_plugins.json"));
+    let markets = load_json(&plugins.join("known_marketplaces.json"));
+    let (installed_read, markets_read) = (installed.is_ok(), markets.is_ok());
+    let installed = read_for_removal(installed, &mut a.notes);
+    let markets = read_for_removal(markets, &mut a.notes);
     if names(&installed, &old_plugin) {
         a.steps
             .push(step(false, &["plugin", "uninstall", old_plugin.as_str()]));
@@ -293,10 +304,16 @@ fn claude_removals(ctx: &Ctx) -> Actions {
         a.steps
             .push(step(false, &["plugin", "marketplace", "remove", OLD]));
     }
-    a.steps
-        .push(step(false, &["plugin", "uninstall", "clax@clax"]));
-    a.steps
-        .push(step(false, &["plugin", "marketplace", "remove", "clax"]));
+    a.steps.push(removal(
+        names(&installed, "clax@clax"),
+        installed_read,
+        &["plugin", "uninstall", "clax@clax"],
+    ));
+    a.steps.push(removal(
+        names(&markets, "clax"),
+        markets_read,
+        &["plugin", "marketplace", "remove", "clax"],
+    ));
     a
 }
 
@@ -325,10 +342,9 @@ fn claude_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
 fn codex_removals(ctx: &Ctx) -> Actions {
     let mut a = Actions::default();
     let old_plugin = old_plugin();
-    let cfg = read_for_removal(
-        load_toml(&ctx.dirs.codex_home.join("config.toml")),
-        &mut a.notes,
-    );
+    let cfg = load_toml(&ctx.dirs.codex_home.join("config.toml"));
+    let read = cfg.is_ok();
+    let cfg = read_for_removal(cfg, &mut a.notes);
     let has = |table: &str, key: &str| {
         cfg.as_ref()
             .and_then(|c| c.get(table))
@@ -343,10 +359,16 @@ fn codex_removals(ctx: &Ctx) -> Actions {
         a.steps
             .push(step(false, &["plugin", "marketplace", "remove", OLD]));
     }
-    a.steps
-        .push(step(false, &["plugin", "remove", "clax@clax"]));
-    a.steps
-        .push(step(false, &["plugin", "marketplace", "remove", "clax"]));
+    a.steps.push(removal(
+        has("plugins", "clax@clax"),
+        read,
+        &["plugin", "remove", "clax@clax"],
+    ));
+    a.steps.push(removal(
+        has("marketplaces", "clax"),
+        read,
+        &["plugin", "marketplace", "remove", "clax"],
+    ));
     a
 }
 
@@ -593,8 +615,9 @@ fn on_path(name: &str) -> Option<PathBuf> {
 }
 
 /// Runs `actions` with `h`'s CLI in the home directory; the harness's
-/// result as JSON. A failed optional command is noted and skipped; a failed
-/// required one fails the harness and stops it.
+/// result as JSON. A failed optional command is noted and skipped, without
+/// a note when its target was not listed; a failed required one fails the
+/// harness and stops it.
 fn run_steps(h: &Harness, ctx: &Ctx, actions: Actions, done: &str) -> Value {
     let mut commands = Vec::new();
     let mut notes = actions.notes;
@@ -616,6 +639,9 @@ fn run_steps(h: &Harness, ctx: &Ctx, actions: Actions, done: &str) -> Value {
             failed = true;
             notes.push(format!("`{line}` failed: {err}"));
             break;
+        }
+        if s.unlisted {
+            continue;
         }
         let first = err.lines().next().unwrap_or_default();
         notes.push(format!("`{line}` failed (ignored): {first}"));

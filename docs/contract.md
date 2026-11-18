@@ -8533,7 +8533,9 @@ each harness whose CLI is on `PATH`: `claude plugin marketplace add` and
 `grok plugin uninstall clax-grok --confirm` (failure ignored) and
 `grok plugin install ~/.clax/marketplace/plugins/clax-grok --trust`.
 It first removes the existing Clax registrations and any under Clax's
-previous name, and records what it registered in
+previous name. A removal command that fails is named in the harness's
+`detail` as ignored, unless the harness's registry, read without error,
+does not list what the command removes. It records what it registered in
 `~/.clax/registrations.json`. `--agent` (repeatable) limits it to named
 harnesses. A harness whose CLI is missing or fails is reported, and the
 others still run. Re-running is safe: it reinstalls the plugin, which
