@@ -140,6 +140,24 @@ describe("QuestionFeed", () => {
     expect(stream.watched[0].off).toBe(true);
   });
 
+  it("keeps the card of a question this page is closing through a list read after the daemon closed it", async () => {
+    // The seeded card is skipped before the topic is live: its close's event
+    // is not heard, and the first list, read after the close, lacks it.
+    let declined!: (r: Response) => void;
+    vi.stubGlobal("fetch", vi.fn((url: string) => url.includes("/decline")
+      ? new Promise<Response>(res => { declined = res; })
+      : Promise.resolve(new Response(JSON.stringify({ questions: [B], open: 1 }), { status: 200 }))));
+    const feed = new QuestionFeed({ after: fakeClock().after });
+    feed.seed([A]);
+    const skipped = feed.decline("Q1");
+    await live(feed);
+    expect(feed.open.map(q => q.id)).toEqual(["Q1", "Q2"]);
+    declined(new Response(JSON.stringify({ question: { ...A, status: "declined", answers: [] } }), { status: 200 }));
+    await skipped;
+    expect(feed.open.map(q => q.id)).toEqual(["Q2"]);
+    expect(feed.recent.map(q => [q.id, q.status])).toEqual([["Q1", "declined"]]);
+  });
+
   it("keeps a question heard while a fetch was in flight, whose list was read before it was asked or closed", async () => {
     // Each fetch waits until the test answers it, with the list as the daemon read it.
     const pending: ((list: unknown[]) => void)[] = [];

@@ -41,9 +41,14 @@ export class QuestionFeed {
   // events heard while it was in flight, which its answer may predate.
   declare private fetching: number;
   declare private heard: QuestionView[] | null;
+  // The questions this page is closing (its request sent, no answer yet):
+  // a list read after the daemon closed one does not take its card away
+  // before the answer says what closed it.
+  declare private closing: Set<string>;
 
   constructor(opts: { after?: After } = {}) {
     this.s = reactive({ open: [], recent: [] });
+    this.closing = new Set();
     this.changed = new Set();
     this.leave = new Map();
     this.unwatch = null;
@@ -106,13 +111,13 @@ export class QuestionFeed {
   }
 
   /** Answers question `id`; rejects when the answer was not sent. */
-  answer(id: string, b: AnswerBody): Promise<void> { return this.close(answerQuestion(id, b)); }
+  answer(id: string, b: AnswerBody): Promise<void> { return this.close(id, answerQuestion(id, b)); }
   /** Skips question `id`. */
-  decline(id: string): Promise<void> { return this.close(declineQuestion(id)); }
+  decline(id: string): Promise<void> { return this.close(id, declineQuestion(id)); }
   /** Moves question `id` to the terminal (mirrored questions). */
-  release(id: string): Promise<void> { return this.close(releaseQuestion(id)); }
+  release(id: string): Promise<void> { return this.close(id, releaseQuestion(id)); }
   /** Ask me here: asks in-terminal question `id`'s agent to ask it here. */
-  pull(id: string): Promise<void> { return this.close(pullQuestion(id)); }
+  pull(id: string): Promise<void> { return this.close(id, pullQuestion(id)); }
 
   /** Takes a question view: an open one is listed (or replaced); one that
    * closed leaves the open list and stays in `recent` for `LEAVE_MS`. A
@@ -137,8 +142,9 @@ export class QuestionFeed {
     }));
   }
 
-  private async close(p: Promise<Closing | Forbidden>): Promise<void> {
-    const r = await p;
+  private async close(id: string, p: Promise<Closing | Forbidden>): Promise<void> {
+    this.closing.add(id);
+    const r = await p.finally(() => { this.closing.delete(id); });
     if (r === "forbidden") throw forbidden();
     this.upsert("question" in r ? r.question : r.closed);
   }
@@ -147,7 +153,9 @@ export class QuestionFeed {
    * list replaces `open`, and then the question events heard since the
    * fetch began are taken again in order, so a question asked or closed
    * while the fetch was in flight is not undone by a list read before it.
-   * Only the latest of overlapping fetches applies. */
+   * A question this page is closing stays listed though the list no longer
+   * has it, until its request's answer closes its card. Only the latest of
+   * overlapping fetches applies. */
   private async refetch(): Promise<void> {
     const n = ++this.fetching;
     this.heard = [];
@@ -157,7 +165,9 @@ export class QuestionFeed {
     this.heard = null;
     if (!r) return;
     // Those that closed unheard leave at once; a card closing now keeps its time.
-    this.open = r === "forbidden" ? [] : (r.questions ?? []).filter(q => !this.recent.some(x => x.id === q.id)).sort(byCreated);
+    const listed = r === "forbidden" ? [] : (r.questions ?? []).filter(q => !this.recent.some(x => x.id === q.id));
+    const mine = this.open.filter(q => this.closing.has(q.id) && !listed.some(x => x.id === q.id));
+    this.open = [...listed, ...mine].sort(byCreated);
     if (r !== "forbidden") for (const q of heard) this.upsert(q);
   }
 
