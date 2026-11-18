@@ -237,6 +237,16 @@ describe("Echo top bar parts", () => {
     Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: Object.freeze({ transport: "host", shell: "clax://app", content: "clax://{id}.c" }) }) });
     try {
       expect(await items()).toEqual({ items: ["Versions"], phoneOnly: true });
+      // Clone with git and Usage have no other home in the app's bar: the menu then shows at every width, with them alone at full width.
+      vi.stubGlobal("matchMedia", () => ({ matches: false }));
+      const usage = { href: "/settings/claxbot", text: "310 / 2,000", label: "ClaxBot: 310 of 2,000 credits used this week", title: "Your ClaxBot credits this week", warn: false, out: false };
+      for (const extra of [{ onClone: vi.fn() }, { usage }, { onClone: vi.fn(), usage }]) {
+        const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), onFork: vi.fn(), ...extra });
+        expect(m.root.querySelector(".more")!.classList.contains("phone-only")).toBe(false);
+        flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
+        expect(Array.from(m.root.querySelectorAll("[role=menuitem]")).map(i => i.textContent!.replace(/\s+/g, " "))).toEqual([...("onClone" in extra ? ["Clone with git…"] : []), ...("usage" in extra ? ["Usage 310 / 2,000"] : [])]);
+        m.unmount();
+      }
     } finally {
       delete (window as { claxTransport?: unknown }).claxTransport;
       vi.unstubAllGlobals();

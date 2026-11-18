@@ -27,7 +27,9 @@
   // handles, and every printable key (so C and ? do nothing there). In the
   // Clax app (`onHost`) it has no Open raw or Copy link, whose addresses
   // are the app's own (the app's bar shares the artifact's link), and so
-  // shows at phone width only, where it holds the bar's hidden items.
+  // shows at phone width only, where it holds the bar's hidden items, unless
+  // it holds Clone with git or Usage, which have no other home in the bar.
+  // At full width in the app it then lists those, Permissions… and the legal links.
   import { tick } from "svelte";
   import { onHost } from "../transport";
   import type { PublishOpener, UsageItem } from "./more-menu.svelte";
@@ -74,7 +76,7 @@
 <svelte:window onpointerdown={outside} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="more" class:phone-only={app} onkeydown={key} onfocusout={leave}>
+<div class="more" class:phone-only={app && !onClone && !usage} onkeydown={key} onfocusout={leave}>
   <button type="button" class="icon" bind:this={button} aria-label="More" aria-haspopup="menu" aria-expanded={open} onclick={toggle}>
     <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.4" fill="currentColor"/><circle cx="8" cy="8" r="1.4" fill="currentColor"/><circle cx="13" cy="8" r="1.4" fill="currentColor"/></svg>
   </button>
