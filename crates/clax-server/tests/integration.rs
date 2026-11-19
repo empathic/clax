@@ -176,10 +176,10 @@ mod api_settings;
 mod api_site;
 #[cfg(any(not(clax_split), clax_split = "api_site_access"))]
 mod api_site_access;
-#[cfg(any(not(clax_split), clax_split = "api_site_api"))]
-mod api_site_api;
 #[cfg(any(not(clax_split), clax_split = "api_site_analytics"))]
 mod api_site_analytics;
+#[cfg(any(not(clax_split), clax_split = "api_site_api"))]
+mod api_site_api;
 #[cfg(any(not(clax_split), clax_split = "api_stream"))]
 mod api_stream;
 #[cfg(any(not(clax_split), clax_split = "api_tags"))]
