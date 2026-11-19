@@ -91,6 +91,10 @@ pub const MAX_HTML: usize = 100_000;
 pub const MAX_TEXT_CHARS: usize = 20_000;
 /// The longest one saved test may take, in milliseconds.
 pub const TEST_MS: u32 = 5_000;
+/// What the saved tests' time leaves for the bridge hook's wait for the
+/// page's `use()` calls (`USES_MS` in `web/bridge/src/bridge.ts`, 5 s)
+/// and the answer's way back.
+const HOOK_SLACK_MS: u64 = 6_000;
 /// Why a popup the page opened is listed blocked: it was closed before
 /// it loaded anything.
 pub const WHY_POPUP: &str = "popup";
@@ -813,9 +817,14 @@ impl Driver<'_> {
         };
         let all = files.len();
         files.truncate(MAX_TEST_FILES);
+        // The hook first waits up to USES_MS for the page's use() calls,
+        // and its answer must come back before the deadline: the tests
+        // get what is left after both, so a run that times out still
+        // reports its partial results.
         let spent = u64::try_from(self.at_ms()).unwrap_or(0);
         let total_ms = (u64::from(opts.timeout_s) * 1000)
             .saturating_sub(spent)
+            .saturating_sub(HOOK_SLACK_MS)
             .max(1);
         let mut t = match self
             .evaluate(&saved_tests_js(&files, TEST_MS, total_ms))
@@ -1961,14 +1970,15 @@ mod tests {
         assert_eq!(r["tests"], json!({"passed": 2, "failed": [], "skipped": 1}));
         assert_eq!(r["passed"], true, "{r}");
         // The hook is called with the target's files, 5 s a test and the
-        // call's time left (the clock did not move: all 60 s of it), its
-        // promise awaited and its value returned.
+        // call's time left (the clock did not move: all 60 s of it) less
+        // the hook's own wait and the way back, its promise awaited and
+        // its value returned.
         let files = ["tests/a.test.js".to_string(), "tests/b.test.js".to_string()];
-        let expected = saved_tests_js(&files, 5_000, 60_000);
+        let expected = saved_tests_js(&files, 5_000, 54_000);
         assert!(
             expected.contains(r#"window.claxTest"#)
                 && expected.contains(
-                    r#"{"files":["tests/a.test.js","tests/b.test.js"],"testMs":5000,"totalMs":60000}"#
+                    r#"{"files":["tests/a.test.js","tests/b.test.js"],"testMs":5000,"totalMs":54000}"#
                 ),
             "{expected}"
         );
