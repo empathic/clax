@@ -44,7 +44,6 @@ pub mod serve;
 pub mod session;
 
 pub use access::{BrowseGrant, BrowserAccess, BrowserGrant, BrowserOff, BrowserShape, TestGrant};
-pub use browse::BrowseRule;
 pub use cdp::{Cdp, CdpEvent, CdpFail};
 pub use fake::{ChromeLog, FakeBrowserSource, FakeChrome, PageModel};
 

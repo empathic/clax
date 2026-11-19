@@ -129,41 +129,7 @@ impl WebOff {
     }
 }
 
-/// Which URLs a fetch may ask for (`web.fetch.url_rule`, spec §5.3).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum UrlRule {
-    /// Only URLs in the sender's own words: a `from_sender` comment of
-    /// the request, or the brief.
-    Sender,
-    /// Only URLs a source of the run holds (spec §5.2): the default.
-    Sourced,
-    /// Any public URL.
-    AnyPublic,
-    /// URLs a source of the run holds, on these hosts (lowercase, as
-    /// `web.fetch.allowlist` keeps them): `example.com` is that host
-    /// alone, `*.example.com` its subdomains and not `example.com`.
-    Allowlist(Vec<String>),
-}
-
-impl UrlRule {
-    /// Whether the rule lets a fetch reach `host` (lowercase, as
-    /// [`PublicUrl::host`] gives it): always, but under
-    /// [`UrlRule::Allowlist`], where the host must be on the list. It is
-    /// the host check of a redirect target too (spec §5.3).
-    #[must_use]
-    pub fn allows_host(&self, host: &str) -> bool {
-        let UrlRule::Allowlist(hosts) = self else {
-            return true;
-        };
-        let host = host.strip_suffix('.').unwrap_or(host);
-        hosts.iter().any(|h| match h.strip_prefix("*.") {
-            Some(base) => host
-                .strip_suffix(base)
-                .is_some_and(|sub| sub.len() > 1 && sub.ends_with('.')),
-            None => host == h,
-        })
-    }
-}
+pub use crate::capability::UrlRule;
 
 /// What a run may search, as the admin set it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -351,6 +317,76 @@ pub fn sources(
         }
     }
     out
+}
+
+/// Why [`admit`] refused a URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// One of the instance's own hosts: `url_not_allowed`.
+    OwnHost,
+    /// Under [`UrlRule::Allowlist`], a host not on the list:
+    /// `url_not_allowed`.
+    NotListed,
+    /// It looks like it holds a credential, and the sender did not write
+    /// it: `url_not_allowed`.
+    Credentialed,
+    /// No source the rule takes holds it (`sender`: not in the sender's
+    /// words; `sourced`, `allowlist`: in no source of the run):
+    /// `url_not_in_prior_context`.
+    NotInPriorContext,
+}
+
+impl Refused {
+    /// Its code: [`crate::web::CODE_URL_NOT_ALLOWED`] or
+    /// [`crate::web::CODE_URL_NOT_IN_PRIOR_CONTEXT`].
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Refused::NotInPriorContext => super::CODE_URL_NOT_IN_PRIOR_CONTEXT,
+            Refused::OwnHost | Refused::NotListed | Refused::Credentialed => {
+                super::CODE_URL_NOT_ALLOWED
+            }
+        }
+    }
+}
+
+/// Whether `url` passes `rule` (spec 2026-11-19-claxbot-browser-design
+/// §4.5), the one URL check of `web.fetch` and of a browser session on a
+/// URL: not one of the instance's own hosts (`own`), on the allowlist
+/// under [`UrlRule::Allowlist`], a credential-looking URL only in the
+/// sender's own words, and held by a source the rule takes, of `found`
+/// (the run's sources, [`sources`]): under [`UrlRule::Sender`] the
+/// sender's words alone, under [`UrlRule::Sourced`] and
+/// [`UrlRule::Allowlist`] any, under [`UrlRule::AnyPublic`] none needed
+/// ([`UrlSource::AnyPublic`] when none holds it). Checked in that order;
+/// the caller has parsed `url` as a [`PublicUrl`] (no credentials, no
+/// private literal, `localhost` or other scheme) and words each refusal.
+///
+/// # Errors
+/// Why it is refused.
+pub fn admit(
+    url: &PublicUrl,
+    rule: &UrlRule,
+    found: &BTreeMap<String, UrlSource>,
+    own: &super::OwnHosts,
+) -> std::result::Result<UrlSource, Refused> {
+    if own.holds(url.host()) {
+        return Err(Refused::OwnHost);
+    }
+    if !rule.allows_host(url.host()) {
+        return Err(Refused::NotListed);
+    }
+    let src = found.get(url.normalized()).cloned();
+    if super::url::looks_credentialed(url) && !matches!(src, Some(UrlSource::Request { .. })) {
+        return Err(Refused::Credentialed);
+    }
+    match (rule, src) {
+        (UrlRule::Sender, Some(s @ UrlSource::Request { .. })) => Ok(s),
+        (UrlRule::Sender, _) => Err(Refused::NotInPriorContext),
+        (_, Some(s)) => Ok(s),
+        (UrlRule::AnyPublic, None) => Ok(UrlSource::AnyPublic),
+        (_, None) => Err(Refused::NotInPriorContext),
+    }
 }
 
 impl WebAccess {
@@ -651,6 +687,123 @@ mod tests {
             ["https://e.example/d", "https://f.example/"]
         );
         assert!(urls_in("no links, just https:// alone").is_empty());
+    }
+
+    /// The one URL check, as a fetch asks it: each rule against the
+    /// sender's words, a search answer and a fetched link, and the checks
+    /// every rule makes.
+    #[test]
+    fn sender_admits_only_the_senders_urls() {
+        let own = super::super::OwnHosts::new(Some("https://clax.example"), None).unwrap();
+        let request = UrlSource::Request {
+            comment_id: Some("c1".into()),
+        };
+        let search = UrlSource::Search {
+            step: 1,
+            seq: 0,
+            n: 1,
+        };
+        let page = UrlSource::Fetched {
+            step: 1,
+            seq: 1,
+            n: 1,
+        };
+        let found: BTreeMap<String, UrlSource> = [
+            ("https://said.example/a", request.clone()),
+            ("https://said.example/?token=1", request.clone()),
+            ("https://found.example/b", search.clone()),
+            ("https://linked.example/c", page.clone()),
+            ("https://found.example/?api_key=2", search.clone()),
+            ("https://clax.example/x", request.clone()),
+        ]
+        .into_iter()
+        .map(|(u, s)| (u.to_string(), s))
+        .collect();
+        let check =
+            |url: &str, rule: &UrlRule| admit(&PublicUrl::parse(url).unwrap(), rule, &found, &own);
+        let allow = UrlRule::Allowlist(vec!["said.example".into(), "found.example".into()]);
+        for (url, rule, want) in [
+            (
+                "https://said.example/a",
+                UrlRule::Sender,
+                Ok(request.clone()),
+            ),
+            (
+                "https://found.example/b",
+                UrlRule::Sender,
+                Err(Refused::NotInPriorContext),
+            ),
+            (
+                "https://linked.example/c",
+                UrlRule::Sender,
+                Err(Refused::NotInPriorContext),
+            ),
+            (
+                "https://found.example/b",
+                UrlRule::Sourced,
+                Ok(search.clone()),
+            ),
+            (
+                "https://linked.example/c",
+                UrlRule::Sourced,
+                Ok(page.clone()),
+            ),
+            (
+                "https://else.example/",
+                UrlRule::Sourced,
+                Err(Refused::NotInPriorContext),
+            ),
+            ("https://found.example/b", allow.clone(), Ok(search.clone())),
+            (
+                "https://linked.example/c",
+                allow.clone(),
+                Err(Refused::NotListed),
+            ),
+            (
+                "https://said.example/z",
+                allow.clone(),
+                Err(Refused::NotInPriorContext),
+            ),
+            (
+                "https://else.example/",
+                UrlRule::AnyPublic,
+                Ok(UrlSource::AnyPublic),
+            ),
+            (
+                "https://found.example/b",
+                UrlRule::AnyPublic,
+                Ok(search.clone()),
+            ),
+        ] {
+            assert_eq!(check(url, &rule), want, "{url} under {rule:?}");
+        }
+        for rule in [
+            UrlRule::Sender,
+            UrlRule::Sourced,
+            allow.clone(),
+            UrlRule::AnyPublic,
+        ] {
+            assert_eq!(
+                check("https://clax.example/x", &rule),
+                Err(Refused::OwnHost),
+                "{rule:?}"
+            );
+            assert_eq!(
+                check("https://found.example/?api_key=2", &rule),
+                Err(Refused::Credentialed),
+                "{rule:?}: a credential the sender did not write"
+            );
+            assert_eq!(
+                check("https://said.example/?token=1", &rule),
+                Ok(request.clone()),
+                "{rule:?}: one the sender wrote"
+            );
+        }
+        assert_eq!(
+            Refused::NotInPriorContext.code(),
+            "url_not_in_prior_context"
+        );
+        assert_eq!(Refused::OwnHost.code(), "url_not_allowed");
     }
 
     #[test]

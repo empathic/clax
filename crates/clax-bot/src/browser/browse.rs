@@ -1,20 +1,21 @@
-//! Browsing public pages (spec §9): which URLs a browse may open, by the
-//! instance's own rule ([`BrowseRule`], independent of `web.fetch`'s),
-//! and what the page's own requests may reach ([`BrowsePolicy`]).
+//! Browser sessions on a public URL (spec
+//! 2026-11-19-claxbot-browser-design §4.5, §8.4): which URLs a session
+//! may open and go to, by `browser.open.url`'s [`UrlRule`] and the one
+//! URL check [`admit`], and what the page's own requests may reach
+//! ([`BrowsePolicy`]).
 //!
 //! # The start URL and each `goto`
 //!
 //! [`BrowseScope::allowed`]: an `http` or `https` URL that is a
 //! [`PublicUrl`] (no credentials, no private or loopback literal, no
-//! `localhost`, at most 2,000 characters), not on one of the instance's
-//! own hosts ([`OwnHosts`]), and admitted by the rule:
-//!
-//! - [`BrowseRule::Sender`]: equal, normalised, to a URL in the sender's
-//!   own words ([`sender_urls`]: their `from_sender` comments and the
-//!   brief, by this module's own scan);
-//! - [`BrowseRule::Allowlist`]: on a listed host (`*.example.com` its
-//!   subdomains);
-//! - [`BrowseRule::AnyPublic`]: any public URL.
+//! `localhost`, at most 2,000 characters) that [`admit`] admits: not on
+//! one of the instance's own hosts ([`OwnHosts`]), and under
+//! [`UrlRule::Sender`] in the sender's own words, under
+//! [`UrlRule::Sourced`] in a source of the run (the sender's words, a
+//! search answer, a fetched page's link), under [`UrlRule::Allowlist`]
+//! in a source and on a listed host, under [`UrlRule::AnyPublic`] any. A
+//! URL no source holds is `url_not_in_prior_context`; one the host check
+//! or the allowlist refuses, `url_not_allowed`.
 //!
 //! # Every request the page makes
 //!
@@ -25,17 +26,18 @@
 //! resolves to public addresses alone by the host's resolver
 //! ([`BrowserSource::host_public`]), and is a host the rule admits
 //! ([`BrowseScope::admits_host`]): under `sender`, a host of the sender's
-//! URLs (a leading `www.` aside); under `allowlist`, a listed one; under
-//! `any_public`, any. Otherwise it fails and is listed blocked, why
+//! URLs, and under `sourced` a host of a source's URLs (a leading `www.`
+//! aside); under `allowlist`, a listed one; under `any_public`, any. Otherwise it fails and is listed blocked, why
 //! [`WHY_SCHEME`], [`WHY_PRIVATE`], [`WHY_OWN`] or [`WHY_RULE`]. A browse
 //! asks the resolver about at most [`MAX_NAMES`] names; a request to a
 //! new name past them is blocked, why [`WHY_NAMES`], so a page cannot
 //! make the instance look up names it picks without end.
 //!
 //! Holding the page's requests to the rule's hosts, not only the start
-//! URL and the `goto`s, is what makes `sender` and `allowlist` bound
-//! where data can go: a model steered into `eval`ing a `fetch` or a
-//! `location = …` to another host is refused as a `goto` there would be.
+//! URL and the `goto`s, is what makes `sender`, `sourced` and `allowlist`
+//! bound where data can go: a model steered into `eval`ing a `fetch` or
+//! a `location = …` to another host is refused as a `goto` there would
+//! be.
 //! Pages that load from hosts the rule does not name render without them
 //! (listed blocked); `any_public` admits them.
 //!
@@ -50,7 +52,9 @@ use super::serve::{Decision, Paused};
 use super::session::RequestPolicy;
 use super::{BrowserError, BrowserSource, CODE_URL_NOT_ALLOWED};
 use crate::api::CODE_BAD_ARGS;
-use crate::host::RequestContext;
+use crate::capability::UrlRule;
+use crate::web::UrlSource;
+use crate::web::access::{Refused, admit};
 use crate::web::url::{OwnHosts, PublicUrl, is_local_addr};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -71,74 +75,6 @@ pub const WHY_OWN: &str = "own";
 /// Why a request was blocked: a host the browse rule does not admit.
 pub const WHY_RULE: &str = "rule";
 
-/// Which URLs a browse may start at and go to
-/// (`browser.browse.url_rule`, spec §9.2).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BrowseRule {
-    /// Only URLs in the sender's own words: the default.
-    Sender,
-    /// URLs on these hosts (lowercase, as `browser.browse.allowlist`
-    /// keeps them): `example.com` is that host alone, `*.example.com` its
-    /// subdomains.
-    Allowlist(Vec<String>),
-    /// Any public URL.
-    AnyPublic,
-}
-
-/// The `http(s)://` URLs written in `text`, normalised
-/// ([`PublicUrl::normalized`]): each runs to the first space, quote,
-/// angle or square bracket, brace or backtick, less the sentence
-/// punctuation (`.,;:!?`) and an unbalanced `)` it ends with. What does
-/// not parse as a [`PublicUrl`] is left out.
-fn urls_in(text: &str) -> Vec<String> {
-    let stop = |c: char| c.is_whitespace() || "\"'<>[]{}`".contains(c);
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(i) = ["http://", "https://"]
-        .iter()
-        .filter_map(|p| rest.find(p))
-        .min()
-    {
-        let tail = &rest[i..];
-        let end = tail.find(stop).unwrap_or(tail.len());
-        let mut url = &tail[..end];
-        loop {
-            let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?']);
-            let trimmed = match trimmed.strip_suffix(')') {
-                Some(t) if t.matches('(').count() < t.matches(')').count() + 1 => t,
-                _ => trimmed,
-            };
-            if trimmed.len() == url.len() {
-                break;
-            }
-            url = trimmed;
-        }
-        if let Ok(u) = PublicUrl::parse(url) {
-            out.push(u.normalized().to_string());
-        }
-        rest = &tail[end.max(1)..];
-    }
-    out
-}
-
-/// The URLs in the sender's own words, normalised: those of their
-/// `from_sender` comments in `cx` and of the brief. Nothing else: not
-/// other people's comments, the artifact, or anything the run wrote or
-/// fetched.
-#[must_use]
-pub fn sender_urls(cx: &RequestContext) -> BTreeSet<String> {
-    let comments = cx
-        .threads
-        .iter()
-        .flat_map(|t| &t.comments)
-        .filter(|c| c.from_sender)
-        .map(|c| c.text.as_str());
-    comments
-        .chain(cx.brief.as_deref())
-        .flat_map(urls_in)
-        .collect()
-}
-
 /// `host` without a trailing dot, lowercase.
 fn bare(host: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
@@ -149,60 +85,58 @@ fn site(host: &str) -> &str {
     host.strip_prefix("www.").unwrap_or(host)
 }
 
-/// What one browse may open: the rule, the instance's own hosts and the
-/// sender's URLs (see the module docs).
+/// What one URL session may open: the rule, the instance's own hosts and
+/// the run's sources (see the module docs).
 #[derive(Clone, Debug)]
 pub struct BrowseScope {
-    rule: BrowseRule,
+    rule: UrlRule,
     own: OwnHosts,
-    /// The sender's URLs, normalised (read under [`BrowseRule::Sender`]).
-    sender: BTreeSet<String>,
-    /// Their hosts, a leading `www.` dropped.
-    sender_hosts: BTreeSet<String>,
+    /// The run's sources, by normalised URL ([`crate::web::access::sources`]).
+    found: BTreeMap<String, UrlSource>,
+    /// The hosts of the sources the rule takes, a leading `www.` dropped:
+    /// the sender's under `sender`, every source's under `sourced`.
+    hosts: BTreeSet<String>,
 }
 
 impl BrowseScope {
     /// The scope of `rule` on an instance whose own hosts are `own`, with
-    /// the sender's URLs `sender` ([`sender_urls`]).
+    /// the run's sources `found` ([`crate::web::access::sources`]).
     #[must_use]
-    pub fn new(rule: BrowseRule, own: OwnHosts, sender: BTreeSet<String>) -> BrowseScope {
-        let sender_hosts = sender
+    pub fn new(rule: UrlRule, own: OwnHosts, found: BTreeMap<String, UrlSource>) -> BrowseScope {
+        let hosts = found
             .iter()
-            .filter_map(|u| Url::parse(u).ok())
+            .filter(|(_, src)| rule != UrlRule::Sender || matches!(src, UrlSource::Request { .. }))
+            .filter_map(|(u, _)| Url::parse(u).ok())
             .filter_map(|u| u.host_str().map(|h| site(&bare(h)).to_string()))
             .collect();
         BrowseScope {
             rule,
             own,
-            sender,
-            sender_hosts,
+            found,
+            hosts,
         }
     }
 
     /// Whether the rule lets the page reach `host` (lowercase, no trailing
-    /// dot): under `sender`, a host of the sender's URLs, a leading
-    /// `www.` on either aside; under `allowlist`, a listed host; under
-    /// `any_public`, any.
+    /// dot): under `sender` and `sourced`, a host of the URLs the rule
+    /// takes, a leading `www.` on either aside; under `allowlist`, a
+    /// listed host; under `any_public`, any.
     #[must_use]
     pub fn admits_host(&self, host: &str) -> bool {
         let host = bare(host);
         match &self.rule {
-            BrowseRule::AnyPublic => true,
-            BrowseRule::Sender => self.sender_hosts.contains(site(&host)),
-            BrowseRule::Allowlist(hosts) => hosts.iter().any(|h| match h.strip_prefix("*.") {
-                Some(base) => host
-                    .strip_suffix(base)
-                    .is_some_and(|sub| sub.len() > 1 && sub.ends_with('.')),
-                None => host == *h,
-            }),
+            UrlRule::AnyPublic => true,
+            UrlRule::Allowlist(_) => self.rule.allows_host(&host),
+            UrlRule::Sender | UrlRule::Sourced => self.hosts.contains(site(&host)),
         }
     }
 
-    /// `url`, a browse's start URL or a `goto`, when it may be opened
-    /// (see the module docs).
+    /// `url`, a session's start URL or a `goto`, when it may be opened
+    /// ([`admit`]).
     ///
     /// # Errors
     /// `invalid_args` for a string that is not an absolute URL;
+    /// `url_not_in_prior_context` for one no source the rule takes holds;
     /// `url_not_allowed`, naming why, for anything else refused.
     pub fn allowed(&self, url: &str) -> Result<PublicUrl, BrowserError> {
         let u = PublicUrl::parse(url).map_err(|e| {
@@ -213,29 +147,34 @@ impl BrowseScope {
             };
             BrowserError::new(code, e.message.replace("fetch a", "open a"), false)
         })?;
-        let refuse = |why: String| Err(BrowserError::new(CODE_URL_NOT_ALLOWED, why, false));
-        if self.own.holds(u.host()) {
-            return refuse(format!(
-                "{} is this instance's own host, which a browse never opens",
-                u.host()
-            ));
+        match admit(&u, &self.rule, &self.found, &self.own) {
+            Ok(_) => Ok(u),
+            Err(why) => {
+                let message = match (why, &self.rule) {
+                    (Refused::OwnHost, _) => format!(
+                        "{} is this instance's own host, which a browser never opens",
+                        u.host()
+                    ),
+                    (Refused::NotListed, _) => {
+                        format!("{} is not a host this instance browses", u.host())
+                    }
+                    (Refused::Credentialed, _) => "the URL looks like it holds a credential; \
+                         it is opened only when the person you act for wrote it themselves"
+                        .to_string(),
+                    (Refused::NotInPriorContext, UrlRule::Sender) => format!(
+                        "{} is not a URL the person you act for wrote; this instance opens \
+                         only those",
+                        u.as_str()
+                    ),
+                    (Refused::NotInPriorContext, _) => format!(
+                        "{} is not in the sender's words, a search result or a page you \
+                         fetched; open only URLs from those",
+                        u.as_str()
+                    ),
+                };
+                Err(BrowserError::new(why.code(), message, false))
+            }
         }
-        let ok = match &self.rule {
-            BrowseRule::AnyPublic => true,
-            BrowseRule::Sender => self.sender.contains(u.normalized()),
-            BrowseRule::Allowlist(_) => self.admits_host(u.host()),
-        };
-        if !ok {
-            return refuse(match &self.rule {
-                BrowseRule::Sender => format!(
-                    "{} is not a URL the person you act for wrote; this instance browses only \
-                     those",
-                    u.as_str()
-                ),
-                _ => format!("{} is not a host this instance browses", u.host()),
-            });
-        }
-        Ok(u)
     }
 
     /// Why the page may not reach `url` by what it says alone (its
@@ -345,7 +284,8 @@ impl RequestPolicy for BrowsePolicy<'_> {
 mod tests {
     use super::*;
     use crate::browser::FakeBrowserSource;
-    use crate::host::{ArtifactMeta, CommentMeta, ThreadMeta};
+    use crate::host::{ArtifactMeta, CommentMeta, RequestContext, ThreadMeta};
+    use crate::web::access::sources;
 
     fn cx(comments: &[(bool, &str)], brief: Option<&str>) -> RequestContext {
         RequestContext {
@@ -381,16 +321,41 @@ mod tests {
         OwnHosts::new(Some("https://clax.example"), Some("sites.example")).unwrap()
     }
 
-    fn scope(rule: BrowseRule, cx: &RequestContext) -> BrowseScope {
-        BrowseScope::new(rule, own(), sender_urls(cx))
+    fn scope(rule: UrlRule, cx: &RequestContext) -> BrowseScope {
+        BrowseScope::new(rule, own(), sources(cx, &[], &[]))
     }
 
     fn code(r: Result<PublicUrl, BrowserError>) -> &'static str {
         r.err().map_or("ok", |e| e.code)
     }
 
+    /// The sources of a run on `cx` that searched once, answered
+    /// `https://found.example/a`, and fetched a page linking
+    /// `https://linked.example/b` (as [`sources`] derives them from its
+    /// journal and page store).
+    fn searched_and_fetched(cx: &RequestContext) -> BTreeMap<String, UrlSource> {
+        let mut found = sources(cx, &[], &[]);
+        found.insert(
+            "https://found.example/a".into(),
+            UrlSource::Search {
+                step: 1,
+                seq: 0,
+                n: 1,
+            },
+        );
+        found.insert(
+            "https://linked.example/b".into(),
+            UrlSource::Fetched {
+                step: 1,
+                seq: 1,
+                n: 1,
+            },
+        );
+        found
+    }
+
     #[test]
-    fn sender_rule_admits_only_the_senders_urls() {
+    fn sender_admits_only_the_senders_urls() {
         let cx = cx(
             &[
                 (true, "Look at https://news.example/story?id=4."),
@@ -398,32 +363,72 @@ mod tests {
             ],
             Some("Start from (https://brief.example/a)"),
         );
-        let s = scope(BrowseRule::Sender, &cx);
+        let s = BrowseScope::new(UrlRule::Sender, own(), searched_and_fetched(&cx));
         assert_eq!(code(s.allowed("https://news.example/story?id=4")), "ok");
         assert_eq!(code(s.allowed("HTTPS://NEWS.example/story?id=4#top")), "ok");
         assert_eq!(code(s.allowed("https://brief.example/a")), "ok");
         // Another URL on the sender's host is not one they wrote.
         assert_eq!(
             code(s.allowed("https://news.example/other")),
-            "url_not_allowed"
+            "url_not_in_prior_context"
         );
-        // Another person's comment is not the sender's words.
-        assert_eq!(code(s.allowed("https://evil.example/")), "url_not_allowed");
+        // Another person's comment is not the sender's words, nor is a
+        // search answer or a fetched page's link.
+        for other in [
+            "https://evil.example/",
+            "https://found.example/a",
+            "https://linked.example/b",
+        ] {
+            assert_eq!(
+                code(s.allowed(other)),
+                "url_not_in_prior_context",
+                "{other}"
+            );
+        }
         // The page may reach the sender's hosts, `www.` aside, and no other.
         assert!(s.admits_host("news.example"));
         assert!(s.admits_host("www.news.example"));
         assert!(s.admits_host("Brief.Example."));
         assert!(!s.admits_host("evil.example"));
+        assert!(!s.admits_host("found.example"));
         assert!(!s.admits_host("cdn.news.example"));
         assert_eq!(s.refusal("https://evil.example/?d=secret"), Some(WHY_RULE));
         assert_eq!(s.refusal("https://www.news.example/next"), None);
     }
 
     #[test]
-    fn allowlist_matches_subdomains_with_a_star() {
+    fn sourced_admits_search_and_fetched_links_for_the_browser_too() {
+        let cx = cx(&[(true, "Start at https://news.example/")], None);
+        let s = BrowseScope::new(UrlRule::Sourced, own(), searched_and_fetched(&cx));
+        for ok in [
+            "https://news.example/",
+            "https://found.example/a",
+            "https://linked.example/b",
+        ] {
+            assert_eq!(code(s.allowed(ok)), "ok", "{ok}");
+            assert!(s.admits_host(Url::parse(ok).unwrap().host_str().unwrap()));
+        }
+        assert_eq!(
+            code(s.allowed("https://found.example/other")),
+            "url_not_in_prior_context"
+        );
+        assert!(!s.admits_host("elsewhere.example"));
+    }
+
+    #[test]
+    fn allowlist_needs_a_source_and_a_listed_host() {
+        let cx = cx(
+            &[(
+                true,
+                "https://example.com/x https://a.docs.example.org/x https://a.b.docs.example.org/ \
+                 https://www.example.com/ https://docs.example.org/ https://xdocs.example.org/ \
+                 https://example.com.evil.example/",
+            )],
+            None,
+        );
         let s = scope(
-            BrowseRule::Allowlist(vec!["example.com".into(), "*.docs.example.org".into()]),
-            &cx(&[], None),
+            UrlRule::Allowlist(vec!["example.com".into(), "*.docs.example.org".into()]),
+            &cx,
         );
         assert_eq!(code(s.allowed("https://example.com/x")), "ok");
         assert_eq!(code(s.allowed("https://a.docs.example.org/x")), "ok");
@@ -437,28 +442,61 @@ mod tests {
             assert_eq!(code(s.allowed(refused)), "url_not_allowed", "{refused}");
             assert_eq!(s.refusal(refused), Some(WHY_RULE), "{refused}");
         }
+        // A listed host is not enough: a source must hold the URL.
+        assert_eq!(
+            code(s.allowed("https://example.com/unsourced")),
+            "url_not_in_prior_context"
+        );
     }
 
     #[test]
-    fn own_hosts_and_private_literals_are_refused_under_every_rule() {
-        let cx = cx(
+    fn any_public_admits_any_public_url() {
+        let s = scope(UrlRule::AnyPublic, &cx(&[], None));
+        assert_eq!(code(s.allowed("https://public.example/")), "ok");
+        assert!(s.admits_host("anything.example"));
+        assert_eq!(s.refusal("https://public.example/"), None);
+    }
+
+    #[test]
+    fn an_unsourced_browser_url_is_not_in_prior_context() {
+        let cx = cx(&[(true, "nothing here")], None);
+        for rule in [
+            UrlRule::Sender,
+            UrlRule::Sourced,
+            UrlRule::Allowlist(vec!["public.example".into()]),
+        ] {
+            let s = scope(rule.clone(), &cx);
+            assert_eq!(
+                code(s.allowed("https://public.example/")),
+                "url_not_in_prior_context",
+                "{rule:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_rule_refuses_own_hosts_private_literals_and_credentials() {
+        let said = cx(
             &[(
                 true,
                 "https://clax.example/a https://x.sites.example/ http://127.0.0.1:9222/json \
-                 http://localhost/ http://[::1]/ http://10.0.0.8/ http://169.254.169.254/",
+                 http://localhost/ http://[::1]/ http://10.0.0.8/ http://169.254.169.254/ \
+                 https://public.example/?api_key=1",
             )],
             None,
         );
         for rule in [
-            BrowseRule::Sender,
-            BrowseRule::Allowlist(vec![
+            UrlRule::Sender,
+            UrlRule::Sourced,
+            UrlRule::Allowlist(vec![
                 "clax.example".into(),
                 "*.sites.example".into(),
                 "localhost".into(),
+                "public.example".into(),
             ]),
-            BrowseRule::AnyPublic,
+            UrlRule::AnyPublic,
         ] {
-            let s = scope(rule.clone(), &cx);
+            let s = scope(rule.clone(), &said);
             for (url, why) in [
                 ("https://clax.example/a", WHY_OWN),
                 ("https://x.sites.example/", WHY_OWN),
@@ -481,16 +519,26 @@ mod tests {
                 code(s.allowed("https://user:pw@public.example/")),
                 "url_not_allowed"
             );
+            // A credential-looking query is opened only from the sender's
+            // own words, which hold this one.
+            assert_eq!(
+                code(s.allowed("https://public.example/?api_key=1")),
+                "ok",
+                "{rule:?}"
+            );
         }
-        let s = scope(BrowseRule::AnyPublic, &cx);
+        let s = scope(UrlRule::AnyPublic, &cx(&[], None));
         assert_eq!(code(s.allowed("not a url")), "invalid_args");
-        assert_eq!(code(s.allowed("https://public.example/")), "ok");
-        assert_eq!(s.refusal("https://public.example/"), None);
+        assert_eq!(
+            code(s.allowed("https://public.example/?api_key=2")),
+            "url_not_allowed",
+            "a credential-looking URL no one wrote"
+        );
     }
 
     #[tokio::test]
     async fn names_on_private_addresses_are_blocked_once_asked() {
-        let s = scope(BrowseRule::AnyPublic, &cx(&[], None));
+        let s = scope(UrlRule::AnyPublic, &cx(&[], None));
         let source = FakeBrowserSource::new();
         source.resolves_private("rebind.example");
         let p = BrowsePolicy::new(&s, &source);
@@ -529,7 +577,7 @@ mod tests {
     /// new name is blocked, why [`WHY_NAMES`].
     #[tokio::test]
     async fn a_browse_asks_the_resolver_about_a_bounded_number_of_names() {
-        let s = scope(BrowseRule::AnyPublic, &cx(&[], None));
+        let s = scope(UrlRule::AnyPublic, &cx(&[], None));
         let source = FakeBrowserSource::new();
         let p = BrowsePolicy::new(&s, &source);
         let req = |url: String| Paused {

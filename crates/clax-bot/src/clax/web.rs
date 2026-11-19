@@ -27,7 +27,7 @@
 //!    instance's own ([`crate::web::WebSource::own_hosts`]), the admin's
 //!    [`UrlRule`] lets its host be reached, a source holds it ([`sources`]) unless the rule
 //!    is [`UrlRule::AnyPublic`], and a URL that looks credentialed
-//!    ([`looks_credentialed`]) is in the sender's own words; else
+//!    ([`looks_credentialed`](crate::web::url::looks_credentialed)) is in the sender's own words; else
 //!    `url_not_allowed` or `url_not_in_prior_context`. When the request
 //!    cannot be read, `web_unavailable`, not retryable: it is refused
 //!    before the source and so not counted, and a flag inviting a retry
@@ -101,12 +101,13 @@ use crate::api::CODE_BAD_ARGS;
 use crate::host::host_error;
 use crate::surface::{Answer, Call, Fields, err_json, recorded};
 use crate::web::page::{PAGE_CHARS, SNIPPET_CHARS, STORE_BYTES, snippet, window};
-use crate::web::url::{OwnHosts, looks_credentialed};
+use crate::web::url::OwnHosts;
 use crate::web::{
-    CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED, CODE_URL_NOT_IN_PRIOR_CONTEXT, CODE_WEB_CAP,
-    CODE_WEB_DISABLED, CODE_WEB_UNAVAILABLE, FetchGrant, Format, OP_FETCH, OP_SEARCH, PublicUrl,
-    SearchAnswer, SearchGrant, SearchQuery, UrlRule, UrlSource, WebAccess, WebError, WebGrant,
-    WebOff, WebSource, access::sources, charged,
+    CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED, CODE_WEB_CAP, CODE_WEB_DISABLED,
+    CODE_WEB_UNAVAILABLE, FetchGrant, Format, OP_FETCH, OP_SEARCH, PublicUrl, SearchAnswer,
+    SearchGrant, SearchQuery, UrlRule, UrlSource, WebAccess, WebError, WebGrant, WebOff, WebSource,
+    access::{Refused, admit, sources},
+    charged,
 };
 use clax_bot_sandbox::HostError;
 use clax_core::audit::{AuditKind, AuditRecord};
@@ -853,37 +854,33 @@ impl ClaxSession<'_> {
             .store()
             .web_pages(&self.run.id)
             .map_err(|e| host_error(&e))?;
-        let found = sources(&cx, journal, &pages).remove(url.normalized());
-        if looks_credentialed(url) && !matches!(found, Some(UrlSource::Request { .. })) {
-            return Err(HostError::new(
-                CODE_URL_NOT_ALLOWED,
-                "the URL looks like it holds a credential; it is fetched only when the \
-                 person you act for wrote it themselves",
-            ));
-        }
-        let src = match (rule, found) {
-            (UrlRule::Sender, Some(src @ UrlSource::Request { .. })) => src,
-            (UrlRule::Sender, _) => {
-                return Err(HostError::new(
-                    CODE_URL_NOT_IN_PRIOR_CONTEXT,
-                    format!(
+        let found = sources(&cx, journal, &pages);
+        let src = match admit(url, rule, &found, own) {
+            Ok(src) => src,
+            Err(why) => {
+                let message = match (why, rule) {
+                    (Refused::OwnHost | Refused::NotListed, _) => format!(
+                        "{} is {}",
+                        url.host(),
+                        host_refused(rule, own, url.host()).unwrap_or("not a host to fetch from")
+                    ),
+                    (Refused::Credentialed, _) => {
+                        "the URL looks like it holds a credential; it is fetched only when the \
+                         person you act for wrote it themselves"
+                            .to_string()
+                    }
+                    (Refused::NotInPriorContext, UrlRule::Sender) => format!(
                         "{} is not in the words of the person you act for; fetch only URLs \
                          they wrote",
                         url.normalized()
                     ),
-                ));
-            }
-            (_, Some(src)) => src,
-            (UrlRule::AnyPublic, None) => UrlSource::AnyPublic,
-            (_, None) => {
-                return Err(HostError::new(
-                    CODE_URL_NOT_IN_PRIOR_CONTEXT,
-                    format!(
+                    (Refused::NotInPriorContext, _) => format!(
                         "{} is not in the sender's words, a search result or a page you \
                          fetched; fetch only URLs from those",
                         url.normalized()
                     ),
-                ));
+                };
+                return Err(HostError::new(why.code(), message));
             }
         };
         Ok((src, pages))

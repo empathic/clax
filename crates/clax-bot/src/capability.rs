@@ -16,7 +16,7 @@
 //!
 //! [`Store::person_caps`]: clax_store::Store::person_caps
 
-use crate::web::{FetchGrant, FetchLimits, Provider, SearchGrant, UrlRule};
+use crate::web::{FetchGrant, FetchLimits, Provider, SearchGrant};
 use clax_core::Result;
 use clax_store::Store;
 use clax_store::bot_settings::Setting;
@@ -217,6 +217,48 @@ pub struct BrowserTerms {
 pub struct Capabilities {
     each: BTreeMap<Capability, std::result::Result<Terms, Off>>,
     browser: Option<BrowserTerms>,
+}
+
+/// Which URLs a capability that takes one admits (spec §4.5), granted
+/// separately to `web.fetch` (`web.fetch.url_rule`) and
+/// `browser.open.url` (`browser.open.url.url_rule`, which also governs
+/// every `goto` out of a session's origin). [`crate::web::access::admit`]
+/// applies it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UrlRule {
+    /// Only URLs in the sender's own words: a `from_sender` comment of
+    /// the request, or the brief.
+    Sender,
+    /// Only URLs a source of the run holds (web tools spec §5.2): the
+    /// sender's words, a search answer, a fetched page's link.
+    /// `web.fetch`'s default.
+    Sourced,
+    /// Any public URL.
+    AnyPublic,
+    /// URLs a source of the run holds, on these hosts (lowercase, as the
+    /// capability's allowlist keeps them): `example.com` is that host
+    /// alone, `*.example.com` its subdomains and not `example.com`.
+    Allowlist(Vec<String>),
+}
+
+impl UrlRule {
+    /// Whether the rule lets a fetch reach `host` (lowercase, as
+    /// [`PublicUrl::host`](crate::web::PublicUrl::host) gives it): always, but under
+    /// [`UrlRule::Allowlist`], where the host must be on the list. It is
+    /// the host check of a redirect target too (spec §5.3).
+    #[must_use]
+    pub fn allows_host(&self, host: &str) -> bool {
+        let UrlRule::Allowlist(hosts) = self else {
+            return true;
+        };
+        let host = host.strip_suffix('.').unwrap_or(host);
+        hosts.iter().any(|h| match h.strip_prefix("*.") {
+            Some(base) => host
+                .strip_suffix(base)
+                .is_some_and(|sub| sub.len() > 1 && sub.ends_with('.')),
+            None => host == h,
+        })
+    }
 }
 
 /// A whole-number setting as `u32`, its default where the stored value

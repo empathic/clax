@@ -85,7 +85,7 @@
 //! in [`from_browser`] alone).
 
 use super::session::ClaxSession;
-use crate::browser::browse::{BrowsePolicy, BrowseRule, BrowseScope, sender_urls};
+use crate::browser::browse::{BrowsePolicy, BrowseScope};
 use crate::browser::opts::{self, BrowserOpts, BrowserTarget, Mode, Step};
 use crate::browser::serve::{Pages, Site};
 use crate::browser::session::{RequestPolicy, Start, TestPolicy, TestRun, run_test};
@@ -94,6 +94,7 @@ use crate::browser::{
     CODE_BROWSER_DISABLED, CODE_BROWSER_TARGET_NOT_FOUND, CODE_BROWSER_TIMEOUT,
     CODE_BROWSER_UNAVAILABLE, CODE_CREDITS_EXHAUSTED, Cdp, OP_BROWSE, OP_TEST,
 };
+use crate::capability::UrlRule;
 use crate::host::host_error;
 use crate::surface::{Answer, Call, Fields, err_json, recorded};
 use clax_bot_sandbox::{CODE_CANCELLED, HostError};
@@ -529,8 +530,10 @@ impl ClaxSession<'_> {
     }
 
     /// What a browse under `grant`'s rule may open: the instance's own
-    /// hosts from `source`, and under the sender rule the URLs of the
-    /// request this run answers, read now.
+    /// hosts from `source`, and the run's sources
+    /// ([`crate::web::access::sources`]: the request this run answers, its
+    /// journaled searches and its page store), read now; under
+    /// `any_public` none are read.
     async fn browse_scope(
         &self,
         source: &dyn BrowserSource,
@@ -539,14 +542,16 @@ impl ClaxSession<'_> {
         let rule = grant
             .browse
             .as_ref()
-            .map_or(BrowseRule::Sender, |b| b.rule.clone());
+            .map_or(UrlRule::Sender, |b| b.rule.clone());
         let own = source.own_hosts().map_err(|why| {
             HostError::new(
                 CODE_BROWSER_UNAVAILABLE,
                 format!("this instance cannot name its own hosts ({why}), so it browses nothing"),
             )
         })?;
-        let sender = if rule == BrowseRule::Sender {
+        let found = if rule == UrlRule::AnyPublic {
+            Default::default()
+        } else {
             let cx = self.provider.host.context(&self.run).await.map_err(|e| {
                 tracing::warn!(
                     "clax-bot: run {} has no request context for a browse: {e}",
@@ -558,11 +563,14 @@ impl ClaxSession<'_> {
                      against it; do without this page",
                 )
             })?;
-            sender_urls(&cx)
-        } else {
-            Default::default()
+            let store = self.store();
+            let journal = store
+                .bot_web_calls(&self.run.id)
+                .map_err(|e| host_error(&e))?;
+            let pages = store.web_pages(&self.run.id).map_err(|e| host_error(&e))?;
+            crate::web::access::sources(&cx, &journal, &pages)
         };
-        Ok(BrowseScope::new(rule, own, sender))
+        Ok(BrowseScope::new(rule, own, found))
     }
 
     /// Check 8: opens a browser on `source` and runs `start` under

@@ -16,7 +16,7 @@
 //!
 //! [`Run::browser`]: clax_store::bot_runs::Run::browser
 
-use super::browse::BrowseRule;
+use crate::capability::UrlRule;
 use clax_core::Result;
 use clax_store::Store;
 
@@ -119,7 +119,8 @@ pub struct TestGrant {
 /// What a run may browse, as the admin set it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrowseGrant {
-    pub rule: BrowseRule,
+    /// `browser.open.url.url_rule`.
+    pub rule: UrlRule,
     /// `browser.open.url.max_per_run`.
     pub max_per_run: u32,
     /// One call's time cap (`browser.call_seconds`), the one cap of every
@@ -157,7 +158,6 @@ impl BrowserAccess {
     /// The store's.
     pub fn now(store: &Store, person: &str, configured: bool) -> Result<BrowserAccess> {
         use crate::capability::{Capabilities, Capability, Family, Terms};
-        use crate::web::UrlRule;
         let caps = Capabilities::now(store, person, &|c| {
             c.family() == Family::Browser && configured
         })?;
@@ -174,13 +174,7 @@ impl BrowserAccess {
         };
         let browse = match caps.get(Capability::OpenUrl) {
             Ok(Terms::Open(g)) => Some(BrowseGrant {
-                // The browse's own rule type, until the URL rule is one:
-                // `sourced` holds a browse to the sender's URLs.
-                rule: match &g.url_rule {
-                    Some(UrlRule::AnyPublic) => BrowseRule::AnyPublic,
-                    Some(UrlRule::Allowlist(h)) => BrowseRule::Allowlist(h.clone()),
-                    _ => BrowseRule::Sender,
-                },
+                rule: g.url_rule.clone().unwrap_or(UrlRule::Sender),
                 max_per_run: g.max_per_run,
                 seconds,
             }),
@@ -348,7 +342,7 @@ mod tests {
             BrowserGrant {
                 test: None,
                 browse: Some(BrowseGrant {
-                    rule: BrowseRule::Sender,
+                    rule: UrlRule::Sender,
                     max_per_run: 4,
                     seconds: 60
                 }),
@@ -366,7 +360,7 @@ mod tests {
         };
         assert_eq!(
             g.browse.unwrap().rule,
-            BrowseRule::Allowlist(vec!["*.example.com".into()])
+            UrlRule::Allowlist(vec!["*.example.com".into()])
         );
         set(
             &st,
@@ -385,7 +379,7 @@ mod tests {
         let BrowserAccess::On(g) = access else {
             panic!("both are on");
         };
-        assert_eq!(g.browse.unwrap().rule, BrowseRule::AnyPublic);
+        assert_eq!(g.browse.unwrap().rule, UrlRule::AnyPublic);
         // The browser choice off turns both off.
         st.set_browser_choice(&AuditCtx::DAEMON, OWNER, false)
             .unwrap();

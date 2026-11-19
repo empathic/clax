@@ -2329,12 +2329,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_browse_session_blocks_private_requests_and_continues_public_ones() {
-        use crate::browser::browse::{
-            BrowsePolicy, BrowseRule, BrowseScope, WHY_OWN, WHY_PRIVATE, WHY_RULE,
-        };
+        use crate::browser::browse::{BrowsePolicy, BrowseScope, WHY_OWN, WHY_PRIVATE, WHY_RULE};
         use crate::web::url::OwnHosts;
         let scope = BrowseScope::new(
-            BrowseRule::Allowlist(vec!["news.example".into(), "*.news.example".into()]),
+            crate::capability::UrlRule::Allowlist(vec![
+                "news.example".into(),
+                "*.news.example".into(),
+            ]),
             OwnHosts::new(Some("https://clax.example"), None).unwrap(),
             Default::default(),
         );

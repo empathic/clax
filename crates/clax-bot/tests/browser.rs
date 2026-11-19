@@ -794,7 +794,11 @@ async fn sender_rule_admits_only_the_senders_urls() {
          return codes;",
     )
     .await;
-    assert_eq!(v, json!(["url_not_allowed", "url_not_allowed", true]));
+    // A URL the sender did not write is in no source the rule takes.
+    assert_eq!(
+        v,
+        json!(["url_not_in_prior_context", "url_not_in_prior_context", true])
+    );
     assert_eq!(env.browser.opened(), 1);
     assert_eq!(browser_rows(&env).len(), 1);
     // Refusals are audited, uncharged and not counted.
@@ -802,7 +806,7 @@ async fn sender_rule_admits_only_the_senders_urls() {
     assert_eq!(counted.get("browser.browse"), Some(&1), "{counted:?}");
     let audit = browser_events(&env);
     assert_eq!(audit.len(), 3);
-    assert_eq!(audit[1]["code"], "url_not_allowed");
+    assert_eq!(audit[1]["code"], "url_not_in_prior_context");
     assert_eq!(audit[1]["credits_milli"], 0);
 }
 
@@ -856,6 +860,8 @@ async fn a_browse_page_reaches_only_what_the_rule_admits() {
         Setting::BrowserOpenUrlAllowlist,
         json!(["news.example", "*.news.example"]),
     )]);
+    // Under allowlist a source must hold the URL too.
+    sender_says(&env, "Start from https://news.example/");
     env.browser.resolves_private("intranet.news.example");
     env.browser.opens(|| {
         Ok(FakeChrome::page(PageModel::new().requests(&[
