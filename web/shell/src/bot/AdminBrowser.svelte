@@ -14,7 +14,7 @@
   import { refusal } from "../people/refusal";
   import { type BrowseRule, type BrowserPatch, type BrowserSettings, getAdminBrowser, pricing, putAdminBrowser } from "./api";
   import { hosted } from "./me";
-  import { UNITS, credits, perUnitMilli, readOnlySource } from "./model";
+  import { credits, perUnitMilli, readOnlySource } from "./model";
   import SourceBadge from "./SourceBadge.svelte";
   import Switch from "./Switch.svelte";
   import { holdReveal } from "../settings/first-data";
@@ -89,7 +89,7 @@
   onMount(() => {
     void Promise.allSettled([
       getAdminBrowser().then(take, e => { err = refusal(e); }),
-      pricing().then(p => { const l = p.lines.find(x => x.id === "browser.time"); hourMilli = l ? perUnitMilli(l, p.credit_price_micro_usd) : null; }, () => {}),
+      pricing().then(p => { const l = p.lines.find(x => x.id === "browser.time"); hourMilli = l ? perUnitMilli({ ...l, cost_micro_usd: l.cost_micro_usd * 3600, fixed_credits_milli: l.fixed_credits_milli == null ? null : l.fixed_credits_milli * 3600 }, p.credit_price_micro_usd) : null; }, () => {}),
       hosted().then(h => { local = !h; }),
     ]).then(release);
   });
@@ -102,7 +102,7 @@
     <div class="fields">
       <div class="field"><Switch checked={testOn} label="Browser testing" disabled={ro("test.enabled")} onchange={on => { testOn = on; }} /> <SourceBadge source={b.sources["test.enabled"]} /></div>
     </div>
-    <p class="note">ClaxBot loads the pages it builds in Cloudflare Browser Run to test them. A test reaches nothing but its page: every request to another origin is refused, and the page's API is read-only.{#if hourMilli !== null}{` Browser time costs ${credits(hourMilli)} credits per ${UNITS.browser_h}, by the second.`}{/if}</p>
+    <p class="note">ClaxBot loads the pages it builds in Cloudflare Browser Run to test them. A test reaches nothing but its page: every request to another origin is refused, and the page's API is read-only.{#if hourMilli !== null}{` Browser time costs ${credits(hourMilli)} credits per browser hour, by the millisecond.`}{/if}</p>
     {#if b.unavailable}<p class="note">Browser testing is off: {b.unavailable}</p>{/if}
     {#if local}
       <p class="note">Cloudflare account ID: {isSet(b.cloudflare.account)} · API token: {isSet(b.cloudflare.token)}. <a href="/settings/web#aw-cf">Set them under Web access.</a> The token needs the Browser Rendering – Edit permission, beside Workers AI Read and AI Gateway Read.</p>

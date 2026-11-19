@@ -116,8 +116,8 @@ export const browserSettings = (o: Partial<BrowserSettings> = {}): BrowserSettin
   cloudflare: { account: true, token: true },
   sources: {}, ...o,
 });
-/** The browser line at Browser Run's list price and no margin: 9 credits per browser hour at $0.01 a credit. */
-export const BROWSER_LINE: CostLine = { id: "browser.time", label: "Browser time", unit: "browser_h", cost_micro_usd: 90_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare Browser Run", model: null };
+/** The browser line at Browser Run's list price and no margin: 25 micro-USD a browser second, 9 credits per browser hour at $0.01 a credit. */
+export const BROWSER_LINE: CostLine = { id: "browser.time", label: "Browser time", unit: "browser_s", cost_micro_usd: 25, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare Browser Run", model: null };
 /** A failed model call as the server details it: Anthropic's 400 for an account out of credit. */
 export const errorDetail = (o: Partial<ErrorDetail> = {}): ErrorDetail => ({
   class: "invalid_request", status: 400, type: "invalid_request_error",

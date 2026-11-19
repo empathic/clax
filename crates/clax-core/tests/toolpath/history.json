@@ -4407,6 +4407,40 @@
     "op": "issue"
    },
    "backfilled": false
+  },
+  {
+   "seq": 131,
+   "at": "2026-10-06T14:09:40.131Z",
+   "kind": "bot.spend",
+   "actor": {
+    "type": "bot",
+    "on_behalf_of": "u_77c0zz"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "daemon",
+    "capability": "browser.open.content",
+    "run": "01JBCB0T000000000000000R01",
+    "step": 4,
+    "op": "browser.session.end",
+    "session": "bs-7a2c91",
+    "kind": "content",
+    "reason": "idle",
+    "ms": 300000,
+    "credits_milli": 13
+   },
+   "backfilled": false
   }
  ]
 }

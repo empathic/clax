@@ -2509,7 +2509,7 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (day, visitor, path)
     ) WITHOUT ROWID;",
     // 69: browser tests (spec 2026-11-19-claxbot-browser §8.1):
-    // `cost_lines.unit` takes `browser_h`, an hour of a browser open counted
+    // `cost_lines.unit` takes `browser_s`, a second of a browser open counted
     // in milliseconds, so `cost_lines` is rebuilt with the one CHECK widened
     // and its rows copied, as migration 63 did for `kreq`; the Rust step
     // ([`BROWSER_MIGRATION`]) seeds the `browser.time` line
@@ -2533,7 +2533,7 @@ pub const MIGRATIONS: &[&str] = &[
         label TEXT NOT NULL,
         unit TEXT NOT NULL CHECK (unit IN
             ('mtok_input', 'mtok_cached_input', 'mtok_cache_write', 'mtok_output', 'cpu_gb_s', 'mreq',
-             'gb_month', 'run', 'kreq', 'browser_h')),
+             'gb_month', 'run', 'kreq', 'browser_s')),
         cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
         margin_bp INTEGER NOT NULL CHECK (margin_bp >= 0),
         fixed_credits_milli INTEGER CHECK (fixed_credits_milli >= 0),
@@ -2657,7 +2657,7 @@ pub const CONTENT_SECURITY_POLICY_MIGRATION: u32 = KEY_PROBLEM_MIGRATION + 1;
 /// `analytics_*` tables), as a schema version.
 pub const ANALYTICS_MIGRATION: u32 = CONTENT_SECURITY_POLICY_MIGRATION + 1;
 
-/// The migration that lets a cost line count browser hours (`browser_h`),
+/// The migration that lets a cost line count browser seconds (`browser_s`),
 /// seeds the `browser.time` line, keeps a person's browser choice
 /// (`bot_person_prefs.browser`) and a run's browser shape
 /// (`bot_runs.browser`), and adds capability grants (`bot_cap_grants`) and
@@ -9470,7 +9470,7 @@ mod tests {
             .cost_line(crate::credits::LINE_BROWSER_TIME)
             .unwrap()
             .unwrap();
-        assert_eq!(line.unit, crate::credits::Unit::BrowserHour);
+        assert_eq!(line.unit, crate::credits::Unit::BrowserSecond);
         let shapes: Vec<String> = c
             .prepare("SELECT browser FROM bot_runs")
             .unwrap()

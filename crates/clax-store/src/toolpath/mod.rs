@@ -769,6 +769,7 @@ impl Event<'_> {
                 | K::BotCall
                 | K::BotWeb
                 | K::BotBrowser
+                | K::BotSpend
                 | K::BotRunEnd
                 | K::BotCancel
                 | K::ViewRun,
@@ -1468,6 +1469,26 @@ impl Event<'_> {
                     (Some("web.fetch"), _, Some(u)) => format!("fetched {u}"),
                     _ => format!("called {}", self.show("op")),
                 },
+                self.show("step"),
+                credits(self.body.get("credits_milli"))
+            ),
+            Some(K::BotSpend) => format!(
+                "ClaxBot run {} {} ({}, step {}, {} credits)",
+                self.show("run"),
+                match (self.str("op"), self.str("query"), self.str("url")) {
+                    _ if self.body.get("ok") == Some(&Value::Bool(false)) => {
+                        format!("was refused {} ({})", self.show("op"), self.show("code"))
+                    }
+                    (Some("web.search"), Some(q), _) => format!("searched the web for {q}"),
+                    (Some("web.fetch"), _, Some(u)) => format!("fetched {u}"),
+                    (Some("browser.session.end"), _, _) => format!(
+                        "ended browser session {} ({})",
+                        self.show("session"),
+                        self.show("reason")
+                    ),
+                    _ => format!("called {}", self.show("op")),
+                },
+                self.show("capability"),
                 self.show("step"),
                 credits(self.body.get("credits_milli"))
             ),

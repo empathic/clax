@@ -79,8 +79,9 @@ pub enum Unit {
     Run,
     /// A thousand requests (web search and web fetch).
     Kreq,
-    /// An hour of a browser open (browser tests), counted in milliseconds.
-    BrowserHour,
+    /// A second of a browser open (`browser.time`), counted in
+    /// milliseconds.
+    BrowserSecond,
 }
 
 impl Unit {
@@ -95,7 +96,7 @@ impl Unit {
         Unit::GbMonth,
         Unit::Run,
         Unit::Kreq,
-        Unit::BrowserHour,
+        Unit::BrowserSecond,
     ];
 
     /// The unit's stored name.
@@ -110,7 +111,7 @@ impl Unit {
             Unit::GbMonth => "gb_month",
             Unit::Run => "run",
             Unit::Kreq => "kreq",
-            Unit::BrowserHour => "browser_h",
+            Unit::BrowserSecond => "browser_s",
         }
     }
 
@@ -121,7 +122,7 @@ impl Unit {
 
     /// How many base quantities one line unit is: 10^6 tokens, 1024 MiB ×
     /// 1000 ms, 10^6 requests, 2^30 bytes × 30 days of seconds, one run,
-    /// 10^3 requests, 3,600,000 ms of a browser open.
+    /// 10^3 requests, 1,000 ms of a browser open.
     pub fn base(self) -> i64 {
         match self {
             Unit::MtokInput
@@ -133,7 +134,7 @@ impl Unit {
             Unit::GbMonth => (1 << 30) * 30 * 86_400,
             Unit::Run => 1,
             Unit::Kreq => 1_000,
-            Unit::BrowserHour => 3_600_000,
+            Unit::BrowserSecond => 1_000,
         }
     }
 
@@ -817,13 +818,13 @@ pub const LINE_TOOLPATH_STORAGE: &str = "toolpath.storage";
 pub const LINE_HARNESS_FEE: &str = "harness.run";
 /// The web fetch line's ID.
 pub const LINE_WEB_FETCH: &str = "web.fetch";
-/// The browser time line's ID: a browser test's measured time, in
-/// milliseconds of a [`Unit::BrowserHour`].
+/// The browser time line's ID: the time a browser is open, in
+/// milliseconds of a [`Unit::BrowserSecond`].
 pub const LINE_BROWSER_TIME: &str = "browser.time";
 
-/// The browser time line's list price in micro-USD per browser hour
-/// (Cloudflare Browser Run, $0.09).
-const BROWSER_HOUR_COST_MICRO_USD: i64 = 90_000;
+/// The browser time line's list price in micro-USD per browser second
+/// (Cloudflare Browser Run, $0.09 a browser hour).
+const BROWSER_SECOND_COST_MICRO_USD: i64 = 25;
 
 /// The web search line of search provider `provider`.
 pub fn web_search_line(provider: &str) -> String {
@@ -1021,11 +1022,11 @@ pub(crate) fn seed_browser_line(tx: &Transaction<'_>) -> Result<()> {
                  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         params![
             LINE_BROWSER_TIME,
-            Unit::BrowserHour.as_str(),
-            BROWSER_HOUR_COST_MICRO_USD,
+            Unit::BrowserSecond.as_str(),
+            BROWSER_SECOND_COST_MICRO_USD,
             INFRA_MARGIN_BP,
             Applies::Always.as_str(),
-            "Cloudflare Browser Run list price, $0.09 per browser hour (check)",
+            "Cloudflare Browser Run list price, $0.09 per browser hour, 25 micro-USD a second (check)",
         ],
     )?;
     Ok(())
@@ -3370,21 +3371,46 @@ mod tests {
         let l = st.cost_line(LINE_BROWSER_TIME).unwrap().unwrap();
         assert_eq!(
             (l.unit, l.cost_micro_usd, l.applies, l.margin_bp),
-            (Unit::BrowserHour, 90_000, Applies::Always, INFRA_MARGIN_BP)
+            (Unit::BrowserSecond, 25, Applies::Always, INFRA_MARGIN_BP)
         );
         assert_eq!(l.fixed_credits_milli, None);
         assert_eq!(
             l.source,
-            "Cloudflare Browser Run list price, $0.09 per browser hour (check)"
+            "Cloudflare Browser Run list price, $0.09 per browser hour, 25 micro-USD a second (check)"
         );
     }
 
     #[test]
-    fn browser_h_round_trips_with_base_3_600_000() {
-        assert_eq!(Unit::parse("browser_h"), Some(Unit::BrowserHour));
-        assert_eq!(Unit::BrowserHour.as_str(), "browser_h");
-        assert_eq!(Unit::BrowserHour.base(), 3_600_000);
-        assert!(Unit::ALL.contains(&Unit::BrowserHour));
-        assert!(!Unit::BrowserHour.is_tokens());
+    fn browser_s_round_trips_with_base_1000() {
+        assert_eq!(Unit::parse("browser_s"), Some(Unit::BrowserSecond));
+        assert_eq!(
+            Unit::parse("browser_h"),
+            None,
+            "the first version's unit is gone"
+        );
+        assert_eq!(Unit::BrowserSecond.as_str(), "browser_s");
+        assert_eq!(Unit::BrowserSecond.base(), 1_000);
+        assert!(Unit::ALL.contains(&Unit::BrowserSecond));
+        assert!(!Unit::BrowserSecond.is_tokens());
+    }
+
+    /// The rate per millisecond is the first version's: $0.09 an hour is
+    /// 25 micro-USD a second, so any number of milliseconds costs the
+    /// credits it cost per hour, at every margin and credit price.
+    #[test]
+    fn a_second_costs_what_a_thousandth_of_an_hour_cost() {
+        for (ms, margin, price) in [
+            (4_200, INFRA_MARGIN_BP, 10_000),
+            (4_200, 0, 10_000),
+            (1, INFRA_MARGIN_BP, 10_000),
+            (3_600_000, 2_500, 7_000),
+            (61_234, INFRA_MARGIN_BP, 1),
+        ] {
+            assert_eq!(
+                row_credits_milli(ms, 25, margin, None, price, Unit::BrowserSecond.base()).unwrap(),
+                row_credits_milli(ms, 90_000, margin, None, price, 3_600_000).unwrap(),
+                "{ms} ms at {margin} bp, {price} micro-USD a credit"
+            );
+        }
     }
 }

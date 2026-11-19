@@ -119,6 +119,7 @@ kinds! {
     BotWeb = "bot.web",
     BotBrowser = "bot.browser",
     BotGrant = "bot.grant",
+    BotSpend = "bot.spend",
     BotRunEnd = "bot.run_end",
     BotCancel = "bot.cancel",
     BotRefused = "bot.refused",
@@ -843,6 +844,7 @@ mod tests {
             "bot.web",
             "bot.browser",
             "bot.grant",
+            "bot.spend",
             "bot.run_end",
             "bot.cancel",
             "bot.refused",
@@ -1040,7 +1042,7 @@ mod tests {
             in_group(KindGroup::Views),
             ["view.run", "view.admin", "view.audit", "view.usage"]
         );
-        assert_eq!(in_group(KindGroup::Bot).len(), 11);
+        assert_eq!(in_group(KindGroup::Bot).len(), 12);
         assert_eq!(in_group(KindGroup::Admin).len(), 7);
         assert_eq!(
             in_group(KindGroup::Credits),

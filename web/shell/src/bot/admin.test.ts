@@ -541,7 +541,7 @@ describe("Admin › Browser", () => {
     expect(text).toContain("Cloudflare account ID: set · API token: not set");
     expect(m.root.querySelector<HTMLAnchorElement>('a[href="/settings/web#aw-cf"]')).not.toBeNull();
     expect(text).toContain("The token needs the Browser Rendering – Edit permission, beside Workers AI Read and AI Gateway Read.");
-    expect(text).toContain("Browser time costs 9 credits per browser hour");
+    expect(text).toContain("Browser time costs 9 credits per browser hour, by the millisecond");
     const test = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Browser testing"]')!;
     expect(test.getAttribute("aria-checked")).toBe("false");
     expect(m.root.querySelector<HTMLInputElement>("#ab-concurrent")!.readOnly).toBe(true);
