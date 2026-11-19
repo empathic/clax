@@ -30,35 +30,26 @@ host_files(
     visibility = ["//crates/clax-worker:__pkg__"],
 )
 
-# The NDK's LLVM for the machine the build runs on: Bazel's NDK repository
-# names its prebuilt directory by that host.
-config_setting(
-    name = "exec_macos",
-    constraint_values = ["@platforms//os:macos"],
-)
-
+# The NDK's LLVM for the machine the build runs on. The NDK repository names
+# its prebuilt directory by that host, and holds only that one, so these
+# aliases of its root name it instead of a per-host label (`llvm_clang`,
+# `llvm_ar`, `llvm_binaries`: bazel/android/rules_android_ndk.patch). A
+# select over the host would name both hosts' labels, and `bazel query`
+# loads every branch of a select: the branch for the other host names a
+# package no fetched NDK has (scripts/affected-tests.sh).
 alias(
     name = "ndk_clang",
-    actual = select({
-        ":exec_macos": "@androidndk//toolchains/llvm/prebuilt/darwin-x86_64:bin/clang",
-        "//conditions:default": "@androidndk//toolchains/llvm/prebuilt/linux-x86_64:bin/clang",
-    }),
+    actual = "@androidndk//:llvm_clang",
 )
 
 alias(
     name = "ndk_llvm_ar",
-    actual = select({
-        ":exec_macos": "@androidndk//toolchains/llvm/prebuilt/darwin-x86_64:bin/llvm-ar",
-        "//conditions:default": "@androidndk//toolchains/llvm/prebuilt/linux-x86_64:bin/llvm-ar",
-    }),
+    actual = "@androidndk//:llvm_ar",
 )
 
 alias(
     name = "ndk_llvm_files",
-    actual = select({
-        ":exec_macos": "@androidndk//toolchains/llvm/prebuilt/darwin-x86_64:all_binaries",
-        "//conditions:default": "@androidndk//toolchains/llvm/prebuilt/linux-x86_64:all_binaries",
-    }),
+    actual = "@androidndk//:llvm_binaries",
 )
 
 # WASM32_CC and WASM32_AR for ring's and sqlite-wasm-rs's build scripts
