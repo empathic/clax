@@ -396,6 +396,40 @@ impl Cdp {
         }
     }
 
+    /// `work`'s output, unless the deadline passes or the run is
+    /// cancelled first: work done between reads (a paused request's
+    /// answer from the host) is held to the same bounds as a read.
+    ///
+    /// # Errors
+    /// [`CdpFail::Deadline`] or [`CdpFail::Cancelled`], each ending every
+    /// later wait as a read's does; at once when one already has.
+    pub async fn bounded<T>(&mut self, work: impl Future<Output = T>) -> Result<T, CdpFail> {
+        if let Some(fail) = self.ended() {
+            return Err(fail);
+        }
+        let Cdp {
+            deadline,
+            cancel,
+            ended,
+            ..
+        } = self;
+        futures::pin_mut!(work);
+        let cancelled = cancel.cancelled();
+        futures::pin_mut!(cancelled);
+        std::future::poll_fn(|cx| {
+            if cancelled.as_mut().poll(cx).is_ready() {
+                *ended = Some(Ended::Cancelled);
+                return Poll::Ready(Err(CdpFail::Cancelled));
+            }
+            if deadline.poll_unpin(cx).is_ready() {
+                *ended = Some(Ended::Deadline);
+                return Poll::Ready(Err(CdpFail::Deadline));
+            }
+            work.as_mut().poll(cx).map(Ok)
+        })
+        .await
+    }
+
     /// Closes the transport; a second close does nothing.
     pub async fn close(&mut self) {
         if !self.transport_closed {

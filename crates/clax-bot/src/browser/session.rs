@@ -474,7 +474,10 @@ impl Driver<'_> {
                 let Some(req) = Paused::of(p) else {
                     return Ok(());
                 };
-                let decision = self.policy.decide(&req).await;
+                // The host's answer (its API, the store) is held to the
+                // test's deadline and the run's cancellation.
+                let policy = self.policy;
+                let decision = self.cdp.bounded(policy.decide(&req)).await?;
                 let document = req.resource_type == "Document" && self.awaiting_document;
                 if document {
                     self.awaiting_document = false;
@@ -699,6 +702,12 @@ impl Driver<'_> {
         if let Err(e) = &loaded {
             self.push_error(&format!("the page did not load: {e}"));
             stopped = true;
+        } else if let Err(fail) = self.settle().await {
+            // The page loaded: what ends the settle ends the test with
+            // what was gathered, as during a step.
+            passed = false;
+            stopped = true;
+            self.end(&fail);
         }
         for step in &opts.steps {
             if stopped {
@@ -834,8 +843,9 @@ impl Driver<'_> {
         }
     }
 
-    /// Steps 1 to 4: the page open and settled, or the browser's error
-    /// text when its navigation failed.
+    /// Steps 1 to 4 up to the load: the page open, or the browser's error
+    /// text when its navigation failed. The settle that follows is after
+    /// the load ([`Driver::drive`]).
     async fn open(
         &mut self,
         start: &Start,
@@ -895,11 +905,7 @@ impl Driver<'_> {
         for (method, params) in setup {
             self.page_call(method, params).await?;
         }
-        if let Err(e) = self.navigate(&start.url()).await? {
-            return Ok(Err(e));
-        }
-        self.settle().await?;
-        Ok(Ok(()))
+        self.navigate(&start.url()).await
     }
 
     /// One step (spec §5.2): its answer, or the failure that ends the
@@ -1971,6 +1977,88 @@ mod tests {
             "{r}"
         );
         assert_eq!(r["passed"], false);
+    }
+
+    #[tokio::test]
+    async fn the_deadline_during_the_settle_answers_what_was_gathered() {
+        // The page loaded and logged; its settle never answers.
+        let deadline = CancelToken::new();
+        let fire = deadline.clone();
+        let chrome = FakeChrome::page(
+            PageModel::new()
+                .evaluate(fine)
+                .on(move |cmd: &Value| {
+                    (cmd["params"]["expression"] == SETTLE_JS).then(|| {
+                        fire.cancel();
+                        vec![]
+                    })
+                })
+                .after_load(vec![event(
+                    "Runtime.consoleAPICalled",
+                    json!({"type": "log", "args": [{"type": "string", "value": "loaded"}]}),
+                    None,
+                )]),
+        );
+        let log = chrome.log();
+        let d = deadline.clone();
+        let mut cdp = Cdp::new(
+            Box::new(chrome),
+            async move { d.cancelled().await }.boxed(),
+            CancelToken::new(),
+        );
+        let run = run_test(
+            &mut cdp,
+            &start(),
+            &opts(json!({"steps": [{"eval": "document.title"}]})),
+            &Serve,
+            &clock(),
+            LIMITS,
+        )
+        .await;
+        let r = result(&run);
+        assert_eq!(r["passed"], false);
+        assert_eq!(r["console"][0]["text"], "loaded");
+        assert_eq!(r["steps"][0], json!({"ok": false, "skipped": true}));
+        assert!(r["truncated"].as_array().unwrap().contains(&json!("time")));
+        assert_eq!(log.sent("Browser.close").len(), 1);
+    }
+
+    /// A policy whose host never answers, after firing the deadline.
+    struct Stalls(CancelToken);
+
+    #[async_trait::async_trait]
+    impl RequestPolicy for Stalls {
+        async fn decide(&self, _req: &Paused) -> Decision {
+            self.0.cancel();
+            futures::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stalled_host_answer_ends_at_the_deadline() {
+        let deadline = CancelToken::new();
+        let chrome = FakeChrome::page(PageModel::new().evaluate(fine));
+        let log = chrome.log();
+        let d = deadline.clone();
+        let mut cdp = Cdp::new(
+            Box::new(chrome),
+            async move { d.cancelled().await }.boxed(),
+            CancelToken::new(),
+        );
+        let run = run_test(
+            &mut cdp,
+            &start(),
+            &opts(json!({})),
+            &Stalls(deadline.clone()),
+            &clock(),
+            LIMITS,
+        )
+        .await;
+        let e = run.outcome.unwrap_err();
+        assert_eq!(e.code, CODE_BROWSER_TIMEOUT);
+        assert!(e.opened);
+        assert_eq!(log.sent("Browser.close").len(), 1);
+        assert_eq!(log.closes(), 1);
     }
 
     #[tokio::test]
