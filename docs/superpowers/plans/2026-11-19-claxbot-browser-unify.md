@@ -20,7 +20,7 @@ Task 1. The web tools' design is `2026-11-02-claxbot-web-tools-design.md`
 sequence, a `Performer` per operation); `web/` and `browser/` become
 performers on it. Browser sessions live in a host-owned registry
 (`browser/live.rs`) of tasks that own their sockets. `clax-store` gains
-`bot_person_caps`, `bot_runs.caps`, `bot_browser_sessions` and the
+`bot_cap_grants`, `bot_runs.caps`, `bot_browser_sessions` and the
 per-second line, all in the branch's own migration 67, edited in place.
 
 **Tech Stack:** Rust (clax-bot, clax-store over SQLite, clax-server on
@@ -76,9 +76,10 @@ Content: `html` ≤ 2 MiB, `files` ≤ 100 and ≤ 16 MiB. Recording 1–10 s,
 Inputs the spec implies and no requirement names. Each has a test in the
 task that owns it.
 
-1. **A person who turned main's web switch off** reads both web
-   capabilities off after migration 67, and their runs declare neither
-   (Task 1, `migration_67_moves_main_web_choices_to_capability_grants`).
+1. **A person who turned main's web switch off** holds no runs grant
+   of either web capability after migration 67, though the instance-wide
+   grant exists, and their runs declare neither (Task 1,
+   `migration_67_writes_main_web_as_explicit_grants`).
 2. **A journal from main with `format: "auto"`** answers its window from
    the page store as `markdown` (Task 8, `an_auto_fetch_from_main_answers_from_the_store`).
 3. **A session opened in step 1 and clicked in step 3, step 2 a model
@@ -129,12 +130,12 @@ it builds. Open threads on code the plan touches, to account for:
 
 | File | Change |
 |---|---|
-| `crates/clax-store/src/migrations.rs` | Migration 67 in place: `bot_person_caps`, `bot_runs.caps`, `bot_browser_sessions`, `bot_web_pages` with `format`, `browser_s` |
+| `crates/clax-store/src/migrations.rs` | Migration 67 in place: `bot_cap_grants`, `bot_runs.caps`, `bot_browser_sessions`, `bot_web_pages` with `format`, `browser_s` |
 | `crates/clax-store/src/bot_web.rs` | Person grants per capability; `Spend.session`; session rows; `end_browser_session`, `lose_open_browser_sessions` |
 | `crates/clax-store/src/bot_runs.rs` | `Run::caps`, `NewRun::caps`, `Bindings::clax(artifact, caps)` |
 | `crates/clax-store/src/bot_settings.rs` | Browser settings per capability; `UrlRule` kind gains `sender` |
 | `crates/clax-store/src/credits.rs` | `Unit::BrowserSecond`, `browser.time` per second |
-| `crates/clax-core/src/audit/mod.rs` | `bot.spend`, `me.capability`, `browser.session.end` (an op of `bot.spend`) |
+| `crates/clax-core/src/audit/mod.rs` | `bot.spend`, `bot.grant`, `browser.session.end` (an op of `bot.spend`) |
 | `crates/clax-bot/src/capability.rs` (new) | `Capability`, `CapSet`, `Capabilities::now`, `Off`, `UrlRule`, shared codes |
 | `crates/clax-bot/src/clax/spend.rs` (new) | The one Spend sequence; `Performer` |
 | `crates/clax-bot/src/clax/web.rs`, `clax/browser.rs` | Performers |
@@ -156,40 +157,55 @@ it builds. Open threads on code the plan touches, to account for:
 
 ## Phase A: the shared mechanism
 
-### Task 1: Person grants per capability and a run's capabilities, in migration 67
+### Task 1: Explicit grants and a run's capabilities, in migration 67
 
-Builds spec decisions `dbf6a832` (person grants), `df067c3c` (declared
-at the start); waiver `cc4ff90e` (default grant; leave it open).
+Builds spec decisions `c8a7f9b5` (grants are explicit, none implied:
+the owner's standing rule), `a4d4b502` (grant storage), `df067c3c`
+(declared at the start).
 
-**Files:** `crates/clax-store/src/migrations.rs`, `bot_web.rs`,
+**Files:** `crates/clax-store/src/migrations.rs`, create
+`crates/clax-store/src/bot_grants.rs`, `lib.rs`, `bot_web.rs`,
 `bot_runs.rs`; `crates/clax-core/src/audit/mod.rs`; toolpath expected
 files the audit kind changes.
 
 **Interfaces produced:**
-- Migration 67 adds `bot_person_caps (person TEXT, capability TEXT,
-  granted INTEGER NOT NULL, set_at TEXT NOT NULL, PRIMARY KEY (person,
-  capability)) WITHOUT ROWID`, filled with `(person, 'web.search', 0)`
-  and `(person, 'web.fetch', 0)` for every `bot_person_prefs` row whose
-  `web = 0`; adds `bot_runs.caps TEXT NOT NULL DEFAULT ''`, filled from
-  `bot_runs.web` (`search` → `web.search`, `fetch` → `web.fetch`) and
-  from the branch's `bot_runs.browser` (`test` → `browser.open.artifact`,
-  `browse` → `browser.open.url`), sorted, comma-separated. The branch's
-  `bot_person_prefs.browser` and `bot_runs.browser` stay until Task 17.
-- `Store::cap_granted(person, cap) -> Result<bool>` (true without a row),
-  `Store::cap_grants(person) -> Result<BTreeMap<String, bool>>`,
-  `Store::set_cap_granted(ctx, person, cap, on) -> Result<bool>` audited
-  `me.capability {person, capability, value}`. `AuditKind::MeCapability`.
-- Shims: `web_choice` is `cap_granted(web.search) && cap_granted(web.fetch)`;
-  `set_web_choice` sets both; `browser_choice`/`set_browser_choice` read
-  and write `browser.open.artifact`, `.url` and `.content` together.
+- Migration 67 adds `bot_cap_grants (id TEXT PRIMARY KEY, capability
+  TEXT NOT NULL, granter TEXT NOT NULL, grantee TEXT NOT NULL, parent
+  TEXT REFERENCES bot_cap_grants(id), status TEXT NOT NULL CHECK (status
+  IN ('issued', 'revoked')), issued_at, issued_by, revoked_at,
+  revoked_by)` with indexes by grantee and by parent. Its Rust step, for
+  each of `web.search` and `web.fetch` whose `web.<op>.enabled` setting
+  is on: one grant to `everyone` (granter `migration`), and one child to
+  `runs_of:<person>` for the owner and every person row, except those
+  whose `bot_person_prefs.web` is 0. Nothing for an instance whose
+  switch is off; nothing for any `browser.open` kind. It adds
+  `bot_runs.caps TEXT NOT NULL DEFAULT ''`, filled from `bot_runs.web`
+  (`search` → `web.search`, `fetch` → `web.fetch`) and the branch's
+  `bot_runs.browser` (`test` → `browser.open.artifact`, `browse` →
+  `browser.open.url`). The branch's `bot_person_prefs.browser` and
+  `bot_runs.browser` stay until Task 17.
+- `Store::issue_cap_grant(ctx, capability, granter, grantee, parent) ->
+  Result<GrantRow>` (an instance-wide grant issues every person's child
+  in its transaction; refused when the granter does not hold the
+  capability), `Store::revoke_cap_grant(ctx, id) -> Result<Vec<String>>`
+  (the grant and its live descendants, transitively; the IDs ended),
+  `Store::cap_grants(filter)`, `Store::person_caps(person) ->
+  BTreeMap<String, PersonCap { granted_by: Option<id>, runs_grant:
+  Option<id> }>`; a person row created issues the children of live
+  instance-wide grants. Each write records `bot.grant {grant,
+  capability, granter, grantee, parent, op}` (`AuditKind::BotGrant`).
+- Shims: `web_choice` is true when both web capabilities reach the
+  person's runs; `set_web_choice` revokes or issues both runs grants;
+  `browser_choice`/`set_browser_choice` likewise for the three
+  `browser.open` kinds.
 - `Run::caps: String`, `NewRun::caps`; `Run::web` and `Run::browser`
   derived from `caps` (shims).
 
-- [ ] **Tests first** (in-module): `migration_67_moves_main_web_choices_to_capability_grants` (a migration-66 database with one person `web = 0`, one `web = 1`, one with no row), `migration_67_fills_run_caps_from_web_and_browser`, `a_person_grants_and_revokes_each_capability_alone` (one `me.capability` per change, none for no change), `the_web_choice_shim_reads_both_web_capabilities`, `a_run_keeps_its_capabilities`.
+- [ ] **Tests first** (in-module): `migration_67_writes_main_web_as_explicit_grants` (a migration-66 database with web on, persons `web = 0`, `web = 1` and no row: the first has no child, the others do), `migration_67_grants_nothing_where_web_was_off`, `migration_67_grants_no_browser_kind`, `an_instance_wide_grant_issues_a_child_to_each_person_and_to_a_new_one`, `revoking_a_grant_ends_its_children_transitively`, `a_person_revokes_and_reissues_only_their_own`, `a_person_cannot_issue_what_they_do_not_hold`, `every_issue_and_revoke_is_one_bot_grant`, `migration_67_fills_run_caps_from_web_and_browser`, `a_run_keeps_its_capabilities`.
 - [ ] Run `bazel test //crates/clax-store:clax_store_lib_test`; expect failures.
 - [ ] Implement.
 - [ ] Full verification command passes.
-- [ ] Commit: `feat(store): a person's grant per capability and a run's capabilities`
+- [ ] Commit: `feat(store): explicit capability grants and a run's capabilities`
 
 ### Task 2: The per-second line, the browser settings per capability, `bot.spend`
 
@@ -240,7 +256,7 @@ writes the new keys, its JSON shape unchanged until Task 7),
   `Browser`), `ALL`.
 - `struct CapSet` (a set of `Capability`), `parse`/`as_str` (the
   `bot_runs.caps` text, sorted, unknown parts ignored).
-- `enum Off { AdminOff, PersonOff, NotConfigured }`; `enum Terms {
+- `enum Off { NotOffered, NotGranted, PersonOff, NotConfigured }` (spec §4.3); `enum Terms {
   Search(SearchGrant), Fetch(FetchGrant), Open(OpenGrant) }` with
   `OpenGrant { kind, max_per_run, url_rule: Option<UrlRule> }` and
   `BrowserTerms { call_seconds, idle_seconds, max_seconds,
@@ -251,7 +267,7 @@ writes the new keys, its JSON shape unchanged until Task 7),
 - `WebAccess::now` and `BrowserAccess::now` become thin views over it
   (shims, removed in Task 17).
 
-- [ ] **Tests first** (in-module): `each_capability_is_on_and_off_on_its_own` (all five, admin and person), `the_admin_reason_comes_before_the_persons`, `not_configured_per_capability`, `a_person_with_no_row_holds_what_is_offered`, `caps_round_trip_through_their_text`, `open_artifact_needs_no_web_capability`.
+- [ ] **Tests first** (in-module): `each_capability_is_on_and_off_on_its_own` (all five, admin and person), `the_admin_reason_comes_before_the_persons`, `not_configured_per_capability`, `an_offered_capability_with_no_grant_is_not_granted`, `a_revoked_parent_leaves_the_run_nothing`, `caps_round_trip_through_their_text`, `open_artifact_needs_no_web_capability`.
 - [ ] `bazel test //crates/clax-bot:clax_bot_lib_test //crates/clax-server/...`; fail; implement; full verification.
 - [ ] Reply on `c56c644b`: one per-call cap, `browser.call_seconds`, with the commit.
 - [ ] Commit: `feat(bot): compute a run's capabilities one way, per capability`
@@ -315,20 +331,24 @@ every family carries `capability`.
 
 ### Task 7: Grants in the admin pages and on the Me page
 
-Builds `dbf6a832`, `63bbbbab`. Replies on `445dba5f`.
+Builds `c8a7f9b5`, `a4d4b502`, `63bbbbab`. Replies on `445dba5f`.
 
 **Files:** `crates/clax-server/src/routes/admin.rs` (`/api/admin/web`
 gains each capability's `{enabled, max_per_run, url_rule?, allowlist?,
 price, configured, unavailable}` beside its existing fields;
 `/api/admin/browser` answers the three open capabilities and the
-browser settings), `routes/bot.rs` (`GET /api/me/bot` `capabilities`,
+browser settings; `GET/POST/DELETE /api/admin/bot/grants` lists,
+issues and revokes the admin's grants, everyone or a person),
+`routes/bot.rs` (`GET /api/me/bot` `capabilities`,
 still `web`; `PUT` takes `capabilities` and main's `web`),
 `web/shell/src/bot/CapabilityCard.svelte` (new), `AdminWeb.svelte`,
-`AdminBrowser.svelte`, `MePage.svelte` (one switch per offered
-capability, with its price), `api.ts`, `admin.test.ts`, `pages.test.ts`,
+`AdminBrowser.svelte` (each card lists its grants, "Everyone on this
+instance" first, each revocable, and grants to everyone or a person),
+`MePage.svelte` (one switch per capability granted to the person, with
+its price; offered but not granted shows "not granted to you"), `api.ts`, `admin.test.ts`, `pages.test.ts`,
 `crates/clax-server/tests/api_claxbot.rs`.
 
-- [ ] **Tests first:** server `admin_browser_round_trips_each_capability`, `admin_web_keeps_its_fields_and_adds_the_cards`, `me_bot_lists_each_offered_capability`, `me_put_web_sets_both_web_capabilities`; vitest `each_capability_has_its_own_card`, `the_me_page_switches_one_capability`, `url_rule_any_public_warns`.
+- [ ] **Tests first:** server `admin_browser_round_trips_each_capability`, `admin_web_keeps_its_fields_and_adds_the_cards`, `admin_grants_to_everyone_and_revokes`, `a_browser_kind_is_granted_to_no_one_until_the_admin_grants_it`, `me_bot_lists_each_capability_and_whether_it_is_granted`, `me_put_web_sets_both_web_capabilities`; vitest `each_capability_has_its_own_card`, `a_card_lists_and_revokes_its_grants`, `the_me_page_switches_one_capability`, `url_rule_any_public_warns`.
 - [ ] `bazel test //crates/clax-server/... //web:unit`; fail; implement; full verification.
 - [ ] Commit: `feat(shell): grant each capability on its own`
 
@@ -506,7 +526,7 @@ headers), `web/shell/src/bot/RunPanel.svelte`, `model.ts`
 **Files:** `docs/usage.md` (the five capabilities, their settings,
 prices and risks; sessions and what they cost while a model thinks; the
 token permissions), `docs/contract.md` (the admin and Me routes'
-fields; `bot.spend`, `me.capability`; `bot.web` and `me.web` as
+fields; `bot.spend`, `bot.grant`; `bot.web` and `me.web` as
 historical; the content route's manifest), `crates/clax-worker/README.md`
 (browser capabilities not configured; `html` fetch works).
 
@@ -536,5 +556,5 @@ by the heartbeat; still skipped without credentials), `justfile`
 ## Before merge
 
 - [ ] `just check` once (background, logged under `target/`); a lane failing in code this branch did not touch is rerun alone and both results reported.
-- [ ] `qualifier diff main`: every spec decision a task built has a reply naming its commit; closes of records other sessions wrote, and every `status:needs-decision` thread (`cc4ff90e`), are left for the owner.
+- [ ] `qualifier diff main`: every spec decision a task built has a reply naming its commit; closes of records other sessions wrote, and every `status:needs-decision` thread, are left for the owner.
 - [ ] Run `just browser-live` with real credentials if the owner provides them; reply on `88b76c21` (path spelling) and `d48cf9c0` (keep-alive) with what it showed.

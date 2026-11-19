@@ -213,37 +213,62 @@ price per browser second **(design: the owner named two price lines)**.
 
 ### 4.3 How a run's capabilities are computed **(owner: zero-capability; design: the grants)**
 
-A run starts with no capability. Its capabilities are the union of what
-its live grants convey, each intersected with its granter's own, as in
-the zero-capability design (§3). Today two grants reach a run, both
-per capability:
+The owner's standing rule: sessions start at zero; capabilities are the
+union of live grants; revoke re-evaluates transitively. A run starts with
+no capability, and nothing is implied: every capability a run holds traces
+to recorded grants, each intersected with its granter's own, as in the
+zero-capability design (§3).
 
 ```
-caps(run) = { c in declared(run) :
-                admin_grant(c) is live            -- the admin offers c on this instance
-              ∧ person_grant(run.person, c) is live
-              ∧ source(c) is configured }         -- the host can perform c now
+offered(c)     = the admin's switch for c is on        -- the instance's terms for c
+caps(person)   = ∪ { c : a live admin grant of c to everyone, or to the person }
+caps(run)      = { c in declared(run) :
+                     offered(c)
+                   ∧ c in caps(person)
+                   ∧ a live grant of c from the person to their runs
+                   ∧ source(c) is configured }         -- the host can perform c now
 ```
 
-- **The admin's grant** of `c` is live while the capability's switch is
-  on; it carries the capability's terms: its per-run cap, its URL rule
-  (for `web.fetch` and `browser.open.url`), and its family's settings
-  (§11.1).
-- **The person's grant** of `c` to their own runs is live unless they
-  revoked it on the Me page. A person who never chose holds it: the
-  default is on wherever the admin offers the capability, as main's web
-  switch is **(design, compatible with main; see the waiver: strict
-  zero-capability would leave every person at none until they turn each
-  capability on)**.
+Grants are rows of one table, `bot_cap_grants` (§11.2): an ID, the
+granter, the grantee (`everyone`, a person, or a person's runs), the
+capability, the parent grant, the status (`issued`, `revoked`), and who
+issued and revoked it when.
+
+- **The admin's switch** for `c` says the instance offers it, with its
+  terms: its per-run cap, its URL rule (for `web.fetch` and
+  `browser.open.url`), and its family's settings (§11.1). It grants it to
+  no one.
+- **The admin's grants** of `c` say who holds it: an instance-wide grant
+  to **everyone** on this instance, or a grant to one person. The
+  admin page shows each and revokes it.
+- **The person's grant** of `c` to their own runs is what reaches a run.
+  An instance-wide grant issues it to every person as its child, in the
+  same transaction for the people there are and when a person joins
+  after; each child is a row, recorded. The person's switch on the Me
+  page revokes their grant or issues it again, which they may do while
+  `c` is in `caps(person)`.
 - **The source** says per capability whether it can perform it now
   (credentials present, a browser source at all).
+- **No grant is implied.** Main's behaviour, web on for everyone the
+  admin offers it to, is an explicit instance-wide grant of `web.search`
+  and `web.fetch` that migration 67 writes on an instance whose web
+  switches were on (§11.2), shown and revocable on the admin page. The
+  three `browser.open` kinds get no instance-wide grant: the admin
+  grants each explicitly.
+- **Revoking re-evaluates transitively**: an admin grant revoked ends its
+  children; a switch turned off leaves every grant of `c` conveying
+  nothing; either re-evaluates every run and session under them (§4.4).
+  A person's own revoke ends only their grant. A new instance-wide grant
+  issues new children to everyone, those who revoked an earlier one's
+  included.
 
 One function computes it, `capability::Capabilities::now(store, person,
 configured)`, answering per capability either its terms or why it is off
-(`admin_off`, `person_off`, `not_configured`). `WebAccess` and
-`BrowserAccess` are replaced by it. When the GNAP store lands, other
-grants (an artifact's owner granting `browser.open.artifact` to runs on
-it, say) join the union without changing a caller.
+(`not_offered`, `not_granted`, `person_off`, `not_configured`).
+`WebAccess` and `BrowserAccess` are replaced by it. When the GNAP store
+lands, its grant graph replaces `bot_cap_grants` and other grants (an
+artifact's owner granting `browser.open.artifact` to runs on it, say)
+join the union without changing a caller.
 
 ### 4.4 Declared at the start, re-evaluated at each call, revoked at once **(design)**
 
@@ -255,10 +280,11 @@ it, say) join the union without changing a caller.
 - **Re-evaluated.** Each call computes `caps(run)` again and refuses one
   that lost the capability it needs (`web_disabled`, `browser_disabled`,
   naming the capability).
-- **Revoked at once.** A revoke (the admin turns a switch off, the person
-  turns theirs off, the credentials are removed) re-evaluates every open
-  browser session before the revoking request answers: a session whose
-  run no longer holds its capability is closed, its time charged
+- **Revoked at once.** A revoke (the admin turns a switch off or revokes
+  a grant, the person revokes theirs, the credentials are removed)
+  re-evaluates every open browser session before the revoking request
+  answers: a session whose run no longer holds its capability is
+  closed, its time charged
   (§10.3), and its next call answers `browser_session_closed` with the
   reason `revoked`. A session is state held under a capability, as the
   zero-capability design requires of watches and leases.
@@ -367,8 +393,9 @@ source, and the call's `ms`). A session closed by the host, not by a
 call (§6.4), writes one `bot.spend` with `op: "browser.session.end"`
 and the reason. `bot.web` records already written stay as they are and
 are read as `bot.spend` by the audit page's filter; nothing writes
-`bot.web` any more. A person's grant change is `me.capability {person,
-capability, value}`; main's `me.web` records stay readable.
+`bot.web` any more. A grant issued or revoked is `bot.grant {grant,
+capability, granter, grantee, parent, op}`; main's `me.web` records stay
+readable.
 
 ### 4.9 One Cloudflare credential **(design, kept)**
 
@@ -931,19 +958,39 @@ and the browser settings, each capability as `{enabled, max_per_run,
 url_rule?, allowlist?, price, configured, unavailable}`, the same shape
 `/api/admin/web` gains for `search` and `fetch`.
 
-### 11.2 The person's grants **(owner: each on its own; design: storage)**
+### 11.2 Grants: the admin's and the person's **(owner: each on its own, none implied; design: storage)**
 
-One switch per capability the admin offers, on the Me page, each with
-its price, kept in `bot_person_caps (person, capability, granted,
-set_at)`: a row is the person's choice; no row is the default grant
-(§4.3). Migration 67 writes, for each person main's
-`bot_person_prefs.web` turned off, `web.search` and `web.fetch` rows
-with `granted = 0`, so no one's choice changes. `GET /api/me/bot`
-answers `capabilities: [{id, offered, on, why_off, price}]` and still
-answers main's `web` (on when both web capabilities are) for older
-clients; `PUT /api/me/bot` takes `{capabilities: {<id>: bool}}`, and
-main's `web: bool` sets both web capabilities. The first version's
-browser switch (`bot_person_prefs.browser`) is gone.
+`bot_cap_grants (id, capability, granter, grantee, parent, status,
+issued_at, issued_by, revoked_at, revoked_by)`, written only by
+`Store::issue_cap_grant` and `Store::revoke_cap_grant`, each recorded as
+`bot.grant`. A grantee is `everyone`, `person:<key>` or
+`runs_of:<key>`; a child names its parent.
+
+- **The admin page** lists, per capability, its switch and terms, then
+  its grants: the instance-wide one ("Everyone on this instance") if
+  any, and each person's, each with a Revoke button, and a way to grant
+  to everyone or to a person.
+- **The Me page** shows one switch per capability in `caps(person)`,
+  with its price: on while the person's grant to their runs is live.
+  Turning it off revokes that grant; on issues a new one (granter the
+  person, parent the admin grant that gives them the capability). A
+  capability the admin offers but has not granted the person is shown
+  off with "not granted to you".
+- **Migration 67** keeps main's behaviour with explicit rows: for each of
+  `web.search` and `web.fetch` whose `web.<op>.enabled` was on, an
+  instance-wide grant (granter `migration`), and its child for every
+  person of the instance (the owner and every person row) except those whose `bot_person_prefs.web` was off;
+  on an instance where it was off, nothing, and turning the switch on
+  later grants it to no one until the admin grants it. No grant of a
+  `browser.open` kind is written.
+- `GET /api/me/bot` answers `capabilities: [{id, offered, granted, on,
+  why_off, price}]` and still answers main's `web` (on when both web
+  capabilities are) for older clients; `PUT /api/me/bot` takes
+  `{capabilities: {<id>: bool}}`, and main's `web: bool` sets both.
+  `GET/POST/DELETE /api/admin/bot/grants` lists, issues and revokes the
+  admin's grants. The first version's browser switch
+  (`bot_person_prefs.browser`) and `bot_person_prefs.web` are no longer
+  read.
 
 ### 11.3 What a run shows **(design)**
 
@@ -978,7 +1025,7 @@ choice", "off on this instance", "not configured").
   `Content-Security-Policy: sandbox; default-src 'none'` and `nosniff`,
   to the person the run acts for and admins who read its artifact.
 - **Audit**: `bot.spend` per call; `browser.session.end` per host end;
-  `me.capability` per person grant change.
+  `bot.grant` per grant issued or revoked.
 - **Usage**: `web.search`, `web.fetch` and `browser.time` are their own
   lines on the person's "This week" and the admin's Usage page.
 
@@ -988,7 +1035,9 @@ Fast and load-tolerant (`AGENTS.md`): no sleeps, injected clocks and
 deadlines, no network but the opt-in live test.
 
 - **Capabilities**: each capability on and off on its own, by the admin
-  and by the person; the default grant; main's web choice migrated;
+  and by the person; nothing held without a grant; an instance-wide
+  grant's children; a revoked parent ending its children; main's web
+  switches and choices migrated to rows;
   `caps(run)` declared at the start and re-evaluated per call.
 - **URL rule**: every value against sender, search and fetched URLs, for
   `web.fetch`, `open({url})` and a `goto` out.
@@ -1046,8 +1095,9 @@ and that a browser now lives across steps.
   surface format gains values with methods.
 - **One price line per `browser.open` kind** (§4.2): revisit when an
   admin wants to price testing its own claxen below browsing.
-- **Strictly zero default grants** (§4.3): revisit with the owner's
-  answer to the open question on the spec.
+- **An implied default grant** (a person with no row holding what the
+  admin offers, §4.3): replaced by explicit instance-wide grants under
+  the owner's standing rule **(owner)**.
 - **Keep-alive as long as the idle time, no heartbeat** (§7.2): an
   orphan would bill up to 20 minutes and turns would be capped at
   Browser Run's maximum.
