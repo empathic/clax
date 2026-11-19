@@ -811,7 +811,73 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 /// - `settle(id, ok, json)` settles a host call: `ok` true with the
 ///   result's JSON, false with a [`HostError`]'s
 ///   [`HostError::reply_json`], `{code, message, retryable}`.
+///
+/// # The browser layer
+///
+/// When `ops` holds all five of [`BROWSER_SESSION_OPS`], the prelude
+/// installs a Playwright-shaped layer over them (spec
+/// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §6.9,
+/// §6.10): `clax.browser.open` answers a `Page`, whose `Locator`s,
+/// `keyboard`, `mouse` and the global `expect` make one call of
+/// `browser.page`, `browser.act` or `browser.expect` each, and
+/// `page.close()` one of `browser.close`. Those four leave
+/// `clax.browser`, so a script reaches them only through a `Page`;
+/// `browser.test` and any other listed browser operation stay. Without
+/// all five, neither the layer nor `expect` exists.
+///
+/// The methods are built from one table, a JSON array between the lines
+/// `// browser-layer-table:begin` and `// browser-layer-table:end`
+/// ([`browser_layer_table`]): class, method, flat operation, action and
+/// parameter names, a row per method that reaches the browser. A
+/// method's positional arguments go into the call's `args` by those
+/// names, its `opts` spread beside them, a `RegExp` sent as `{regex,
+/// flags}`, the page's `setDefaultTimeout` added as `timeout` to a page or
+/// locator call that takes options and names none, and `not: true` to a
+/// negated matcher. An answer `{ok: false}` is thrown: a `TimeoutError`
+/// when it says `timeout`, an `Error` named `Expected` from `expect`, else
+/// an `Error`. `page.evaluate(fn, arg)` sends `fn`'s source text, read
+/// with the `Function.prototype.toString` captured before the script ran,
+/// and refuses a function whose text is `[native code]` with a
+/// `TypeError` before any call. `expect` of a value that is not a
+/// `Locator` or a `Page` has the saved-test harness's five matchers
+/// (`web/bridge/src/harness.ts`), checked in the sandbox with no call.
+/// Nothing in the layer reads a clock or a random number, so a replayed
+/// step makes the same calls.
 pub const PRELUDE: &str = include_str!("prelude.js");
+
+/// The most bytes [`PRELUDE`] may have: it is evaluated once per run in
+/// every sandbox (spec §6.9, "A budget").
+pub const PRELUDE_BUDGET_BYTES: usize = 24 * 1024;
+
+/// The flat browser session operations whose presence in a script's
+/// operations installs the prelude's browser layer.
+pub const BROWSER_SESSION_OPS: [&str; 5] = [
+    "browser.open",
+    "browser.page",
+    "browser.act",
+    "browser.expect",
+    "browser.close",
+];
+
+/// The rows of the prelude's browser layer table, as [`PRELUDE`] writes
+/// them between its marker lines: `[class, method, operation, action or
+/// null, [parameter names]]` each.
+///
+/// # Panics
+/// When the markers are missing or what lies between them is not JSON:
+/// [`PRELUDE`] is this crate's own file, and a test holds both.
+#[must_use]
+pub fn browser_layer_table() -> serde_json::Value {
+    let begin = "// browser-layer-table:begin";
+    let end = "// browser-layer-table:end";
+    let from = PRELUDE.find(begin).map(|i| i + begin.len());
+    let to = PRELUDE.find(end);
+    match (from, to) {
+        (Some(from), Some(to)) if from < to => serde_json::from_str(&PRELUDE[from..to])
+            .unwrap_or_else(|e| panic!("the browser layer table is not JSON: {e}")),
+        _ => panic!("the browser layer table's markers are missing"),
+    }
+}
 
 /// What [`wrap`] puts before the code: its own line, as the `Function`
 /// constructors' source does, so a first line that opens with `-->` (an
@@ -1293,5 +1359,37 @@ mod tests {
             serde_json::from_value::<ScriptOutcome>(json).unwrap(),
             outcome
         );
+    }
+
+    #[test]
+    fn the_prelude_stays_within_its_budget() {
+        assert!(
+            PRELUDE.len() <= PRELUDE_BUDGET_BYTES,
+            "src/prelude.js is {} bytes, over its budget of {PRELUDE_BUDGET_BYTES}",
+            PRELUDE.len()
+        );
+    }
+
+    #[test]
+    fn the_browser_layer_table_is_rows_of_five() {
+        let table = browser_layer_table();
+        let rows = table.as_array().expect("an array");
+        assert!(!rows.is_empty());
+        for row in rows {
+            let r = row.as_array().expect("a row is an array");
+            assert_eq!(r.len(), 5, "{row}");
+            assert!(
+                r[0].is_string() && r[1].is_string() && r[2].is_string(),
+                "{row}"
+            );
+            assert!(r[3].is_string() || r[3].is_null(), "{row}");
+            assert!(
+                r[4].as_array()
+                    .is_some_and(|p| p.iter().all(serde_json::Value::is_string)),
+                "{row}"
+            );
+            let op = format!("browser.{}", r[2].as_str().unwrap_or_default());
+            assert!(BROWSER_SESSION_OPS.contains(&op.as_str()), "{row}");
+        }
     }
 }
