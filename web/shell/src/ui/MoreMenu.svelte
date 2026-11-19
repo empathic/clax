@@ -16,7 +16,8 @@
   // (`onPeople`, the people panel) and, while the artifact has runs, ClaxBot
   // (`onBot`, the run panel). While ClaxBot is
   // on for the viewer (`usage`), it lists Usage at every width, with the
-  // week's credits, linking to the page that details them. On a hosted
+  // week's credits, linking to the page that details them. Where the viewer administers the artifact on
+  // a hosted Clax (`onAnalytics`), it lists Analytics…. On a hosted
   // Clax that shows Terms of Service and a Privacy Policy (`legal`), it ends
   // with links to both and to Clax's source on GitHub. A menu button: opening
   // focuses the first item; Up, Down, Home and End move between the items;
@@ -34,7 +35,7 @@
   import { onHost } from "../transport";
   import type { PublishOpener, UsageItem } from "./more-menu.svelte";
 
-  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, getHref = null, onFork, onClone = null, onShare = null, onPublish = null, onPermissions = null, onPeople = null, onBot = null, usage = null, legal = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null; onPermissions?: (() => void) | null; onPeople?: (() => void) | null; onBot?: PublishOpener | null; usage?: UsageItem | null; legal?: { terms_url: string; privacy_url: string } | null } = $props();
+  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, getHref = null, onFork, onClone = null, onShare = null, onPublish = null, onPermissions = null, onAnalytics = null, onPeople = null, onBot = null, usage = null, legal = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null; onPermissions?: (() => void) | null; onAnalytics?: (() => void) | null; onPeople?: (() => void) | null; onBot?: PublishOpener | null; usage?: UsageItem | null; legal?: { terms_url: string; privacy_url: string } | null } = $props();
   let open = $state(false);
   const app = onHost();
   // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
@@ -101,6 +102,7 @@
       {#if phone && onPublish}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPublish.open(); }}>{onPublish.label}</button>{/if}
       {#if onPermissions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPermissions(); }}>Permissions…</button>{/if}
       {#if usage}<a role="menuitem" tabindex="-1" class="usage" class:warn={usage.warn} class:out={usage.out} href={usage.href} aria-label={`Usage: ${usage.label}`} title={usage.title} onclick={close}>Usage <span class="usage-n">{usage.text}</span></a>{/if}
+      {#if onAnalytics}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onAnalytics(); }}>Analytics…</button>{/if}
       {#if legal}
         <hr />
         <a role="menuitem" tabindex="-1" href={legal.terms_url} target="_blank" rel="noopener" onclick={close}>Terms of Service</a>

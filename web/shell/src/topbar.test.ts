@@ -407,6 +407,39 @@ describe("the top bar and the sidebar with the Comments switch, and an app's hea
   const withFields = (extra: Record<string, unknown>) => { const a = artifact(8); return { ...a, artifact: { ...a.artifact, ...extra } }; };
   const answer = (extra: Record<string, unknown>) => async () => new Response(JSON.stringify(withFields(extra)));
 
+  it("mounts the Analytics panel, which gives the more menu its Analytics…, only when the artifact carries analytics", async () => {
+    const { analyticsOpen } = await import("./ui/more-menu.svelte");
+    const plain = await mountView(answer({}));
+    await waitFor(() => plain.root.querySelector("button.comment"), "the top bar");
+    // Every chunk the bar asked for has loaded: an Analytics panel would be mounted by now.
+    await vi.dynamicImportSettled();
+    flush();
+    expect(analyticsOpen.current).toBeNull();
+    plain.unmount();
+    const empty = { analytics: "on", from: "2026-10-21", to: "2026-11-19", totals: { visitors: 0, views: 0, framed: 0, load_ms_median: null, lcp_ms_median: null }, days: [], versions: [], pages: [], referrers: [], countries: [], devices: [], versions_viewed: [] };
+    await mountView(async (url: string) => new Response(JSON.stringify(url.includes("/analytics") ? empty : withFields({ analytics: "on" }))));
+    const open = await waitFor(() => analyticsOpen.current, "the Analytics panel, mounted");
+    flush(() => open());
+    await waitFor(() => document.querySelector("[data-testid=analytics-empty]"), "the panel's empty state");
+    expect(document.querySelector("[data-testid=analytics-panel] h2")!.textContent).toBe("Analytics for “T”");
+  });
+
+  it("the more menu lists Analytics… where it is given an opener, which closes it and opens the panel", async () => {
+    const onAnalytics = vi.fn();
+    const without = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn() });
+    flush(() => without.root.querySelector<HTMLButtonElement>("button.icon")!.click());
+    expect(Array.from(without.root.querySelectorAll("[role=menuitem]")).map(i => i.textContent)).not.toContain("Analytics…");
+    without.unmount();
+    const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onAnalytics });
+    flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
+    const item = Array.from(m.root.querySelectorAll<HTMLElement>("[role=menuitem]")).find(i => i.textContent === "Analytics…");
+    expect(item).toBeDefined();
+    flush(() => item!.click());
+    expect(onAnalytics).toHaveBeenCalledTimes(1);
+    expect(m.root.querySelector("[role=menu]")).toBeNull();
+    m.unmount();
+  });
+
   it("comment button disabled when comments off", async () => {
     const view = await mountView(answer({ comments: false }));
     const comment = await waitFor(() => view.root.querySelector<HTMLButtonElement>("button.comment"), "the Comment button");

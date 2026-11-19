@@ -534,10 +534,12 @@ which call `sweep` with a moved clock; no test passes midnight under
 
 On a hosted Clax, for an administrator, the top bar's more menu
 (`web/shell/src/ui/MoreMenu.svelte`) lists **Analytics…** beside
-Permissions…, and opens a panel over the stage, loaded lazily as the
-Permissions panel is (`web/shell/src/ui/more-menu.svelte.ts`: a loader and
-an opener, `analytics` and `analyticsOpen`), so the `artifact` entry's
-budget does not grow by more than the item and its opener. A panel rather
+Permissions…, and opens a panel over the stage, its own lazy chunk. The top
+bar (`TopbarIsland.svelte`) imports it only when the artifact carries
+`analytics`, as it does Get in Clax, so nobody else loads it; mounted, the
+panel gives the more menu its opener (`web/shell/src/ui/more-menu.svelte.ts`,
+`analyticsOpen` and `setAnalyticsOpener`), and the `artifact` entry's
+budget grows by no more than the item, the import and the opener. A panel rather
 than a shell route: `/a/<id>/<anything>` names a published file
 (`web/shell/src/route.ts`), and a route would reserve another file name as
 `get` does (Open question 4).
@@ -545,10 +547,14 @@ than a shell route: `/a/<id>/<anything>` names a published file
 The panel (`web/shell/src/ui/AnalyticsPanel.svelte`, words and formatting
 in `analytics-model.ts`, the fetch in `analytics-api.ts`):
 
-- A range picker: 7 days, 30 days (the default), 90 days, 13 months.
-- Totals: Visitors ("counted once a day"), Page views, Median load time
-  (and LCP where there are samples), with the share of views in Clax's
-  frame in small text.
+- A range picker: 7 days, 30 days (the default), 90 days, 13 months. Each
+  sends `from` alone (the daemon's today ends it); 13 months starts a day
+  after the oldest day kept, so a browser clock a day behind the daemon's
+  never asks for a day it no longer keeps.
+- Totals: Daily visitors ("Counted once a day: someone who visits on three
+  days counts three times."), Page views, Median load time (and "Median
+  time to main content", the LCP, where there are samples), with the share
+  of views in Clax's frame and "Days are in UTC." in small text.
 - A visits-per-day chart: one bar per day (visitors, with page views as a
   lighter bar behind), inline SVG, the theme's tokens for color in both
   modes, a dashed mark at each version's publish day labelled `v<n>`, and
@@ -558,12 +564,14 @@ in `analytics-model.ts`, the fetch in `analytics-api.ts`):
   Versions.
 - The setting: a line saying whether Clax is counting visits and one
   button, "Stop counting visits" or "Count visits", which sends the PATCH
-  at once (no approval, nothing to explain beyond the line: "Clax counts
-  page views and daily visitors on this clax's site, without cookies or
-  stored addresses. Visitors who send Global Privacy Control are not
-  counted.").
-- Empty: "No visits yet" with the setting; off and empty: the setting
-  alone.
+  at once (no approval, nothing to explain beyond the line: on, "Clax is
+  counting visits to this clax's site: page views and daily visitors,
+  without cookies or stored addresses. Visitors who send Global Privacy
+  Control are not counted."; off, "Clax is not counting visits to this
+  clax's site. What it counted before is kept.").
+- Empty: "No visits in the last 30 days." (the range's words), or "No
+  visits yet." over 13 months, with the setting; off and empty: the
+  setting alone.
 
 ### Where an agent meets it
 
@@ -764,9 +772,10 @@ header rewrite, `just worker-test`. Depends on Task 3.
 `analytics-api.ts`, `analytics-model.test.ts`, `analytics-panel.test.ts`
 (all new, under `web/shell/src/ui/`), `web/shell/src/ui/more-menu.svelte.ts`,
 `web/shell/src/ui/MoreMenu.svelte`, `web/shell/src/ui/TopbarIsland.svelte`,
-`web/scripts/bundle-size.mjs` and `web/perf/bundle-budget.json` (an
+`web/shell/src/api.ts` (the artifact's `analytics`),
+`web/scripts/bundle-size.mjs` and its test, and `web/perf/bundle-budget.json` (an
 `analytics` chunk budget set by hand, as `people` and `queues`). Tests: the
-shell unit tests, `//web:bundle_size` (the `artifact` entry stays within a
+shell unit tests (the more menu's item in `web/shell/src/topbar.test.ts`), `//web:bundle_size` (the `artifact` entry stays within a
 few bytes). Depends on Task 4's answer shape; can start against fixtures
 while Tasks 3 to 5 run, as it touches none of their files (Task 2 touches
 `web/perf/bundle-budget.json` only if it raises `bridge`: take that line

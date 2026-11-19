@@ -57,6 +57,9 @@ export type Artifact = {
   /** From `GET /api/artifacts/<id>` and the bootstrap: the Content-Security-Policy Clax sends on its own
    * content, `self` or `unrestricted`. */
   content_security_policy?: ContentSecurityPolicy;
+  /** From `GET /api/artifacts/<id>` on a hosted Clax, for whoever administers it (never a draft's): whether Clax
+   * counts visits to its site, `on` or `off`. Absent elsewhere. */
+  analytics?: "on" | "off";
 };
 /** The Content-Security-Policy Clax sends on an artifact's own content: one that holds its pages to their own
  * site (`self`, every artifact's at first), or no source restrictions (`unrestricted`): its pages then load code

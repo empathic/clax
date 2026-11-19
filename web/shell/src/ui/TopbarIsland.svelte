@@ -31,14 +31,17 @@
   // who reads, forks too. Publish (to a public Clax this Clax is signed in
   // to) comes with the more menu too, in the owner's shell of a local daemon
   // only; on a phone it is a more menu item. The more menu's Permissions…
-  // (the Permissions panel) comes for a viewer who may approve what the page uses.
+  // (the Permissions panel) comes for a viewer who may approve what the page uses,
+  // and its Analytics… (the Analytics panel, its own lazy chunk, which this
+  // island mounts) where the artifact carries `analytics`: on a hosted Clax,
+  // for whoever administers it, never on a draft.
   // For a person who may report problems with Clax, the feedback menu
   // (`feedback/`) comes before the more menu.
   import { fromStore } from "svelte/store";
   import { getToken } from "../api";
   import { COMMENTS_OFF } from "../failure";
   import { type ArtifactController, commentsOff, viewReady } from "../view/artifact-controller";
-  import { botOpen, clone, cloneOpen, forkButton, legal, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, usage, who } from "./more-menu.svelte";
+  import { analyticsOpen, botOpen, clone, cloneOpen, forkButton, legal, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, usage, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
   import { feedbackMenu } from "../feedback/slot.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
@@ -93,9 +96,10 @@
   {#if Publish && ownerShell && !live && !s.deleted}<Publish id={ctl.id} title={s.data.artifact.title} {latest} />{/if}
   {@const mayApprove = s.data.artifact.may_approve === true && !s.deleted}
   {#if Permissions && mayApprove}<Permissions {ctl} />{/if}
+  {#if s.data.artifact.analytics && !s.deleted}{#await import("./AnalyticsPanel.svelte") then { default: AnalyticsPanel }}<AnalyticsPanel {ctl} />{/await}{/if}
   {#if feedbackMenu.current}<feedbackMenu.current />{/if}
   {#if MoreMenu}
-    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} getHref={s.data.artifact.app && !s.deleted ? `/a/${encodeURIComponent(ctl.id)}/get` : null} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} onPermissions={mayApprove ? permissionsOpen.current : null} onPeople={Who ? () => ctl.openMenu("people") : null} onBot={botOpen.current} usage={usage.current} legal={legal.current} />
+    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} getHref={s.data.artifact.app && !s.deleted ? `/a/${encodeURIComponent(ctl.id)}/get` : null} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} onPermissions={mayApprove ? permissionsOpen.current : null} onAnalytics={analyticsOpen.current} onPeople={Who ? () => ctl.openMenu("people") : null} onBot={botOpen.current} usage={usage.current} legal={legal.current} />
   {:else}
     <span class="more-slot"></span>
   {/if}

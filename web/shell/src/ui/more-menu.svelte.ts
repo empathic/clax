@@ -16,7 +16,7 @@ export type PublishOpener = { label: string; open(): void };
 export type UsageItem = { href: string; text: string; label: string; title: string; warn: boolean; out: boolean };
 /** A hosted Clax's Terms of Service and Privacy Policy, which the more menu links. */
 export type LegalLinks = { terms_url: string; privacy_url: string };
-type More = Component<{ rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: PublishOpener | null; onPermissions?: (() => void) | null; onPeople?: (() => void) | null; onBot?: PublishOpener | null; usage?: UsageItem | null; legal?: LegalLinks | null }>;
+type More = Component<{ rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: PublishOpener | null; onPermissions?: (() => void) | null; onAnalytics?: (() => void) | null; onPeople?: (() => void) | null; onBot?: PublishOpener | null; usage?: UsageItem | null; legal?: LegalLinks | null }>;
 type CloneT = Component<{ id: string }>;
 type ForkT = Component<{ shown: number; disabled: boolean; onFork(): void }>;
 type ShareT = Component<{ id: string; title: string; onComments?(on: boolean): void }>;
@@ -90,6 +90,13 @@ export function setUsage(u: UsageItem | null): void { usageItem = u; }
 export const botOpen = { get current(): PublishOpener | null { return botOpener; } };
 /** Sets the ClaxBot item (the artifact view's ClaxBot part sets it; null clears it). */
 export function setBotOpener(o: PublishOpener | null): void { botOpener = o; }
+
+let analyticsOpener: (() => void) | null = $state(null);
+/** What opens the Analytics panel while it is mounted (the top bar mounts
+ * it, its own lazy chunk, for whoever administers a hosted clax), else null. */
+export const analyticsOpen = { get current(): (() => void) | null { return analyticsOpener; } };
+/** Sets what opens the Analytics panel (the panel sets it on mount; null clears it). */
+export function setAnalyticsOpener(f: (() => void) | null): void { analyticsOpener = f; }
 
 /** The hosted Clax's documents once `loadMoreMenu` has asked for them, else null. */
 export const legal = { get current(): LegalLinks | null { return legalLinks; } };
