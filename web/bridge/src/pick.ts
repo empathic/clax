@@ -21,14 +21,17 @@ export const NOT_TAKEN = "it was not taken";
 
 type Post = (m: BridgeToShell, transfer?: Transferable[]) => void;
 
+// Fields are `declare`d and set in the constructor, as `Rpc`'s are
+// (rpc.ts): a field declaration costs the eager bridge a helper call each.
 export class PickFlow {
-  private waiting: { pickId: string; answer(go: boolean): void; timer: number } | null = null;
-  private readonly setTimer: (f: () => void, ms: number) => number;
-  private readonly clearTimer: (t: number) => void;
-  private readonly ms: number;
-  private readonly newId: () => string;
+  private declare waiting: { pickId: string; answer(go: boolean): void; timer: number } | null;
+  private declare readonly setTimer: (f: () => void, ms: number) => number;
+  private declare readonly clearTimer: (t: number) => void;
+  private declare readonly ms: number;
+  private declare readonly newId: () => string;
 
   constructor(win: Window, private readonly post: Post, private readonly version: number, opts: { ms?: number; newId?: () => string } = {}) {
+    this.waiting = null;
     const set = win.setTimeout.bind(win);
     const clear = win.clearTimeout.bind(win);
     this.setTimer = (f, ms) => set(f, ms) as unknown as number;
