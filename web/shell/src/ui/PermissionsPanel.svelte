@@ -10,13 +10,25 @@
   // (ApprovalDialog). Withdrawing an approval changes what the page is
   // served, so the view reloads (ArtifactController.permissionsChanged); the
   // panel then opens again on the new document (the flag `reopenKey`). Loaded after the
-  // first paint (`more-menu.svelte.ts`), which keeps its opener.
-  import { onMount, untrack } from "svelte";
+  // first paint (`more-menu.svelte.ts`), which keeps its opener; opened at
+  // `"policy"` (the blocked notice's Permissions…) it focuses the Content
+  // Security Policy setting. Under the rows, the artifact's Content Security
+  // Policy, where the daemon says it: for whoever administers it
+  // (`may_tag`) the control the hosted Share dialog shows too
+  // (ContentSecurityPolicySetting, the same control and words), its change
+  // made with the browser's cookie through the shell's confirmation flow
+  // (`hosted/api.ts` `setContentSecurityPolicy`, `held.ts`); for anyone else
+  // who opens the panel, a line when the clax is served unrestricted.
+  import { onMount, tick, untrack } from "svelte";
   import { fromStore } from "svelte/store";
   import { ApiError, getToken } from "../api";
   import type { ArtifactController } from "../view/artifact-controller";
   import { failureText } from "../failure";
+  import { type ContentSecurityPolicy, setContentSecurityPolicy } from "../hosted/api";
+  import { policyOf } from "../view/artifact-controller";
   import ApprovalDialog from "./ApprovalDialog.svelte";
+  import { CSP_HEADING, CSP_NOTE, SELF_NOTE } from "./content-security-policy-model";
+  import ContentSecurityPolicySetting from "./ContentSecurityPolicySetting.svelte";
   import { setPermissionsOpener } from "./more-menu.svelte";
   import { type PermissionRow, type PermissionsView, permissionRows } from "./permissions-model";
   import { inertOutside, trapTab } from "./modal";
@@ -58,10 +70,31 @@
   // the answer again, so no row lingers as it was.
   const approvalKey = $derived(JSON.stringify([s.data?.artifact.capabilities_in_force ?? null, s.data?.artifact.pending_capabilities ?? null, s.data?.artifact.may_approve ?? null]));
   $effect(() => { void approvalKey; if (untrack(() => open)) void untrack(load); });
-  function show() {
+  async function show(at?: "policy") {
     back.el = document.activeElement as HTMLElement | null;
     open = true;
     void load();
+    if (at === "policy") { await tick(); panel?.querySelector<HTMLElement>("button[name=content_security_policy]")?.focus(); }
+  }
+
+  // The Content Security Policy setting, where the daemon says it.
+  const policy = $derived(s.data?.artifact.content_security_policy === undefined ? null : policyOf(s));
+  const admin = $derived(s.data?.artifact.may_tag === true);
+  let setting = $state(false);
+  async function setPolicy(p: ContentSecurityPolicy): Promise<boolean> {
+    if (setting) return false;
+    setting = true;
+    try {
+      const r = await setContentSecurityPolicy(ctl.id, p);
+      ctl.policyChanged(r.artifact?.content_security_policy ?? p);
+      error = null;
+      return true;
+    } catch (e) {
+      error = failureText("Could not change the Content Security Policy", e);
+      return false;
+    } finally {
+      setting = false;
+    }
   }
   function close() {
     open = false;
@@ -143,6 +176,16 @@
           </li>
         {/each}
       </ul>
+      {#if policy && (admin || policy === "unrestricted")}
+        <section class="policy" aria-labelledby="perm-policy">
+          <h3 id="perm-policy">{CSP_HEADING}</h3>
+          {#if admin}
+            <ContentSecurityPolicySetting held={policy} busy={setting} set={setPolicy} note={SELF_NOTE} />
+          {:else}
+            <p class="muted" data-testid="csp-note">{CSP_NOTE}</p>
+          {/if}
+        </section>
+      {/if}
       <div class="foot"><button type="button" {@attach focus} onclick={close}>Close</button></div>
     </div>
   </div>
@@ -161,4 +204,7 @@
   .perm-panel .what span, .perm-panel .muted { color: var(--muted); }
   .perm-panel .err { color: var(--danger, inherit); font-size: 13px; }
   .perm-panel .foot { margin-top: 16px; display: flex; justify-content: flex-end; }
+  .perm-panel .policy { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .perm-panel h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+  .perm-panel .policy .muted { margin: 0; font-size: 13px; }
 </style>

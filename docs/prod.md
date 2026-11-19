@@ -255,6 +255,11 @@ zone's SSL/TLS, Edge Certificates): a site host is two levels below the
 zone, beyond what the universal certificate covers, as on the previews'
 site zone.
 
+`clax.run` and `clax-staging.run` need Web Analytics' automatic setup
+turned off, for the reason [docs/environments.md](environments.md) gives
+under "Cloudflare": left on, Cloudflare adds its beacon script to every
+clax's pages, and Clax's Content-Security-Policy refuses it on each load.
+
 ### The release App
 
 Deploy prod's `carry` job carries each release to `main` as a GitHub App

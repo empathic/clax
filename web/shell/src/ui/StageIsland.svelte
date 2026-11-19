@@ -11,14 +11,18 @@
   // and the spectator's are lazy chunks (view/drafts.ts, view/spectator.ts),
   // loaded the first time there is a draft or the view is a spectator; so
   // is the notice that offers the page in a tab when the frame could not
-  // open it (view/open-in-tab.svelte).
+  // open it (view/open-in-tab.svelte). The notice that Clax's lockdown
+  // blocked the page from other sites (BlockedNotice) sits in the foot too,
+  // loaded the first time a page reports one, for a clax still at `self`
+  // (and, to whoever may approve, once it is `unrestricted`, to reload).
   import type { Component } from "svelte";
   import { fromStore } from "svelte/store";
   import { INDEX_FILE } from "../../../bridge/src/protocol";
   import { getToken } from "../api";
   import { registerShield } from "../caps/gesture";
   import { shellPath } from "../route";
-  import { type ArtifactController, viewReady } from "../view/artifact-controller";
+  import { type ArtifactController, policyOf, viewReady } from "../view/artifact-controller";
+  import { permissionsOpen } from "./more-menu.svelte";
   import ApprovalBar from "./ApprovalBar.svelte";
   import ApprovalDialog from "./ApprovalDialog.svelte";
   import Composer from "./Composer.svelte";
@@ -64,6 +68,10 @@
   // A spectator's banner loads with spectator mode, the first time the view is one.
   let SpectatorBanner: Component<{ code: string; joinable: boolean; onJoin(): void }> | null = $state(null);
   $effect(() => { if (s.spectator && !SpectatorBanner) import("../view/spectator").then(m => { SpectatorBanner = m.SpectatorBanner; }, () => {}); });
+  // The blocked notice loads the first time the page reports something blocked.
+  let Blocked: typeof import("./BlockedNotice.svelte").default | null = $state(null);
+  const blockedShown = $derived(!!s.blocked?.length && !s.blockedDismissed && !s.deleted);
+  $effect(() => { if (blockedShown && !Blocked) import("./BlockedNotice.svelte").then(m => { Blocked = m.default; }, () => {}); });
   // The shield is registered while it is shown, and unregistered as it goes.
   const shield = (el: HTMLElement) => {
     registerShield(el);
@@ -94,6 +102,11 @@
     {/if}
     {#if s.spectator && SpectatorBanner}
       <SpectatorBanner code={s.spectator.code} joinable={s.spectator.joinable} onJoin={() => ctl.joinLive()} />
+    {/if}
+    {#if blockedShown && Blocked}
+      {@const open = permissionsOpen.current}
+      <Blocked origins={s.blocked} admin={s.data.artifact.may_approve === true} unrestricted={policyOf(s) === "unrestricted"}
+        onPermissions={open ? () => open("policy") : null} onReload={() => ctl.reloadHere()} onDismiss={() => ctl.dismissBlocked()} />
     {/if}
   </div>
   {#if !s.deleted && !missing}

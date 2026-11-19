@@ -272,18 +272,18 @@ test("the Share dialog's Content Security Policy setting explains itself and sen
     await owner.getByRole("button", { name: "Share", exact: true }).click();
     const dialog = owner.getByRole("dialog", { name: "Share Site plan" });
     await expect(dialog).toBeVisible();
-    const sw = dialog.getByRole("checkbox", { name: "Serve this clax without Clax's Content Security Policy" });
-    await expect(sw).not.toBeChecked();
+    const sw = dialog.locator("button[name=content_security_policy]");
+    await expect(sw).toHaveText("Serve without Clax's Content Security Policy…");
     await expect(dialog.getByTestId("csp-note")).toHaveCount(0);
 
-    // On: the explanation first, and nothing sent.
+    // Its button: the explanation first, and nothing sent.
     const patches: string[] = [];
     owner.on("request", r => { if (r.method() === "PATCH") patches.push(r.postData() ?? ""); });
     await sw.click();
     const ask = dialog.getByTestId("csp-confirm");
     await expect(ask).toContainText("Clax then sends no Content-Security-Policy holding its pages to their own site: they may load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.");
     await expect(ask.getByRole("button", { name: "Confirm" })).toBeFocused();
-    await expect(sw).not.toBeChecked();
+    await expect(sw).toHaveText("Serve without Clax's Content Security Policy…");
     expect(patches).toEqual([]);
     expect(await policy()).toBe("self");
     // Tab stays inside the dialog while it asks.
@@ -293,7 +293,7 @@ test("the Share dialog's Content Security Policy setting explains itself and sen
     // Cancel: still nothing sent, still `self`.
     await ask.getByRole("button", { name: "Cancel" }).click();
     await expect(ask).toHaveCount(0);
-    await expect(sw).not.toBeChecked();
+    await expect(sw).toHaveText("Serve without Clax's Content Security Policy…");
     expect(patches).toEqual([]);
     expect(await policy()).toBe("self");
 
@@ -301,15 +301,15 @@ test("the Share dialog's Content Security Policy setting explains itself and sen
     await sw.click();
     await ask.getByRole("button", { name: "Confirm" }).click();
     await expect.poll(policy).toBe("unrestricted");
-    await expect(sw).toBeChecked();
+    await expect(sw).toHaveText("Restore Clax's Content Security Policy");
     await expect(dialog.getByTestId("csp-note")).toHaveText("Served without Clax's Content Security Policy: its pages load and send where they choose.");
     expect(patches.map(p => JSON.parse(p))).toEqual([{ content_security_policy: "unrestricted" }]);
 
-    // Off: `self` again at once, with no question.
+    // Its button then: `self` again at once, with no question.
     await sw.click();
     await expect.poll(policy).toBe("self");
     await expect(ask).toHaveCount(0);
-    await expect(sw).not.toBeChecked();
+    await expect(sw).toHaveText("Serve without Clax's Content Security Policy…");
     await expect(dialog.getByTestId("csp-note")).toHaveCount(0);
     expect(patches.map(p => JSON.parse(p))).toEqual([{ content_security_policy: "unrestricted" }, { content_security_policy: "self" }]);
   } finally {

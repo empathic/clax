@@ -26,7 +26,7 @@ let shareOpener: (() => void) | null = $state(null);
 let publishLoaded: PublishT | null = $state(null);
 let publishOpener: PublishOpener | null = $state(null);
 let permissionsLoaded: PermissionsT | null = $state(null);
-let permissionsOpener: (() => void) | null = $state(null);
+let permissionsOpener: PermissionsOpener | null = $state(null);
 let legalLinks: LegalLinks | null = $state(null);
 
 /** The more menu's component once `loadMoreMenu` has loaded it, else null. */
@@ -61,10 +61,12 @@ export function setPublishOpener(o: PublishOpener | null): void { publishOpener 
 
 /** The Permissions panel's component once `loadMoreMenu` has loaded it, else null. */
 export const permissions = { get current(): PermissionsT | null { return permissionsLoaded; } };
-/** What opens the Permissions panel while it is mounted (the more menu's Permissions… item), else null. */
-export const permissionsOpen = { get current(): (() => void) | null { return permissionsOpener; } };
+/** Opens the Permissions panel; `"policy"` focuses its Content Security Policy setting (the blocked notice's Permissions…). */
+export type PermissionsOpener = (at?: "policy") => void;
+/** What opens the Permissions panel while it is mounted (the more menu's Permissions… item, the blocked notice's), else null. */
+export const permissionsOpen = { get current(): PermissionsOpener | null { return permissionsOpener; } };
 /** Sets what opens the Permissions panel (the panel sets it on mount; null clears it). */
-export function setPermissionsOpener(f: (() => void) | null): void { permissionsOpener = f; }
+export function setPermissionsOpener(f: PermissionsOpener | null): void { permissionsOpener = f; }
 
 /** The hosted Clax's documents once `loadMoreMenu` has asked for them, else null. */
 export const legal = { get current(): LegalLinks | null { return legalLinks; } };

@@ -3,7 +3,7 @@
 // gives it.
 import { type Anchor, type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
 import { approveCapabilities } from "../caps/approval";
-import { ApiError, type Artifact, type Attention, type PendingCapabilities, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
+import { ApiError, type Artifact, type Attention, type ContentSecurityPolicy, type PendingCapabilities, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, acceptSiteState, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
@@ -21,6 +21,7 @@ import { after } from "../clock";
 import { afterPaint, nextFrame } from "./after-paint";
 import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
 import { AnchorHandles } from "./anchor-handles";
+import { BlockedSites } from "./blocked";
 import type { Decided } from "./changelog-model";
 import { rallyOnce } from "./rally";
 import type { Boot } from "./boot";
@@ -167,7 +168,22 @@ export type ViewState = {
    * says (`view/title-tags.ts` `tagsOf`). Kept apart from `data`, whose
    * replacement starts a new capability host. */
   tags: { tags: TagRef[]; may: boolean } | null;
+  /** The other sites Clax's lockdown blocked the greeted page from
+   * (`clax:blocked`, `blocked.ts`), first reported first: text the page
+   * sent, for the notice to name. Empty for a new document. */
+  blocked: string[];
+  /** The viewer dismissed the blocked notice for this document. */
+  blockedDismissed: boolean;
+  /** The artifact's Content Security Policy as the setting last set it here; null: as
+   * `data` says (`policyOf`). Kept apart from `data`, as `tags` is. */
+  policy: ContentSecurityPolicy | null;
 };
+
+/** The artifact's Content Security Policy: as the setting last set it in
+ * this view, else as the daemon said (`self` where it says nothing). */
+export function policyOf(s: ViewState): ContentSecurityPolicy {
+  return s.policy ?? s.data?.artifact.content_security_policy ?? "self";
+}
 
 /** The artifact's Comments switch is off (spec 2026-10-21-app-push-pull
  * §5.6): nobody comments on it, whatever their access, so the view opens no
@@ -299,6 +315,9 @@ export class ArtifactController {
    * version or origin, or a document that loaded without greeting) and at
    * the next greeting. */
   private failedParts = new Set<keyof typeof PART_FAILED>();
+  /** What the lockdown blocked the greeted page from (`clax:blocked`);
+   * forgotten with the document, as `failedParts` is. */
+  private blockedSites = new BlockedSites();
   // The pick ID of the open composer when a pick made in comment mode opened
   // it: comment mode, off while that composer is open, comes back on when it
   // closes.
@@ -422,7 +441,7 @@ export class ArtifactController {
       decided: null, rally: false, menu: null, askName: null, looked: {}, presence: [], shareWhere: readShareWhere(),
       agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null, sampleCalls: null,
       spectator: null, viewing: null,
-      drafts: [], showDraft: null, draftChanged: null, tags: null,
+      drafts: [], showDraft: null, draftChanged: null, tags: null, blocked: [], blockedDismissed: false, policy: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
@@ -725,6 +744,7 @@ export class ArtifactController {
       this.gateFor = key;
       this.gate.reset();
       this.failedParts.clear();
+      this.forgetBlocked();
       if (s.openInTab) this.set({ openInTab: null });
     }
     // Made before the frame it serves is inserted: a hello and a capability
@@ -862,6 +882,7 @@ export class ArtifactController {
     if (this.gate.load()) {
       this.leaveDocument();
       this.failedParts.clear();
+      this.forgetBlocked();
       this.set({ file: null, resolved: {} });
       if (wasOpen) this.send({ type: "clax:greet" });
     }
@@ -902,6 +923,7 @@ export class ArtifactController {
     this.gate.close();
     this.leaveDocument();
     this.failedParts.clear();
+    this.forgetBlocked();
     this.set({ file: null, resolved: {} });
     const url = this.pageAt(target) + hash;
     if (replace && frame.contentWindow) {
@@ -1300,6 +1322,7 @@ export class ArtifactController {
     this.gate.bye();
     this.leaveDocument();
     this.failedParts.clear();
+    this.forgetBlocked();
     this.set({ file: null, resolved: {} });
   }
 
@@ -1336,6 +1359,9 @@ export class ArtifactController {
         if (this.hs?.phase === "code") this.hs.phase = "done";
         this.pendingPick = null;
         this.failedParts.clear();
+        // Another document's reports go with it; the same document greeting
+        // again (`again`) tells them again after its welcome.
+        if (m.again !== true || !this.gate.open) this.forgetBlocked();
         this.set({ resolved: {} });
         this.anchorIds.forget();
         if (!this.gate.open) { this.leaveDocument(); this.set({ file: null }); break; }
@@ -1513,6 +1539,14 @@ export class ArtifactController {
         this.failedParts.add(m.part as keyof typeof PART_FAILED);
         this.showPartFailed(m.part as keyof typeof PART_FAILED);
         if (m.part === "comment") this.set({ commenting: false });
+        break;
+      }
+      case "clax:blocked": {
+        // The lockdown blocked the greeted page from another site: the
+        // notice names it (StageIsland). The page could post this itself,
+        // so it is checked and kept as text, at most BLOCKED_MAX, and
+        // nothing is done because of it.
+        if (this.gate.open && this.blockedSites.add(m, this.s.origin ?? "")) this.set({ blocked: this.blockedSites.origins });
         break;
       }
       case "clax:hover": break;
@@ -1805,6 +1839,15 @@ export class ArtifactController {
   copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => {}); }
   reloadLatest(): void { nav.assign(this.here(null)); }
   dismissNotice(): void { this.set({ notice: null }); }
+  /** Hides the blocked notice until another document greets. */
+  dismissBlocked(): void { this.set({ blockedDismissed: true }); }
+  private forgetBlocked(): void {
+    this.blockedSites.clear();
+    if (this.s.blocked.length || this.s.blockedDismissed) this.set({ blocked: [], blockedDismissed: false });
+  }
+  /** The artifact's site now holds `policy` (the Content Security Policy setting's
+   * answer): the view says so from now on. */
+  policyChanged(policy: ContentSecurityPolicy): void { this.set({ policy }); }
 
   /** The declaration the approval bar shows: what the current version asks
    * for, once the daemon says this viewer may approve it and "Not now" has

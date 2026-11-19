@@ -36,7 +36,9 @@
  * `history.pushState` routes (`clax:route`) and takes the shell back among
  * them (`clax:back`). On
  * `pagehide` it says `clax:bye`, and the shell stops sending until the next
- * document greets. In a frame the shell named `INSPECT_FRAME` it keeps the
+ * document greets. Framed, it tells the shell what Clax's lockdown refused
+ * the page from other origins (`clax:blocked`, `blocked.ts`: each directive
+ * and origin once, no path or query), after every welcome. In a frame the shell named `INSPECT_FRAME` it keeps the
  * page's errors from before its first script (`inspect.ts`); it answers the
  * app's inspect view's `clax:inspect` with the clip part's inspection
  * (`clax:inspection`), and there only, its `clax:test` with the test part's
@@ -71,6 +73,7 @@ import { loadParts } from "clax-bridge-parts";
 import { now } from "../../shell/src/clock";
 import type { Resolved } from "./anchor";
 import { acceptFromShell, forwardedKey, pageShortcut, shellOrigins } from "./channel";
+import { type Blocked, BlockedLog, lockdownRefusal } from "./blocked";
 import { commentsContext } from "./comments-context";
 import { type ErrorRing, installErrorRing } from "./inspect";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
@@ -242,6 +245,16 @@ type PartName = keyof Parts;
   // The page's own pushState routes, watched once the app shell welcomed.
   let routes: Routes | undefined;
 
+  // What the lockdown refused the page from other origins (`blocked.ts`),
+  // heard from before any page script runs, told to the shell once it has
+  // welcomed this page, and all of it again after each welcome.
+  const blocked = new BlockedLog();
+  const tell = (b: Blocked) => { if (welcomed) post({ type: "clax:blocked", ...b }); };
+  document.addEventListener("securitypolicyviolation", e => {
+    const b = lockdownRefusal(e, location.origin);
+    if (b && blocked.add(b)) tell(b);
+  }, true);
+
   // A pick's clip is rendered only once the shell's composer for it has
   // focus (see `pick.ts`).
   const picks = new PickFlow(window, post, meta.version);
@@ -374,6 +387,7 @@ type PartName = keyof Parts;
     switch (m.type) {
       case "clax:welcome":
         welcomed = true; appShell = m.app === true; shellMode = m.mode === "comment"; followMode(); rpc.connect(); post(hashFor(location.hash));
+        for (const b of blocked.all) tell(b);
         prefetch();
         if (m.app) void parts.caps().then(c => { routes = c.app(window, post, meta.file, m.restoreScroll); }, () => {});
         break;

@@ -1,7 +1,8 @@
 // The Share dialog's model (crates/clax-server/src/hosted.rs, the sharing
 // routes): the words for each access, a GitHub login as the daemon checks
 // it, the suggestions the add field offers, and the link request each
-// general access makes, and the words of the Content Security Policy setting. Pure: the dialog renders it.
+// general access makes. Pure: the dialog renders it. The Content Security
+// Policy setting's words are content-security-policy-model.ts's.
 import type { GeneralAccess, LinkAccess, Share, ShareAccess, ShareCandidate, SiteAccess } from "../hosted/api";
 
 export const ACCESS_LABEL: Record<ShareAccess, string> = { viewer: "Can view", commenter: "Can comment", editor: "Can edit" };
@@ -20,12 +21,6 @@ export const SITE_NOTE: Record<SiteAccess, string> = {
   private: "Only the people with access load its site, at ",
   world: "Anyone loads its site and uses its data as its rules allow, without signing in, at ",
 };
-
-/** The Content Security Policy setting (spec 2026-11-15-site-own-content-policy), the explanation shown
- * before it is turned on, and the line a clax served unrestricted shows beside its site. */
-export const CSP_LABEL = "Serve this clax without Clax's Content Security Policy";
-export const CSP_EXPLAIN = "Clax then sends no Content-Security-Policy holding its pages to their own site: they may load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.";
-export const CSP_NOTE = "Served without Clax's Content Security Policy: its pages load and send where they choose.";
 
 /** The Comments switch (spec 2026-10-21-app-push-pull §5.6), and the line under it, on and off. */
 export const COMMENTS_LABEL = "Comments";
