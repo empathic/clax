@@ -29,11 +29,29 @@
 //! # Bounds
 //!
 //! Every wait ends at the deadline ([`CdpFail::Deadline`]), at the run's
-//! cancellation ([`CdpFail::Cancelled`]) or when the socket closes
-//! ([`CdpFail::Closed`]), whichever is first; once one of them has
-//! happened every later wait answers it at once. Sends are not bounded:
-//! a transport's `send` hands a frame to its socket. Closing the
-//! connection ([`Cdp::close`]) closes the transport once.
+//! cancellation ([`CdpFail::Cancelled`]), when the socket closes
+//! ([`CdpFail::Closed`]) or when the watched page is gone
+//! ([`CdpFail::Lost`]: [`Cdp::watch`]), whichever is first; once one of
+//! them has happened every later wait answers it at once, until
+//! [`Cdp::rebound`] gives a deadline and a cancellation anew (a closed
+//! socket and a lost page stay so). Sends are not bounded: a transport's
+//! `send` hands a frame to its socket. Closing the connection
+//! ([`Cdp::close`]) closes the transport once.
+//!
+//! # A lost page
+//!
+//! Once [`Cdp::watch`] names the page's target and session, any of
+//! `Inspector.targetCrashed` on its session, `Target.targetCrashed` of
+//! its target, or `Target.detachedFromTarget` of its session or target
+//! ends every wait as [`CdpFail::Lost`]: the page will answer nothing
+//! more.
+//!
+//! # Cancellation of a wait
+//!
+//! A wait dropped before it finished loses nothing: a frame is taken from
+//! the transport only when its `recv` completes, and [`CdpTransport::recv`]
+//! is cancel-safe (a host's socket stream is), so the session registry
+//! may stop waiting for an event when a call arrives.
 
 use super::{BrowserError, CdpTransport, Deadline};
 use clax_bot_sandbox::CancelToken;
@@ -66,6 +84,8 @@ pub enum CdpFail {
     Protocol(String),
     /// The transport failed.
     Transport(BrowserError),
+    /// The watched page crashed or was detached ([`Cdp::watch`]): why.
+    Lost(String),
 }
 
 impl fmt::Display for CdpFail {
@@ -76,6 +96,7 @@ impl fmt::Display for CdpFail {
             CdpFail::Closed => f.write_str("the browser's connection closed"),
             CdpFail::Protocol(m) => write!(f, "the browser answered: {m}"),
             CdpFail::Transport(e) => write!(f, "{e}"),
+            CdpFail::Lost(why) => write!(f, "the page is gone: {why}"),
         }
     }
 }
@@ -89,21 +110,41 @@ pub enum Got {
     Event(CdpEvent),
 }
 
-/// What ended the connection's waits for good.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What ended the connection's waits: for good, or until
+/// [`Cdp::rebound`] (a deadline, a cancellation).
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Ended {
     Deadline,
     Cancelled,
     Closed,
+    Lost(String),
 }
 
 impl Ended {
-    fn fail(self) -> CdpFail {
+    fn fail(&self) -> CdpFail {
         match self {
             Ended::Deadline => CdpFail::Deadline,
             Ended::Cancelled => CdpFail::Cancelled,
             Ended::Closed => CdpFail::Closed,
+            Ended::Lost(why) => CdpFail::Lost(why.clone()),
         }
+    }
+}
+
+/// Why `e` means the watched page (`target`, `session`) is gone, if it
+/// does.
+fn lost_by(e: &CdpEvent, target: Option<&str>, session: Option<&str>) -> Option<&'static str> {
+    let p = &e.params;
+    let is = |v: &Value, want: Option<&str>| want.is_some_and(|w| v.as_str() == Some(w));
+    match e.method.as_str() {
+        "Inspector.targetCrashed" if session.is_some() && e.session.as_deref() == session => {
+            Some("the page crashed")
+        }
+        "Target.targetCrashed" if is(&p["targetId"], target) => Some("the page crashed"),
+        "Target.detachedFromTarget" if is(&p["sessionId"], session) || is(&p["targetId"], target) => {
+            Some("the page was detached")
+        }
+        _ => None,
     }
 }
 
@@ -120,6 +161,10 @@ pub struct Cdp {
     events: VecDeque<CdpEvent>,
     ended: Option<Ended>,
     transport_closed: bool,
+    /// The page whose loss ends every wait ([`Cdp::watch`]).
+    watched: (Option<String>, Option<String>),
+    /// How many frames were sent.
+    sent: u64,
 }
 
 impl fmt::Debug for Cdp {
@@ -231,6 +276,32 @@ impl Cdp {
             events: VecDeque::new(),
             ended: None,
             transport_closed: false,
+            watched: (None, None),
+            sent: 0,
+        }
+    }
+
+    /// How many commands were sent so far: what tells a session whether
+    /// the browser heard from it ([`super::live`]'s heartbeat).
+    #[must_use]
+    pub fn sent(&self) -> u64 {
+        self.sent
+    }
+
+    /// Ends every wait as [`CdpFail::Lost`] once the page of `target` and
+    /// `session` crashes or is detached (see the module docs).
+    pub fn watch(&mut self, target: Option<String>, session: Option<String>) {
+        self.watched = (target, session);
+    }
+
+    /// Bounds every later wait by `deadline` and `cancel` instead: a wait
+    /// the old deadline or cancellation ended no longer answers that. A
+    /// closed socket and a lost page stay so.
+    pub fn rebound(&mut self, deadline: Deadline, cancel: CancelToken) {
+        self.deadline = deadline;
+        self.cancel = cancel;
+        if matches!(self.ended, Some(Ended::Deadline | Ended::Cancelled)) {
+            self.ended = None;
         }
     }
 
@@ -240,6 +311,15 @@ impl Cdp {
         self.ended == Some(Ended::Deadline)
     }
 
+    /// Whether the watched page is gone, and why.
+    #[must_use]
+    pub fn lost(&self) -> Option<&str> {
+        match &self.ended {
+            Some(Ended::Lost(why)) => Some(why),
+            _ => None,
+        }
+    }
+
     /// Whether the deadline passed, the run was cancelled or the socket
     /// closed: every later wait fails at once.
     #[must_use]
@@ -247,7 +327,7 @@ impl Cdp {
         if self.ended.is_none() && self.cancel.is_cancelled() {
             return Some(CdpFail::Cancelled);
         }
-        self.ended.map(Ended::fail)
+        self.ended.as_ref().map(Ended::fail)
     }
 
     async fn send_frame(
@@ -269,6 +349,7 @@ impl Cdp {
             .send(frame.to_string())
             .await
             .map_err(CdpFail::Transport)?;
+        self.sent += 1;
         Ok(id)
     }
 
@@ -349,7 +430,14 @@ impl Cdp {
                     // An answer to a command sent with `send_only`, or to
                     // none: dropped.
                 }
-                event @ Frame::Event(_) => return Ok(event),
+                Frame::Event(event) => {
+                    let (target, session) = &self.watched;
+                    if let Some(why) = lost_by(&event, target.as_deref(), session.as_deref()) {
+                        self.ended = Some(Ended::Lost(why.to_string()));
+                        return Err(CdpFail::Lost(why.to_string()));
+                    }
+                    return Ok(Frame::Event(event));
+                }
             }
         }
     }
@@ -677,4 +765,57 @@ mod tests {
         cdp.close().await;
         assert_eq!(log.closes(), 1);
     }
+
+    #[tokio::test]
+    async fn a_crash_or_a_detach_of_the_watched_page_ends_waits_as_lost() {
+        for (frame, why) in [
+            (
+                event("Inspector.targetCrashed", json!({}), Some("S")),
+                "the page crashed",
+            ),
+            (
+                event("Target.targetCrashed", json!({"targetId": "T", "status": "crashed"}), None),
+                "the page crashed",
+            ),
+            (
+                event("Target.detachedFromTarget", json!({"sessionId": "S"}), None),
+                "the page was detached",
+            ),
+        ] {
+            let chrome = FakeChrome::new(|_: &Value| vec![]);
+            let log = chrome.log();
+            let mut cdp = Cdp::new(Box::new(chrome), never(), CancelToken::new());
+            cdp.watch(Some("T".into()), Some("S".into()));
+            // Another target's crash and another session's detach are
+            // events like any other.
+            log.emit(event("Target.targetCrashed", json!({"targetId": "W"}), None));
+            log.emit(event("Target.detachedFromTarget", json!({"sessionId": "S2"}), None));
+            assert_eq!(cdp.next_event().await.unwrap().method, "Target.targetCrashed");
+            assert_eq!(cdp.next_event().await.unwrap().method, "Target.detachedFromTarget");
+            let id = cdp.send(Some("S"), "Runtime.evaluate", json!({})).await.unwrap();
+            log.emit(frame);
+            assert_eq!(cdp.wait(id).await, Err(CdpFail::Lost(why.into())));
+            assert_eq!(cdp.lost(), Some(why));
+            // A new deadline does not bring the page back.
+            cdp.rebound(never(), CancelToken::new());
+            assert_eq!(cdp.next_event().await, Err(CdpFail::Lost(why.into())));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_bound_lifts_a_passed_deadline_and_a_cancellation() {
+        let chrome = FakeChrome::new(|cmd: &Value| vec![answer(cmd, json!({"ok": 1}))]);
+        let cancel = CancelToken::new();
+        let mut cdp = Cdp::new(Box::new(chrome), futures::future::ready(()).boxed(), cancel.clone());
+        assert_eq!(cdp.next_event().await, Err(CdpFail::Deadline));
+        cdp.rebound(never(), CancelToken::new());
+        assert_eq!(cdp.call(None, "A.b", json!({})).await.unwrap(), json!({"ok": 1}));
+        let cancelled = CancelToken::new();
+        cancelled.cancel();
+        cdp.rebound(never(), cancelled);
+        assert_eq!(cdp.call(None, "A.b", json!({})).await, Err(CdpFail::Cancelled));
+        cdp.rebound(never(), CancelToken::new());
+        assert_eq!(cdp.call(None, "A.b", json!({})).await.unwrap(), json!({"ok": 1}));
+    }
+
 }

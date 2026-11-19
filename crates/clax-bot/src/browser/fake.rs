@@ -58,6 +58,8 @@ struct Shared {
     closed: bool,
     closes: u32,
     waker: Option<Waker>,
+    /// Who waits for a command to be sent ([`ChromeLog::wait_sent`]).
+    watchers: Vec<Waker>,
 }
 
 /// What a test keeps of a [`FakeChrome`] once it is handed over: what it
@@ -102,6 +104,31 @@ impl ChromeLog {
     pub fn close_socket(&self) {
         let mut s = self.lock();
         s.closed = true;
+        if let Some(w) = s.waker.take() {
+            w.wake();
+        }
+    }
+
+    /// Resolves once `n` commands of `method` have been sent: a test's
+    /// wait for a session's task to act, on a condition, not a time.
+    pub async fn wait_sent(&self, method: &str, n: usize) {
+        std::future::poll_fn(|cx| {
+            let mut s = self.lock();
+            if s.commands.iter().filter(|c| c["method"] == method).count() >= n {
+                return Poll::Ready(());
+            }
+            s.watchers.push(cx.waker().clone());
+            Poll::Pending
+        })
+        .await;
+    }
+
+    /// Has the browser send `frame` (an event: a crash, a paused request
+    /// of a page's own, an attached target) without a command before it,
+    /// as a browser does between commands.
+    pub fn emit(&self, frame: Value) {
+        let mut s = self.lock();
+        s.outbox.push_back(frame.to_string());
         if let Some(w) = s.waker.take() {
             w.wake();
         }
@@ -172,7 +199,13 @@ impl CdpTransport for FakeChrome {
                 false,
             ));
         }
-        self.log.lock().commands.push(cmd.clone());
+        {
+            let mut s = self.log.lock();
+            s.commands.push(cmd.clone());
+            for w in s.watchers.drain(..) {
+                w.wake();
+            }
+        }
         let frames = (self.handler)(&cmd);
         let mut s = self.log.lock();
         for f in frames {
@@ -253,7 +286,8 @@ type Override = Box<dyn FnMut(&Value) -> Option<Vec<Value>> + Send>;
 ///   `Target.attachToTarget` with the context `CTX`, the target `T` and
 ///   the session `S`; `Browser.close` with `{}`, then the socket closes;
 ///   every other command not named here with `{}`.
-/// - `Page.navigate` pauses the document's request
+/// - `Page.navigate` (and `Page.reload`, of the URL last navigated to)
+///   pauses the document's request
 ///   (`Fetch.requestPaused`, request IDs `R1`, `R2`, …) and answers once
 ///   it is fulfilled, failed or continued. A fulfilled document pauses
 ///   each of [`PageModel::requests`]; once all are answered, the events of
@@ -278,6 +312,8 @@ pub struct PageModel {
     navigating: Option<(Value, String)>,
     /// Subresource requests paused and not yet answered.
     outstanding: Vec<String>,
+    /// The URL last navigated to, which `Page.reload` loads again.
+    url: String,
 }
 
 impl Default for PageModel {
@@ -292,6 +328,7 @@ impl Default for PageModel {
             next_request: 0,
             navigating: None,
             outstanding: Vec::new(),
+            url: String::new(),
         }
     }
 }
@@ -404,8 +441,12 @@ impl PageModel {
                 answer(cmd, json!({"sessionId": "S"})),
             ],
             "Browser.close" => vec![answer(cmd, json!({})), CLOSE],
-            "Page.navigate" => {
-                let url = params["url"].as_str().unwrap_or_default().to_string();
+            "Page.navigate" | "Page.reload" => {
+                let url = match params["url"].as_str() {
+                    Some(u) => u.to_string(),
+                    None => self.url.clone(),
+                };
+                self.url = url.clone();
                 let (id, e) = self.paused(&url, "Document");
                 self.navigating = Some((cmd.clone(), id));
                 vec![e]
@@ -481,6 +522,9 @@ pub struct FakeBrowserSource {
     logs: Mutex<Vec<ChromeLog>>,
     deadline: CancelToken,
     deadlines: Mutex<Vec<DateTime<Utc>>>,
+    /// The deadlines not yet fired, each with what fires it, and the time
+    /// [`FakeBrowserSource::fire_until`] reached.
+    pending: Mutex<(Option<DateTime<Utc>>, Vec<(DateTime<Utc>, CancelToken)>)>,
     clax_files: Mutex<BTreeMap<String, Served>>,
     site_headers: Mutex<Vec<(String, String)>>,
     site_api: Mutex<BTreeMap<String, Served>>,
@@ -521,6 +565,7 @@ impl FakeBrowserSource {
             logs: Mutex::new(Vec::new()),
             deadline: CancelToken::new(),
             deadlines: Mutex::new(Vec::new()),
+            pending: Mutex::new((None, Vec::new())),
             clax_files: Mutex::new(BTreeMap::new()),
             site_headers: Mutex::new(vec![(
                 "Content-Security-Policy".into(),
@@ -566,6 +611,22 @@ impl FakeBrowserSource {
     /// Fires every deadline it handed out, and every later one at once.
     pub fn fire_deadline(&self) {
         self.deadline.cancel();
+    }
+
+    /// Fires every deadline it handed out at `at` or before, and every
+    /// later one at or before `at` at once: a manual clock for deadlines,
+    /// which a test moves with its [`clax_core::working::ManualClock`].
+    pub fn fire_until(&self, at: DateTime<Utc>) {
+        let mut p = lock(&self.pending);
+        p.0 = Some(p.0.map_or(at, |t| t.max(at)));
+        p.1.retain(|(when, fire)| {
+            if *when <= at {
+                fire.cancel();
+                false
+            } else {
+                true
+            }
+        });
     }
 
     /// The times of the deadlines it handed out, in order.
@@ -644,8 +705,22 @@ impl BrowserSource for FakeBrowserSource {
 
     fn deadline(&self, at: DateTime<Utc>) -> Deadline {
         lock(&self.deadlines).push(at);
-        let fired = self.deadline.clone();
-        let f = async move { fired.cancelled().await };
+        let all = self.deadline.clone();
+        let mine = CancelToken::new();
+        {
+            let mut p = lock(&self.pending);
+            if p.0.is_some_and(|now| at <= now) {
+                mine.cancel();
+            } else {
+                p.1.push((at, mine.clone()));
+            }
+        }
+        let f = async move {
+            let a = all.cancelled();
+            let m = mine.cancelled();
+            futures::pin_mut!(a, m);
+            futures::future::select(a, m).await;
+        };
         #[cfg(not(target_arch = "wasm32"))]
         return f.boxed();
         #[cfg(target_arch = "wasm32")]

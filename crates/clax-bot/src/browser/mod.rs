@@ -39,6 +39,7 @@ pub mod access;
 pub mod browse;
 pub mod cdp;
 pub mod fake;
+pub mod live;
 pub mod opts;
 pub mod serve;
 pub mod session;
@@ -71,6 +72,13 @@ pub const CODE_BROWSER_BUSY: &str = "browser_busy";
 pub const CODE_BROWSER_UNAVAILABLE: &str = "browser_unavailable";
 /// The deadline passed before the page loaded.
 pub const CODE_BROWSER_TIMEOUT: &str = "browser_timeout";
+/// The session's browser is gone (the daemon restarted, the socket
+/// dropped, the page crashed or detached), or this process holds no such
+/// session for the run; not retryable: open a new one.
+pub const CODE_BROWSER_SESSION_LOST: &str = "browser_session_lost";
+/// The session was closed (`close`, its idle time, its lifetime, a
+/// revoke, credits, the run's end); the reason is in the message.
+pub const CODE_BROWSER_SESSION_CLOSED: &str = "browser_session_closed";
 
 /// A browser call that failed: a code above, a message for the model,
 /// whether trying again may succeed, and whether a browser had opened.
@@ -136,7 +144,9 @@ pub type Deadline = futures::future::LocalBoxFuture<'static, ()>;
 pub trait CdpTransport: MaybeSend {
     /// Sends one frame.
     async fn send(&mut self, frame: String) -> Result<(), BrowserError>;
-    /// The next frame; `None` once the socket closed.
+    /// The next frame; `None` once the socket closed. Cancel-safe: a
+    /// `recv` dropped before it completed has taken no frame, so the next
+    /// one reads it ([`cdp`], "Cancellation of a wait").
     async fn recv(&mut self) -> Result<Option<String>, BrowserError>;
     /// Closes the socket. Closing a closed socket does nothing.
     async fn close(&mut self);

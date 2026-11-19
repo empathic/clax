@@ -170,7 +170,9 @@ pub enum Start {
 }
 
 impl Start {
-    fn mode(&self) -> Mode {
+    /// Its egress and preamble: a test's or a browse's.
+    #[must_use]
+    pub fn mode(&self) -> Mode {
         match self {
             Start::Test { .. } => Mode::Test,
             Start::Browse { .. } => Mode::Browse,
@@ -252,6 +254,22 @@ pub fn saved_tests_js(files: &[String], test_ms: u32, total_ms: u64) -> String {
     )
 }
 
+/// `Fetch.enable`'s parameters: every request paused at the Request
+/// stage.
+fn fetch_patterns() -> Value {
+    json!({"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+}
+
+/// `Target.setAutoAttach`'s parameters: related targets attached,
+/// flattened, and held before they run until they are resumed.
+fn auto_attach() -> Value {
+    json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true})
+}
+
+/// What a worker evaluates before it runs: its WebSocket and
+/// WebTransport removed, as the preamble removes a browsed page's.
+pub const WORKER_PREAMBLE_JS: &str = "(() => { for (const n of ['WebSocket', 'WebTransport']) { try { Object.defineProperty(self, n, {value: undefined, writable: false, configurable: false}); } catch (e) {} } })();";
+
 /// A saved tests' result of one failure, named `tests`, saying `why`.
 fn tests_failed(why: &str) -> Value {
     json!({"passed": 0, "failed": [{"name": "tests", "error": why}], "skipped": 0})
@@ -301,30 +319,9 @@ pub async fn run_test(
     limits: SessionLimits,
 ) -> TestRun {
     let opened_at = clock.now();
-    let mut d = Driver {
-        cdp,
-        policy,
-        clock,
-        opened_at,
-        session: None,
-        target: None,
-        context: None,
-        console: Vec::new(),
-        console_errors: 0,
-        errors: Vec::new(),
-        uncaught: 0,
-        failed: Vec::new(),
-        blocked: Vec::new(),
-        cut: Vec::new(),
-        loaded: false,
-        awaiting_document: false,
-        status: 0,
-        browse: start.mode() == Mode::Browse,
-        network_urls: BTreeMap::new(),
-        shots: Vec::new(),
-    };
+    let mut d = Driver::new(cdp, policy, clock, start.mode(), opened_at);
     let gathered = d.drive(start, opts, limits).await;
-    d.close().await;
+    d.close_page().await;
     let closed_at = clock.now();
     let ms = (closed_at - opened_at).num_milliseconds().max(0);
     let outcome = gathered.map(|g| d.result(g, ms));
@@ -348,33 +345,39 @@ struct Gathered {
     tests: Option<Value>,
 }
 
-/// One test's state while it runs.
-struct Driver<'a> {
-    cdp: &'a mut Cdp,
+/// One page's state while it is open: a test's, from [`run_test`]'s
+/// open to its close, or a live session's ([`super::live`]), across its
+/// calls. The primitives a test is made of: [`Driver::open_page`], a
+/// step, [`Driver::collect`], [`Driver::close_page`].
+pub(super) struct Driver<'a> {
+    pub(super) cdp: &'a mut Cdp,
     policy: &'a dyn RequestPolicy,
     clock: &'a dyn Clock,
-    opened_at: DateTime<Utc>,
-    session: Option<String>,
+    pub(super) opened_at: DateTime<Utc>,
+    pub(super) session: Option<String>,
     /// The test's own page.
-    target: Option<String>,
+    pub(super) target: Option<String>,
     context: Option<String>,
-    console: Vec<Value>,
+    pub(super) console: Vec<Value>,
     console_errors: usize,
-    errors: Vec<Value>,
+    pub(super) errors: Vec<Value>,
     uncaught: usize,
-    failed: Vec<Value>,
-    blocked: Vec<Value>,
+    pub(super) failed: Vec<Value>,
+    pub(super) blocked: Vec<Value>,
     /// What was cut, by name.
     cut: Vec<&'static str>,
     loaded: bool,
     /// Whether the next `Document` request is the navigation's.
     awaiting_document: bool,
-    status: u16,
+    pub(super) status: u16,
     /// Whether this is a browse, whose requests go to the network.
     browse: bool,
     /// The URLs of the network's requests, to name a failed load.
     network_urls: BTreeMap<String, String>,
-    shots: Vec<Vec<u8>>,
+    pub(super) shots: Vec<Vec<u8>>,
+    /// The page's URL as its main frame last navigated: the URL a
+    /// session call answers.
+    pub(super) url: String,
 }
 
 /// The most network request URLs kept to name failed loads.
@@ -414,7 +417,7 @@ fn arg_text(arg: &Value) -> String {
 }
 
 /// A failure before the page loaded, as the call's error.
-fn setup_error(fail: CdpFail, timeout_s: u32) -> BrowserError {
+pub(super) fn setup_error(fail: CdpFail, timeout_s: u32) -> BrowserError {
     let e = match fail {
         CdpFail::Deadline => BrowserError::new(
             CODE_BROWSER_TIMEOUT,
@@ -433,6 +436,11 @@ fn setup_error(fail: CdpFail, timeout_s: u32) -> BrowserError {
             false,
         ),
         CdpFail::Transport(e) => e,
+        CdpFail::Lost(why) => BrowserError::new(
+            CODE_BROWSER_UNAVAILABLE,
+            format!("the page was lost before it loaded ({why}); open it again"),
+            true,
+        ),
     };
     e.opened(true)
 }
@@ -440,14 +448,49 @@ fn setup_error(fail: CdpFail, timeout_s: u32) -> BrowserError {
 /// What a step answered: its value, or why it failed.
 type StepAnswer = Result<Option<Value>, String>;
 
-impl Driver<'_> {
+impl<'a> Driver<'a> {
+    /// A page not yet open, on `cdp`, its requests answered by `policy`,
+    /// measured by `clock` from `opened_at`; its egress and preamble as
+    /// `mode`'s.
+    pub(super) fn new(
+        cdp: &'a mut Cdp,
+        policy: &'a dyn RequestPolicy,
+        clock: &'a dyn Clock,
+        mode: Mode,
+        opened_at: DateTime<Utc>,
+    ) -> Driver<'a> {
+        Driver {
+            cdp,
+            policy,
+            clock,
+            opened_at,
+            session: None,
+            target: None,
+            context: None,
+            console: Vec::new(),
+            console_errors: 0,
+            errors: Vec::new(),
+            uncaught: 0,
+            failed: Vec::new(),
+            blocked: Vec::new(),
+            cut: Vec::new(),
+            loaded: false,
+            awaiting_document: false,
+            status: 0,
+            browse: mode == Mode::Browse,
+            network_urls: BTreeMap::new(),
+            shots: Vec::new(),
+            url: String::new(),
+        }
+    }
+
     fn cut(&mut self, what: &'static str) {
         if !self.cut.contains(&what) {
             self.cut.push(what);
         }
     }
 
-    fn at_ms(&self) -> i64 {
+    pub(super) fn at_ms(&self) -> i64 {
         (self.clock.now() - self.opened_at)
             .num_milliseconds()
             .max(0)
@@ -494,7 +537,7 @@ impl Driver<'_> {
     }
 
     /// Takes in one event (see the module docs).
-    async fn handle(&mut self, ev: CdpEvent) -> Result<(), CdpFail> {
+    pub(super) async fn handle(&mut self, ev: CdpEvent) -> Result<(), CdpFail> {
         let p = &ev.params;
         match ev.method.as_str() {
             "Fetch.requestPaused" => {
@@ -502,9 +545,12 @@ impl Driver<'_> {
                     return Ok(());
                 };
                 // The host's answer (its API, the store) is held to the
-                // test's deadline and the run's cancellation.
+                // test's deadline and the run's cancellation. The answer
+                // goes to the target that paused it: the page, or an
+                // iframe or worker attached to it.
                 let policy = self.policy;
                 let decision = self.cdp.bounded(policy.decide(&req)).await?;
+                let session = ev.session.clone().or_else(|| self.session.clone());
                 let document = req.resource_type == "Document" && self.awaiting_document;
                 if document {
                     self.awaiting_document = false;
@@ -525,7 +571,6 @@ impl Driver<'_> {
                             .iter()
                             .map(|(k, v)| json!({"name": k, "value": v}))
                             .collect();
-                        let session = self.session.clone();
                         self.cdp
                             .send_only(
                                 session.as_deref(),
@@ -540,7 +585,6 @@ impl Driver<'_> {
                             .await?;
                     }
                     Decision::Continue => {
-                        let session = self.session.clone();
                         self.cdp
                             .send_only(
                                 session.as_deref(),
@@ -554,7 +598,6 @@ impl Driver<'_> {
                             self.status = 0;
                         }
                         self.push_request(true, json!({"url": req.url, "why": why}));
-                        let session = self.session.clone();
                         self.cdp
                             .send_only(
                                 session.as_deref(),
@@ -632,20 +675,73 @@ impl Driver<'_> {
                 }
             }
             "Page.loadEventFired" => self.loaded = true,
+            // The main frame's own navigations (a link, a script's
+            // `location =`) move the URL a session call answers.
+            "Page.frameNavigated"
+                if p["frame"].get("parentId").is_none() && self.is_page(ev.session.as_deref()) =>
+            {
+                if let Some(u) = p["frame"]["url"].as_str() {
+                    self.url = cut_chars(u, MAX_URL).0;
+                }
+            }
+            "Page.navigatedWithinDocument"
+                if p["frameId"].as_str() == self.target.as_deref()
+                    && self.is_page(ev.session.as_deref()) =>
+            {
+                if let Some(u) = p["url"].as_str() {
+                    self.url = cut_chars(u, MAX_URL).0;
+                }
+            }
             "Target.attachedToTarget" => {
                 let info = &p["targetInfo"];
                 let id = info["targetId"].as_str().unwrap_or_default().to_string();
-                if self.target.as_deref() != Some(id.as_str()) {
-                    let why = if info["type"] == "page" {
-                        WHY_POPUP
-                    } else {
-                        WHY_TARGET
-                    };
-                    let url = info["url"].as_str().unwrap_or_default().to_string();
-                    self.push_request(true, json!({"url": url, "why": why}));
-                    self.cdp
-                        .send_only(None, "Target.closeTarget", json!({"targetId": id}))
-                        .await?;
+                if self.target.as_deref() == Some(id.as_str()) {
+                    return Ok(());
+                }
+                let child = p["sessionId"].as_str().map(str::to_string);
+                match info["type"].as_str() {
+                    // An out-of-process iframe or a worker of the page:
+                    // held to the page's request policy before it runs
+                    // (it was attached waiting for the debugger), its own
+                    // children attached the same way, and, for a worker,
+                    // its sockets removed as the preamble removes the
+                    // page's: their connections are outside the Fetch
+                    // domain.
+                    Some(kind @ ("iframe" | "worker")) if child.is_some() => {
+                        let child = child.as_deref();
+                        self.cdp
+                            .send_only(child, "Fetch.enable", fetch_patterns())
+                            .await?;
+                        self.cdp
+                            .send_only(child, "Target.setAutoAttach", auto_attach())
+                            .await?;
+                        if kind == "worker" {
+                            self.cdp
+                                .send_only(
+                                    child,
+                                    "Runtime.evaluate",
+                                    json!({"expression": WORKER_PREAMBLE_JS}),
+                                )
+                                .await?;
+                        }
+                        self.cdp
+                            .send_only(child, "Runtime.runIfWaitingForDebugger", json!({}))
+                            .await?;
+                    }
+                    // A popup, or another target (a shared or service
+                    // worker): closed before it runs, listed blocked.
+                    ty => {
+                        let why = if ty == Some("page") {
+                            WHY_POPUP
+                        } else {
+                            WHY_TARGET
+                        };
+                        let url = info["url"].as_str().unwrap_or_default().to_string();
+                        self.push_request(true, json!({"url": url, "why": why}));
+                        self.cdp
+                            .send_only(None, "Target.closeTarget", json!({"targetId": id}))
+                            .await?;
+                    }
                 }
             }
             // A dialog holds the page's main thread until it is answered:
@@ -666,6 +762,12 @@ impl Driver<'_> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Whether an event of `session` is of the page itself (not of an
+    /// iframe or worker attached to it).
+    fn is_page(&self, session: Option<&str>) -> bool {
+        session.is_none() || session == self.session.as_deref()
     }
 
     /// A command on `session`, answering each event that comes before
@@ -689,14 +791,21 @@ impl Driver<'_> {
         self.call_on(None, method, params).await
     }
 
-    async fn page_call(&mut self, method: &str, params: Value) -> Result<Value, CdpFail> {
+    pub(super) async fn page_call(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, CdpFail> {
         let session = self.session.clone();
         self.call_on(session, method, params).await
     }
 
     /// Evaluates `expression` in the page, awaiting a promise: its value,
     /// or what it threw.
-    async fn evaluate(&mut self, expression: &str) -> Result<Result<Value, String>, CdpFail> {
+    pub(super) async fn evaluate(
+        &mut self,
+        expression: &str,
+    ) -> Result<Result<Value, String>, CdpFail> {
         let r = self
             .page_call(
                 "Runtime.evaluate",
@@ -715,14 +824,36 @@ impl Driver<'_> {
 
     /// Opens `url` and waits for its load: `Err` with the browser's
     /// error text when the navigation failed.
-    async fn navigate(&mut self, url: &str) -> Result<Result<(), String>, CdpFail> {
+    pub(super) async fn navigate(&mut self, url: &str) -> Result<Result<(), String>, CdpFail> {
+        self.navigation("Page.navigate", json!({"url": url}), Some(url), false)
+            .await
+    }
+
+    /// Reloads the page and waits for its load: `Err` with the browser's
+    /// error text when it failed.
+    pub(super) async fn reload(&mut self) -> Result<Result<(), String>, CdpFail> {
+        self.navigation("Page.reload", json!({}), None, true).await
+    }
+
+    /// `method` with `params`, a navigation of the main frame to `url`
+    /// (the page's own URL when `None`), and its load: the load event is
+    /// waited for when `always_loads` (a reload, whose answer names no
+    /// loader), else only when the answer names a loader (a new
+    /// document, not a fragment).
+    async fn navigation(
+        &mut self,
+        method: &str,
+        params: Value,
+        url: Option<&str>,
+        always_loads: bool,
+    ) -> Result<Result<(), String>, CdpFail> {
         self.loaded = false;
         self.awaiting_document = true;
+        if let Some(u) = url {
+            self.url = cut_chars(u, MAX_URL).0;
+        }
         let session = self.session.clone();
-        let id = self
-            .cdp
-            .send(session.as_deref(), "Page.navigate", json!({"url": url}))
-            .await?;
+        let id = self.cdp.send(session.as_deref(), method, params).await?;
         loop {
             match self.cdp.answer_or_event(id).await? {
                 Got::Answer(Ok(a)) => {
@@ -732,7 +863,7 @@ impl Driver<'_> {
                     }
                     // A same-document navigation (a new fragment) answers
                     // no loaderId and fires no load event.
-                    if a.get("loaderId").is_none() {
+                    if a.get("loaderId").is_none() && !always_loads {
                         self.awaiting_document = false;
                         self.loaded = true;
                     }
@@ -752,7 +883,7 @@ impl Driver<'_> {
 
     /// Two animation frames after the load: every paused request was
     /// answered as it came.
-    async fn settle(&mut self) -> Result<(), CdpFail> {
+    pub(super) async fn settle(&mut self) -> Result<(), CdpFail> {
         self.evaluate(SETTLE_JS).await.map(|_| ())
     }
 
@@ -765,7 +896,7 @@ impl Driver<'_> {
         limits: SessionLimits,
     ) -> Result<Gathered, BrowserError> {
         let loaded = self
-            .open(start, opts)
+            .open_page(start, &opts.viewport)
             .await
             .map_err(|f| setup_error(f, opts.timeout_s))?;
         let mut steps = Vec::with_capacity(opts.steps.len());
@@ -831,16 +962,23 @@ impl Driver<'_> {
             }
         }
         if self.cdp.ended().is_none() && loaded.is_ok() {
-            match self.evaluate(&collect_js(opts.html, opts.text)).await {
-                Ok(Ok(v)) => self.collected(&v, &mut g),
-                Ok(Err(_)) => {}
-                Err(fail) => {
-                    g.passed = false;
-                    self.end(&fail);
-                }
-            }
+            self.collect(opts, &mut g).await;
         }
         Ok(g)
+    }
+
+    /// Step 6: the title, the final URL, `html` and `text` when `opts`
+    /// asks, and the content security policy refusals, into `g`; a
+    /// failure that ends the test is noted and fails it.
+    async fn collect(&mut self, opts: &BrowserOpts, g: &mut Gathered) {
+        match self.evaluate(&collect_js(opts.html, opts.text)).await {
+            Ok(Ok(v)) => self.collected(&v, g),
+            Ok(Err(_)) => {}
+            Err(fail) => {
+                g.passed = false;
+                self.end(&fail);
+            }
+        }
     }
 
     /// Runs the saved tests `opts.tests` names (see the module docs): the
@@ -926,13 +1064,13 @@ impl Driver<'_> {
         }
     }
 
-    /// Steps 1 to 4 up to the load: the page open, or the browser's error
-    /// text when its navigation failed. The settle that follows is after
-    /// the load ([`Driver::drive`]).
-    async fn open(
+    /// Steps 1 to 4 up to the load: the page open at `viewport`, or the
+    /// browser's error text when its navigation failed. The settle that
+    /// follows is after the load ([`Driver::drive`]).
+    pub(super) async fn open_page(
         &mut self,
         start: &Start,
-        opts: &BrowserOpts,
+        viewport: &super::opts::Viewport,
     ) -> Result<Result<(), String>, CdpFail> {
         let c = self
             .browser_call(
@@ -960,22 +1098,18 @@ impl Driver<'_> {
             )
             .await?;
         self.session = s["sessionId"].as_str().map(str::to_string);
+        // The page crashing or detached ends every wait.
+        self.cdp.watch(self.target.clone(), self.session.clone());
         // Every other target the page opens (a popup: `window.open`, a
         // link or form with a target) is attached paused, before its
         // navigation, and closed (`Target.attachedToTarget` in
         // `handle`): its requests would not be paused by this page's
         // `Fetch.enable`.
-        self.browser_call(
-            "Target.setAutoAttach",
-            json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true}),
-        )
-        .await?;
-        let vp = &opts.viewport;
+        self.browser_call("Target.setAutoAttach", auto_attach())
+            .await?;
+        let vp = viewport;
         let mut setup = vec![
-            (
-                "Fetch.enable",
-                json!({"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}),
-            ),
+            ("Fetch.enable", fetch_patterns()),
             ("Runtime.enable", json!({})),
             ("Log.enable", json!({})),
             ("Page.enable", json!({})),
@@ -996,6 +1130,11 @@ impl Driver<'_> {
             "Page.addScriptToEvaluateOnNewDocument",
             json!({"source": preamble_js(start.mode())}),
         ));
+        // The page's out-of-process iframes and its workers, which Chrome
+        // gives targets of their own, are attached paused and held to the
+        // same policy before they run (`Target.attachedToTarget` in
+        // `handle`).
+        setup.push(("Target.setAutoAttach", auto_attach()));
         for (method, params) in setup {
             self.page_call(method, params).await?;
         }
@@ -1226,7 +1365,7 @@ impl Driver<'_> {
 
     /// Step 7: the context disposed, the browser closed, the transport
     /// closed (see the module docs).
-    async fn close(&mut self) {
+    pub(super) async fn close_page(&mut self) {
         let context = self.context.take();
         if self.cdp.ended().is_none() {
             if let Some(ctx) = context {
@@ -1456,6 +1595,7 @@ mod tests {
                 "Emulation.setDeviceMetricsOverride",
                 "Emulation.setTouchEmulationEnabled",
                 "Page.addScriptToEvaluateOnNewDocument",
+                "Target.setAutoAttach",
                 "Page.navigate",
                 "Fetch.fulfillRequest",
                 "Fetch.failRequest",
@@ -1468,10 +1608,26 @@ mod tests {
         for c in &sent {
             let m = c["method"].as_str().unwrap();
             let on_page = c.get("sessionId").is_some();
+            // The browser's auto-attach (popups) and the page's (its
+            // iframes and workers).
+            if m == "Target.setAutoAttach" {
+                continue;
+            }
             assert_eq!(
                 on_page,
                 !(m.starts_with("Target.") || m.starts_with("Browser.")),
                 "{m}"
+            );
+        }
+        let attach = log.sent("Target.setAutoAttach");
+        assert_eq!(
+            attach.iter().map(|c| c.get("sessionId").cloned()).collect::<Vec<_>>(),
+            [None, Some(json!("S"))]
+        );
+        for c in &attach {
+            assert_eq!(
+                c["params"],
+                json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true})
             );
         }
         assert!(page_cmds > 10);
