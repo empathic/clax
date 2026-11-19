@@ -1420,12 +1420,9 @@ class Tools {
       if (name === INDEX) throw invalid("index.html comes from file_path or html, not files");
       files[name] = f === null ? null : this.fileArg(ctx, name, f);
     }
-    // A new artifact needs a title: the given one, else the page's <title>.
-    let title = a.title;
-    if (targetId === undefined && title === undefined) {
-      title = page.encoding === "utf8" ? htmlTitle(page.content) : undefined;
-      if (title === undefined) throw invalid("a new artifact needs a title: pass `title`, or give the page a non-empty <title>");
-    }
+    // Without a title a new artifact is untitled: the daemon shows its
+    // page's <title>, else "Untitled".
+    const title = a.title;
     files[INDEX] = page;
     const body: Json = { files };
     if (title !== undefined) body.title = title;

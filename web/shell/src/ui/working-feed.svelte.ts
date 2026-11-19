@@ -38,12 +38,13 @@ export class WorkingFeed {
   }
   #newer(id: string, since: number): boolean { return (this.#at[id] ?? 0) > since; }
   /** `onTags`: a `tags` event, with the artifact whose tags changed (null:
-   * the list changed, which any card may show). */
-  start(onResync: () => void, onChange: (id: string) => void = () => {}, onDelta: (d: CardDelta) => void = () => {}, onTags: (id: string | null) => void = () => {}): void {
+   * the list changed, which any card may show), or an `artifact_meta`
+   * event (its title, description or icon changed), with its artifact. */
+  start(onResync: () => void, onChange: (id: string) => void = () => {}, onDelta: (d: CardDelta) => void = () => {}, onTags: (id: string | null, meta?: boolean) => void = () => {}): void {
     if (this.#stop) return;
     this.#stop = subscribeGallery((e: StreamEvent) => {
       const id = typeof e.artifact_id === "string" ? e.artifact_id : null;
-      if (e.type === "tags") { onTags(id); return; }
+      if (e.type === "tags" || e.type === "artifact_meta") { onTags(id, e.type === "artifact_meta"); return; }
       if (e.type === "working" && id) {
         this.#at[id] = ++this.events;
         this.byId = { ...this.byId, [id]: workingFromSummary((e.working ?? []) as WorkingSummary[]) };

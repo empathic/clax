@@ -33,7 +33,7 @@ pub struct Args {
     /// Update the artifact at this URL instead of creating one.
     #[arg(long)]
     pub url: Option<String>,
-    /// Artifact title. When creating without it, the page's <title> is used.
+    /// Artifact title. Without it a new artifact is untitled and shows the page's <title>.
     #[arg(long)]
     pub title: Option<String>,
     /// One-line description.
@@ -135,22 +135,6 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         (_, Some(u)) => Some(super::open::id_from(u)?),
         _ => None,
     };
-    // The tool refuses a new artifact without a title too; this names the
-    // CLI's flag and file.
-    if target.is_none() && a.title.is_none() {
-        let page = std::fs::read(&a.index)
-            .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", a.index.display()))?;
-        if std::str::from_utf8(&page)
-            .ok()
-            .and_then(clax_core::html_title)
-            .is_none()
-        {
-            anyhow::bail!(
-                "a new artifact needs a title: pass --title, or give {} a non-empty <title>",
-                a.index.display()
-            );
-        }
-    }
     let c = Client::connect(home, cli.port_for(home)?)?;
     let mut if_version = a.if_version;
     if let Some(id) = &target {

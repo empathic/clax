@@ -29,11 +29,11 @@ export type PickGroup = { label: string; mine: boolean; agents: Pick[] };
 /** Who is asking: this browser's viewer as `GET /api/viewers/me` gives it. */
 export type Me = { public_id?: string; owner?: boolean } | null | undefined;
 
-/** Why the form cannot be sent yet, or null: a title and a brief, within
- * the daemon's limits (it checks them again). */
+/** Why the form cannot be sent yet, or null: a brief, and a title if one
+ * is given, within the daemon's limits (it checks them again). */
 export function formProblem(title: string, brief: string): string | null {
+  // No title is fine: the artifact is untitled until its page names it.
   const t = title.trim();
-  if (!t) return "Give it a title.";
   if ([...t].length > MAX_TITLE) return `A title is at most ${MAX_TITLE} characters.`;
   // As any artifact title (clax_core::text::is_hidden_char): the joiners
   // (Persian and Indic words, emoji) and the direction marks (right-to-left
@@ -99,11 +99,11 @@ export function newKey(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-/** Starts an artifact titled `title` from `brief`, under idempotency key
+/** Starts an artifact titled `title` (blank: untitled) from `brief`, under idempotency key
  * `key`; with `build`, ClaxBot builds it at once (spec 2026-10-21-claxbot
  * §6.4). Throws a [`Refused`] when the daemon refuses. */
 export async function start(title: string, brief: string, key: string, build?: "claxbot"): Promise<Started> {
-  const res = await fetch("/api/artifacts:new", { method: "POST", headers: { ...await headers(), "idempotency-key": key }, body: JSON.stringify({ title: title.trim(), brief: brief.trim(), ...build && { build } }) });
+  const res = await fetch("/api/artifacts:new", { method: "POST", headers: { ...await headers(), "idempotency-key": key }, body: JSON.stringify({ ...title.trim() && { title: title.trim() }, brief: brief.trim(), ...build && { build } }) });
   if (!res.ok) throw await refused(res);
   return res.json() as Promise<Started>;
 }

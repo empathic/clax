@@ -993,6 +993,53 @@ async fn may_edit_is_said_to_owner_and_editors_only() {
     }
 }
 
+#[tokio::test]
+async fn a_browser_that_may_edit_renames_from_the_shell_and_no_one_else() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.artifact("Plan").await;
+    let sam = site.member(&owner, "Sam").await;
+    site.share(&owner, &aid, &site.pid(&sam).await, "editor")
+        .await;
+    let kim = site.member(&owner, "Kim").await;
+    site.share(&owner, &aid, &site.pid(&kim).await, "commenter")
+        .await;
+    let path = format!("/api/artifacts/{aid}");
+    let mut rx = site.ts.events.subscribe();
+    let (s, v) = site
+        .send(&sam, reqwest::Method::PATCH, &path, json!({"title": "Sam's plan"}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifact"]["title"], "Sam's plan");
+    let (s, v) = site
+        .send(&owner, reqwest::Method::PATCH, &path, json!({"title": ""}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifact"]["untitled"], true);
+    let mut told = 0;
+    while let Ok(e) = rx.try_recv() {
+        told += matches!(e.event, clax_core::Event::ArtifactMeta { .. }) as u32;
+    }
+    assert_eq!(told, 2);
+    // A commenter may not; nor may an editor's browser change more than
+    // the title without the token.
+    let (s, v) = site
+        .send(&kim, reqwest::Method::PATCH, &path, json!({"title": "Kim's"}))
+        .await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PATCH,
+            &path,
+            json!({"title": "Sam's", "description": "more"}),
+        )
+        .await;
+    assert_eq!(s, 401, "{v}");
+    let (_, v) = site.get(&kim, &path).await;
+    assert_eq!(v["artifact"]["untitled"], true, "{v}");
+}
+
 /// An artifact shared with Sam at Can comment and by link at Can comment,
 /// with a guest, four open threads of the guest's, and its Comments switch
 /// off: the site, the owner, Sam, the guest, the artifact, the threads.
