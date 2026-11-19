@@ -88,6 +88,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use clax_core::Secret;
 use clax_core::rights::RightType;
+use clax_core::secret::hmac_sha256;
 use clax_store::hosted::{LinkAccess, SessionViewer, SignedIn};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -692,26 +693,6 @@ impl Hosted {
     pub fn url(&self, path: &str) -> String {
         format!("{}{path}", self.origin)
     }
-}
-
-/// HMAC-SHA-256 of `msg` under `key` (RFC 2104).
-fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
-    let mut k = [0u8; 64];
-    if key.len() > 64 {
-        k[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        k[..key.len()].copy_from_slice(key);
-    }
-    let pad = |b: u8| k.map(|x| x ^ b);
-    let inner = Sha256::new()
-        .chain_update(pad(0x36))
-        .chain_update(msg)
-        .finalize();
-    Sha256::new()
-        .chain_update(pad(0x5c))
-        .chain_update(inner)
-        .finalize()
-        .into()
 }
 
 /// The first 128 bits of the HMAC of `msg` under a key of `label`'s, made
@@ -2205,22 +2186,6 @@ mod tests {
             let h = Hosted::new("https://clax.example", none).unwrap();
             assert!(!h.setup_secret_matches(""));
         }
-    }
-
-    #[test]
-    fn hmac_is_rfc_4231s() {
-        let hex = |b: [u8; 32]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
-        assert_eq!(
-            hex(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
-            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
-        );
-        assert_eq!(
-            hex(hmac_sha256(
-                &[0xaa; 131],
-                b"Test Using Larger Than Block-Size Key - Hash Key First"
-            )),
-            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
-        );
     }
 
     #[test]

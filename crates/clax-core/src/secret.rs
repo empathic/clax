@@ -85,6 +85,26 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
     b
 }
 
+/// HMAC-SHA-256 of `msg` under `key` (RFC 2104).
+pub fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        k[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let pad = |b: u8| k.map(|x| x ^ b);
+    let inner = Sha256::new()
+        .chain_update(pad(0x36))
+        .chain_update(msg)
+        .finalize();
+    Sha256::new()
+        .chain_update(pad(0x5c))
+        .chain_update(inner)
+        .finalize()
+        .into()
+}
+
 /// `bytes` as unpadded base64url.
 pub fn base64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -182,6 +202,22 @@ pub fn canonical_user_code(code: &str) -> Option<String> {
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hmac_is_rfc_4231s() {
+        let hex = |b: [u8; 32]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        assert_eq!(
+            hex(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        assert_eq!(
+            hex(hmac_sha256(
+                &[0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            )),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+    }
 
     #[test]
     fn secrets_never_print() {

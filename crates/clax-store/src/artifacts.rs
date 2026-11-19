@@ -576,6 +576,7 @@ impl Store {
                 "DELETE FROM live_picks WHERE artifact_id = ?1",
                 params![id.as_str()],
             )?;
+            super::analytics::delete_artifact_in(tx, id.as_str())?;
             Ok(())
         })?;
         if let Err(e) = self.content.delete_artifact(id).await {
