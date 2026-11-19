@@ -377,21 +377,34 @@ impl Store {
     }
 
     /// How many of run `id`'s journaled web calls each op made that its
-    /// entry marks `counted` (a result whose `counted` is true: the call
-    /// reached its source), by op; an op with none is absent. Counted in
-    /// the database, without reading the entries' results out.
+    /// entry marks `counted`, by op ([`Store::bot_spend_counts`] of `web`).
     ///
     /// # Errors
     /// The store's.
     pub fn bot_web_counts(&self, id: &str) -> Result<BTreeMap<String, u32>> {
+        self.bot_spend_counts(id, "web")
+    }
+
+    /// How many of run `id`'s journaled calls of the operation family
+    /// `namespace` (`web`, `browser`: the ops `<namespace>.<name>`) each
+    /// op made that its entry marks `counted` (a result whose `counted` is
+    /// true: the call reached its source), by op; an op with none is
+    /// absent. Counted in the database, without reading the entries'
+    /// results out. `namespace` is one of the crate's callers' names,
+    /// never a script's: it holds no `%` or `_`.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn bot_spend_counts(&self, id: &str, namespace: &str) -> Result<BTreeMap<String, u32>> {
+        debug_assert!(!namespace.contains(['%', '_']), "{namespace}");
         self.with_read(|c| {
             let mut q = c.prepare_cached(
                 "SELECT op, COUNT(*) FROM bot_calls
-                  WHERE run_id = ?1 AND op LIKE 'web.%'
+                  WHERE run_id = ?1 AND op LIKE ?2 || '.%'
                     AND json_extract(result_json, '$.counted') = 1
                   GROUP BY op",
             )?;
-            let rows = q.query_map(params![id], |r| {
+            let rows = q.query_map(params![id, namespace], |r| {
                 let n: i64 = r.get(1)?;
                 Ok((r.get(0)?, u32::try_from(n).unwrap_or(u32::MAX)))
             })?;
@@ -636,6 +649,43 @@ mod tests {
             counts.into_iter().collect::<Vec<_>>(),
             vec![("web.fetch".to_string(), 1), ("web.search".to_string(), 2)]
         );
+    }
+
+    #[test]
+    fn spend_counts_are_per_namespace() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        let journal = |seq: i64, op: &str, result: serde_json::Value| {
+            let e = st
+                .call_entry(&run.id, &d, 1, 1, seq, op, &format!("h-{seq}"))
+                .unwrap()
+                .answered(false, result);
+            st.record_bot_call(&e).unwrap();
+        };
+        assert!(st.bot_spend_counts(&run.id, "browser").unwrap().is_empty());
+        journal(0, "web.fetch", json!({"value": {}, "counted": true}));
+        journal(1, "browser.test", json!({"value": {}, "counted": true}));
+        journal(
+            2,
+            "browser.test",
+            json!({"code": "browser_unavailable", "counted": true}),
+        );
+        journal(3, "browser.browse", json!({"code": "browser_cap"}));
+        journal(4, "browserx.test", json!({"value": {}, "counted": true}));
+        let pairs = |m: BTreeMap<String, u32>| m.into_iter().collect::<Vec<_>>();
+        assert_eq!(
+            pairs(st.bot_spend_counts(&run.id, "browser").unwrap()),
+            vec![("browser.test".to_string(), 2)]
+        );
+        assert_eq!(
+            pairs(st.bot_spend_counts(&run.id, "web").unwrap()),
+            vec![("web.fetch".to_string(), 1)]
+        );
+        assert_eq!(
+            st.bot_web_counts(&run.id).unwrap(),
+            st.bot_spend_counts(&run.id, "web").unwrap()
+        );
+        assert!(st.bot_spend_counts(&run.id, "files").unwrap().is_empty());
     }
 
     #[test]
