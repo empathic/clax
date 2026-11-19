@@ -2534,6 +2534,13 @@ pub const MIGRATIONS: &[&str] = &[
     // with `format` in its primary key, each row's format read from its
     // fetch's journal entry (`raw` as `raw`; main's `auto`, and an entry
     // that names none or is missing, as `markdown`).
+    //
+    // Browser sessions (spec 2026-11-19-claxbot-browser-design §10.3):
+    // `bot_browser_sessions` keeps each session of a run, its source kind,
+    // when it opened, the point its time is charged through (milliseconds
+    // since the open), and when and why it closed, written only by
+    // `crate::bot_web` (`Store::spend_journaled`'s `SessionSpend`,
+    // `Store::end_bot_browser_session`, `Store::lose_open_bot_browser_sessions`).
     "CREATE TABLE cost_lines_new (
         id TEXT PRIMARY KEY,
         label TEXT NOT NULL,
@@ -2596,7 +2603,19 @@ pub const MIGRATIONS: &[&str] = &[
                p.total_chars, p.links_json
         FROM bot_web_pages p;
     DROP TABLE bot_web_pages;
-    ALTER TABLE bot_web_pages_new RENAME TO bot_web_pages;",
+    ALTER TABLE bot_web_pages_new RENAME TO bot_web_pages;
+    CREATE TABLE bot_browser_sessions (
+        run_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('url', 'artifact', 'content')),
+        opened_at TEXT NOT NULL,
+        charged_ms INTEGER NOT NULL CHECK (charged_ms >= 0),
+        closed_at TEXT,
+        reason TEXT,
+        PRIMARY KEY (run_id, session_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX bot_browser_sessions_open ON bot_browser_sessions(run_id)
+        WHERE closed_at IS NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec

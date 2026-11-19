@@ -3342,6 +3342,11 @@ fn prune_run_in(
                    (SELECT rowid FROM bot_pending_calls WHERE run_id = ?1 LIMIT ?2)",
                 &mut pruned.pending_calls,
             ),
+            (
+                "DELETE FROM bot_browser_sessions WHERE run_id = ?1 AND session_id IN
+                   (SELECT session_id FROM bot_browser_sessions WHERE run_id = ?1 LIMIT ?2)",
+                &mut pruned.browser_sessions,
+            ),
         ] {
             let n = delete_some(c, delete, &run.id, *budget)?;
             if !take(count, n, budget) {
@@ -3396,6 +3401,8 @@ pub struct Pruned {
     pub draft_files: usize,
     /// Pending calls.
     pub pending_calls: usize,
+    /// Browser sessions' rows (`bot_browser_sessions`), with the journal.
+    pub browser_sessions: usize,
     /// Run ends kept for a registration.
     pub run_ends: usize,
     /// Messages of runs' inboxes ([`crate::bot_messages`]).
@@ -3425,6 +3432,7 @@ impl Pruned {
         self.pages += other.pages;
         self.draft_files += other.draft_files;
         self.pending_calls += other.pending_calls;
+        self.browser_sessions += other.browser_sessions;
         self.run_ends += other.run_ends;
         self.messages += other.messages;
         self.contents += other.contents;

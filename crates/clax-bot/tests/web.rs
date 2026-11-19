@@ -1898,6 +1898,7 @@ impl WebSource for RacedToThePage {
                     total_chars: i64::try_from(page.text.chars().count()).unwrap(),
                     links: Vec::new(),
                 }),
+                session: None,
                 audit: AuditRecord::new(AuditKind::BotWeb, self.store.now())
                     .with("op", "web.fetch"),
             };

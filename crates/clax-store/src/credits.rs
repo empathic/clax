@@ -1115,6 +1115,25 @@ pub(crate) fn charge_in(
     items: &[Metered],
     at: DateTime<Utc>,
 ) -> Result<Vec<UsageRow>> {
+    charge_rows_in(tx, ov, person, run.map(|r| r.0), run.map(|r| r.1), items, at)
+}
+
+/// [`charge_in`], for run `run` when given and its step `step` when given:
+/// a row of a run on none of its steps (a browser session's last segment,
+/// charged when the host ends it between steps) keeps the run and no step.
+///
+/// # Errors
+/// As [`charge_in`].
+pub(crate) fn charge_rows_in(
+    tx: &Transaction<'_>,
+    ov: &Overrides,
+    person: &str,
+    run: Option<&str>,
+    step: Option<i64>,
+    items: &[Metered],
+    at: DateTime<Utc>,
+) -> Result<Vec<UsageRow>> {
+    let step = run.and(step);
     let week = week_key(at);
     let stamp = clax_core::time::stamp(at);
     let usage = week_usage_in(tx, ov, person, at)?;
@@ -1166,8 +1185,8 @@ pub(crate) fn charge_in(
         )?
         .execute(params![
             person,
-            run.map(|r| r.0),
-            run.map(|r| r.1),
+            run,
+            step,
             m.line,
             r.unit.as_str(),
             m.qty,
@@ -1189,8 +1208,8 @@ pub(crate) fn charge_in(
         out.push(UsageRow {
             id: tx.last_insert_rowid(),
             person: person.to_string(),
-            run_id: run.map(|r| r.0.to_string()),
-            step_n: run.map(|r| r.1),
+            run_id: run.map(str::to_string),
+            step_n: step,
             line: m.line.clone(),
             unit: r.unit,
             qty: m.qty,

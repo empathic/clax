@@ -554,6 +554,7 @@ pub(super) fn write(
         entry,
         usage: f.usage.map(|(m, _)| m),
         page: f.page,
+        session: None,
         audit,
     };
     match store.spend_journaled(&s.run, s.cx.claim.driver(), spend) {
