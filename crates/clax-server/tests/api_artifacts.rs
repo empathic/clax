@@ -325,26 +325,153 @@ async fn corrupt_row_is_left_out_of_the_list_and_named_on_lookup() {
 }
 
 #[tokio::test]
-async fn creating_an_artifact_requires_a_title_but_a_new_version_does_not() {
+async fn an_artifact_made_without_a_title_shows_its_pages_until_it_has_its_own() {
     let ts = TestServer::spawn().await;
-    let page = json!({"index.html": {"content": "<title>Page</title>"}});
+    let page = json!({"index.html": {"content": "<title> From &amp; the\n page </title><p>1"}});
     for body in [
         json!({"files": page}),
         json!({"title": null, "files": page}),
-        json!({"title": "  \n", "files": page}),
+        json!({"title": "  ", "files": page}),
     ] {
         let res = ts.post_json("/api/artifacts", body.clone()).await;
-        assert_eq!(res.status(), 400, "{body}");
-        let err: serde_json::Value = res.json().await.unwrap();
-        assert_eq!(err["error"]["code"], "invalid_args", "{body}");
-        assert_eq!(
-            err["error"]["message"],
-            "title is required when creating an artifact"
-        );
+        assert_eq!(res.status(), 201, "{body}");
+        let v: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(v["artifact"]["title"], "From & the page", "{body}");
+        assert_eq!(v["artifact"]["untitled"], true, "{body}");
     }
+    // A page that names no title: Untitled.
+    let res = ts
+        .post_json(
+            "/api/artifacts",
+            json!({"files": {"index.html": {"content": "<p>1"}}}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let v: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(v["artifact"]["title"], "Untitled");
+    assert_eq!(v["artifact"]["untitled"], true);
+    let id = v["artifact"]["id"].as_str().unwrap().to_string();
+    let path = format!("/api/artifacts/{id}/versions");
+    let mut n = 1;
+    let mut publish = async |files: serde_json::Value, title: Option<&str>| {
+        let mut body = json!({"if_version": n, "files": files});
+        if let Some(t) = title {
+            body["title"] = json!(t);
+        }
+        let res = ts.post_json(&path, body).await;
+        assert_eq!(res.status(), 201);
+        n += 1;
+        let v: serde_json::Value = res.json().await.unwrap();
+        v["artifact"].clone()
+    };
+    let page = |html: &str| json!({"index.html": {"content": html}});
+    // A later page's title names it; a page that names none keeps it.
+    let a = publish(page("<title>Named</title>"), None).await;
+    assert_eq!(a["title"], "Named");
+    assert_eq!(a["untitled"], true);
+    let a = publish(page("<p>3"), None).await;
+    assert_eq!(a["title"], "Named");
+    let a = publish(page("<title>Renamed by the page</title>"), None).await;
+    assert_eq!(a["title"], "Renamed by the page");
+    // A title of its own: pages no longer change it.
+    let a = publish(page("<title>Other</title>"), Some("Own")).await;
+    assert_eq!(a["title"], "Own");
+    assert!(a.get("untitled").is_none(), "{a}");
+    let a = publish(page("<title>Later</title>"), None).await;
+    assert_eq!(a["title"], "Own");
     let list: serde_json::Value = ts.get("/api/artifacts").await.json().await.unwrap();
-    assert!(list["artifacts"].as_array().unwrap().is_empty());
+    let titles: Vec<&str> = list["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles.iter().filter(|t| **t == "From & the page").count(), 3);
+    assert!(titles.contains(&"Own"), "{titles:?}");
+}
 
+#[tokio::test]
+async fn renaming_sets_a_title_of_its_own_and_a_blank_one_makes_it_untitled() {
+    let ts = TestServer::spawn().await;
+    let created = ts
+        .publish("Given", &[("index.html", "<title>From the page</title>")])
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    assert!(created["artifact"].get("untitled").is_none());
+    let mut rx = ts.events.subscribe();
+    let patch = async |body: serde_json::Value| {
+        let res = ts
+            .authed(
+                ts.client
+                    .patch(format!("{}/api/artifacts/{id}", ts.base))
+                    .json(&body),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{body}");
+        let v: serde_json::Value = res.json().await.unwrap();
+        v["artifact"].clone()
+    };
+    let a = patch(json!({"title": "Renamed"})).await;
+    assert_eq!(a["title"], "Renamed");
+    assert!(a.get("untitled").is_none(), "{a}");
+    // Blank: untitled, showing the page's title.
+    let a = patch(json!({"title": ""})).await;
+    assert_eq!(a["title"], "From the page");
+    assert_eq!(a["untitled"], true);
+    let got: serde_json::Value = ts
+        .get(&format!("/api/artifacts/{id}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["artifact"]["title"], "From the page");
+    assert_eq!(got["artifact"]["untitled"], true);
+    // Each rename is told to the artifact's and the gallery's streams.
+    let mut told = 0;
+    while let Ok(e) = rx.try_recv() {
+        if let clax_core::Event::ArtifactMeta { artifact_id } = e.event {
+            assert_eq!(artifact_id, id);
+            told += 1;
+        }
+    }
+    assert_eq!(told, 2);
+    // A pin alone changes no text: nothing is told.
+    patch(json!({"pinned": true})).await;
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .all(|e| !matches!(e.event, clax_core::Event::ArtifactMeta { .. }))
+    );
+    // A page with no title of its own: Untitled.
+    let bare = ts.publish("Bare", &[("index.html", "<p>no title")]).await;
+    let bid = bare["artifact"]["id"].as_str().unwrap();
+    let res = ts
+        .authed(
+            ts.client
+                .patch(format!("{}/api/artifacts/{bid}", ts.base))
+                .json(&json!({"title": "   "})),
+        )
+        .send()
+        .await
+        .unwrap();
+    let v: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(v["artifact"]["title"], "Untitled");
+    assert_eq!(v["artifact"]["untitled"], true);
+    // Without the token, a browser that may not update it is refused.
+    let res = ts
+        .client
+        .patch(format!("{}/api/artifacts/{bid}", ts.base))
+        .json(&json!({"title": "Sneaky"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn a_new_version_keeps_the_title_and_refuses_a_blank_one() {
+    let ts = TestServer::spawn().await;
     let created = ts.publish("Titled", &[("index.html", "<p>1")]).await;
     let id = created["artifact"]["id"].as_str().unwrap();
     let res = ts

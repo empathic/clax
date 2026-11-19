@@ -9,7 +9,8 @@ use crate::{CoreError, Result};
 pub const MAX_TITLE_CHARS: usize = crate::publish::MAX_TITLE_CHARS;
 
 /// The title, trimmed, checked as any artifact title is
-/// ([`crate::publish::check_meta_text`]): `invalid_title` when it is blank,
+/// ([`crate::publish::check_meta_text`]); `None` when it is blank, for an
+/// artifact without a title of its own. `invalid_title` when it is
 /// longer than [`MAX_TITLE_CHARS`], or holds a control character (a line
 /// break) or a hidden format character ([`crate::text::is_hidden_char`]: a
 /// bidi control, a zero-width space), which would make one-line views read
@@ -19,10 +20,10 @@ pub const MAX_TITLE_CHARS: usize = crate::publish::MAX_TITLE_CHARS;
 ///
 /// # Errors
 /// As above.
-pub fn check_title(title: &str) -> Result<String> {
+pub fn check_title(title: &str) -> Result<Option<String>> {
     let t = title.trim();
     if t.is_empty() {
-        return Err(CoreError::invalid("invalid_title", "a title is required"));
+        return Ok(None);
     }
     crate::publish::check_meta_text(Some(t), None, None).map_err(|e| match e {
         CoreError::Invalid {
@@ -38,7 +39,7 @@ pub fn check_title(title: &str) -> Result<String> {
         ),
         other => other,
     })?;
-    Ok(t.to_string())
+    Ok(Some(t.to_string()))
 }
 
 /// The brief, trimmed: `invalid_brief` when it is blank. Its length is the
@@ -112,12 +113,14 @@ mod tests {
 
     #[test]
     fn a_title_is_trimmed_bounded_and_one_line() {
-        assert_eq!(check_title("  Q3 plan ").unwrap(), "Q3 plan");
-        let code = |r: Result<String>| match r {
+        assert_eq!(check_title("  Q3 plan ").unwrap().as_deref(), Some("Q3 plan"));
+        let code = |r: Result<Option<String>>| match r {
             Err(CoreError::Invalid { code, .. }) => code,
             other => panic!("{other:?}"),
         };
-        assert_eq!(code(check_title("   ")), "invalid_title");
+        // Blank: no title of its own.
+        assert_eq!(check_title("   ").unwrap(), None);
+        assert_eq!(check_title("").unwrap(), None);
         assert_eq!(code(check_title("a\nb")), "invalid_title");
         assert_eq!(code(check_title("a\u{202e}b")), "invalid_title");
         assert_eq!(code(check_title("a\u{200b}b")), "invalid_title");
@@ -132,7 +135,10 @@ mod tests {
             "invalid_title"
         );
         assert!(check_title(&"é".repeat(MAX_TITLE_CHARS)).is_ok());
-        assert_eq!(code(check_brief(" \n ")), "invalid_brief");
+        assert!(matches!(
+            check_brief(" \n "),
+            Err(CoreError::Invalid { code: "invalid_brief", .. })
+        ));
         assert_eq!(check_brief(" build it\n").unwrap(), "build it");
     }
 

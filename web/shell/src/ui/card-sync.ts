@@ -48,9 +48,10 @@ export class CardSync {
   start(): void {
     if (this.#life) return;
     const life = (this.#life = new Lifecycle());
-    // A card's tags changed: that card is fetched again; the list changed
-    // (a tag renamed, recoloured or deleted): every card.
-    this.feed.start(() => void this.full(), id => void this.changed(id), d => this.apply(d), id => { this.cards.tags?.(); void (id ? this.one(id) : this.full()); });
+    // A card's tags, title, description or icon changed: that card is
+    // fetched again; the list changed (a tag renamed, recoloured or
+    // deleted): every card.
+    this.feed.start(() => void this.full(), id => void this.changed(id), d => this.apply(d), (id, meta) => { if (!meta) this.cards.tags?.(); void (id ? this.one(id) : this.full()); });
     life.defer(() => this.feed.stop());
     this.#arm();
     life.listen(document, "visibilitychange", this.#shown);

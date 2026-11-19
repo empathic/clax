@@ -1,5 +1,6 @@
 //! The first-load data the daemon puts into `artifact.html` for `/a/…`
-//! (spec §8 Time to usable): the bootstrap block, the page title and the
+//! (spec §8 Time to usable): the bootstrap block, the page title (the
+//! heading's and the tab's) and the
 //! content frame, opened on its site's handshake
 //! (`/_clax/session/start`, `crate::routes::site`). String injection at
 //! comment markers the shell build keeps; no template engine.
@@ -19,6 +20,9 @@ pub const FRAME_ALLOW: &str = "clipboard-write; fullscreen; storage-access";
 pub const BOOT_MARK: &str = "<!--clax:boot-->";
 const FRAME_MARK: &str = "<!--clax:frame-->";
 const TITLE_MARK: &str = "<h1>Clax</h1>";
+/// The tab's title, which becomes `<title> · Clax` as the shell keeps it
+/// (`web/shell/src/view/tab-title.ts`).
+const TAB_MARK: &str = "<title>Clax</title>";
 
 /// What goes into `artifact.html`: the bootstrap JSON (already escaped by
 /// [`script_json`]), the frame's markup when the page exists, the title.
@@ -464,21 +468,19 @@ pub fn with_embed_meta(
 
 /// `template` (the built `artifact.html`) with `i` injected at its markers,
 /// or with the markers removed when there is nothing to inject. Every
-/// injected string is escaped (the title as HTML text, the bootstrap by
-/// [`script_json`], the frame's `src` as an attribute), so none can form a
-/// marker or close its element.
+/// injected string is escaped (the title as HTML text, in the heading and
+/// the tab's `<title>`, the bootstrap by [`script_json`], the frame's `src`
+/// as an attribute), so none can form a marker or close its element.
 pub fn inject(template: &str, i: Option<&Injected>) -> String {
     let Some(i) = i else {
         return template
             .replacen(BOOT_MARK, "", 1)
             .replacen(FRAME_MARK, "", 1);
     };
+    let title = html_escape(&i.title);
     template
-        .replacen(
-            TITLE_MARK,
-            &format!("<h1>{}</h1>", html_escape(&i.title)),
-            1,
-        )
+        .replacen(TAB_MARK, &format!("<title>{title} · Clax</title>"), 1)
+        .replacen(TITLE_MARK, &format!("<h1>{title}</h1>"), 1)
         .replacen(FRAME_MARK, i.frame.as_deref().unwrap_or(""), 1)
         .replacen(BOOT_MARK, &boot_script(&i.boot), 1)
 }
@@ -620,6 +622,20 @@ mod tests {
             inject(t, Some(&i)),
             "<head><script type=\"application/json\" id=\"clax-boot\">{\"v\":1}</script></head><div class=\"stage\"><iframe></iframe></div><h1>A &lt;b&gt;</h1>"
         );
+    }
+
+    #[test]
+    fn the_tab_names_the_artifact_escaped() {
+        let t = "<head><title>Clax</title><!--clax:boot--></head><h1>Clax</h1>";
+        let i = Injected {
+            boot: "{}".into(),
+            frame: None,
+            title: "Q3 <plan> & more".into(),
+        };
+        let out = inject(t, Some(&i));
+        assert!(out.contains("<title>Q3 &lt;plan&gt; &amp; more · Clax</title>"), "{out}");
+        assert!(out.contains("<h1>Q3 &lt;plan&gt; &amp; more</h1>"), "{out}");
+        assert!(inject(t, None).contains("<title>Clax</title>"));
     }
 
     #[test]

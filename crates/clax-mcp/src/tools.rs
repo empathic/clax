@@ -93,8 +93,8 @@ pub struct PublishArgs {
     /// The version this update is based on; a stale value fails with the current
     /// version. Defaults to the artifact's current version.
     pub if_version: Option<u32>,
-    /// Artifact title. Required to create an artifact unless the page has a
-    /// non-empty `<title>`, which is used instead; optional on an update.
+    /// Artifact title. Optional: a new artifact without one shows its page's
+    /// `<title>` (else "Untitled") until it is given one.
     pub title: Option<String>,
     /// One-line description.
     pub description: Option<String>,
@@ -2010,20 +2010,9 @@ impl ClaxTools {
             };
             files.insert(name, entry);
         }
-        let title = match (&target, a.title) {
-            (None, None) => Some(
-                page["content"]
-                    .as_str()
-                    .filter(|_| page["encoding"] == "utf8")
-                    .and_then(clax_core::html_title)
-                    .ok_or_else(|| {
-                        invalid(
-                            "a new artifact needs a title: pass `title`, or give the page a non-empty <title>",
-                        )
-                    })?,
-            ),
-            (_, t) => t,
-        };
+        // Without a title a new artifact is untitled: the daemon shows its
+        // page's <title>, else "Untitled".
+        let title = a.title;
         files.insert(clax_core::publish::INDEX.to_string(), page);
         let mut body = json!({"files": files});
         for (k, v) in [

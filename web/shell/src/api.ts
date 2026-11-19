@@ -5,6 +5,8 @@ export { ApiError } from "./trouble";
 
 export type Artifact = {
   id: string; title: string; description: string | null; icon: string | null;
+  /** It has no title of its own: `title` is its page's `<title>`, else "Untitled" (docs/contract.md "Title on create"). */
+  untitled?: boolean;
   created_at?: string; updated_at: string; current_version: number; pinned: boolean;
   capabilities?: Record<string, unknown>; contract_version?: string; owner_session_id?: string | null;
   /** From `GET /api/artifacts` and `GET /api/artifacts/<id>`: the owner session exists and has not ended. */

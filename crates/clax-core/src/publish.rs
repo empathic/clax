@@ -534,6 +534,20 @@ fn decode_basic_entities(s: &str) -> String {
     out
 }
 
+/// What an artifact without a title of its own shows when its page names
+/// none either.
+pub const UNTITLED: &str = "Untitled";
+
+/// What an untitled artifact shows for a title, from its `index.html`'s
+/// bytes: the page's `<title>` ([`html_title`]) when the page is UTF-8 and
+/// has one, else [`UNTITLED`].
+pub fn shown_title(index: Option<&[u8]>) -> String {
+    index
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .and_then(html_title)
+        .unwrap_or_else(|| UNTITLED.to_string())
+}
+
 /// The title of a new artifact: `Some` non-blank text.
 ///
 /// # Errors
