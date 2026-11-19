@@ -14,6 +14,9 @@
 //! read-only `GET` of the page runtime's API. It is its own operation
 //! family, built on none of the web tools' internals (spec §4.1).
 //!
+//! [`cdp`] is one CDP connection over any transport; [`fake`] is a
+//! browser in memory for tests ([`FakeChrome`], [`FakeBrowserSource`]).
+//!
 //! # Who may use it
 //!
 //! [`BrowserAccess`] (in [`access`]) is what a run may do in a browser
@@ -33,10 +36,14 @@
 //! [`api::CODE_BAD_ARGS`](crate::api::CODE_BAD_ARGS).
 
 pub mod access;
+pub mod cdp;
+pub mod fake;
 
 pub use access::{
     BrowseGrant, BrowseRule, BrowserAccess, BrowserGrant, BrowserOff, BrowserShape, TestGrant,
 };
+pub use cdp::{Cdp, CdpEvent, CdpFail};
+pub use fake::{FakeBrowserSource, FakeChrome, PageModel};
 
 use chrono::{DateTime, Utc};
 use clax_bot_sandbox::{CancelToken, MaybeSend, MaybeSendSync};
