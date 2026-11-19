@@ -9636,7 +9636,7 @@ the body below.
 | `bot.script` | `run, step, title, code_sha256, calls[op], cpu_ms, mem_peak, credits_milli, error` (the code itself is in the run's step, never the body) | a script's step committed |
 | `bot.call` | `run, step, op, target, ok` | every API op a script called, reads included, with its step |
 | `bot.web` | `run, step, op (web.search\|web.fetch), query` or `url, source, provider, request_id, credits_milli` | a web call answered, with its charge, in the transaction that journals it |
-| `bot.browser` | `run, step, op (browser.test), version?` (none for the draft), `path, viewport, ms, passed, ok` or `code, credits_milli` | a browser test answered, with its charge, in the transaction that journals it |
+| `bot.browser` | `run, step, op (browser.test\|browser.browse)`, for a test `version?` (none for the draft) `, path`, for a browse `url`, then `viewport, ms, passed, ok` or `code, credits_milli` | a browser test or browse answered, with its charge, in the transaction that journals it |
 | `bot.run_end` | `run, outcome (finished\|gave_up\|stopped), reason, credits_milli` (the run's total) | a run's terminal step committed |
 | `bot.cancel` | `run, by` (the person key of who asked) | someone asked a queued, running or parked run to stop |
 | `bot.surface.registered` | `registration, name, def_hash, registered_by, prompt_sha256?` (its prompt file's), `replaces?` (the registration it takes the place of), `changed?` | a surface registered for ClaxBot runs, or a registration gone on with a changed definition, prompt file or settings (`changed: true`), filed on the person who registered it |
