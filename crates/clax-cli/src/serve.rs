@@ -12,9 +12,9 @@ use std::time::Duration;
 pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
     close_inherited_fds();
     tracing_subscriber::fmt()
-        .with_env_filter(
+        .with_env_filter(clax_server::browser_source::hiding_credentials(
             tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
-        )
+        ))
         .init();
     let web: Arc<dyn FileTree> = match a.web_dist {
         Some(dir) => Arc::new(DiskTree::new(dir)),

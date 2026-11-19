@@ -77,6 +77,21 @@ pub const BROWSER_RUN_PATH: &str = "browser-run";
 /// (`Browser.close`), so a longer value only bills an orphan longer.
 pub const KEEP_ALIVE_MS: u32 = 10_000;
 
+/// `filter` with tungstenite's client handshake log turned off, whatever
+/// `filter` asked for: at trace it prints the whole upgrade request, the
+/// Cloudflare token's `Authorization` header included. Every process that
+/// runs a [`DaemonBrowser`] and installs a log subscriber builds its filter
+/// through this; a WebSocket client added later with a credential in its
+/// request needs the same.
+#[must_use]
+pub fn hiding_credentials(filter: tracing_subscriber::EnvFilter) -> tracing_subscriber::EnvFilter {
+    filter.add_directive(
+        "tungstenite::handshake::client=off"
+            .parse()
+            .expect("a constant directive"),
+    )
+}
+
 /// How long the WebSocket's upgrade may take, from the connection's start.
 pub const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -262,7 +277,9 @@ impl DaemonBrowser {
         Ok(url)
     }
 
-    /// Connects to `url` with `token`, over this source's TLS.
+    /// Connects to `url` with `token`, over this source's TLS. tungstenite
+    /// logs this request, token and all, at trace: the daemon's log filter
+    /// turns that off ([`hiding_credentials`]).
     async fn connect(&self, url: &Url, token: &str) -> Result<Socket, BrowserError> {
         let mut req = url
             .as_str()
@@ -591,6 +608,49 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(120), fut)
             .await
             .unwrap_or_else(|_| panic!("{what}: not after the hang guard"))
+    }
+
+    /// A log line of tungstenite's client handshake, which prints the
+    /// whole upgrade request with its `Authorization` header, is dropped by
+    /// a filter [`hiding_credentials`] made, whatever the filter asked for.
+    #[test]
+    fn the_handshake_trace_is_never_logged() {
+        use std::io::Write;
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for asked in [
+            "trace",
+            "tungstenite=trace",
+            "tungstenite::handshake=trace",
+            "tungstenite::handshake::client=trace",
+        ] {
+            let buf = Buf::default();
+            let out = buf.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(hiding_credentials(tracing_subscriber::EnvFilter::new(
+                    asked,
+                )))
+                .with_writer(move || out.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::trace!(target: "tungstenite::handshake::client", "Request: Bearer {TOKEN}");
+                tracing::trace!(target: "tungstenite::protocol", "a frame");
+            });
+            let logged = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+            assert!(!logged.contains(TOKEN), "{asked}: {logged}");
+            if matches!(asked, "trace" | "tungstenite=trace") {
+                assert!(logged.contains("a frame"), "{asked}: {logged}");
+            }
+        }
     }
 
     /// What the fake Browser Run saw of an upgrade.
