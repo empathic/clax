@@ -403,9 +403,18 @@ pub fn parse_target(v: &Value) -> Result<BrowserTarget, BrowserError> {
     };
     let path = match o.get("path") {
         None | Some(Value::Null) => clax_core::publish::INDEX.into(),
-        Some(v) => artifact_path(v, "target.path")?
-            .trim_start_matches('/')
-            .to_string(),
+        Some(v) => {
+            let p = artifact_path(v, "target.path")?;
+            // The target names a file, whose existence is checked by name:
+            // a query or fragment belongs to a `goto` step.
+            if p.contains(['?', '#']) {
+                return Err(bad(
+                    "target.path",
+                    "must be a file of the artifact, without `?` or `#` (open a query or fragment with a `goto` step)",
+                ));
+            }
+            p.trim_start_matches('/').to_string()
+        }
     };
     let path = if path.is_empty() {
         clax_core::publish::INDEX.into()
@@ -927,6 +936,8 @@ mod tests {
             json!({"path": ""}),
             json!({"path": "https://elsewhere.example/"}),
             json!({"path": "../x.html"}),
+            json!({"path": "about.html?tab=2"}),
+            json!({"path": "about.html#top"}),
             json!({"page": "x.html"}),
         ] {
             let e = parse_target(&bad).unwrap_err();
