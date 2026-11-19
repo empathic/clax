@@ -139,6 +139,18 @@ describe("runTests", () => {
     ]);
   });
 
+  it("loads files from the base it is given, not the page's directory", async () => {
+    const { d, loaded } = deps({ "tests/a.test.js": () => { g().test("ok", () => {}); } });
+    history.replaceState(null, "", "/docs/guide.html");
+    try {
+      const r = await runTests(window, ["tests/a.test.js"], { base: new URL("/", location.href).href }, d);
+      vexpect(loaded).toEqual(["tests/a.test.js"]);
+      vexpect(r).toEqual({ passed: 1, failed: [], skipped: 0 });
+    } finally {
+      history.replaceState(null, "", "/");
+    }
+  });
+
   it("ends a test at its limit and skips the tests the run has no time left for", async () => {
     vi.useFakeTimers();
     const { d } = deps({

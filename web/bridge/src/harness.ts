@@ -225,9 +225,9 @@ function within<T>(p: Promise<T>, ms: number, why: string, t: HarnessTimers): Pr
   return Promise.race([p, late]).finally(() => t.clearTimeout(timer));
 }
 
-/** Runs the test files `files` (paths relative to the page, `tests/….test.js`)
- * in `win`, as the module comment says. */
-export async function runTests(win: Window, files: string[], opts: { testMs?: number; totalMs?: number }, deps: HarnessDeps): Promise<TestResults> {
+/** Runs the test files `files` (paths relative to `opts.base`, else to the
+ * page, `tests/….test.js`) in `win`, as the module comment says. */
+export async function runTests(win: Window, files: string[], opts: { testMs?: number; totalMs?: number; base?: string }, deps: HarnessDeps): Promise<TestResults> {
   const testMs = bounded(opts.testMs, 1, TEST_MAX_MS, TEST_MS);
   const totalMs = bounded(opts.totalMs, 1, TOTAL_MAX_MS, TOTAL_MS);
   const start = deps.now();
@@ -253,7 +253,7 @@ export async function runTests(win: Window, files: string[], opts: { testMs?: nu
       continue;
     }
     try {
-      await within(deps.load(new URL(file, win.location.href).href), left(), `it took longer than the run's ${totalMs} ms to load`, deps.timers);
+      await within(deps.load(new URL(file, opts.base ?? win.location.href).href), left(), `it took longer than the run's ${totalMs} ms to load`, deps.timers);
     } catch (e) {
       fail(file, `the file did not load: ${message(e)}`);
     }

@@ -10,9 +10,10 @@ export const test = (win: Window, m: Extract<ShellToBridge, { type: "clax:test" 
   answerTests(win, m, post, { timers: clock, now: () => clock.now(), load: u => import(/* @vite-ignore */ u) });
 
 /** A browser test's run of the saved tests `o.files` (`window.claxTest.run`):
- * each imported as a module; files that are not a list of paths run none. */
+ * each a path of the artifact, imported as a module from the site's root
+ * whatever page is open; files that are not a list of paths run none. */
 export const run = (win: Window, o: TestRun, clock: HarnessTimers & { now(): number }): Promise<TestResults> =>
-  runTests(win, Array.isArray(o?.files) ? o.files.filter(f => typeof f === "string") : [], o ?? {}, { timers: clock, now: () => clock.now(), load: u => import(/* @vite-ignore */ u) });
+  runTests(win, Array.isArray(o?.files) ? o.files.filter(f => typeof f === "string") : [], { testMs: o?.testMs, totalMs: o?.totalMs, base: new URL("/", win.location.href).href }, { timers: clock, now: () => clock.now(), load: u => import(/* @vite-ignore */ u) });
 
 /** The bridge's `clax:migrate` order `m`, answered on `post`: the file is
  * imported as a module and given the page's `window.claude.use("db")`. */
