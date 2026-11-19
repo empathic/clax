@@ -1075,7 +1075,14 @@ interface Done {
     fn the_browser_rule_appears_only_with_the_namespace() {
         let rules = namespace_rules("browser").unwrap();
         assert!(
-            rules.starts_with("Test pages you build or change"),
+            rules.starts_with("When you have `clax.browser.test`: test pages you build or change"),
+            "{rules}"
+        );
+        // A run with `browse` alone is told the rules too: each mention of
+        // `test` in them is under the condition that the run has it.
+        assert_eq!(
+            rules.matches("clax.browser.test").count(),
+            rules.matches("When you have `clax.browser.test`").count(),
             "{rules}"
         );
         let rule = format!("- {rules}\n");
