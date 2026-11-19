@@ -7,9 +7,10 @@ import AdminPeople from "./AdminPeople.svelte";
 import AdminPricing from "./AdminPricing.svelte";
 import AdminProvider from "./AdminProvider.svelte";
 import AdminUsage from "./AdminUsage.svelte";
+import AdminBrowser from "./AdminBrowser.svelte";
 import AdminWeb from "./AdminWeb.svelte";
 import type { ModelPricing } from "./api";
-import { adminPerson, defaultPriced, errorDetail, listing, meBot, modelPricing, pricing, provider, providerFailure, unitPricing, usage, webSettings, WEB_LINES } from "./fixtures";
+import { BROWSER_LINE, adminPerson, browserSettings, defaultPriced, errorDetail, listing, meBot, modelPricing, pricing, provider, providerFailure, unitPricing, usage, webSettings, WEB_LINES } from "./fixtures";
 import { forget } from "./me";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
@@ -521,6 +522,74 @@ describe("Admin › Web", () => {
     await settle();
     expect(m.root.querySelector("#aw-account")).toBeNull();
     expect(m.root.querySelector(".bkey")).toBeNull();
+  });
+});
+
+describe("Admin › Browser", () => {
+  const BROWSER_PRICING = pricing({ lines: [...pricing().lines, BROWSER_LINE] });
+
+  it("the_browser_page_shows_and_saves_its_settings", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/browser": browserSettings({ configured: false, unavailable: "the Cloudflare account ID and API token are not both set (Web access)", cloudflare: { account: true, token: false }, sources: { max_concurrent: "file" } }),
+      "GET /api/admin/pricing": BROWSER_PRICING,
+      "PUT /api/admin/browser": (b: unknown) => browserSettings({ test: { ...browserSettings().test, ...(b as { test: object }).test } }),
+    });
+    const m = mount(AdminBrowser, {});
+    await settle();
+    const text = m.root.textContent!;
+    expect(text).toContain("Browser testing is off: the Cloudflare account ID and API token are not both set (Web access)");
+    expect(text).toContain("Cloudflare account ID: set · API token: not set");
+    expect(m.root.querySelector<HTMLAnchorElement>('a[href="/settings/web#aw-cf"]')).not.toBeNull();
+    expect(text).toContain("The token needs the Browser Rendering – Edit permission, beside Workers AI Read and AI Gateway Read.");
+    expect(text).toContain("Browser time costs 9 credits per browser hour");
+    const test = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Browser testing"]')!;
+    expect(test.getAttribute("aria-checked")).toBe("false");
+    expect(m.root.querySelector<HTMLInputElement>("#ab-concurrent")!.readOnly).toBe(true);
+    // A time outside 10 to 120 seconds is refused before anything is sent.
+    const seconds = m.root.querySelector<HTMLInputElement>("#ab-seconds")!;
+    type(seconds, "121");
+    click(button(m.root, "Save"));
+    await settle();
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("Seconds per test is a whole number from 10 to 120.");
+    expect(calls.some(c => c.method === "PUT")).toBe(false);
+    type(seconds, "90");
+    click(test);
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")).toEqual({ url: "/api/admin/browser", method: "PUT", body: { test: { enabled: true, seconds: 90 } } });
+    expect(m.root.querySelector('[role="status"]')!.textContent).toContain("Saved.");
+    expect(m.root.querySelector('[role="switch"][aria-label="Browser testing"]')!.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("browse_shows_its_risk_and_any_public_warns", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/browser": browserSettings(),
+      "GET /api/admin/pricing": BROWSER_PRICING,
+      "PUT /api/admin/browser": (b: unknown) => browserSettings({ browse: { ...browserSettings().browse, ...(b as { browse: object }).browse } }),
+    });
+    const m = mount(AdminBrowser, {});
+    await settle();
+    expect(m.root.textContent).toContain("A page can steer ClaxBot, and ClaxBot writes what it types, the code it runs and the URLs it opens: it can type data into a form on a site it was sent to, and under Any public URL put an artifact's data in a URL. Browsing also needs each person's web switch on.");
+    const rule = m.root.querySelector<HTMLSelectElement>("#ab-rule")!;
+    expect([...rule.options].map(o => [o.value, o.textContent])).toEqual([["sender", "Only URLs in the sender's own words"], ["allowlist", "Allowlist"], ["any_public", "Any public URL"]]);
+    expect(m.root.querySelector("#ab-allow")).toBeNull();
+    expect(m.root.textContent).not.toContain("Any public URL ClaxBot writes may be opened");
+    choose(rule, "any_public");
+    expect(m.root.textContent).toContain("Any public URL ClaxBot writes may be opened, so a page can make it send data out.");
+    choose(rule, "allowlist");
+    expect(m.root.textContent).not.toContain("Any public URL ClaxBot writes may be opened");
+    type(m.root.querySelector<HTMLTextAreaElement>("#ab-allow") as unknown as HTMLInputElement, "docs.example.com\n*.rust-lang.org");
+    click(m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Browse public pages"]')!);
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ browse: { enabled: true, url_rule: "allowlist", allowlist: ["docs.example.com", "*.rust-lang.org"] } });
+  });
+
+  it("is a tab of the admin screen, after Web access", async () => {
+    stubFetch({ "GET /api/me/bot": meBot({ role: "admin" }), "GET /api/admin/browser": browserSettings(), "GET /api/admin/pricing": BROWSER_PRICING });
+    const m = mount(AdminPage, { tab: "browser" });
+    await vi.waitFor(() => expect(m.root.textContent).toContain("Browser testing"));
+    expect(m.root.querySelector("h2")!.textContent).toBe("Browser");
   });
 });
 

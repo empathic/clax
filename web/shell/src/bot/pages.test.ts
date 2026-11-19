@@ -153,6 +153,40 @@ describe("You", () => {
     }
   });
 
+  it("the_me_switch_turns_the_browser_off", async () => {
+    let me = meBot({ browser: { on: true, offered: true, why_off: null, price_milli_per_minute: 150 } });
+    const calls = stubFetch({
+      "GET /api/me/bot": () => me,
+      "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
+      "PUT /api/me/bot": (b: { browser: boolean }) => { me = meBot({ browser: { on: b.browser, offered: true, why_off: b.browser ? null : "person_off", price_milli_per_minute: 150 } }); return me; },
+    });
+    const m = mount(MePage, {});
+    await settle();
+    const label = '[role="switch"][aria-label="Let ClaxBot test pages in a browser"]';
+    const sw = m.root.querySelector<HTMLElement>(label)!;
+    expect([sw.getAttribute("aria-checked"), sw.getAttribute("aria-disabled")]).toEqual(["true", null]);
+    expect(m.root.querySelector(".mew-browser")!.textContent).toContain("ClaxBot may load the pages it builds for you in a browser to test them; a test reaches nothing but its page. Browser time costs 0.15 credits a minute.");
+    click(sw);
+    await settle();
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ browser: false });
+    const off = m.root.querySelector<HTMLElement>(label)!;
+    expect([off.getAttribute("aria-checked"), off.getAttribute("aria-disabled")]).toEqual(["false", null]);
+    m.unmount();
+    // Off on the instance, the switch says why and cannot be pressed.
+    for (const [why, text] of [["admin_off", "Off on this instance"], ["not_configured", "Not configured"]] as const) {
+      stubFetch({
+        "GET /api/me/bot": meBot({ browser: { on: true, offered: false, why_off: why, price_milli_per_minute: null } }),
+        "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
+      });
+      const n = mount(MePage, {});
+      await settle();
+      const x = n.root.querySelector<HTMLElement>(label)!;
+      expect([x.getAttribute("aria-checked"), x.getAttribute("aria-disabled")]).toEqual(["false", "true"]);
+      expect(n.root.querySelector(".mew-browser")!.textContent).toContain(text);
+      n.unmount();
+    }
+  });
+
   it("shows the person's own key's last failed request, what the provider said, and keeps its problem line", async () => {
     const auth = errorDetail({ class: "auth", status: 401, type: "authentication_error", message: "invalid x-api-key", request_id: "req_011Mine" });
     stubFetch({

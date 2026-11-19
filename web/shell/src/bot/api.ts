@@ -64,6 +64,7 @@ export type MeBot = {
   can_export?: boolean;
   provider_host?: string | null;
   web?: MeWeb;
+  browser?: MeBrowser;
 };
 /** Whether ClaxBot may search and read the web for this person (`GET
  * /api/me/bot`): `on` their own choice (on by default), `offered` whether
@@ -73,6 +74,15 @@ export type MeWeb = {
   on: boolean; offered: boolean; operations: { search: boolean; fetch: boolean }; why_off: "admin_off" | "person_off" | "not_configured" | null;
   /** Milli-credits one request costs them: a search on the active provider's line, a fetch (null for a line that does not exist). */
   prices: { search_milli: number | null; fetch_milli: number | null };
+};
+
+/** Whether ClaxBot may test pages in a browser for this person (`GET
+ * /api/me/bot`): `on` their own choice (on by default), `offered` whether
+ * the admin turned browser testing on and the host can open browsers,
+ * `why_off` why their runs cannot now, else `null`, and what a minute of
+ * browser time costs them, in milli-credits (null without the line). */
+export type MeBrowser = {
+  on: boolean; offered: boolean; why_off: "admin_off" | "person_off" | "not_configured" | null; price_milli_per_minute: number | null;
 };
 
 /** A line of usage: a cost line's ID, its label and unit, and the quantity and credits (§7.3). */
@@ -353,6 +363,8 @@ export const clearOwnKey = () => call<MeBot>("/api/me/bot/key", "DELETE");
 export const useOwnKey = (use_own: boolean) => call<MeBot>("/api/me/bot", "PUT", { use_own });
 /** Lets ClaxBot's runs for this person search and read the web, or not. */
 export const setWebChoice = (web: boolean) => call<MeBot>("/api/me/bot", "PUT", { web });
+/** Lets ClaxBot's runs for this person test pages in a browser, or not. */
+export const setBrowserChoice = (browser: boolean) => call<MeBot>("/api/me/bot", "PUT", { browser });
 export const meUsage = (week?: string) => call<MeUsage>(`/api/me/usage${query({ week })}`);
 
 /** A refusal from a failed model call (502 `provider_error`), with how it failed. */
@@ -439,6 +451,22 @@ export const getAdminWeb = () => call<WebSettings>("/api/admin/web");
 export const putAdminWeb = (patch: WebPatch) => call<WebSettings>("/api/admin/web", "PUT", patch);
 export const putWebToken = (token: string) => call<WebSettings>("/api/admin/web/token", "PUT", { token });
 export const deleteWebToken = () => call<WebSettings>("/api/admin/web/token", "DELETE");
+/** Which public URLs a browse may open: those in the sender's own words, the allowlist's hosts, or any. */
+export type BrowseRule = "sender" | "allowlist" | "any_public";
+/** `GET /api/admin/browser`: browser testing's settings (`test`), browsing public pages' (`browse`), the browsers open at once on the instance, `configured` whether the host can open browsers now (on a daemon, with the Cloudflare account ID and token of Web access), `unavailable` why browser use is off whatever the settings (else null), whether the Cloudflare account ID and token are set, and where each value comes from by its dotted name (`test.seconds`, `max_concurrent`). */
+export type BrowserSettings = {
+  test: { enabled: boolean; max_per_run: number; seconds: number };
+  browse: { enabled: boolean; url_rule: BrowseRule; allowlist: string[]; max_per_run: number };
+  max_concurrent: number;
+  configured: boolean;
+  unavailable: string | null;
+  cloudflare: { account: boolean; token: boolean };
+  sources: Record<string, Source>;
+};
+/** What `PUT /api/admin/browser` changes: any of the settings' fields. */
+export type BrowserPatch = { test?: Partial<BrowserSettings["test"]>; browse?: Partial<BrowserSettings["browse"]>; max_concurrent?: number };
+export const getAdminBrowser = () => call<BrowserSettings>("/api/admin/browser");
+export const putAdminBrowser = (patch: BrowserPatch) => call<BrowserSettings>("/api/admin/browser", "PUT", patch);
 export const providerModels = () => call<ProviderModels>("/api/admin/provider/models");
 /** `POST /api/admin/pricing/tokenulator`: refreshes the price catalog, then
  * prices `model`'s token lines from it, as `providerId` (its tokenulator.dev

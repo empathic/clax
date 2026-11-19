@@ -1,6 +1,6 @@
 // ClaxBot fixtures for the unit tests: the shapes of spec 2026-10-21-claxbot
 // §10 with plausible values, each overridable.
-import type { AdminPerson, AdminUsage, BotRun, BotStep, CatalogListing, CostLine, ErrorDetail, MeBot, ModelPricing, Pricing, Provider, ProviderFailure, Settings, UnitPricing, WebSettings, Week } from "./api";
+import type { AdminPerson, AdminUsage, BotRun, BotStep, BrowserSettings, CatalogListing, CostLine, ErrorDetail, MeBot, ModelPricing, Pricing, Provider, ProviderFailure, Settings, UnitPricing, WebSettings, Week } from "./api";
 
 export const WEEK_START = "2026-10-19T00:00:00Z";
 export const WEEK_END = "2026-10-26T00:00:00Z";
@@ -107,6 +107,17 @@ export const WEB_LINES: CostLine[] = [
   { id: "web.search.linkup", label: "Web search (Linkup)", unit: "kreq", cost_micro_usd: 5_000_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
   { id: "web.fetch", label: "Web fetch", unit: "kreq", cost_micro_usd: 500_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
 ];
+export const browserSettings = (o: Partial<BrowserSettings> = {}): BrowserSettings => ({
+  test: { enabled: false, max_per_run: 10, seconds: 60 },
+  browse: { enabled: false, url_rule: "sender", allowlist: [], max_per_run: 10 },
+  max_concurrent: 2,
+  configured: true,
+  unavailable: null,
+  cloudflare: { account: true, token: true },
+  sources: {}, ...o,
+});
+/** The browser line at Browser Run's list price and no margin: 9 credits per browser hour at $0.01 a credit. */
+export const BROWSER_LINE: CostLine = { id: "browser.time", label: "Browser time", unit: "browser_h", cost_micro_usd: 90_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare Browser Run", model: null };
 /** A failed model call as the server details it: Anthropic's 400 for an account out of credit. */
 export const errorDetail = (o: Partial<ErrorDetail> = {}): ErrorDetail => ({
   class: "invalid_request", status: 400, type: "invalid_request_error",

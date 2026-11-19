@@ -12,7 +12,7 @@
   // ClaxBot is not on this Clax.
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
-  import { type MeBot, type MeUsage, clearOwnKey, meUsage, setOwnKey, setWebChoice, useOwnKey } from "./api";
+  import { type MeBot, type MeUsage, clearOwnKey, meUsage, setBrowserChoice, setOwnKey, setWebChoice, useOwnKey } from "./api";
   import { refresh } from "./me";
   import { relativeTime } from "../format";
   import { UNITS, credits, meter, resetDay, runStatus, tokens } from "./model";
@@ -35,6 +35,8 @@
   const WHY: Record<string, string> = { admin_off: "Off on this instance", not_configured: "Not configured" };
   const web = $derived(me?.web ?? null);
   const instanceWhy = $derived(web?.why_off && web.why_off !== "person_off" ? WHY[web.why_off] ?? null : null);
+  const browser = $derived(me?.browser ?? null);
+  const browserWhy = $derived(browser?.why_off && browser.why_off !== "person_off" ? WHY[browser.why_off] ?? null : null);
   // Which operations are offered: both while web use is off on this instance, as the switch then shows what it would turn on.
   const ops = $derived(web?.offered ? web.operations : { search: true, fetch: true });
   // What a request of each offered operation costs them, per thousand as the Pricing page words it (the daemon sends one request's milli-credits).
@@ -97,6 +99,15 @@
         <div class="mek mew-web">
           <Switch checked={web.why_off === null} label={`Let ClaxBot ${ops.search && ops.fetch ? "search and read the web" : what}`} disabled={!!instanceWhy} busy={busy} describedby="me-web-why" onchange={on => change(() => setWebChoice(on))} />
           <small id="me-web-why" class="note">{instanceWhy ? `${instanceWhy}.` : `ClaxBot may ${what} for you; ${ops.search && ops.fetch ? "what a run searches for and the pages it reads" : ops.search ? "what a run searches for" : "the pages a run reads"} can carry data out.`}{#if cost}{` ${cost}`}{/if}</small>
+        </div>
+      </section>
+    {/if}
+    {#if browser}
+      <section class="bcard" aria-labelledby="me-browser">
+        <h3 id="me-browser">Browser</h3>
+        <div class="mek mew-browser">
+          <Switch checked={browser.why_off === null} label="Let ClaxBot test pages in a browser" disabled={!!browserWhy} busy={busy} describedby="me-browser-why" onchange={on => change(() => setBrowserChoice(on))} />
+          <small id="me-browser-why" class="note">{browserWhy ? `${browserWhy}.` : "ClaxBot may load the pages it builds for you in a browser to test them; a test reaches nothing but its page."}{#if browser.price_milli_per_minute != null}{` Browser time costs ${credits(browser.price_milli_per_minute)} credits a minute.`}{/if}</small>
         </div>
       </section>
     {/if}

@@ -132,6 +132,13 @@ export const SCREENS: Screen[] = [
     ],
   },
   {
+    id: "browser", group: "ClaxBot", title: "Browser", line: "Whether ClaxBot may test the pages it builds in a browser, and browse public pages.", when: c => c.admin,
+    items: [
+      { title: "Browser testing", at: "#ab-on", words: "turn on off browser run test pages screenshots tests per run seconds per test browsers at once" },
+      { title: "Browsing public pages", at: "#ab-b", words: "browse allowlist allowed hosts any public url sender browses per run" },
+    ],
+  },
+  {
     id: "pricing", group: "ClaxBot", title: "Pricing", line: "What a credit costs, the free credits each week, and each model's rates.", when: c => c.admin,
     items: [
       { title: "Credit price and free weekly credits", at: "#pr-c", words: "usd free tier" },
