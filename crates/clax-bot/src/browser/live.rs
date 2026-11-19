@@ -39,6 +39,21 @@
 //! `clax_store::Store::end_bot_browser_session`); a close the script asks
 //! for (`SessionEnd::Closed`) is charged by its own call.
 //!
+//! # Sources and leaving an origin
+//!
+//! A session opens on a URL, the run's clax or supplied content
+//! ([`Start`]); an artifact session of the draft is given the draft as
+//! each call sees it ([`CallCtx::pages`]). A `goto` within the session's
+//! synthetic origin needs nothing more; a `goto` elsewhere from an
+//! artifact or content session needs the URL session's policy the caller
+//! gives once `browser.open.url` and its rule admit the URL
+//! ([`CallCtx::leave`], [`BrowserSessions::leaves`]), and makes the
+//! session a URL session for the rest of its life, once (spec §8.5): the
+//! synthetic origin is no longer served ([`super::serve::Left`]: every
+//! request to it fails, why `left`), the preamble becomes a browse's, and
+//! `runTests` answers `browser_disabled`. The call that converted it
+//! answers the new kind ([`Answered::kind`]).
+//!
 //! # Who may reach a session
 //!
 //! A session is reachable only through calls of the run that opened it:
@@ -49,6 +64,8 @@
 
 use super::cdp::{Cdp, CdpFail};
 use super::opts::{MAX_EVAL_BYTES, Viewport};
+use super::opts::Tests;
+use super::serve::{Decision, Left, Pages, Paused};
 use super::session::{Driver, RequestPolicy, SessionLimits, Start};
 use super::{
     BrowserError, BrowserSource, CODE_BROWSER_SESSION_CLOSED, CODE_BROWSER_SESSION_LOST, Deadline,
@@ -132,6 +149,37 @@ pub struct Answered {
     pub at_ms: i64,
     /// The screenshots the call took, PNG, in order.
     pub shots: Vec<Vec<u8>>,
+    /// The session's new kind, when this call changed it (a `goto` out of
+    /// its origin made it a URL session).
+    pub kind: Option<SessionKind>,
+}
+
+/// What a call is given beside itself: its deadline (at most the
+/// session's lifetime) and the run's cancellation; for an artifact session
+/// of the draft, the draft as the call sees it; and, when the run may
+/// leave the session's origin by this call (`browser.open.url` live, the
+/// URL admitted by its rule), the URL session's policy it would then
+/// have.
+#[derive(Clone)]
+pub struct CallCtx {
+    pub deadline: DateTime<Utc>,
+    pub cancel: CancelToken,
+    pub pages: Option<Pages>,
+    pub leave: Option<Arc<dyn RequestPolicy>>,
+}
+
+impl CallCtx {
+    /// A call by `deadline` and the run's `cancel`, with no draft and no
+    /// leave to go out of the origin.
+    #[must_use]
+    pub fn new(deadline: DateTime<Utc>, cancel: CancelToken) -> CallCtx {
+        CallCtx {
+            deadline,
+            cancel,
+            pages: None,
+            leave: None,
+        }
+    }
 }
 
 /// An open session, as [`BrowserSessions::open`] answers it.
@@ -167,8 +215,7 @@ pub struct Ended {
 enum Msg {
     Call {
         call: SessionCall,
-        deadline: DateTime<Utc>,
-        cancel: CancelToken,
+        ctx: CallCtx,
         reply: oneshot::Sender<Result<Answered, BrowserError>>,
     },
     Close {
@@ -184,6 +231,10 @@ struct Entry {
     /// `None` while open; why it ended once it did.
     ended: Option<SessionEnd>,
     tx: mpsc::UnboundedSender<Msg>,
+    /// The page's URL after the last call.
+    url: String,
+    /// The synthetic origin's host it is served from, until it leaves it.
+    synthetic: Option<String>,
 }
 
 #[derive(Default)]
@@ -283,6 +334,7 @@ impl BrowserSessions {
         );
         let (tx, rx) = mpsc::unbounded();
         let (open_tx, open_rx) = oneshot::channel();
+        let synthetic = start.synthetic_host();
         let task = Task {
             run: run.to_string(),
             id: id.clone(),
@@ -302,6 +354,8 @@ impl BrowserSessions {
                 kind,
                 ended: None,
                 tx,
+                url: start.url(),
+                synthetic,
             },
         );
         drop(clax_rt::spawn(task.run(cdp, start, viewport, policy, open_tx, rx)));
@@ -311,30 +365,26 @@ impl BrowserSessions {
         }
     }
 
-    /// Performs `call` on session `session` of run `run`, by `deadline`
-    /// (at most the session's lifetime) and the run's `cancel`.
+    /// Performs `call` on session `session` of run `run`, within `ctx`
+    /// (see [`CallCtx`]).
     ///
     /// # Errors
     /// `browser_session_lost` for a session this process does not hold
     /// for `run`, or whose browser is gone; `browser_session_closed` for
     /// one that ended (its lifetime included, when it cut this call);
+    /// `browser_disabled` for a `goto` out of the session's origin with
+    /// no [`CallCtx::leave`], and for `runTests` in a URL session;
     /// `cancelled`.
     pub async fn call(
         &self,
         run: &str,
         session: &str,
         call: SessionCall,
-        deadline: DateTime<Utc>,
-        cancel: &CancelToken,
+        ctx: CallCtx,
     ) -> Result<Answered, BrowserError> {
         let tx = self.sender(run, session)?;
         let (reply, answer) = oneshot::channel();
-        let msg = Msg::Call {
-            call,
-            deadline,
-            cancel: cancel.clone(),
-            reply,
-        };
+        let msg = Msg::Call { call, ctx, reply };
         if tx.unbounded_send(msg).is_err() {
             return Err(self.gone(session));
         }
@@ -386,6 +436,25 @@ impl BrowserSessions {
         for (run, session) in doomed {
             let _ = self.close(&run, &session, SessionEnd::Revoked).await;
         }
+    }
+
+    /// Whether a `goto` of `url` (resolved against the page's URL after
+    /// the last call) leaves session `session` of run `run`'s synthetic
+    /// origin: what needs `browser.open.url` and makes it a URL session.
+    /// A URL session leaves nothing.
+    ///
+    /// # Errors
+    /// As [`BrowserSessions::call`], for a session not open.
+    pub fn leaves(&self, run: &str, session: &str, url: &str) -> Result<bool, BrowserError> {
+        self.sender(run, session)?;
+        let reg = lock(&self.reg);
+        let Some(e) = reg.sessions.get(session) else {
+            return Err(lost(session, "this process holds no such session for this run"));
+        };
+        Ok(match &e.synthetic {
+            None => false,
+            Some(host) => resolve_url(&e.url, url).as_deref().and_then(host_of) != Some(host.as_str()),
+        })
     }
 
     /// The sessions of run `run` open now, with their kinds.
@@ -465,6 +534,61 @@ fn never() -> Deadline {
     return futures::future::pending().boxed_local();
 }
 
+/// `to` resolved against `base` (a relative `goto`), as a URL.
+fn resolve_url(base: &str, to: &str) -> Option<String> {
+    url::Url::parse(base)
+        .and_then(|b| b.join(to))
+        .or_else(|_| url::Url::parse(to))
+        .ok()
+        .map(|u| u.to_string())
+}
+
+/// The host of `url`.
+fn host_of(url: &str) -> Option<&str> {
+    let after = url.split_once("://")?.1;
+    let end = after.find(['/', '?', '#']).unwrap_or(after.len());
+    let authority = &after[..end];
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    Some(host.split(':').next().unwrap_or(host))
+}
+
+/// The session's policy, which a `goto` out replaces once.
+struct Swap(Mutex<Arc<dyn RequestPolicy>>);
+
+impl Swap {
+    fn now(&self) -> Arc<dyn RequestPolicy> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn replace(&self, p: Arc<dyn RequestPolicy>) {
+        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = p;
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl RequestPolicy for Swap {
+    async fn decide(&self, req: &Paused) -> Decision {
+        self.now().decide(req).await
+    }
+
+    async fn saved_tests(&self, which: &Tests) -> Result<Vec<String>, String> {
+        self.now().saved_tests(which).await
+    }
+
+    fn set_pages(&self, pages: Pages) {
+        self.now().set_pages(pages);
+    }
+}
+
+/// `browser_disabled`, saying what needs which capability.
+fn disabled(message: String) -> BrowserError {
+    BrowserError::new(super::CODE_BROWSER_DISABLED, message, false)
+}
+
 impl Task {
     fn at_ms(&self) -> i64 {
         (self.clock.now() - self.opened_at)
@@ -500,7 +624,9 @@ impl Task {
         open_reply: oneshot::Sender<Result<Opened, BrowserError>>,
         mut rx: mpsc::UnboundedReceiver<Msg>,
     ) {
-        let mut d = Driver::new(&mut cdp, &*policy, &*self.clock, start.mode(), self.opened_at);
+        let policy = Swap(Mutex::new(policy));
+        let mut synthetic = start.synthetic_host();
+        let mut d = Driver::new(&mut cdp, &policy, &*self.clock, start.mode(), self.opened_at);
         let opened = self.open(&mut d, &start, &viewport).await;
         let ok = opened.is_ok();
         if !ok {
@@ -569,21 +695,67 @@ impl Task {
                     let _ = reply.send(at);
                     return;
                 }
-                Woke::Msg(Some(Msg::Call {
-                    call,
-                    deadline,
-                    cancel,
-                    reply,
-                })) => {
-                    let until = deadline.min(self.lifetime);
+                Woke::Msg(Some(Msg::Call { call, ctx, reply })) => {
+                    let until = ctx.deadline.min(self.lifetime);
                     let started = self.clock.now();
-                    d.cdp.rebound(self.source.deadline(until), cancel);
-                    let r = perform(&mut d, &call, self.limits, self.times).await;
+                    d.cdp.rebound(self.source.deadline(until), ctx.cancel.clone());
+                    if let Some(pages) = ctx.pages.clone() {
+                        policy.set_pages(pages);
+                    }
+                    // What the call may not do here, answered before it
+                    // reaches the page.
+                    let mut converted = None;
+                    if let SessionCall::Page { action, args } = &call {
+                        if action == "runTests" && synthetic.is_none() {
+                            let _ = reply.send(Err(disabled(
+                                "page.runTests: this session is on the web, not on the run's clax; open the clax to run its tests"
+                                    .into(),
+                            )));
+                            last_call = self.clock.now();
+                            continue;
+                        }
+                        if action == "goto"
+                            && let Some(host) = synthetic.clone()
+                        {
+                            let to = args["url"].as_str().unwrap_or_default();
+                            let target = resolve_url(&d.url, to).unwrap_or_else(|| to.to_string());
+                            if host_of(&target) != Some(host.as_str()) {
+                                let Some(leave) = ctx.leave.clone() else {
+                                    let _ = reply.send(Err(disabled(format!(
+                                        "page.goto: {target} is outside this session's origin; going there needs browser.open.url"
+                                    ))));
+                                    last_call = self.clock.now();
+                                    continue;
+                                };
+                                policy.replace(Arc::new(Left { host, then: leave }));
+                                synthetic = None;
+                                converted = Some(SessionKind::Url);
+                                {
+                                    let mut reg = lock(&self.reg);
+                                    if let Some(e) = reg.sessions.get_mut(&self.id) {
+                                        e.kind = SessionKind::Url;
+                                        e.synthetic = None;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let r = match converted {
+                        Some(_) => match d.become_browse().await {
+                            Ok(()) => perform(&mut d, &call, self.limits, self.times).await,
+                            Err(e) => Err(e),
+                        },
+                        None => perform(&mut d, &call, self.limits, self.times).await,
+                    };
                     let at_ms = self.at_ms();
+                    if let Some(e) = lock(&self.reg).sessions.get_mut(&self.id) {
+                        e.url.clone_from(&d.url);
+                    }
                     let answer = match r {
                         Ok(mut a) => {
                             a.at_ms = at_ms;
                             a.url.clone_from(&d.url);
+                            a.kind = converted;
                             Ok(a)
                         }
                         Err(CdpFail::Deadline) if self.clock.now() >= self.lifetime => {
@@ -604,6 +776,7 @@ impl Task {
                                 url: d.url.clone(),
                                 at_ms,
                                 shots: std::mem::take(&mut d.shots),
+                                kind: converted,
                             })
                         }
                         Err(CdpFail::Cancelled) => Err(BrowserError::new(
@@ -620,6 +793,7 @@ impl Task {
                             url: d.url.clone(),
                             at_ms,
                             shots: std::mem::take(&mut d.shots),
+                            kind: converted,
                         }),
                         Err(fail @ (CdpFail::Lost(_) | CdpFail::Closed | CdpFail::Transport(_))) => {
                             d.close_page().await;
@@ -743,6 +917,7 @@ fn answered(value: Value) -> Answered {
         url: String::new(),
         at_ms: 0,
         shots: Vec::new(),
+        kind: None,
     }
 }
 
@@ -756,6 +931,7 @@ fn failed(error: String) -> Answered {
         url: String::new(),
         at_ms: 0,
         shots: Vec::new(),
+        kind: None,
     }
 }
 
@@ -771,18 +947,24 @@ async fn perform(
     times: SessionTimes,
 ) -> Result<Answered, CdpFail> {
     let mut a = match call {
-        SessionCall::Page { action, args } => page(d, action, args).await?,
+        SessionCall::Page { action, args } => page(d, action, args, times).await?,
         SessionCall::Act { action, .. } => failed(format!("locator.{action} is not an action")),
         SessionCall::Expect { matcher, .. } => failed(format!("{matcher} is not a matcher")),
     };
-    let _ = (limits, times);
+    let _ = limits;
     a.shots = std::mem::take(&mut d.shots);
     Ok(a)
 }
 
 /// A page action (spec §6.1): `goto`, `reload`, `title`, `content`,
-/// `evaluate`.
-async fn page(d: &mut Driver<'_>, action: &str, args: &Value) -> Result<Answered, CdpFail> {
+/// `evaluate`, `runTests` (the saved tests, `args.paths` or all of them,
+/// within the call's cap).
+async fn page(
+    d: &mut Driver<'_>,
+    action: &str,
+    args: &Value,
+    times: SessionTimes,
+) -> Result<Answered, CdpFail> {
     Ok(match action {
         "goto" => {
             let to = args["url"].as_str().unwrap_or_default();
@@ -819,6 +1001,13 @@ async fn page(d: &mut Driver<'_>, action: &str, args: &Value) -> Result<Answered
             Err(e) => failed(format!("page.content: {e}")),
         },
         "evaluate" => evaluate(d, args).await?,
+        "runTests" => {
+            let which = match args.get("paths").and_then(Value::as_array) {
+                Some(p) => Tests::Paths(p.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+                None => Tests::All,
+            };
+            answered(d.run_saved(&which, u64::from(times.call_seconds) * 1_000).await?)
+        }
         other => failed(format!("page.{other} is not an action")),
     })
 }
@@ -963,6 +1152,19 @@ mod tests {
         }
 
         async fn page(&self, action: &str, args: Value) -> Result<Answered, BrowserError> {
+            self.call_with(action, args, None, None).await
+        }
+
+        async fn call_with(
+            &self,
+            action: &str,
+            args: Value,
+            pages: Option<Pages>,
+            leave: Option<Arc<dyn RequestPolicy>>,
+        ) -> Result<Answered, BrowserError> {
+            let mut ctx = CallCtx::new(self.clock.now() + Duration::seconds(60), CancelToken::new());
+            ctx.pages = pages;
+            ctx.leave = leave;
             self.sessions
                 .call(
                     "run-1",
@@ -971,8 +1173,7 @@ mod tests {
                         action: action.into(),
                         args,
                     },
-                    self.clock.now() + Duration::seconds(60),
-                    &CancelToken::new(),
+                    ctx,
                 )
                 .await
         }
@@ -1020,8 +1221,7 @@ mod tests {
                     action: "title".into(),
                     args: json!({}),
                 },
-                w.clock.now() + Duration::seconds(60),
-                &CancelToken::new(),
+                CallCtx::new(w.clock.now() + Duration::seconds(60), CancelToken::new()),
             )
             .await;
         assert_eq!(code(theirs), CODE_BROWSER_SESSION_LOST);
@@ -1289,4 +1489,154 @@ mod tests {
         assert_eq!(code(w.page("title", json!({})).await), CODE_BROWSER_SESSION_LOST);
         assert_eq!(log.closes(), 1);
     }
+
+    /// A URL session's policy for the tests: continues every request.
+    struct Web;
+
+    #[async_trait::async_trait]
+    impl RequestPolicy for Web {
+        async fn decide(&self, _req: &Paused) -> Decision {
+            Decision::Continue
+        }
+    }
+
+    #[tokio::test]
+    async fn a_goto_within_the_origin_needs_nothing() {
+        let w = World::new();
+        let (_, log) = w.open(TIMES).await;
+        assert_eq!(w.sessions.leaves("run-1", "s1", "/about.html"), Ok(false));
+        assert_eq!(w.sessions.leaves("run-1", "s1", &format!("{ORIGIN}a?b#c")), Ok(false));
+        let g = w.page("goto", json!({"url": "about.html"})).await.unwrap();
+        assert!(g.ok, "{g:?}");
+        assert_eq!((g.url.as_str(), g.kind), (format!("{ORIGIN}about.html").as_str(), None));
+        assert!(log.sent("Fetch.continueRequest").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_goto_out_converts_the_session_once() {
+        let w = World::new();
+        let (_, log) = w.open(TIMES).await;
+        let out = "https://example.com/page";
+        assert_eq!(w.sessions.leaves("run-1", "s1", out), Ok(true));
+        // Without the URL policy browser.open.url gives, it is refused.
+        let refused = w.page("goto", json!({"url": out})).await;
+        assert_eq!(refused.unwrap_err().code, crate::browser::CODE_BROWSER_DISABLED);
+        let g = w
+            .call_with("goto", json!({"url": out}), None, Some(Arc::new(Web)))
+            .await
+            .unwrap();
+        assert!(g.ok, "{g:?}");
+        assert_eq!((g.url.as_str(), g.kind), (out, Some(SessionKind::Url)));
+        assert_eq!(w.sessions.open_sessions("run-1"), [("s1".to_string(), SessionKind::Url)]);
+        // The synthetic origin is no longer served: a request to it fails,
+        // why left; the web is the URL policy's.
+        log.emit(event(
+            "Fetch.requestPaused",
+            json!({"requestId": "back", "request": {"url": format!("{ORIGIN}_clax/api/docs"), "method": "GET", "headers": {}}, "resourceType": "Fetch"}),
+            Some("S"),
+        ));
+        log.wait_sent("Fetch.failRequest", 1).await;
+        assert_eq!(log.sent("Fetch.failRequest")[0]["params"]["requestId"], "back");
+        assert!(!log.sent("Fetch.continueRequest").is_empty(), "the page out went to the web");
+        // Converted once: a second goto elsewhere changes no kind.
+        let again = w
+            .call_with("goto", json!({"url": "https://example.org/"}), None, Some(Arc::new(Web)))
+            .await
+            .unwrap();
+        assert_eq!(again.kind, None);
+        assert_eq!(w.sessions.leaves("run-1", "s1", "https://example.org/x"), Ok(false));
+        // A URL session runs no saved tests.
+        let t = w.page("runTests", json!({})).await;
+        assert_eq!(t.unwrap_err().code, crate::browser::CODE_BROWSER_DISABLED);
+    }
+
+    #[tokio::test]
+    async fn an_artifact_session_serves_the_draft_as_the_last_call_saw_it() {
+        use crate::browser::serve::Site;
+        use crate::browser::session::ArtifactPolicy;
+        use crate::draft::DraftEntry;
+        use base64::Engine as _;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(clax_store::Store::open(&clax_core::Home::at(dir.path().join("ax"))).unwrap());
+        let draft = |body: &str| {
+            let mut files = std::collections::BTreeMap::new();
+            files.insert(
+                "index.html".to_string(),
+                DraftEntry {
+                    content: body.as_bytes().to_vec(),
+                    content_type: "text/html".into(),
+                },
+            );
+            Pages::Draft(files, 1)
+        };
+        let w = World::new();
+        let aid = ArtifactId::parse(AID).unwrap();
+        let policy = ArtifactPolicy::new(Site::new(&aid, draft("<h1>One</h1>")), w.src.clone(), store, "owner");
+        let start = Start::Test {
+            origin: Origin::new(&aid),
+            path: "index.html".into(),
+        };
+        w.sessions
+            .open(
+                "run-1",
+                "s1".into(),
+                SessionKind::Artifact,
+                start,
+                Arc::new(policy),
+                Viewport::desktop(),
+                TIMES,
+                w.clock.now() + Duration::seconds(60),
+                &CancelToken::new(),
+            )
+            .await
+            .unwrap();
+        let log = w.src.logs()[0].clone();
+        let bodies = || -> Vec<String> {
+            log.sent("Fetch.fulfillRequest")
+                .iter()
+                .map(|c| {
+                    let b = base64::engine::general_purpose::STANDARD
+                        .decode(c["params"]["body"].as_str().unwrap())
+                        .unwrap();
+                    String::from_utf8(b).unwrap()
+                })
+                .collect()
+        };
+        assert!(bodies()[0].contains("<h1>One</h1>"));
+        // The draft changed between the calls: the reload is served what
+        // the call saw.
+        let r = w.call_with("reload", json!({}), Some(draft("<h1>Two</h1>")), None).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert!(bodies()[1].contains("<h1>Two</h1>"), "{:?}", bodies());
+        // A call that brings no draft keeps the last one.
+        w.page("reload", json!({})).await.unwrap();
+        assert!(bodies()[2].contains("<h1>Two</h1>"));
+    }
+
+    #[tokio::test]
+    async fn content_opens_at_its_session_origin() {
+        use crate::browser::serve::{ContentFile, ContentSite};
+        use crate::browser::session::ContentPolicy;
+        let w = World::new();
+        let site = ContentSite::new("s0123456789a", b"<h1>Mine</h1>".to_vec(), std::collections::BTreeMap::<String, ContentFile>::new());
+        let o = w
+            .sessions
+            .open(
+                "run-1",
+                "s1".into(),
+                SessionKind::Content,
+                Start::Content { host: site.host.clone() },
+                Arc::new(ContentPolicy(site)),
+                Viewport::desktop(),
+                TIMES,
+                w.clock.now() + Duration::seconds(60),
+                &CancelToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!((o.url.as_str(), o.status), ("https://s0123456789a.clax-content.invalid/", 200));
+        assert_eq!(w.sessions.leaves("run-1", "s1", "https://abcdefghjkmn.clax-test.invalid/"), Ok(true));
+        assert_eq!(w.sessions.leaves("run-1", "s1", "/b.css"), Ok(false));
+    }
+
 }

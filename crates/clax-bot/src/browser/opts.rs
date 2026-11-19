@@ -35,7 +35,9 @@
 
 use super::BrowserError;
 use crate::api::CODE_BAD_ARGS;
+use base64::Engine as _;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 
 /// The most steps one call may have.
 pub const MAX_STEPS: usize = 50;
@@ -895,6 +897,164 @@ pub fn eval_js(expression: &str) -> String {
 /// The expression that waits two animation frames: the page settled.
 pub const SETTLE_JS: &str = "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))";
 
+/// The most bytes of a content session's `html` (spec §6.2).
+pub const MAX_CONTENT_HTML: usize = 2 * 1024 * 1024;
+/// The most files of a content session.
+pub const MAX_CONTENT_FILES: usize = 100;
+/// The most bytes of a content session's files together, `Image` handles
+/// not counted.
+pub const MAX_CONTENT_BYTES: usize = 16 * 1024 * 1024;
+
+/// One file of supplied content, as the script wrote it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SuppliedFile {
+    /// A string: its UTF-8 text.
+    Text(String),
+    /// `{base64}`: its bytes.
+    Bytes(Vec<u8>),
+    /// An `Image` handle: that item of the run's content, by its ID.
+    Image(String),
+}
+
+/// What `clax.browser.open` opens (spec §6.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceSpec {
+    /// `{url}`: a public URL, which `browser.open.url`'s rule admits.
+    Url(String),
+    /// `{artifact: "draft" | version, path?}`: the run's draft (`None`)
+    /// or that version of its artifact, at `path`.
+    Artifact { version: Option<u32>, path: String },
+    /// `{html, files?}`: content the script supplies.
+    Content {
+        html: String,
+        files: BTreeMap<String, SuppliedFile>,
+    },
+}
+
+impl SourceSpec {
+    /// The kind of session it opens.
+    #[must_use]
+    pub fn kind(&self) -> clax_store::bot_web::SessionKind {
+        use clax_store::bot_web::SessionKind;
+        match self {
+            SourceSpec::Url(_) => SessionKind::Url,
+            SourceSpec::Artifact { .. } => SessionKind::Artifact,
+            SourceSpec::Content { .. } => SessionKind::Content,
+        }
+    }
+}
+
+/// A content file's path: relative, no `..`, no scheme, no `_clax/`, at
+/// most [`MAX_TEXT`] characters.
+fn content_path(p: &str, field: &str) -> Result<String, BrowserError> {
+    let path = p.trim_start_matches('/');
+    let ok = !path.is_empty()
+        && path.chars().count() <= MAX_TEXT
+        && !path.contains(['\\', '?', '#'])
+        && !path.split('/').any(|s| s.is_empty() || s == "." || s == "..")
+        && !path.starts_with("_clax/")
+        && !path.contains(':');
+    if ok {
+        Ok(path.to_string())
+    } else {
+        Err(bad(
+            field,
+            "must be a relative path (`style.css`, `img/a.png`), without `..`, `?`, `#` or `_clax/`",
+        ))
+    }
+}
+
+/// The source of `clax.browser.open`: `v` is its first argument.
+///
+/// # Errors
+/// [`CODE_BAD_ARGS`], naming the field: not exactly one of `url`,
+/// `artifact` and `html`, or one over its caps.
+pub fn parse_source(v: &Value) -> Result<SourceSpec, BrowserError> {
+    let Some(o) = object(v, "source")? else {
+        return Err(bad("source", "must be {url}, {artifact, path?} or {html, files?}"));
+    };
+    let kinds = ["url", "artifact", "html"]
+        .iter()
+        .filter(|k| o.contains_key(**k))
+        .count();
+    if kinds != 1 {
+        return Err(bad("source", "must hold exactly one of url, artifact and html"));
+    }
+    if let Some(u) = o.get("url") {
+        only(o, "source", &["url"])?;
+        return Ok(SourceSpec::Url(string(u, "source.url", 2_000)?));
+    }
+    if let Some(a) = o.get("artifact") {
+        only(o, "source", &["artifact", "path"])?;
+        let version = match a {
+            Value::String(s) if s == "draft" => None,
+            v => Some(
+                u32::try_from(int(v, "source.artifact", 1, i64::from(u32::MAX))?)
+                    .map_err(|_| bad("source.artifact", "is too large"))?,
+            ),
+        };
+        let path = match o.get("path") {
+            None | Some(Value::Null) => clax_core::publish::INDEX.to_string(),
+            Some(p) => {
+                let p = artifact_path(p, "source.path")?;
+                if p.contains(['?', '#']) {
+                    return Err(bad("source.path", "must be a file of the artifact, without `?` or `#`"));
+                }
+                let p = p.trim_start_matches('/').to_string();
+                if p.is_empty() { clax_core::publish::INDEX.to_string() } else { p }
+            }
+        };
+        return Ok(SourceSpec::Artifact { version, path });
+    }
+    only(o, "source", &["html", "files"])?;
+    let html = match o.get("html") {
+        Some(Value::String(h)) if h.len() <= MAX_CONTENT_HTML => h.clone(),
+        Some(Value::String(_)) => {
+            return Err(bad("source.html", format!("must be at most {} MiB", MAX_CONTENT_HTML / (1024 * 1024))));
+        }
+        _ => return Err(bad("source.html", "must be a string")),
+    };
+    let mut files = BTreeMap::new();
+    let mut bytes = 0usize;
+    if let Some(fs) = object(o.get("files").unwrap_or(&Value::Null), "source.files")? {
+        if fs.len() > MAX_CONTENT_FILES {
+            return Err(bad("source.files", format!("must hold at most {MAX_CONTENT_FILES} files")));
+        }
+        for (p, f) in fs {
+            let field = format!("source.files[{}]", Value::String(p.clone()));
+            let path = content_path(p, &field)?;
+            let file = match f {
+                Value::String(s) => {
+                    bytes += s.len();
+                    SuppliedFile::Text(s.clone())
+                }
+                Value::Object(m) if m.contains_key("base64") => {
+                    let b = m["base64"]
+                        .as_str()
+                        .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
+                        .ok_or_else(|| bad(&field, "base64 must be standard Base64"))?;
+                    bytes += b.len();
+                    SuppliedFile::Bytes(b)
+                }
+                Value::Object(m) if m.get("id").and_then(Value::as_str).is_some() => {
+                    SuppliedFile::Image(m["id"].as_str().unwrap_or_default().to_string())
+                }
+                _ => return Err(bad(&field, "must be a string, {base64} or an Image")),
+            };
+            if bytes > MAX_CONTENT_BYTES {
+                return Err(bad(
+                    "source.files",
+                    format!("must hold at most {} MiB together", MAX_CONTENT_BYTES / (1024 * 1024)),
+                ));
+            }
+            if files.insert(path.clone(), file).is_some() {
+                return Err(bad(&field, "names a path another file names"));
+            }
+        }
+    }
+    Ok(SourceSpec::Content { html, files })
+}
+
 #[cfg(test)]
 #[warn(clippy::disallowed_methods)]
 mod tests {
@@ -1242,4 +1402,82 @@ mod tests {
         assert!(ev.contains("document.title // the title\n"), "{ev}");
         assert!(ev.contains("JSON.stringify") && ev.contains(&MAX_EVAL_BYTES.to_string()));
     }
+
+    fn source(v: Value) -> Result<SourceSpec, BrowserError> {
+        parse_source(&v)
+    }
+
+    #[test]
+    fn content_files_take_text_base64_and_images() {
+        let s = source(json!({
+            "html": "<h1>Hi</h1>",
+            "files": {
+                "style.css": "h1 { color: red }",
+                "/img/dot.bin": {"base64": "AQID"},
+                "shot.png": {"id": "c-1", "sha256": "ab", "media_type": "image/png"},
+            },
+        }))
+        .unwrap();
+        let SourceSpec::Content { html, files } = s else {
+            panic!("content")
+        };
+        assert_eq!(html, "<h1>Hi</h1>");
+        assert_eq!(
+            files.into_iter().collect::<Vec<_>>(),
+            [
+                ("img/dot.bin".to_string(), SuppliedFile::Bytes(vec![1, 2, 3])),
+                ("shot.png".to_string(), SuppliedFile::Image("c-1".into())),
+                ("style.css".to_string(), SuppliedFile::Text("h1 { color: red }".into())),
+            ]
+        );
+        assert_eq!(
+            source(json!({"url": "https://example.com/"})).unwrap(),
+            SourceSpec::Url("https://example.com/".into())
+        );
+        assert_eq!(
+            source(json!({"artifact": "draft"})).unwrap(),
+            SourceSpec::Artifact { version: None, path: "index.html".into() }
+        );
+        assert_eq!(
+            source(json!({"artifact": 3, "path": "/about.html"})).unwrap(),
+            SourceSpec::Artifact { version: Some(3), path: "about.html".into() }
+        );
+        assert_eq!(source(json!({"html": ""})).unwrap().kind(), clax_store::bot_web::SessionKind::Content);
+    }
+
+    #[test]
+    fn content_over_its_caps_is_invalid_args() {
+        let refused = |v: Value| {
+            let e = source(v).unwrap_err();
+            assert_eq!(e.code, CODE_BAD_ARGS);
+            e.message
+        };
+        let big = "x".repeat(MAX_CONTENT_HTML + 1);
+        assert_eq!(refused(json!({"html": big})), "source.html: must be at most 2 MiB");
+        let many: Map<String, Value> = (0..=MAX_CONTENT_FILES).map(|i| (format!("f{i}.txt"), json!("x"))).collect();
+        assert_eq!(
+            refused(json!({"html": "", "files": many})),
+            "source.files: must hold at most 100 files"
+        );
+        let half = "x".repeat(MAX_CONTENT_BYTES / 2 + 1);
+        assert_eq!(
+            refused(json!({"html": "", "files": {"a.txt": half, "b.txt": half}})),
+            "source.files: must hold at most 16 MiB together"
+        );
+        // An image handle is not counted.
+        let just = "x".repeat(MAX_CONTENT_BYTES);
+        assert!(source(json!({"html": "", "files": {"a.txt": just, "i.png": {"id": "c-1"}}})).is_ok());
+        assert!(refused(json!({"html": "", "files": {"../x": "a"}})).contains("relative path"));
+        assert!(refused(json!({"html": "", "files": {"_clax/api": "a"}})).contains("relative path"));
+        assert!(refused(json!({"html": "", "files": {"a": {"base64": "!!"}}})).contains("Base64"));
+        assert!(refused(json!({"html": "", "files": {"a": 3}})).contains("an Image"));
+        assert_eq!(
+            refused(json!({"url": "https://a.example/", "html": "x"})),
+            "source: must hold exactly one of url, artifact and html"
+        );
+        assert!(refused(json!({"artifact": "latest"})).starts_with("source.artifact"));
+        assert!(refused(json!({"artifact": "draft", "path": "../x"})).contains("must not leave"));
+        assert!(refused(json!(null)).starts_with("source:"));
+    }
+
 }

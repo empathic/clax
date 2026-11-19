@@ -67,7 +67,7 @@ use super::opts::{
     BrowserOpts, Expect, MAX_EVAL_BYTES, MAX_TEST_FILES, Mode, SETTLE_JS, Step, Tests, click_js,
     eval_js, expect_js, focus_js, scroll_js, wait_js,
 };
-use super::serve::{Decision, Origin, Paused, Site};
+use super::serve::{Decision, Origin, Pages, Paused, Site};
 use super::{BrowserError, BrowserSource, CODE_BROWSER_TIMEOUT, CODE_BROWSER_UNAVAILABLE};
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
@@ -129,6 +129,92 @@ pub trait RequestPolicy: MaybeSendSync {
             Tests::None | Tests::All => Vec::new(),
         })
     }
+
+    /// Serves `pages` from now on: a live session of the run's draft is
+    /// given the draft as each call sees it (spec §6.2). Every other
+    /// policy keeps what it serves.
+    fn set_pages(&self, _pages: Pages) {}
+}
+
+/// A live artifact session's policy ([`super::live`]): the clax's
+/// synthetic origin ([`Site::answer`]), owned, its draft replaced by
+/// what each call sees ([`RequestPolicy::set_pages`]).
+pub struct ArtifactPolicy {
+    site: std::sync::Mutex<std::sync::Arc<Site>>,
+    source: std::sync::Arc<dyn BrowserSource>,
+    store: std::sync::Arc<Store>,
+    person: String,
+}
+
+impl ArtifactPolicy {
+    /// The policy of `site`, answered with `source`'s files and API and
+    /// `store`'s versions, `person`'s API reads.
+    #[must_use]
+    pub fn new(
+        site: Site,
+        source: std::sync::Arc<dyn BrowserSource>,
+        store: std::sync::Arc<Store>,
+        person: &str,
+    ) -> ArtifactPolicy {
+        ArtifactPolicy {
+            site: std::sync::Mutex::new(std::sync::Arc::new(site)),
+            source,
+            store,
+            person: person.to_string(),
+        }
+    }
+
+    fn site(&self) -> std::sync::Arc<Site> {
+        self.site
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl RequestPolicy for ArtifactPolicy {
+    async fn decide(&self, req: &Paused) -> Decision {
+        let site = self.site();
+        site.answer(req, &*self.source, &self.store, &self.person)
+            .await
+    }
+
+    async fn saved_tests(&self, which: &Tests) -> Result<Vec<String>, String> {
+        match which {
+            Tests::None => Ok(Vec::new()),
+            Tests::All => self.site().pages.test_files(&self.store).await,
+            Tests::Paths(p) => Ok(p.clone()),
+        }
+    }
+
+    /// A session of the draft serves `pages` when they are a draft; a
+    /// session of a version keeps its version.
+    fn set_pages(&self, pages: Pages) {
+        let mut site = self
+            .site
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(site.pages, Pages::Draft(..)) && matches!(pages, Pages::Draft(..)) {
+            *site = std::sync::Arc::new(Site {
+                origin: site.origin.clone(),
+                pages,
+            });
+        }
+    }
+}
+
+/// A live content session's policy: its content alone
+/// ([`super::serve::ContentSite::answer`]).
+pub struct ContentPolicy(pub super::serve::ContentSite);
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl RequestPolicy for ContentPolicy {
+    async fn decide(&self, req: &Paused) -> Decision {
+        self.0.answer(req)
+    }
 }
 
 /// A test's policy: the clax's synthetic origin ([`Site::answer`]).
@@ -167,6 +253,9 @@ pub enum Start {
     Test { origin: Origin, path: String },
     /// `browse`: a URL; a `goto` is a URL.
     Browse { url: String },
+    /// Supplied content, at its session's synthetic origin `host`
+    /// (`<session ID>.clax-content.invalid`).
+    Content { host: String },
 }
 
 impl Start {
@@ -174,15 +263,28 @@ impl Start {
     #[must_use]
     pub fn mode(&self) -> Mode {
         match self {
-            Start::Test { .. } => Mode::Test,
+            Start::Test { .. } | Start::Content { .. } => Mode::Test,
             Start::Browse { .. } => Mode::Browse,
         }
     }
 
-    fn url(&self) -> String {
+    /// The URL it opens.
+    #[must_use]
+    pub fn url(&self) -> String {
         match self {
             Start::Test { origin, path } => origin.url(path),
             Start::Browse { url } => url.clone(),
+            Start::Content { host } => format!("https://{host}/"),
+        }
+    }
+
+    /// The synthetic origin's host it opens on: none for a URL.
+    #[must_use]
+    pub fn synthetic_host(&self) -> Option<String> {
+        match self {
+            Start::Test { origin, .. } => Some(origin.host.clone()),
+            Start::Content { host } => Some(host.clone()),
+            Start::Browse { .. } => None,
         }
     }
 
@@ -196,7 +298,7 @@ impl Start {
                 };
                 format!("{}{rest}", origin.url(path))
             }
-            Start::Browse { .. } => to.to_string(),
+            Start::Browse { .. } | Start::Content { .. } => to.to_string(),
         }
     }
 }
@@ -378,6 +480,8 @@ pub(super) struct Driver<'a> {
     /// The page's URL as its main frame last navigated: the URL a
     /// session call answers.
     pub(super) url: String,
+    /// The preamble's identifier (`Page.addScriptToEvaluateOnNewDocument`).
+    preamble: Option<String>,
 }
 
 /// The most network request URLs kept to name failed loads.
@@ -481,7 +585,30 @@ impl<'a> Driver<'a> {
             network_urls: BTreeMap::new(),
             shots: Vec::new(),
             url: String::new(),
+            preamble: None,
         }
+    }
+
+    /// Makes the page a URL session's from its next document on (spec
+    /// §8.5): the browse preamble in place of the test's, and the
+    /// network's answers read as a browse's.
+    pub(super) async fn become_browse(&mut self) -> Result<(), CdpFail> {
+        if let Some(id) = self.preamble.take() {
+            self.page_call(
+                "Page.removeScriptToEvaluateOnNewDocument",
+                json!({"identifier": id}),
+            )
+            .await?;
+        }
+        let a = self
+            .page_call(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({"source": preamble_js(Mode::Browse)}),
+            )
+            .await?;
+        self.preamble = a["identifier"].as_str().map(str::to_string);
+        self.browse = true;
+        Ok(())
     }
 
     fn cut(&mut self, what: &'static str) {
@@ -984,7 +1111,16 @@ impl<'a> Driver<'a> {
     /// Runs the saved tests `opts.tests` names (see the module docs): the
     /// result's `tests`, or the failure that ended the test.
     async fn saved_tests(&mut self, opts: &BrowserOpts) -> Result<Value, CdpFail> {
-        let mut files = match self.policy.saved_tests(&opts.tests).await {
+        let spent = u64::try_from(self.at_ms()).unwrap_or(0);
+        let left = (u64::from(opts.timeout_s) * 1000).saturating_sub(spent);
+        self.run_saved(&opts.tests, left).await
+    }
+
+    /// Runs the saved tests `which` names within `left_ms` (see the
+    /// module docs): the harness's `TestResults`, or the failure that
+    /// ended the call.
+    pub(super) async fn run_saved(&mut self, which: &Tests, left_ms: u64) -> Result<Value, CdpFail> {
+        let mut files = match self.policy.saved_tests(which).await {
             Ok(f) => f,
             Err(e) => {
                 return Ok(tests_failed(&format!(
@@ -998,11 +1134,7 @@ impl<'a> Driver<'a> {
         // and its answer must come back before the deadline: the tests
         // get what is left after both, so a run that times out still
         // reports its partial results.
-        let spent = u64::try_from(self.at_ms()).unwrap_or(0);
-        let total_ms = (u64::from(opts.timeout_s) * 1000)
-            .saturating_sub(spent)
-            .saturating_sub(HOOK_SLACK_MS)
-            .max(1);
+        let total_ms = left_ms.saturating_sub(HOOK_SLACK_MS).max(1);
         let mut t = match self
             .evaluate(&saved_tests_js(&files, TEST_MS, total_ms))
             .await?
@@ -1136,7 +1268,10 @@ impl<'a> Driver<'a> {
         // `handle`).
         setup.push(("Target.setAutoAttach", auto_attach()));
         for (method, params) in setup {
-            self.page_call(method, params).await?;
+            let a = self.page_call(method, params).await?;
+            if method == "Page.addScriptToEvaluateOnNewDocument" {
+                self.preamble = a["identifier"].as_str().map(str::to_string);
+            }
         }
         self.navigate(&start.url()).await
     }
@@ -2495,9 +2630,9 @@ mod tests {
             OwnHosts::new(Some("https://clax.example"), None).unwrap(),
             Default::default(),
         );
-        let source = FakeBrowserSource::new();
+        let source = Arc::new(FakeBrowserSource::new());
         source.resolves_private("intranet.news.example");
-        let policy = BrowsePolicy::new(&scope, &source);
+        let policy = BrowsePolicy::new(scope, source.clone());
         let chrome = FakeChrome::page(
             PageModel::new()
                 .evaluate(fine)

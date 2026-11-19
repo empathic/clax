@@ -57,7 +57,7 @@ use crate::web::UrlSource;
 use crate::web::access::{Refused, admit};
 use crate::web::url::{OwnHosts, PublicUrl, is_local_addr};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use url::{Host, Url};
 
 /// Why a request was blocked: not `http` or `https`.
@@ -211,20 +211,21 @@ impl BrowseScope {
     }
 }
 
-/// A browse's request policy (see the module docs): every request
+/// A URL session's request policy (see the module docs): every request
 /// continued or failed, nothing of Clax's served. The host's resolver is
-/// asked once per name in a browse.
-pub struct BrowsePolicy<'a> {
-    pub scope: &'a BrowseScope,
-    pub source: &'a dyn BrowserSource,
+/// asked once per name in a session. Owned, so a live session's task
+/// holds it ([`super::live`]).
+pub struct BrowsePolicy {
+    pub scope: BrowseScope,
+    pub source: Arc<dyn BrowserSource>,
     /// Each name asked, and whether it resolved to public addresses alone.
     resolved: Mutex<BTreeMap<String, bool>>,
 }
 
-impl<'a> BrowsePolicy<'a> {
+impl BrowsePolicy {
     /// The policy of `scope`, asking `source`'s resolver.
     #[must_use]
-    pub fn new(scope: &'a BrowseScope, source: &'a dyn BrowserSource) -> BrowsePolicy<'a> {
+    pub fn new(scope: BrowseScope, source: Arc<dyn BrowserSource>) -> BrowsePolicy {
         BrowsePolicy {
             scope,
             source,
@@ -261,7 +262,7 @@ impl<'a> BrowsePolicy<'a> {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl RequestPolicy for BrowsePolicy<'_> {
+impl RequestPolicy for BrowsePolicy {
     async fn decide(&self, req: &Paused) -> Decision {
         if let Some(why) = self.scope.refusal(&req.url) {
             return Decision::Fail { why };
@@ -539,9 +540,9 @@ mod tests {
     #[tokio::test]
     async fn names_on_private_addresses_are_blocked_once_asked() {
         let s = scope(UrlRule::AnyPublic, &cx(&[], None));
-        let source = FakeBrowserSource::new();
+        let source = Arc::new(FakeBrowserSource::new());
         source.resolves_private("rebind.example");
-        let p = BrowsePolicy::new(&s, &source);
+        let p = BrowsePolicy::new(s, source.clone());
         let req = |url: &str| Paused {
             request_id: "r".into(),
             url: url.into(),
@@ -578,8 +579,8 @@ mod tests {
     #[tokio::test]
     async fn a_browse_asks_the_resolver_about_a_bounded_number_of_names() {
         let s = scope(UrlRule::AnyPublic, &cx(&[], None));
-        let source = FakeBrowserSource::new();
-        let p = BrowsePolicy::new(&s, &source);
+        let source = Arc::new(FakeBrowserSource::new());
+        let p = BrowsePolicy::new(s, source.clone());
         let req = |url: String| Paused {
             request_id: "r".into(),
             url,

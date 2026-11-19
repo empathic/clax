@@ -30,6 +30,10 @@
 //!    ([`clax_core::wrap::wrap_page`]), the bridge tag naming the target's
 //!    version (a draft's base version). A file the target lacks: 404.
 //!
+//! A content session's origin, `https://<session ID>.clax-content.invalid/`,
+//! serves the script's content alone ([`ContentSite`]); a session that left
+//! its synthetic origin fails every request to it ([`Left`]).
+//!
 //! Every answer carries the site's headers
 //! ([`BrowserSource::site_headers`], its content security policy among
 //! them), so the page is held to exactly the policy it lives under; an
@@ -405,6 +409,153 @@ fn decode(s: &str) -> Option<String> {
         }
     }
     String::from_utf8(out).ok()
+}
+
+/// The domain under which each content session has its synthetic origin.
+pub const CONTENT_DOMAIN: &str = "clax-content.invalid";
+
+/// Why a request to a synthetic origin the session left was failed (spec
+/// §8.5): the session became a URL session, and its artifact's API and
+/// its content are no longer served.
+pub const WHY_LEFT: &str = "left";
+
+/// The headers of every answer of a content session: the site's content
+/// security policy (spec §8.2), and no sniffing.
+pub const CONTENT_HEADERS: [(&str, &str); 2] = [
+    (
+        "Content-Security-Policy",
+        "default-src 'self' data: blob:; connect-src 'self'",
+    ),
+    ("X-Content-Type-Options", "nosniff"),
+];
+
+/// One file of supplied content: its bytes and its content type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentFile {
+    pub bytes: Vec<u8>,
+    pub content_type: String,
+}
+
+/// Content a script supplied, at its session's synthetic origin
+/// `https://<session ID>.clax-content.invalid/` (spec §6.2, §8.2): `/` is
+/// the HTML, each file at its path, 404 for anything else, `/_clax/`
+/// included (the page has no bridge and no page runtime API). Every
+/// answer carries [`CONTENT_HEADERS`]. A request to any other origin is
+/// failed, why [`WHY_ORIGIN`].
+#[derive(Clone, Debug)]
+pub struct ContentSite {
+    /// `<session ID>.clax-content.invalid`.
+    pub host: String,
+    pub html: Vec<u8>,
+    pub files: BTreeMap<String, ContentFile>,
+}
+
+impl ContentSite {
+    /// The content of session `session`.
+    #[must_use]
+    pub fn new(session: &str, html: Vec<u8>, files: BTreeMap<String, ContentFile>) -> ContentSite {
+        ContentSite {
+            host: format!("{session}.{CONTENT_DOMAIN}"),
+            html,
+            files,
+        }
+    }
+
+    /// The URL of `path` at the origin.
+    #[must_use]
+    pub fn url(&self, path: &str) -> String {
+        format!("https://{}/{}", self.host, path.trim_start_matches('/'))
+    }
+
+    /// The answer to `req` (see the type's docs).
+    #[must_use]
+    pub fn answer(&self, req: &Paused) -> Decision {
+        let Some((path, _)) = path_on(&self.host, &req.url) else {
+            return Decision::Fail { why: WHY_ORIGIN };
+        };
+        let own = if req
+            .header("service-worker")
+            .is_some_and(|v| v.eq_ignore_ascii_case("script"))
+        {
+            plain(200, "text/javascript", Vec::new())
+        } else if path == "/" || path == "/index.html" && !self.files.contains_key("index.html") {
+            plain(200, "text/html; charset=utf-8", self.html.clone())
+        } else {
+            match decode(path.trim_start_matches('/'))
+                .filter(|p| !p.starts_with("_clax/"))
+                .and_then(|p| self.files.get(&p))
+            {
+                Some(f) => plain(200, &f.content_type, f.bytes.clone()),
+                None => plain(404, TEXT, b"not found".to_vec()),
+            }
+        };
+        let headers = CONTENT_HEADERS
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        Decision::Fulfill(with_site_headers(own, headers))
+    }
+}
+
+/// The files of supplied content as a [`ContentSite`] serves them: a
+/// string as its UTF-8 text, `{base64}` as its bytes, an `Image` handle
+/// as that item of the run's content (`image` answers its bytes), each
+/// typed by its path's extension as the draft's files are
+/// ([`clax_core::publish::content_type_for`]).
+///
+/// # Errors
+/// An `Image` handle `image` does not know, in words naming it.
+pub fn content_files(
+    files: BTreeMap<String, super::opts::SuppliedFile>,
+    image: impl Fn(&str) -> Option<Vec<u8>>,
+) -> Result<BTreeMap<String, ContentFile>, String> {
+    use super::opts::SuppliedFile;
+    files
+        .into_iter()
+        .map(|(path, f)| {
+            let bytes = match f {
+                SuppliedFile::Text(t) => t.into_bytes(),
+                SuppliedFile::Bytes(b) => b,
+                SuppliedFile::Image(id) => image(&id)
+                    .ok_or_else(|| format!("files[{path:?}] names no image of this run's content ({id})"))?,
+            };
+            let content_type = clax_core::publish::content_type_for(&path);
+            Ok((path, ContentFile { bytes, content_type }))
+        })
+        .collect()
+}
+
+/// The path and query of `url` when it is of `https://<host>/`.
+fn path_on(host: &str, url: &str) -> Option<(String, Option<String>)> {
+    let u = url::Url::parse(url).ok()?;
+    (u.scheme() == "https"
+        && u.host_str() == Some(host)
+        && u.port().is_none()
+        && u.username().is_empty()
+        && u.password().is_none())
+    .then(|| (u.path().to_string(), u.query().map(str::to_string)))
+}
+
+/// What a session that left its synthetic origin answers (spec §8.5):
+/// every request to `host` failed, why [`WHY_LEFT`], every other as
+/// `then`, the URL session's policy, decides.
+pub struct Left {
+    pub host: String,
+    pub then: std::sync::Arc<dyn super::session::RequestPolicy>,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl super::session::RequestPolicy for Left {
+    async fn decide(&self, req: &Paused) -> Decision {
+        let left = url::Url::parse(&req.url)
+            .ok()
+            .is_some_and(|u| u.host_str() == Some(self.host.as_str()));
+        if left {
+            return Decision::Fail { why: WHY_LEFT };
+        }
+        self.then.decide(req).await
+    }
 }
 
 #[cfg(test)]
@@ -879,4 +1030,118 @@ mod tests {
         assert_eq!(d.failed(), None, "blocked, not failed");
         assert!(src.api_calls().is_empty());
     }
+
+    fn paused(url: &str) -> Paused {
+        Paused {
+            request_id: "R".into(),
+            url: url.into(),
+            method: "GET".into(),
+            headers: Vec::new(),
+            resource_type: "Document".into(),
+        }
+    }
+
+    fn content() -> ContentSite {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "style.css".to_string(),
+            ContentFile {
+                bytes: b"h1{}".to_vec(),
+                content_type: "text/css".into(),
+            },
+        );
+        files.insert(
+            "img/a b.png".to_string(),
+            ContentFile {
+                bytes: vec![1, 2, 3],
+                content_type: "image/png".into(),
+            },
+        );
+        ContentSite::new("s0123456789a", b"<h1>Hi</h1>".to_vec(), files)
+    }
+
+    fn fulfilled(d: Decision) -> Served {
+        match d {
+            Decision::Fulfill(s) => s,
+            other => panic!("not fulfilled: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn content_is_served_at_its_own_origin() {
+        let c = content();
+        assert_eq!(c.host, "s0123456789a.clax-content.invalid");
+        assert_eq!(c.url("/"), "https://s0123456789a.clax-content.invalid/");
+        let root = fulfilled(c.answer(&paused("https://s0123456789a.clax-content.invalid/")));
+        assert_eq!((root.status, root.body.as_slice()), (200, b"<h1>Hi</h1>".as_slice()));
+        assert_eq!(header(&root, "content-type"), Some("text/html; charset=utf-8"));
+        assert_eq!(
+            header(&root, "content-security-policy"),
+            Some("default-src 'self' data: blob:; connect-src 'self'")
+        );
+        assert_eq!(header(&root, "x-content-type-options"), Some("nosniff"));
+        let css = fulfilled(c.answer(&paused("https://s0123456789a.clax-content.invalid/style.css?v=1")));
+        assert_eq!((css.status, header(&css, "content-type")), (200, Some("text/css")));
+        let png = fulfilled(c.answer(&paused("https://s0123456789a.clax-content.invalid/img/a%20b.png")));
+        assert_eq!(png.body, vec![1, 2, 3]);
+        let missing = fulfilled(c.answer(&paused("https://s0123456789a.clax-content.invalid/nope.js")));
+        assert_eq!(missing.status, 404);
+        assert!(header(&missing, "content-security-policy").is_some());
+    }
+
+    #[test]
+    fn content_reaches_nothing_else() {
+        let c = content();
+        for url in [
+            "https://evil.example/?d=1",
+            "https://abcdefghjkmn.clax-test.invalid/",
+            "http://s0123456789a.clax-content.invalid/",
+            "https://s0123456789a.clax-content.invalid:8443/",
+            "https://other.clax-content.invalid/",
+        ] {
+            assert_eq!(c.answer(&paused(url)), Decision::Fail { why: WHY_ORIGIN }, "{url}");
+        }
+        // No bridge, no page runtime API, no blob of any artifact.
+        for path in ["_clax/bridge.js", "_clax/api/docs", "_clax/blob/x"] {
+            let s = fulfilled(c.answer(&paused(&format!("https://s0123456789a.clax-content.invalid/{path}"))));
+            assert_eq!(s.status, 404, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_left_origin_fails_every_request_to_it() {
+        struct Web;
+        #[async_trait::async_trait]
+        impl super::super::session::RequestPolicy for Web {
+            async fn decide(&self, _req: &Paused) -> Decision {
+                Decision::Continue
+            }
+        }
+        let left = Left {
+            host: "abcdefghjkmn.clax-test.invalid".into(),
+            then: std::sync::Arc::new(Web),
+        };
+        use super::super::session::RequestPolicy as _;
+        assert_eq!(
+            left.decide(&paused("https://abcdefghjkmn.clax-test.invalid/_clax/api/docs")).await,
+            Decision::Fail { why: WHY_LEFT }
+        );
+        assert_eq!(left.decide(&paused("https://example.com/")).await, Decision::Continue);
+    }
+
+    #[test]
+    fn supplied_files_are_typed_and_images_resolved() {
+        use crate::browser::opts::SuppliedFile;
+        let mut files = BTreeMap::new();
+        files.insert("a.css".to_string(), SuppliedFile::Text("h1{}".into()));
+        files.insert("b.bin".to_string(), SuppliedFile::Bytes(vec![7]));
+        files.insert("c.png".to_string(), SuppliedFile::Image("c-1".into()));
+        let got = content_files(files.clone(), |id| (id == "c-1").then(|| vec![9])).unwrap();
+        assert_eq!(got["a.css"].bytes, b"h1{}".to_vec());
+        assert!(got["a.css"].content_type.starts_with("text/css"));
+        assert_eq!(got["b.bin"].bytes, vec![7]);
+        assert_eq!((got["c.png"].bytes.clone(), got["c.png"].content_type.as_str()), (vec![9], "image/png"));
+        assert!(content_files(files, |_| None).unwrap_err().contains("c-1"));
+    }
+
 }

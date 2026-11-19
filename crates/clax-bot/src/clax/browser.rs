@@ -426,7 +426,7 @@ impl Performer for Browse {
             unreachable!("a browse is performed only once admitted")
         };
         let source = browser_source(s);
-        let policy = BrowsePolicy::new(scope, source.as_ref());
+        let policy = BrowsePolicy::new(scope.clone(), source.clone());
         let start = Start::Browse {
             url: url.as_str().to_string(),
         };
