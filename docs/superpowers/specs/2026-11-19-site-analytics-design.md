@@ -83,10 +83,11 @@ The attribute is added to the wrapped page after the wrap cache
 (`crates/clax-server/src/routes/content.rs`, `lookup`), whose entries stay
 keyed by artifact, version and file; `crates/clax-core/src/wrap.rs` gains a
 helper that inserts it before the tag's `></script>` as it does
-`data-origin` and `data-api`. A page's `ETag` names the setting as it names
-an `unrestricted` policy (`tagged_by_policy`): its source gains
-`\0analytics=on` while counting, so a page a browser revalidates after the
-setting changes is answered 200 with the right tag, never 304.
+`data-origin` and `data-api` (`with_count`). A page's `ETag` is of the bytes
+sent (`http_cache::html`, and `tagged_by_policy` over them for an
+`unrestricted` page), which carry the mark while counting, so a page a
+browser revalidates after the setting changes is answered 200 with the
+right tag, never 304; no `\0analytics=on` suffix is needed.
 
 The bridge reports nothing:
 
@@ -211,7 +212,10 @@ not in `inner_path`):
   253 bytes of letters, digits, `-` and `.` (anything else, the site's own
   host, the public origin's host and any site host under the site domain
   become `""`, "no referring site"); `load_ms` and `lcp_ms` integers from
-  0 to 600 000 or null.
+  0 to 600 000 or null. A field of the wrong type, or a missing `file` or
+  `version`, is 400; a `file` that fails its check or a `version` below 1
+  is not counted (204); a timing outside its range is dropped and the view
+  counted without it.
 - **Rate:** `Attempt::PageView` in `clax_http::hosted` (`Limits`), per
   client address (`client_key`: an IPv6 address by its /64): 30 at once,
   one back every 2 s. A view over it is answered 204 and not counted: a
@@ -388,9 +392,11 @@ Written one view at a time, a view would dirty a leaf page of each table
 it touches (days, dims, timings, seen): five to eight chunk writes a view.
 So views are batched:
 
-- `clax_http::analytics::Analytics`, an `AppState` field built only when
-  hosted, keeps the views not yet written as sums keyed by artifact, day
-  and dimension value, beside the day's seen set in memory.
+- `clax_http::analytics::Analytics`, an `AppState` field, keeps the views
+  not yet written as sums keyed by artifact, day and dimension value,
+  beside the day's seen set in memory. It is always there and empty, and
+  counts, sweeps and is due only while `AppState::hosted` is set (the
+  testkit and the hosts set `hosted` after `AppState::assemble`).
 - A batch is written in one store transaction when it is 60 s old, when it
   holds 1 000 views, or at the day's rollover: from the request that finds
   it due, and from `AppState::sweep`, whose due time `AppState::next_sweep_in`
@@ -417,7 +423,11 @@ transaction writes the old day's pending batch, then deletes the old day's
 secret and its `analytics_seen` rows. After it no hash of that day can be
 recomputed or matched. The seen rows go in bounded passes if there are many
 (the secret goes in the first), each within the transaction cap, the next
-pass at the next sweep.
+pass at the next sweep. The old day's seen rows still in the batch are
+dropped rather than written and deleted. A process does not know at start
+whether an earlier one left a day open, so `next_sweep_in` is due at once
+until the first sweep has read the earliest stored day
+(`Store::analytics_open_day`): on the Worker, one store read per wake.
 
 Retention: rows of `analytics_days`, `analytics_dims` and
 `analytics_timings` whose day is more than 13 calendar months before today

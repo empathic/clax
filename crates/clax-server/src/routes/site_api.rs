@@ -15,6 +15,7 @@
 //! | `room` | `GET` (a WebSocket) | `/api/artifacts/<id>/room` |
 //! | `artifact` | `GET`, `HEAD` | `/api/artifacts/<id>`, its `capabilities` the declaration in force ([`in_force_as_declared`]; a `HEAD` answer without the `ETag` and `Content-Length` of the full one) |
 //! | `whoami` | `GET` | `{kind, id?, name?, level, can_edit}` ([`whoami`]) |
+//! | `analytics` | `POST` | a page view the bridge reports; 204, counted or not ([`page_view`]) |
 //! | `read/<source>/docs`, `read/<source>/docs/<path>` | `GET` | `/api/artifacts/<source>/docs…` read for this artifact (`X-Clax-Reader`, [`read_source`]) |
 //!
 //! Anything else under `/_clax/api/` is 404: comments and threads are the
@@ -257,6 +258,16 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
         }
         return whoami(&s, &site.artifact, &caller).await.map_err(refuse);
     }
+    if rest == "analytics" {
+        if *req.method() != Method::POST {
+            return Err(refuse(ApiError::new(
+                axum::http::StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "this route takes POST",
+            )));
+        }
+        return page_view(&s, &site, req).await.map_err(refuse);
+    }
     // A cross-app read: another artifact's documents, read for this one.
     let reading = read_target(&rest);
     let path = match &reading {
@@ -375,6 +386,70 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
         res.headers_mut().insert(header::ETAG, v);
     }
     Ok(res)
+}
+
+/// `analytics`: a page view of the site's artifact, as its bridge reports
+/// it (`web/bridge/src/count.ts`), whoever the site's access check let in;
+/// who they are is never recorded. The artifact is the site host's, never
+/// the body's. A body past [`clax_http::analytics::MAX_BODY`] is 413, one
+/// that is not a report 400 `invalid_argument`; anything else is 204 with
+/// no body, counted or not, so a page learns nothing of the rules. Nothing
+/// is counted on a local Clax or in the Clax app, for a live page's
+/// snapshot, with `Sec-GPC: 1`, from a User-Agent that is empty or names a
+/// bot ([`clax_core::analytics::is_bot`]), from a client over its
+/// [`clax_http::hosted::Attempt::PageView`] rate, or for a report
+/// [`clax_http::analytics::view_of`] or
+/// [`clax_http::analytics::Analytics::count`] does not count (a draft, a
+/// deleted artifact, one whose analytics setting is off, a version past
+/// its current one).
+async fn page_view(s: &AppState, site: &SiteRequest, req: Request) -> Result<Response, ApiError> {
+    use clax_http::analytics::{Context, host_of, read_report, sends_gpc, view_of};
+    let (parts, body) = req.into_parts();
+    let report = read_report(&parts.headers, body).await?;
+    let done = || axum::http::StatusCode::NO_CONTENT.into_response();
+    let Some(h) = &s.hosted else {
+        return Ok(done());
+    };
+    let headers = &parts.headers;
+    let ua = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    if s.embed.is_some()
+        || s.live_ids.contains(site.artifact.as_str())
+        || sends_gpc(headers)
+        || clax_core::analytics::is_bot(ua)
+    {
+        return Ok(done());
+    }
+    let Some(client) = h.page_view(headers, &parts.extensions) else {
+        return Ok(done());
+    };
+    let own: Vec<String> = [host_of(&site.origin), host_of(&h.origin)]
+        .into_iter()
+        .flatten()
+        .collect();
+    let own: Vec<&str> = own.iter().map(String::as_str).collect();
+    let cx = Context {
+        user_agent: ua,
+        ch_mobile: headers
+            .get("sec-ch-ua-mobile")
+            .and_then(|v| v.to_str().ok()),
+        country: h.country(headers),
+        own_hosts: &own,
+        site_domain: Some(s.sites().domain()),
+    };
+    let Some(view) = view_of(&report, &cx) else {
+        return Ok(done());
+    };
+    let (analytics, aid, ua) = (s.analytics.clone(), site.artifact.clone(), ua.to_string());
+    if let Err(e) = s
+        .store_call(move |st| analytics.count(st, &aid, client, &ua, view))
+        .await
+    {
+        tracing::warn!(code = e.code, "counting a page view failed");
+    }
+    Ok(done())
 }
 
 /// The validator of a docs read on `aid` by `caller` (`GET docs/<path>`,

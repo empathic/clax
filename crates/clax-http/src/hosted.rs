@@ -224,6 +224,10 @@ pub enum Attempt {
     /// Counting an install of an app (`POST /api/artifacts/<id>/installs`):
     /// a row each.
     Install,
+    /// A page view a site's bridge reports (`POST /_clax/api/analytics`),
+    /// counted per client address; one over the rate is answered as any
+    /// other and not counted ([`Hosted::page_view`]).
+    PageView,
 }
 
 impl Attempt {
@@ -239,6 +243,7 @@ impl Attempt {
             Attempt::SiteWrite => (60.0, 1.0),
             Attempt::SiteWriteArtifact => (600.0, 0.1),
             Attempt::Install => (10.0, 60.0),
+            Attempt::PageView => (30.0, 2.0),
         }
     }
 }
@@ -646,6 +651,33 @@ impl Hosted {
                 }
                 e
             })
+    }
+
+    /// Takes one of the request's client's [`Attempt::PageView`]: the
+    /// client's address key ([`client_key`], what a visitor's hash is made
+    /// of, [`crate::analytics::visitor`]), or `None` when none is left.
+    pub fn page_view(
+        &self,
+        headers: &HeaderMap,
+        extensions: &axum::http::Extensions,
+    ) -> Option<std::net::IpAddr> {
+        let client = client_key(self.client(headers, extensions));
+        self.limits.take(Attempt::PageView, client).ok()?;
+        Some(client)
+    }
+
+    /// The request's country ([`clax_core::analytics::country`]): its
+    /// `CF-IPCountry` when Cloudflare is trusted to have set it, as
+    /// `CF-Connecting-IP` is ([`Hosted::client`]: behind Cloudflare, and
+    /// always on `wasm32`, where the Worker sets it on the request it
+    /// forwards to the instance); else `XX`.
+    pub fn country(&self, headers: &HeaderMap) -> String {
+        let trusted = self.behind_cloudflare || cfg!(target_arch = "wasm32");
+        clax_core::analytics::country(
+            trusted
+                .then(|| headers.get("cf-ipcountry")?.to_str().ok())
+                .flatten(),
+        )
     }
 
     /// Whether the daemon has a setup secret: `/setup` is open until the
