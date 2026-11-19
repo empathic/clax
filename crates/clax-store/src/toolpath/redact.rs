@@ -411,6 +411,10 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("me.web", "person" | "value") => Safe,
         // A person's own choice of browser use: their key and a flag.
         ("me.browser", "person" | "value") => Safe,
+        // A capability grant issued or revoked: IDs, a capability's ID,
+        // `instance`, `migration` or a person key, a grantee
+        // (`everyone`, `person:<key>`, `runs_of:<key>`) and the op.
+        ("bot.grant", "grant" | "capability" | "granter" | "grantee" | "parent" | "op") => Safe,
         // External artifacts and report queues (spec
         // 2026-10-27-clax-sdk-design §6.6): an app's opaque IDs, titles,
         // revisions and metadata are its users' text; a page URL can carry

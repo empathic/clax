@@ -19,6 +19,28 @@ const KEY: &str = "sk-ant-api03-FAKEKEYFORTESTS-wxyz";
 /// script's watchdog runs on real time, four times its CPU budget while
 /// the engine is busy (`clax_bot_js::Watchdog`): the budget is set far past
 /// the HANG guard, so a loaded machine never has the watchdog end a run.
+/// The instance-wide grant of every capability: none reaches a run
+/// without one (migration 67). Whether the instance offers each is its
+/// settings'.
+fn grant_everyone(ts: &TestServer) {
+    use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GRANTER_INSTANCE, GrantFilter};
+    let live = ts
+        .store
+        .cap_grants(&GrantFilter {
+            grantee: Some(EVERYONE.into()),
+            live: true,
+            ..GrantFilter::default()
+        })
+        .unwrap();
+    for cap in CAPABILITIES {
+        if !live.iter().any(|g| g.capability == cap) {
+            ts.store
+                .issue_cap_grant(&AuditCtx::DAEMON, cap, GRANTER_INSTANCE, EVERYONE, None)
+                .unwrap();
+        }
+    }
+}
+
 fn on_fake(base: &str) -> [(Setting, Option<Value>); 2] {
     [
         (Setting::BaseUrl, Some(json!(base))),
@@ -36,6 +58,7 @@ async fn daemon(fake: &FakeMessages) -> TestServer {
     ts.store
         .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
         .unwrap();
+    grant_everyone(&ts);
     let res = ts
         .client
         .put(format!("{}/api/admin/provider/key", ts.base))
@@ -294,8 +317,7 @@ async fn the_servers_host_passes_the_bot_host_conformance_suite() {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: String::new(),
-                    browser: String::new(),
+                    caps: String::new(),
                 },
             )
             .unwrap()
@@ -366,6 +388,7 @@ async fn a_run_edits_publishes_and_replies_as_claxbot_for_its_person() {
     ts.store
         .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
         .unwrap();
+    grant_everyone(&ts);
     // A new base URL drops the stored key: the admin enters it again.
     let res = ts
         .client
@@ -446,6 +469,7 @@ async fn held_daemon(fake: &FakeMessages) -> (TestServer, std::sync::Arc<clax_bo
     ts.store
         .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
         .unwrap();
+    grant_everyone(&ts);
     let res = ts
         .client
         .put(format!("{}/api/admin/provider/key", ts.base))
@@ -821,8 +845,7 @@ async fn a_reader_of_the_artifact_sees_a_runs_outline_alone_and_loses_it_with_th
                 key_source: clax_store::credits::KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
-                browser: String::new(),
+                caps: String::new(),
             },
         )
         .unwrap();
@@ -1413,8 +1436,7 @@ async fn a_runs_clax_json_that_changes_the_declaration_is_its_makers() {
                 key_source: KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
-                browser: String::new(),
+                caps: String::new(),
             },
         )
         .unwrap()
@@ -1487,8 +1509,7 @@ async fn a_runs_events_end_when_the_owner_logs_out() {
                 key_source: clax_store::credits::KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
-                browser: String::new(),
+                caps: String::new(),
             },
         )
         .unwrap();
@@ -1676,6 +1697,7 @@ async fn a_host_source_that_cannot_run_here_reads_not_configured_and_says_why() 
 /// Turns search and fetch on at `/admin` and sets the Cloudflare account
 /// ID and token, so the daemon's web use is configured.
 async fn web_on(ts: &TestServer) {
+    grant_everyone(ts);
     for (path, body) in [
         (
             "/api/admin/web",
@@ -1903,6 +1925,7 @@ async fn a_run_whose_step_does_not_read_fails_no_usage_page_and_no_listing() {
 /// Sets the Cloudflare account ID and token at `/admin` and turns browser
 /// testing on, so the daemon's browser use is configured.
 async fn browser_on(ts: &TestServer) {
+    grant_everyone(ts);
     for (path, body) in [
         (
             "/api/admin/web",
@@ -2179,6 +2202,7 @@ async fn a_whole_browser_test_through_the_daemon() {
     ts.store
         .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
         .unwrap();
+    grant_everyone(&ts);
     let res = ts
         .client
         .put(format!("{}/api/admin/provider/key", ts.base))

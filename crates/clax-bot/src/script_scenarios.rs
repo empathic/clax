@@ -465,7 +465,8 @@ async fn left(env: &Env, run: &str, live: &mut crate::Subscription) -> Left {
         .events_after(0, 10_000)
         .unwrap()
         .into_iter()
-        .filter(|e| e.kind.starts_with("bot."))
+        // A grant (`bot.grant`) is the instance's, not the run's.
+        .filter(|e| e.kind.starts_with("bot.") && e.kind != "bot.grant")
         .map(|e| {
             let i = &e.ids;
             json!({"kind": e.kind, "at": e.at,

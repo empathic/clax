@@ -6340,5 +6340,41 @@
       ],
       "timestamp": "2026-10-06T14:09:38.129Z"
     }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+        "structural": {
+          "capability": "browser.open.content",
+          "grant": "01JBCB0T000000000000000G02",
+          "grantee": "runs_of:u_77c0zz",
+          "granter": "u_77c0zz",
+          "op": "issue",
+          "parent": "01JBCB0T000000000000000G01",
+          "type": "clax.bot.grant"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "bot.grant",
+        "seq": 130,
+        "v": 1,
+        "via": "shell"
+      },
+      "description": "Granted browser.open.content to runs_of:u_77c0zz (grant 01JBCB0T000000000000000G02, under grant 01JBCB0T000000000000000G01)"
+    },
+    "step": {
+      "actor": "human:clax-owner",
+      "id": "e000000000130",
+      "parents": [
+        "e000000000129"
+      ],
+      "timestamp": "2026-10-06T14:09:39.130Z"
+    }
   }
 ]

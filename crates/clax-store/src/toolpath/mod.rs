@@ -777,7 +777,9 @@ impl Event<'_> {
                 .str("subject_person")
                 .map(Obj::Person)
                 .or(Some(Obj::Install)),
-            Some(K::ViewAudit | K::AdminProvider | K::AdminSettings) => Some(Obj::Install),
+            Some(K::ViewAudit | K::AdminProvider | K::AdminSettings | K::BotGrant) => {
+                Some(Obj::Install)
+            }
             Some(
                 K::AdminRole
                 | K::AdminFlag
@@ -1585,6 +1587,20 @@ impl Event<'_> {
                     "off"
                 },
                 self.show("person")
+            ),
+            Some(K::BotGrant) => format!(
+                "{} {} to {} (grant {}{})",
+                if self.str("op") == Some("revoke") {
+                    "Revoked"
+                } else {
+                    "Granted"
+                },
+                self.show("capability"),
+                self.show("grantee"),
+                self.show("grant"),
+                self.str("parent")
+                    .map(|p| format!(", under grant {p}"))
+                    .unwrap_or_default()
             ),
             Some(K::MeBrowser) => format!(
                 "Turned browser use {} for person {}",

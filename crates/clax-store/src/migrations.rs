@@ -2517,6 +2517,16 @@ pub const MIGRATIONS: &[&str] = &[
     // each person's own choice of browser use (§10.2), on unless they turn
     // it off; `bot_runs.browser` is the browser grant's shape when the run
     // was made (§4.5): `""`, `"test"`, `"browse"` or `"test,browse"`.
+    //
+    // Capabilities (spec 2026-11-19-claxbot-browser-design §4.3, §11.2):
+    // `bot_cap_grants` holds every grant of a capability, an instance-wide
+    // one (`everyone`), one to a person (`person:<key>`) and a person's to
+    // their own runs (`runs_of:<key>`, the child of one of the others),
+    // written only by `crate::bot_grants`; `bot_runs.caps` is the run's
+    // capabilities when it was made, capability IDs sorted and
+    // comma-separated. The Rust step ([`BROWSER_MIGRATION`]) writes main's
+    // web switches as explicit grants and fills `caps` from `web` and
+    // `browser` (`crate::bot_grants::grants_from_main`).
     // `bot_runs.browser` is the migration's mark (`MARKS_AFTER_APP`).
     "CREATE TABLE cost_lines_new (
         id TEXT PRIMARY KEY,
@@ -2540,7 +2550,22 @@ pub const MIGRATIONS: &[&str] = &[
     DROP TABLE cost_lines;
     ALTER TABLE cost_lines_new RENAME TO cost_lines;
     ALTER TABLE bot_person_prefs ADD COLUMN browser INTEGER NOT NULL DEFAULT 1;
-    ALTER TABLE bot_runs ADD COLUMN browser TEXT NOT NULL DEFAULT '';",
+    ALTER TABLE bot_runs ADD COLUMN browser TEXT NOT NULL DEFAULT '';
+    ALTER TABLE bot_runs ADD COLUMN caps TEXT NOT NULL DEFAULT '';
+    CREATE TABLE bot_cap_grants (
+        id TEXT PRIMARY KEY,
+        capability TEXT NOT NULL,
+        granter TEXT NOT NULL,
+        grantee TEXT NOT NULL,
+        parent TEXT REFERENCES bot_cap_grants(id),
+        status TEXT NOT NULL CHECK (status IN ('issued', 'revoked')),
+        issued_at TEXT NOT NULL,
+        issued_by TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_by TEXT
+    );
+    CREATE INDEX bot_cap_grants_by_grantee ON bot_cap_grants(grantee, capability, status);
+    CREATE INDEX bot_cap_grants_by_parent ON bot_cap_grants(parent) WHERE parent IS NOT NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2633,9 +2658,11 @@ pub const CONTENT_SECURITY_POLICY_MIGRATION: u32 = KEY_PROBLEM_MIGRATION + 1;
 pub const ANALYTICS_MIGRATION: u32 = CONTENT_SECURITY_POLICY_MIGRATION + 1;
 
 /// The migration that lets a cost line count browser hours (`browser_h`),
-/// seeds the `browser.time` line and keeps a person's browser choice
+/// seeds the `browser.time` line, keeps a person's browser choice
 /// (`bot_person_prefs.browser`) and a run's browser shape
-/// (`bot_runs.browser`), as a schema version, and this build's last.
+/// (`bot_runs.browser`), and adds capability grants (`bot_cap_grants`) and
+/// a run's capabilities (`bot_runs.caps`), as a schema version, and this
+/// build's last.
 pub const BROWSER_MIGRATION: u32 = ANALYTICS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
@@ -3148,6 +3175,7 @@ pub(super) fn rust_step_of(
     }
     if migrations[version as usize - 1] == MIGRATIONS[BROWSER_MIGRATION as usize - 1] {
         crate::credits::seed_browser_line(tx)?;
+        crate::bot_grants::grants_from_main(tx)?;
     }
     Ok(())
 }
@@ -8461,8 +8489,7 @@ mod tests {
                 key_source: run.key_source,
                 base_version: run.base_version,
                 agent_grant: run.agent_grant.clone(),
-                web: run.web.clone(),
-                browser: run.browser.clone(),
+                caps: run.caps.clone(),
             };
             assert_eq!(
                 new[&run.id],
@@ -8521,9 +8548,12 @@ mod tests {
         for o in &odd {
             let run = runs.iter().find(|r| r.id == o.id).expect("the odd run");
             let (web, threads) = (o.web, &o.thread_ids_json);
+            // Its web reads as the parts it names (migration 67 keeps them
+            // as capabilities, `bot_runs.caps`).
+            let named = crate::bot_runs::web_shape(&crate::bot_runs::caps_of_shapes(web, ""));
             assert_eq!(
                 (run.web.as_str(), &run.thread_ids),
-                (web, &o.thread_ids),
+                (named.as_str(), &o.thread_ids),
                 "the run read at 63 from web {web:?} and thread_ids_json {threads:?}"
             );
             assert_eq!(
@@ -9450,7 +9480,7 @@ mod tests {
             .unwrap();
         assert_eq!(shapes.len() as i64, runs);
         assert!(shapes.iter().all(String::is_empty), "{shapes:?}");
-        assert!(st.browser_choice("u_mia").unwrap());
+        assert!(!st.browser_choice("u_mia").unwrap(), "no grant is implied");
         assert!(!st.web_choice("u_mia").unwrap());
         assert!(
             c.execute(
@@ -9459,6 +9489,187 @@ mod tests {
             )
             .is_err(),
             "the unit is one of the CHECK's"
+        );
+    }
+
+    /// A database at 66, as main leaves it, from [`at_64_with_runs`], with
+    /// `sql` run on it, then opened by this build.
+    fn opened_from_66_with(home: &Home, sql: &str) -> Store {
+        let mut c = at_64_with_runs(home);
+        let at_66 = super::Numbering {
+            migrations: &MIGRATIONS[..super::KEY_PROBLEM_MIGRATION as usize],
+            main_marks: &MAIN_MARKS_ABOVE_38,
+        };
+        crate::migrate_with(&mut c, &at_66).unwrap();
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
+        c.execute_batch(sql).unwrap();
+        drop(c);
+        opened_after_the_runs(home)
+    }
+
+    /// Three connected people beside the owner: Ana chose web off, Ben
+    /// chose it on, Cy never chose; and a viewer who is not a person.
+    const PEOPLE_AT_66: &str = "
+        INSERT INTO viewers (id, public_id, display_name, created_at, person)
+            VALUES ('v-ana', 'u_ana', 'Ana', 'x', 1), ('v-ben', 'u_ben', 'Ben', 'x', 1),
+                   ('v-cy', 'u_cy', 'Cy', 'x', 1), ('v-vi', 'u_vi', 'Vi', 'x', 0);
+        INSERT INTO bot_person_prefs (person, web, set_at)
+            VALUES ('u_ana', 0, 'x'), ('u_ben', 1, 'x');";
+
+    fn grants_of(st: &Store, cap: &str) -> Vec<crate::bot_grants::GrantRow> {
+        st.cap_grants(&crate::bot_grants::GrantFilter {
+            capability: Some(cap.into()),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    /// Main's web switches on, and a person's choice off, become explicit
+    /// grants: one instance-wide grant per web capability, and its child
+    /// to the runs of every person but the one who chose off.
+    #[test]
+    fn migration_67_writes_main_web_as_explicit_grants() {
+        use crate::bot_grants::{EVERYONE, GRANTER_MIGRATION};
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let st = opened_from_66_with(
+            &home,
+            &format!(
+                "{PEOPLE_AT_66}
+                 INSERT INTO bot_settings (key, value_json, set_by, set_at)
+                     VALUES ('web.search.enabled', 'true', '*owner', 'x'),
+                            ('web.fetch.enabled', 'true', '*owner', 'x');"
+            ),
+        );
+        for cap in ["web.search", "web.fetch"] {
+            let grants = grants_of(&st, cap);
+            let root: Vec<_> = grants.iter().filter(|g| g.grantee == EVERYONE).collect();
+            assert_eq!(root.len(), 1, "{cap}: {grants:?}");
+            assert_eq!(
+                (root[0].granter.as_str(), root[0].issued_by.as_str()),
+                (GRANTER_MIGRATION, GRANTER_MIGRATION)
+            );
+            let children: Vec<&str> = grants
+                .iter()
+                .filter(|g| g.parent.as_deref() == Some(root[0].id.as_str()))
+                .map(|g| g.grantee.as_str())
+                .collect();
+            assert_eq!(
+                children,
+                ["runs_of:*owner", "runs_of:u_ben", "runs_of:u_cy"],
+                "{cap}"
+            );
+            assert_eq!(grants.len(), 4, "{cap}: nothing else");
+        }
+        assert!(!st.web_choice("u_ana").unwrap(), "Ana chose off");
+        assert!(
+            st.person_caps("u_ana").unwrap()["web.fetch"]
+                .granted_by
+                .is_some()
+        );
+        for p in [crate::roles::OWNER, "u_ben", "u_cy"] {
+            assert!(st.web_choice(p).unwrap(), "{p}");
+        }
+        assert!(!st.web_choice("u_vi").unwrap(), "a viewer is not a person");
+        // A person who joins after holds the web as the others do.
+        let dee = crate::roles::tests::person(&st, "Dee", 7);
+        assert!(st.web_choice(&dee).unwrap());
+    }
+
+    /// An instance whose web switches were off, or set on only one, gets
+    /// a grant of nothing it did not offer.
+    #[test]
+    fn migration_67_grants_nothing_where_web_was_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let st = opened_from_66_with(
+            &home,
+            &format!(
+                "{PEOPLE_AT_66}
+                 INSERT INTO bot_settings (key, value_json, set_by, set_at)
+                     VALUES ('web.search.enabled', 'false', '*owner', 'x'),
+                            ('web.fetch.enabled', 'true', '*owner', 'x');"
+            ),
+        );
+        assert!(grants_of(&st, "web.search").is_empty());
+        assert_eq!(grants_of(&st, "web.fetch").len(), 4);
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let st = opened_from_66_with(&home, PEOPLE_AT_66);
+        assert!(
+            st.cap_grants(&crate::bot_grants::GrantFilter::default())
+                .unwrap()
+                .is_empty(),
+            "switches never set are off"
+        );
+    }
+
+    /// No `browser.open` kind is granted by the migration, whatever the
+    /// first version's browser settings and choices said.
+    #[test]
+    fn migration_67_grants_no_browser_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let st = opened_from_66_with(
+            &home,
+            &format!(
+                "{PEOPLE_AT_66}
+                 INSERT INTO bot_settings (key, value_json, set_by, set_at)
+                     VALUES ('web.search.enabled', 'true', '*owner', 'x'),
+                            ('web.fetch.enabled', 'true', '*owner', 'x'),
+                            ('browser.enabled', 'true', '*owner', 'x'),
+                            ('browser.browse.enabled', 'true', '*owner', 'x');"
+            ),
+        );
+        for cap in crate::bot_grants::BROWSER_CAPABILITIES {
+            assert!(grants_of(&st, cap).is_empty(), "{cap}");
+        }
+        assert!(!st.browser_choice(crate::roles::OWNER).unwrap());
+    }
+
+    /// Each run's capabilities come from its web shape (main's) and its
+    /// browser shape (the first version's), each part as `Bindings::clax`
+    /// reads it, and the run reads as it read before.
+    #[test]
+    fn migration_67_fills_run_caps_from_web_and_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let mut c = at_64_with_runs(&home);
+        let at_66 = super::Numbering {
+            migrations: &MIGRATIONS[..super::KEY_PROBLEM_MIGRATION as usize],
+            main_marks: &MAIN_MARKS_ABOVE_38,
+        };
+        crate::migrate_with(&mut c, &at_66).unwrap();
+        let ids: Vec<String> = c
+            .prepare("SELECT id FROM bot_runs ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(ids.len() >= 4, "{ids:?}");
+        for (id, web) in ids.iter().zip(["search,fetch", "fetch", "", " search"]) {
+            c.execute(
+                "UPDATE bot_runs SET web = ?2 WHERE id = ?1",
+                params![id, web],
+            )
+            .unwrap();
+        }
+        drop(c);
+        let st = opened_after_the_runs(&home);
+        let caps: Vec<String> = ids
+            .iter()
+            .take(4)
+            .map(|id| st.run(id).unwrap().unwrap().caps)
+            .collect();
+        assert_eq!(caps, ["web.fetch,web.search", "web.fetch", "", ""]);
+        let run = st.run(&ids[0]).unwrap().unwrap();
+        assert_eq!(run.web, "search,fetch", "read as it was");
+        // A first-version home's browser shape reads the same way
+        // (`bot_runs.browser` exists only from 67).
+        assert_eq!(
+            crate::bot_runs::caps_of_shapes("search", "test,browse"),
+            "browser.open.artifact,browser.open.url,web.search"
         );
     }
 }

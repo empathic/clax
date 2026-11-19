@@ -706,6 +706,14 @@ impl Store {
                 // No longer `*unconnected` (multi-person M14, M17).
                 self.visibility_changed();
             }
+            let public_id: Option<String> = tx.query_row(
+                "SELECT public_id FROM viewers WHERE id = ?1",
+                params![viewer_id],
+                |r| r.get(0),
+            )?;
+            if let Some(p) = public_id {
+                self.issue_joined_grants_in(tx, ctx, &p)?;
+            }
             self.signed_in(
                 tx,
                 ctx,

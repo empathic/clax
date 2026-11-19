@@ -244,14 +244,83 @@ pub struct Run {
     /// as much as its person's do; `None` for a person's own send and the
     /// owner's agents.
     pub agent_grant: Option<String>,
-    /// The shape of the run's web grant when it was made: `""` (no web
-    /// tools), `"search"`, `"fetch"` or `"search,fetch"`. Written when the
-    /// run is made and never changed.
+    /// The run's capabilities when it was made (`bot_runs.caps`):
+    /// capability IDs ([`crate::bot_grants::CAPABILITIES`]) sorted and
+    /// comma-separated, `""` for none. Written when the run is made and
+    /// never changed.
+    pub caps: String,
+    /// The web operations its capabilities allow, as the run's web shape
+    /// was spelled: `""`, `"search"`, `"fetch"` or `"search,fetch"`
+    /// ([`web_shape`] of [`Run::caps`]).
     pub web: String,
-    /// The shape of the run's browser grant when it was made: `""` (no
-    /// browser), `"test"`, `"browse"` or `"test,browse"`. Written when the
-    /// run is made and never changed.
+    /// The first version's browser operations its capabilities allow:
+    /// `""`, `"test"` (`browser.open.artifact`), `"browse"`
+    /// (`browser.open.url`) or `"test,browse"` ([`browser_shape`] of
+    /// [`Run::caps`]).
     pub browser: String,
+}
+
+/// The capabilities text (`bot_runs.caps`) of a run whose web shape is
+/// `web` (`search`, `fetch`) and whose browser shape is `browser`
+/// (`test` for `browser.open.artifact`, `browse` for `browser.open.url`),
+/// each comma-separated; any other part names nothing. Sorted, each once.
+pub fn caps_of_shapes(web: &str, browser: &str) -> String {
+    let mut caps: Vec<&str> = web
+        .split(',')
+        .filter_map(|p| match p {
+            "search" => Some("web.search"),
+            "fetch" => Some("web.fetch"),
+            _ => None,
+        })
+        .chain(browser.split(',').filter_map(|p| match p {
+            "test" => Some("browser.open.artifact"),
+            "browse" => Some("browser.open.url"),
+            _ => None,
+        }))
+        .collect();
+    caps.sort_unstable();
+    caps.dedup();
+    caps.join(",")
+}
+
+/// `caps` (capability IDs, comma-separated, any order) as
+/// [`Store::create_run`] keeps them: the known ones sorted, each once.
+pub fn caps_text<'a>(caps: impl IntoIterator<Item = &'a str>) -> String {
+    let mut caps: Vec<&str> = caps
+        .into_iter()
+        .filter(|c| crate::bot_grants::CAPABILITIES.contains(c))
+        .collect();
+    caps.sort_unstable();
+    caps.dedup();
+    caps.join(",")
+}
+
+/// The web shape of capabilities text `caps`: `search` for `web.search`,
+/// `fetch` for `web.fetch`, in that order.
+pub fn web_shape(caps: &str) -> String {
+    let has = |c: &str| caps.split(',').any(|p| p == c);
+    [("web.search", "search"), ("web.fetch", "fetch")]
+        .into_iter()
+        .filter(|(c, _)| has(c))
+        .map(|(_, s)| s)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The first version's browser shape of capabilities text `caps`: `test`
+/// for `browser.open.artifact`, `browse` for `browser.open.url`, in that
+/// order.
+pub fn browser_shape(caps: &str) -> String {
+    let has = |c: &str| caps.split(',').any(|p| p == c);
+    [
+        ("browser.open.artifact", "test"),
+        ("browser.open.url", "browse"),
+    ]
+    .into_iter()
+    .filter(|(c, _)| has(c))
+    .map(|(_, s)| s)
+    .collect::<Vec<_>>()
+    .join(",")
 }
 
 /// What `bot_runs` keeps of a run's parking, beside [`Run`]
@@ -366,10 +435,8 @@ pub struct NewRun {
     pub base_version: u32,
     /// The grant of the agent that asked for it ([`Run::agent_grant`]).
     pub agent_grant: Option<String>,
-    /// The shape of its web grant ([`Run::web`]).
-    pub web: String,
-    /// The shape of its browser grant ([`Run::browser`]).
-    pub browser: String,
+    /// Its capabilities ([`Run::caps`], [`caps_text`]).
+    pub caps: String,
 }
 
 /// The surface every run made so far is of: Clax's own, which declares
@@ -956,7 +1023,11 @@ impl NewRun {
     /// on its artifact.
     #[must_use]
     pub fn bindings(&self) -> Bindings {
-        Bindings::clax(&self.artifact_id, &self.web, &self.browser)
+        Bindings::clax(
+            &self.artifact_id,
+            &web_shape(&self.caps),
+            &browser_shape(&self.caps),
+        )
     }
 
     /// The run's request (`bot_runs.request_json`).
@@ -1020,7 +1091,7 @@ pub struct Committed {
 
 const RUN_COLS: &str = "id, artifact_id, person, request, thread_ids_json, status, reason, model,
     key_source, base_version, credits_milli, claimed_by, claimed_at, created_at, updated_at, ended_at,
-    agent_grant, due_at, web, browser";
+    agent_grant, due_at, caps";
 
 /// Column `i` of a `bot_runs` row, `column`, as the `T` its text names.
 /// A value `parse` does not know is an error naming the column and the
@@ -1108,8 +1179,9 @@ fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
         ended_at: r.get(15)?,
         agent_grant: r.get(16)?,
         due_at: r.get(17)?,
-        web: s(18)?,
-        browser: s(19)?,
+        web: web_shape(&s(18)?),
+        browser: browser_shape(&s(18)?),
+        caps: s(18)?,
     })
 }
 
@@ -1133,8 +1205,7 @@ fn as_made(
         key_source: run.key_source,
         base_version: run.base_version,
         agent_grant: run.agent_grant.clone(),
-        web: run.web.clone(),
-        browser: run.browser.clone(),
+        caps: run.caps.clone(),
     };
     RunAsMade {
         kind: kind.unwrap_or_else(|| before_64().kind()),
@@ -1203,16 +1274,26 @@ pub(crate) fn run_in(c: &Connection, id: &str) -> Result<Option<Run>> {
 }
 
 /// [`run_in`] on a database migrated only as far as migrations 63 to 66
-/// leave `bot_runs`, before migration 67 adds `bot_runs.browser`: the run
-/// reads with no browser grant, as migration 67's default gives it.
+/// leave `bot_runs`, before migration 67 adds `bot_runs.caps`: the run
+/// reads with the capabilities migration 67 gives it from its web shape
+/// ([`caps_of_shapes`]).
 #[cfg(test)]
 #[warn(clippy::disallowed_methods)]
 pub(crate) fn run_before_browser_in(c: &Connection, id: &str) -> Result<Option<Run>> {
-    let cols = RUN_COLS.replace(", web, browser", ", web, '' AS browser");
+    let cols = RUN_COLS.replace(", caps", ", web");
     Ok(
         c.prepare(&format!("SELECT {cols} FROM bot_runs WHERE id = ?1"))?
             .query_row(params![id], row_to_run)
-            .optional()?,
+            .optional()?
+            .map(|run| {
+                let caps = caps_of_shapes(&run.caps, "");
+                Run {
+                    web: web_shape(&caps),
+                    browser: browser_shape(&caps),
+                    caps,
+                    ..run
+                }
+            }),
     )
 }
 
@@ -1827,9 +1908,9 @@ impl Store {
             tx.execute(
                 "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
                     model, key_source, base_version, created_at, updated_at, agent_grant, web,
-                    kind, bindings_json, request_json, browser)
+                    kind, bindings_json, request_json, browser, caps)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?9, ?10, ?11,
-                    ?12, ?13, ?14, ?15)",
+                    ?12, ?13, ?14, ?15, ?16)",
                 params![
                     id,
                     new.artifact_id,
@@ -1841,11 +1922,12 @@ impl Store {
                     new.base_version,
                     now,
                     new.agent_grant,
-                    new.web,
+                    web_shape(&new.caps),
                     new.kind(),
                     bindings.map_or_else(|| new.bindings().to_json(), Bindings::to_json),
                     serde_json::to_string(&new.clax_request()).expect("serialisable IDs"),
-                    new.browser
+                    browser_shape(&new.caps),
+                    caps_text(new.caps.split(','))
                 ],
             )?;
             let mut rec = AuditRecord::new(AuditKind::BotRunStart, now)
@@ -1931,7 +2013,7 @@ impl Store {
             ))?
             .query_row(params![id], |r| {
                 let run = row_to_run(r)?;
-                let made = as_made(&run, r.get(20)?, r.get(21)?, r.get(22)?);
+                let made = as_made(&run, r.get(19)?, r.get(20)?, r.get(21)?);
                 Ok((run, made))
             })
             .optional()?)
@@ -1953,7 +2035,7 @@ impl Store {
                 ))?
                 .query_row(params![id], |r| {
                     let run = row_to_run(r)?;
-                    let made = as_made(&run, r.get(20)?, r.get(21)?, r.get(22)?);
+                    let made = as_made(&run, r.get(19)?, r.get(20)?, r.get(21)?);
                     Ok((run, made))
                 })
                 .optional()?;
@@ -3660,8 +3742,7 @@ mod tests {
                 key_source: KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
-                browser: String::new(),
+                caps: String::new(),
             },
         )
     }
@@ -3787,7 +3868,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_keeps_its_browser_shape() {
+    fn a_run_keeps_its_capabilities() {
         let (_d, st) = store();
         let aid = artifact(&st, None).to_string();
         let made = st
@@ -3802,14 +3883,34 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: String::new(),
-                    browser: "test".into(),
+                    caps:
+                        "browser.open.content,browser.open.artifact,web.crawl,browser.open.content"
+                            .into(),
                 },
             )
             .unwrap()
             .unwrap();
         let (run, as_made) = st.run_as_made(&made.id).unwrap().unwrap();
-        assert_eq!(run.browser, "test");
+        assert_eq!(
+            run.caps, "browser.open.artifact,browser.open.content",
+            "known capabilities, sorted, each once"
+        );
+        assert_eq!((run.web.as_str(), run.browser.as_str()), ("", "test"));
+        assert_eq!(st.run(&run.id).unwrap().unwrap().caps, run.caps);
+        assert_eq!(
+            caps_of_shapes("fetch,search,search", "browse,test,x"),
+            "browser.open.artifact,browser.open.url,web.fetch,web.search"
+        );
+        assert_eq!(caps_of_shapes(" search", "Test"), "");
+        assert_eq!(
+            web_shape("web.fetch,web.search"),
+            "search,fetch",
+            "in main's order"
+        );
+        assert_eq!(
+            browser_shape("browser.open.url,browser.open.artifact"),
+            "test,browse"
+        );
         let bindings = as_made.bindings().unwrap();
         assert_eq!(bindings.bindings[0].granted(), ["browser.test"]);
         assert_eq!(kept(&st, &run.id).1, bindings, "kept as made");
@@ -3846,8 +3947,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: web.into(),
-                    browser: String::new(),
+                    caps: caps_of_shapes(web, ""),
                 },
             )
             .unwrap()
@@ -4388,8 +4488,7 @@ mod tests {
                 key_source: KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
-                browser: String::new(),
+                caps: String::new(),
             },
         );
         assert!(matches!(again, Err(CoreError::NotFound)), "{again:?}");
@@ -4686,8 +4785,7 @@ mod tests {
             key_source,
             base_version: 1,
             agent_grant: None,
-            web: String::new(),
-            browser: String::new(),
+            caps: String::new(),
         };
         assert_eq!(
             code(st.create_run(&bot(), new(KeySource::Instance))),
@@ -5696,8 +5794,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: String::new(),
-                    browser: String::new(),
+                    caps: String::new(),
                 },
             )
             .unwrap();
@@ -6290,6 +6387,7 @@ mod tests {
                 ended_at: None,
                 due_at: None,
                 agent_grant: None,
+                caps: String::new(),
                 web: String::new(),
                 browser: String::new(),
             }

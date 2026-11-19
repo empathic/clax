@@ -661,6 +661,28 @@ impl Env {
         self.store
             .set_bot_settings(&AuditCtx::DAEMON, &changes)
             .unwrap();
+        self.grant_everyone();
+    }
+
+    /// The instance-wide grant of every capability, once: no capability
+    /// reaches a run without one (migration 67).
+    pub fn grant_everyone(&self) {
+        use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GRANTER_INSTANCE, GrantFilter};
+        let live = self
+            .store
+            .cap_grants(&GrantFilter {
+                grantee: Some(EVERYONE.into()),
+                live: true,
+                ..GrantFilter::default()
+            })
+            .unwrap();
+        for cap in CAPABILITIES {
+            if !live.iter().any(|g| g.capability == cap) {
+                self.store
+                    .issue_cap_grant(&AuditCtx::DAEMON, cap, GRANTER_INSTANCE, EVERYONE, None)
+                    .unwrap();
+            }
+        }
     }
 
     /// A thread run that declares the web operations of `shape`
@@ -746,8 +768,7 @@ impl Env {
                     key_source,
                     base_version: 1,
                     agent_grant: None,
-                    web: shape.as_str().into(),
-                    browser: browser.as_str().into(),
+                    caps: clax_store::bot_runs::caps_of_shapes(shape.as_str(), browser.as_str()),
                 },
             )
             .unwrap()
@@ -868,7 +889,8 @@ impl Env {
             .events_after(0, 10_000)
             .unwrap()
             .into_iter()
-            .filter(|e| e.kind.starts_with("bot."))
+            // A grant (`bot.grant`) is the instance's, not the run's.
+            .filter(|e| e.kind.starts_with("bot.") && e.kind != "bot.grant")
             .map(|e| (e.kind.clone(), serde_json::from_str(&e.body).unwrap()))
             .collect()
     }

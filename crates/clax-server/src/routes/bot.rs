@@ -1063,11 +1063,12 @@ pub fn start_run(
         key_source,
         base_version: art.current_version,
         agent_grant: sender.agent_grant.clone(),
-        web: WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
-            .shape()
-            .as_str()
-            .to_string(),
-        browser: run_browser_shape(st, bot, person)?.as_str().to_string(),
+        caps: clax_store::bot_runs::caps_of_shapes(
+            WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
+                .shape()
+                .as_str(),
+            run_browser_shape(st, bot, person)?.as_str(),
+        ),
     };
     // The surfaces whose hosts joined the artifact and are connected now
     // are bound too (`super::bot_joins`); with none, the run is made as
@@ -1077,8 +1078,8 @@ pub fn start_run(
         bot,
         sender,
         aid.as_str(),
-        &new.web,
-        &new.browser,
+        &clax_store::bot_runs::web_shape(&new.caps),
+        &clax_store::bot_runs::browser_shape(&new.caps),
         &new.thread_ids,
     )?;
     match joined {

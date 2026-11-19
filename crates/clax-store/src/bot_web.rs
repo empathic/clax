@@ -1,13 +1,13 @@
 //! ClaxBot's web tools in the store (migration 63, spec
 //! 2026-11-02-claxbot-web-tools).
 //!
-//! - A person's own choice (§9.2): web search and web fetch are on for a
-//!   person unless they turn them off, whatever the instance's
-//!   `web.*.enabled` settings say; the instance settings still decide
-//!   whether the tools exist at all. The choice is a row of
-//!   `bot_person_prefs`, kept per person key. The same row keeps their
-//!   choice of browser use (migration 67, spec 2026-11-19-claxbot-browser
-//!   §10.2), a switch of its own beside the web one.
+//! - A person's own choice (§9.2), now their grants of each web
+//!   capability to their runs (migration 67, spec
+//!   2026-11-19-claxbot-browser-design §11.2, [`crate::bot_grants`]):
+//!   [`Store::web_choice`] and [`Store::set_web_choice`] read and set both
+//!   web capabilities' at once, [`Store::browser_choice`] and
+//!   [`Store::set_browser_choice`] the three `browser.open` kinds'.
+//!   `bot_person_prefs` is no longer read.
 //! - The Spend transaction (§4.2, §7.2): a web call's journal entry, its
 //!   usage row and (for a fetch) its page commit together, before the
 //!   script sees the answer ([`Store::spend_journaled`]). The usage row is
@@ -20,12 +20,13 @@
 //!   from the store, so a second page of it is refused (`page_exists`).
 
 use super::Store;
+use crate::bot_grants::{BROWSER_CAPABILITIES, Grantee, WEB_CAPABILITIES};
 use crate::bot_runs::{
     CALL_COLS, CallEntry, DriverId, Run, call_in, check_claim, insert_call, open_step_in,
     row_to_call, run_in, same_call,
 };
 use crate::credits::{Metered, charge_in};
-use clax_core::audit::{Actor, AuditCtx, AuditKind, AuditRecord};
+use clax_core::audit::{Actor, AuditCtx, AuditRecord};
 use clax_core::{CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::collections::BTreeMap;
@@ -137,103 +138,76 @@ fn insert_page(
 }
 
 impl Store {
-    /// Whether `person` allows ClaxBot the web tools: `true` when they
-    /// never chose.
+    /// Whether both web capabilities reach `person`'s runs: each held by
+    /// them and granted to their runs ([`Store::person_caps`]).
     ///
     /// # Errors
     /// The store's.
     pub fn web_choice(&self, person: &str) -> Result<bool> {
-        self.with_read(|c| {
-            Ok(
-                c.prepare_cached("SELECT web FROM bot_person_prefs WHERE person = ?1")?
-                    .query_row(params![person], |r| r.get::<_, bool>(0))
-                    .optional()?
-                    .unwrap_or(true),
-            )
-        })
+        self.family_reaches_runs(person, &WEB_CAPABILITIES)
     }
 
-    /// Sets whether `person` allows ClaxBot the web tools, as `ctx`; a
-    /// change is recorded as `me.web {person, value}`. Returns whether the
-    /// choice changed.
+    /// Turns `person`'s grants of both web capabilities to their runs on
+    /// or off, as `ctx` ([`Store::set_family_choice`]). Returns whether
+    /// any grant changed.
     ///
     /// # Errors
     /// The store's.
     pub fn set_web_choice(&self, ctx: &AuditCtx, person: &str, on: bool) -> Result<bool> {
-        self.with_tx(|tx| {
-            let was: bool = tx
-                .query_row(
-                    "SELECT web FROM bot_person_prefs WHERE person = ?1",
-                    params![person],
-                    |r| r.get(0),
-                )
-                .optional()?
-                .unwrap_or(true);
-            if was == on {
-                return Ok(false);
-            }
-            tx.execute(
-                "INSERT INTO bot_person_prefs (person, web, set_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (person) DO UPDATE SET web = excluded.web, set_at = excluded.set_at",
-                params![person, on, self.now()],
-            )?;
-            let rec = AuditRecord::new(AuditKind::MeWeb, self.now())
-                .with("person", person)
-                .with("value", on);
-            self.record_audit(tx, ctx, rec)?;
-            Ok(true)
-        })
+        self.set_family_choice(ctx, person, &WEB_CAPABILITIES, on)
     }
 
-    /// Whether `person` allows ClaxBot a browser (spec
-    /// 2026-11-19-claxbot-browser §10.2): `true` when they never chose.
-    /// Their web choice ([`Store::web_choice`]) is a separate switch.
+    /// Whether every `browser.open` kind reaches `person`'s runs.
     ///
     /// # Errors
     /// The store's.
     pub fn browser_choice(&self, person: &str) -> Result<bool> {
-        self.with_read(|c| {
-            Ok(
-                c.prepare_cached("SELECT browser FROM bot_person_prefs WHERE person = ?1")?
-                    .query_row(params![person], |r| r.get::<_, bool>(0))
-                    .optional()?
-                    .unwrap_or(true),
-            )
-        })
+        self.family_reaches_runs(person, &BROWSER_CAPABILITIES)
     }
 
-    /// Sets whether `person` allows ClaxBot a browser, as `ctx`; a change
-    /// is recorded as `me.browser {person, value}`. The person's web choice
-    /// is left as it is (on, for a person who never chose). Returns whether
-    /// the choice changed.
+    /// Turns `person`'s grants of the three `browser.open` kinds to their
+    /// runs on or off, as `ctx` ([`Store::set_family_choice`]). Returns
+    /// whether any grant changed.
     ///
     /// # Errors
     /// The store's.
     pub fn set_browser_choice(&self, ctx: &AuditCtx, person: &str, on: bool) -> Result<bool> {
-        self.with_tx(|tx| {
-            let was: bool = tx
-                .query_row(
-                    "SELECT browser FROM bot_person_prefs WHERE person = ?1",
-                    params![person],
-                    |r| r.get(0),
-                )
-                .optional()?
-                .unwrap_or(true);
-            if was == on {
-                return Ok(false);
+        self.set_family_choice(ctx, person, &BROWSER_CAPABILITIES, on)
+    }
+
+    fn family_reaches_runs(&self, person: &str, caps: &[&str]) -> Result<bool> {
+        let held = self.person_caps(person)?;
+        Ok(caps.iter().all(|c| held[*c].reaches_runs()))
+    }
+
+    /// Off revokes each live grant of `caps` to `person`'s runs; on issues
+    /// one, under the admin grant that gives them the capability, for each
+    /// they hold and have not granted to their runs. A capability they do
+    /// not hold is left as it is. Returns whether any grant changed.
+    fn set_family_choice(
+        &self,
+        ctx: &AuditCtx,
+        person: &str,
+        caps: &[&str],
+        on: bool,
+    ) -> Result<bool> {
+        let held = self.person_caps(person)?;
+        let runs = Grantee::RunsOf(person.to_string()).as_text();
+        let mut changed = false;
+        for cap in caps {
+            let h = &held[*cap];
+            match (on, &h.granted_by, &h.runs_grant) {
+                (false, _, Some(g)) => {
+                    changed |= !self.revoke_cap_grant(ctx, g)?.is_empty();
+                }
+                (true, Some(parent), None) => {
+                    self.issue_cap_grant(ctx, cap, person, &runs, Some(parent))?;
+                    changed = true;
+                }
+                _ => {}
             }
-            tx.execute(
-                "INSERT INTO bot_person_prefs (person, web, browser, set_at) VALUES (?1, 1, ?2, ?3)
-                 ON CONFLICT (person) DO UPDATE
-                    SET browser = excluded.browser, set_at = excluded.set_at",
-                params![person, on, self.now()],
-            )?;
-            let rec = AuditRecord::new(AuditKind::MeBrowser, self.now())
-                .with("person", person)
-                .with("value", on);
-            self.record_audit(tx, ctx, rec)?;
-            Ok(true)
-        })
+        }
+        Ok(changed)
     }
 
     /// Journals web call `s.entry` of `run` for `driver`, which holds the
@@ -437,6 +411,7 @@ mod tests {
     use crate::test_util::{DAEMON, artifact, store};
     use clax_core::CoreError;
     use clax_core::audit::Actor;
+    use clax_core::audit::AuditKind;
     use serde_json::json;
 
     fn bot() -> AuditCtx {
@@ -463,8 +438,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: "search,fetch".into(),
-                    browser: String::new(),
+                    caps: "web.fetch,web.search".into(),
                 },
             )
             .unwrap();
@@ -875,47 +849,74 @@ mod tests {
         assert_eq!((pages(&st, &run), pages(&st, &going)), (0, 1));
     }
 
+    fn everyone(st: &Store, caps: &[&str]) {
+        for cap in caps {
+            st.issue_cap_grant(
+                DAEMON,
+                cap,
+                crate::bot_grants::GRANTER_INSTANCE,
+                crate::bot_grants::EVERYONE,
+                None,
+            )
+            .unwrap();
+        }
+    }
+
+    fn grant_ops(st: &Store) -> Vec<(String, String)> {
+        st.events_after(0, 1000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "bot.grant")
+            .map(|e| {
+                let b: serde_json::Value = serde_json::from_str(&e.body).unwrap();
+                (
+                    b["op"].as_str().unwrap().to_string(),
+                    b["capability"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn a_person_chooses_web_off_and_back() {
         let (_d, st) = store();
+        assert!(!st.web_choice(OWNER).unwrap(), "no grant, no web");
+        assert!(
+            !st.set_web_choice(DAEMON, OWNER, true).unwrap(),
+            "nothing held to turn on"
+        );
+        everyone(&st, &["web.search"]);
+        assert!(!st.web_choice(OWNER).unwrap(), "fetch is not granted");
+        everyone(&st, &["web.fetch"]);
         assert!(st.web_choice(OWNER).unwrap());
+        let before = grant_ops(&st).len();
         assert!(!st.set_web_choice(DAEMON, OWNER, true).unwrap());
         assert!(st.set_web_choice(DAEMON, OWNER, false).unwrap());
         assert!(!st.web_choice(OWNER).unwrap());
         assert!(!st.set_web_choice(DAEMON, OWNER, false).unwrap());
-        let events: Vec<String> = st
-            .events_after(0, 100)
-            .unwrap()
-            .into_iter()
-            .filter(|e| e.kind == "me.web")
-            .map(|e| e.body)
-            .collect();
-        assert_eq!(events.len(), 1, "one change, one event");
-        assert!(events[0].contains("\"value\":false"), "{}", events[0]);
+        assert_eq!(
+            grant_ops(&st)[before..],
+            [
+                ("revoke".to_string(), "web.search".to_string()),
+                ("revoke".to_string(), "web.fetch".to_string())
+            ],
+            "each runs grant revoked, recorded once"
+        );
         assert!(st.set_web_choice(DAEMON, OWNER, true).unwrap());
         assert!(st.web_choice(OWNER).unwrap());
-        assert!(st.web_choice("someone-else").unwrap());
+        assert!(!st.web_choice("someone-else").unwrap(), "not a person");
     }
 
     #[test]
     fn a_person_turns_the_browser_off_and_back() {
         let (_d, st) = store();
+        everyone(&st, &crate::bot_grants::CAPABILITIES);
         assert!(st.browser_choice(OWNER).unwrap());
         assert!(!st.set_browser_choice(DAEMON, OWNER, true).unwrap());
         assert!(st.set_browser_choice(DAEMON, OWNER, false).unwrap());
         assert!(!st.browser_choice(OWNER).unwrap());
         assert!(st.web_choice(OWNER).unwrap(), "the web choice is its own");
         assert!(!st.set_browser_choice(DAEMON, OWNER, false).unwrap());
-        let events: Vec<String> = st
-            .events_after(0, 100)
-            .unwrap()
-            .into_iter()
-            .filter(|e| e.kind == "me.browser")
-            .map(|e| e.body)
-            .collect();
-        assert_eq!(events.len(), 1, "one change, one event");
-        assert!(events[0].contains("\"value\":false"), "{}", events[0]);
-        assert!(events[0].contains(OWNER), "{}", events[0]);
         assert!(st.set_web_choice(DAEMON, OWNER, false).unwrap());
         assert!(
             !st.browser_choice(OWNER).unwrap(),
@@ -927,6 +928,5 @@ mod tests {
             !st.web_choice(OWNER).unwrap(),
             "the browser choice keeps it"
         );
-        assert!(st.browser_choice("someone-else").unwrap());
     }
 }

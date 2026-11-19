@@ -904,13 +904,15 @@ impl Store {
                 InvitePerson::New(name) => {
                     let name = check_person_name(tx, name, None)?;
                     let id = new_ulid();
+                    let public_id = new_public_id();
                     tx.execute(
                         "INSERT INTO viewers (id, public_id, display_name, created_at, person)
                          VALUES (?1, ?2, ?3, ?4, 1)",
-                        params![id, new_public_id(), name, now],
+                        params![id, public_id, name, now],
                     )?;
                     // A new person: not `*unconnected` (M14, M17).
                     self.visibility_changed();
+                    self.issue_joined_grants_in(tx, ctx, &public_id)?;
                     id
                 }
                 InvitePerson::Viewer(public_id) => {
@@ -944,6 +946,7 @@ impl Store {
                         // A viewer made a person: no longer `*unconnected`.
                         self.visibility_changed();
                     }
+                    self.issue_joined_grants_in(tx, ctx, public_id)?;
                     id
                 }
                 InvitePerson::Owner => {

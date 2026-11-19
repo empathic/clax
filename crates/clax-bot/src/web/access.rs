@@ -454,6 +454,26 @@ mod tests {
         let changes: Vec<(Setting, Option<Value>)> =
             changes.iter().map(|(s, v)| (*s, Some(v.clone()))).collect();
         st.set_bot_settings(&AuditCtx::DAEMON, &changes).unwrap();
+        grant_everyone(st);
+    }
+
+    /// The instance-wide grant of every capability, once: no capability
+    /// reaches a run without one (migration 67).
+    fn grant_everyone(st: &Store) {
+        use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GRANTER_INSTANCE, GrantFilter};
+        let live = st
+            .cap_grants(&GrantFilter {
+                grantee: Some(EVERYONE.into()),
+                live: true,
+                ..GrantFilter::default()
+            })
+            .unwrap();
+        for cap in CAPABILITIES {
+            if !live.iter().any(|g| g.capability == cap) {
+                st.issue_cap_grant(&AuditCtx::DAEMON, cap, GRANTER_INSTANCE, EVERYONE, None)
+                    .unwrap();
+            }
+        }
     }
 
     #[test]
@@ -625,8 +645,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: shape.as_str().into(),
-                    browser: String::new(),
+                    caps: clax_store::bot_runs::caps_of_shapes(shape.as_str(), ""),
                 },
             )
             .unwrap();
@@ -733,8 +752,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: "search,fetch".into(),
-                    browser: String::new(),
+                    caps: "web.fetch,web.search".into(),
                 },
             )
             .unwrap();

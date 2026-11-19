@@ -50,6 +50,26 @@ fn code(v: &Value) -> &str {
 }
 
 /// The events of `kind` recorded so far, as (actor, body).
+/// The instance-wide grant of every capability: none reaches a person
+/// without one (migration 67).
+fn grant_everyone(ts: &TestServer) {
+    use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GRANTER_INSTANCE};
+    for cap in CAPABILITIES {
+        ts.store
+            .issue_cap_grant(&AuditCtx::DAEMON, cap, GRANTER_INSTANCE, EVERYONE, None)
+            .unwrap();
+    }
+}
+
+/// The `op` of each `bot.grant` record of `capability`, in order.
+fn grant_ops(ts: &TestServer, capability: &str) -> Vec<String> {
+    events(ts, "bot.grant")
+        .into_iter()
+        .filter(|(_, b)| b["capability"] == capability)
+        .map(|(_, b)| b["op"].as_str().unwrap().to_string())
+        .collect()
+}
+
 fn events(ts: &TestServer, kind: &str) -> Vec<(Value, Value)> {
     ts.store
         .events_after(0, 10_000)
@@ -2864,6 +2884,7 @@ async fn web_is_configured_once_the_account_and_token_are_set() {
     let ts = &p.ts;
     let owner = Who::OwnerBrowser;
     let sam = Who::Person(p.sam.0.clone());
+    grant_everyone(ts);
     let (s, v) = call(
         ts,
         &owner,
@@ -3014,6 +3035,9 @@ async fn me_turns_web_off() {
     let sam = Who::Person(p.sam.0.clone());
     let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(s, 200, "{v}");
+    assert_eq!(v["web"]["on"], false, "no grant, nothing implied");
+    grant_everyone(ts);
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(v["web"]["on"], true);
     assert_eq!(v["web"]["offered"], false);
     assert_eq!(v["web"]["why_off"], "admin_off");
@@ -3035,7 +3059,13 @@ async fn me_turns_web_off() {
     assert_eq!(v["web"]["on"], false);
     let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(v["web"]["on"], false);
-    assert_eq!(events(ts, "me.web").len(), 1);
+    for cap in ["web.search", "web.fetch"] {
+        assert_eq!(
+            grant_ops(ts, cap).iter().filter(|o| *o == "revoke").count(),
+            1,
+            "{cap}: Sam's runs grant revoked, once"
+        );
+    }
     // The choice is the person's own.
     let (_, v) = call(
         ts,
@@ -3056,6 +3086,7 @@ async fn me_put_needs_a_field() {
     let p = people().await;
     let ts = &p.ts;
     let sam = Who::Person(p.sam.0.clone());
+    grant_everyone(ts);
     let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({})).await;
     assert_eq!((s, code(&v)), (400, "empty_request"), "{v}");
     // Both fields in one request: use_own still needs a key.
@@ -3317,6 +3348,7 @@ async fn me_bot_shows_the_browser_switch() {
     let ts = &p.ts;
     let sam = Who::Person(p.sam.0.clone());
     let owner = Who::OwnerBrowser;
+    grant_everyone(ts);
     let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(s, 200, "{v}");
     // A minute of the browser.time line, as a test is charged for it.
@@ -3389,7 +3421,13 @@ async fn me_bot_shows_the_browser_switch() {
         (&v["browser"]["on"], &v["browser"]["why_off"]),
         (&json!(false), &json!("person_off"))
     );
-    assert_eq!(events(ts, "me.browser").len(), 1);
+    for cap in clax_store::bot_grants::BROWSER_CAPABILITIES {
+        assert_eq!(
+            grant_ops(ts, cap).iter().filter(|o| *o == "revoke").count(),
+            1,
+            "{cap}: Sam's runs grant revoked, once"
+        );
+    }
     // The choice is the person's own.
     let (_, v) = call(ts, &owner, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(v["browser"]["on"], true);
