@@ -274,7 +274,8 @@ fn tagged_by_policy(source: &[u8], unrestricted: bool) -> Vec<u8> {
 /// stored: immutable, unless `current` (the version a site's root serves,
 /// whose files change with its next version: then revalidated, with an
 /// `ETag` of its artifact, version, path and size); an HTML file that is
-/// not UTF-8 is revalidated like every page.
+/// not UTF-8 is revalidated like every page. A file served as stored
+/// answers a byte range ([`http_cache::stored_file`]); a page does not.
 ///
 /// While the artifact's `content_security_policy` is `unrestricted` and
 /// the response carries that policy (not a live page's snapshot), every
@@ -325,37 +326,31 @@ pub(crate) async fn serve_version(
         }
         Served::Raw(bytes, meta) => (bytes, meta),
     };
-    let body = Body::from(bytes);
-    if is_html(&meta.content_type) || current || unrestricted {
-        // A version's files never change, so its artifact, version, path
-        // and size identify its bytes.
-        let etag = http_cache::etag_of(&tagged_by_policy(
+    // A version's files never change, so its artifact, version, path and
+    // size identify its bytes: the tag of a file that is revalidated. One
+    // served immutable has none. While the site is `unrestricted`, every
+    // file is revalidated and its tag names the policy ([`tagged_by_policy`]).
+    let (etag, cache_control) = if is_html(&meta.content_type) || current || unrestricted {
+        let tag = http_cache::etag_of(&tagged_by_policy(
             format!("{tag_source}\0{}", meta.size).as_bytes(),
             unrestricted,
         ));
-        let ct = meta.content_type.clone();
-        let res = http_cache::tagged_as(req, etag, http_cache::REVALIDATE, move || {
-            (
-                [
-                    (header::CONTENT_TYPE, ct),
-                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-                ],
-                body,
-            )
-                .into_response()
-        });
-        return Ok(framed_by_shell(s, res, req, live, csp));
-    }
-    let res = (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, meta.content_type.as_str()),
-            (header::CACHE_CONTROL, http_cache::IMMUTABLE),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-        ],
-        body,
-    )
-        .into_response();
+        (Some(tag), http_cache::REVALIDATE)
+    } else {
+        (None, http_cache::IMMUTABLE)
+    };
+    let ct = meta.content_type;
+    let res = http_cache::stored_file(req, bytes, etag, cache_control, move |status, body| {
+        (
+            status,
+            [
+                (header::CONTENT_TYPE, ct),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            ],
+            body,
+        )
+            .into_response()
+    });
     Ok(framed_by_shell(s, res, req, live, csp))
 }
 

@@ -11551,7 +11551,9 @@ was made; and a run's end, sent until it is acknowledged.
   artifact) and the UI's files; any other `/_clax/` path is a 404. An
   artifact made before sites (`legacy_paths`) also keeps
   `/_blob/<asset ID>` for its assets. Publishing refuses a file under
-  `_clax/`, and under `_blob/` for such an artifact. Every response there,
+  `_clax/`, and under `_blob/` for such an artifact. Its files served as
+  stored and its assets answer byte ranges (`206`, `416`; "Browser
+  caching", below). Every response there,
   an error's included, carries `Referrer-Policy: no-referrer`,
   `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy:
   same-origin` (`cross-origin` on a site open to the world), on `https`
@@ -12025,6 +12027,26 @@ was made; and a run's end, sent until it is acknowledged.
   contains the bridge URL is left alone.
 - Supporting files that are not HTML, and uploaded assets (`/_blob/...`),
   are immutable: their URLs name bytes that never change.
+- A file served as stored on an artifact's site (a version's file that is
+  not a wrapped page, under `/` and `/_clax/v/<n>/`; a draft's file under
+  `/_clax/draft/…`; an asset under `/_clax/blob/<id>`, or `/_blob/…` where
+  that is the asset's address) answers byte ranges (RFC 9110 §14), so a
+  browser can seek in a video or audio file. Every such answer carries
+  `Accept-Ranges: bytes`. A `Range` of one range, `bytes=a-b`, `bytes=a-`
+  or `bytes=-n`, gets `206 Partial Content` with those bytes, `Content-Range:
+  bytes a-b/<size>` and their `Content-Length`, and the same `ETag`,
+  `Cache-Control` and other headers as the whole file's `200`; an end past
+  the file is cut to its last byte. A range that starts at or past the end
+  (or `bytes=-0`, or any range of an empty file) gets `416 Range Not
+  Satisfiable` with `Content-Range: bytes */<size>`, no body,
+  `Cache-Control: no-store` and no `ETag`. More than one range, another
+  unit, or a `Range` that does not parse gets the whole file as `200`. An
+  `If-Range` honours the range only when it is the file's current `ETag`
+  (compared strongly); a date, another tag, or any `If-Range` for a file
+  sent without an `ETag` (an immutable one) gets the whole file as `200`.
+  `If-None-Match` is checked first: a request that names the current tag
+  gets `304` whatever its `Range`. `HEAD` is answered as `GET`, without a
+  body. A wrapped HTML page takes no range: it is always the whole page.
 - The shell's bundles under `/_clax/shell/` are named by a hash of their
   bytes and are immutable in a release build, with an `ETag`; a debug
   build, which reads them from disk, sends them `no-cache`.

@@ -3,7 +3,6 @@
 
 use crate::routes::artifacts::path;
 use axum::Json;
-use axum::body::Body;
 use axum::extract::multipart::MultipartRejection;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Multipart, Path, State};
@@ -253,12 +252,14 @@ pub async fn scoped_blob(
 /// asset ID names an asset within its artifact, so another artifact's
 /// answers 404, as a missing one does. An asset of a live page answers 404
 /// to a caller that may not see live pages ([`SeesLive`]), checked on the
-/// asset's row before any of its bytes are read.
+/// asset's row before any of its bytes are read. Immutable, and answers a
+/// byte range ([`clax_http::http_cache::stored_file`]).
 pub(crate) async fn serve_blob(
     s: &AppState,
     sees: SeesLive,
     asset_id: String,
     owner: ArtifactId,
+    req: &axum::http::HeaderMap,
 ) -> Result<Response, ApiError> {
     let live_ids = s.live_ids.clone();
     let (asset, bytes) = s
@@ -276,17 +277,24 @@ pub(crate) async fn serve_blob(
             Ok((asset, bytes))
         })
         .await?;
-    let len = bytes.len().to_string();
-    Ok((
-        [
-            (header::CONTENT_TYPE, asset.content_type.as_str()),
-            (header::CONTENT_LENGTH, len.as_str()),
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::CONTENT_SECURITY_POLICY, "sandbox"),
-            (header::REFERRER_POLICY, "no-referrer"),
-        ],
-        Body::from(bytes),
-    )
-        .into_response())
+    let ct = asset.content_type;
+    Ok(clax_http::http_cache::stored_file(
+        req,
+        bytes,
+        None,
+        clax_http::http_cache::IMMUTABLE,
+        move |status, body| {
+            (
+                status,
+                [
+                    (header::CONTENT_TYPE, ct.as_str()),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                    (header::CONTENT_SECURITY_POLICY, "sandbox"),
+                    (header::REFERRER_POLICY, "no-referrer"),
+                ],
+                body,
+            )
+                .into_response()
+        },
+    ))
 }

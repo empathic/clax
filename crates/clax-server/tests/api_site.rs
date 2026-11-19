@@ -589,3 +589,229 @@ async fn an_https_sites_responses_carry_strict_transport_security() {
         assert_eq!(res.headers()["x-content-type-options"], "nosniff", "{path}");
     }
 }
+
+/// A request of `method` for `path` on `id`'s site as the owner's browser,
+/// with `headers`.
+async fn site_request(
+    ts: &TestServer,
+    method: reqwest::Method,
+    id: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> reqwest::Response {
+    let mut req = ts
+        .client
+        .request(method, format!("{}{path}", ts.base))
+        .header("host", ts.site_host(id))
+        .header("cookie", ts.site_cookie(id).await);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    req.send().await.unwrap()
+}
+
+/// The bytes of a stand-in video, each its offset mod 251.
+fn video() -> Vec<u8> {
+    (0..1000u32).map(|i| (i % 251) as u8).collect()
+}
+
+#[tokio::test]
+async fn a_version_file_answers_a_byte_range() {
+    use base64::Engine;
+    let ts = TestServer::spawn().await;
+    let bytes = video();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let res = ts
+        .post_json(
+            "/api/artifacts",
+            json!({"title": "V", "files": {
+                "index.html": {"content": "<video src=clip.mp4>", "encoding": "utf8"},
+                "clip.mp4": {"content": b64, "encoding": "base64"},
+            }}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let id = id_of(&res.json().await.unwrap());
+    let get = || reqwest::Method::GET;
+    let file = "/clip.mp4";
+
+    // The whole file says it takes ranges.
+    let res = site_request(&ts, get(), &id, file, &[]).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["accept-ranges"], "bytes");
+    assert_eq!(res.headers()["content-length"], "1000");
+    let etag = res.headers()["etag"].to_str().unwrap().to_string();
+    let policy = res.headers()["content-security-policy"].clone();
+    assert_eq!(res.bytes().await.unwrap(), bytes);
+
+    // One range: 206 of that slice, with the same caching and policy.
+    for (range, start, end) in [
+        ("bytes=0-99", 0, 99),
+        ("bytes=900-", 900, 999),
+        ("bytes=-10", 990, 999),
+        ("bytes=990-5000", 990, 999),
+    ] {
+        let res = site_request(&ts, get(), &id, file, &[("range", range)]).await;
+        assert_eq!(res.status(), 206, "{range}");
+        let h = res.headers();
+        let want = format!("bytes {start}-{end}/1000");
+        assert_eq!(h["content-range"], want.as_str(), "{range}");
+        let len = (end - start + 1).to_string();
+        assert_eq!(h["content-length"], len.as_str(), "{range}");
+        assert_eq!(h["content-type"], "video/mp4");
+        assert_eq!(h["etag"], etag.as_str());
+        assert_eq!(h["cache-control"], "private, no-cache");
+        assert_eq!(h["accept-ranges"], "bytes");
+        assert_eq!(h["content-security-policy"], policy);
+        assert_eq!(h["x-content-type-options"], "nosniff");
+        assert_eq!(res.bytes().await.unwrap(), bytes[start..=end], "{range}");
+    }
+
+    // Past the end: 416 naming the size.
+    let res = site_request(&ts, get(), &id, file, &[("range", "bytes=1000-")]).await;
+    assert_eq!(res.status(), 416);
+    assert_eq!(res.headers()["content-range"], "bytes */1000");
+    assert!(res.bytes().await.unwrap().is_empty());
+
+    // Several ranges: the whole file.
+    let res = site_request(&ts, get(), &id, file, &[("range", "bytes=0-1,5-6")]).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.bytes().await.unwrap(), bytes);
+
+    // If-Range: the current tag honours the range, another serves it all.
+    let tag = etag.as_str();
+    let res = site_request(
+        &ts,
+        get(),
+        &id,
+        file,
+        &[("range", "bytes=10-19"), ("if-range", tag)],
+    )
+    .await;
+    assert_eq!(res.status(), 206);
+    assert_eq!(res.bytes().await.unwrap(), bytes[10..20]);
+    let res = site_request(
+        &ts,
+        get(),
+        &id,
+        file,
+        &[("range", "bytes=10-19"), ("if-range", "\"stale\"")],
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["etag"], etag.as_str());
+    assert_eq!(res.bytes().await.unwrap(), bytes);
+
+    // If-None-Match still answers 304, before any range.
+    let res = site_request(
+        &ts,
+        get(),
+        &id,
+        file,
+        &[("range", "bytes=0-9"), ("if-none-match", tag)],
+    )
+    .await;
+    assert_eq!(res.status(), 304);
+    assert_eq!(res.headers()["etag"], etag.as_str());
+    assert!(res.bytes().await.unwrap().is_empty());
+
+    // HEAD answers as GET, without the body.
+    let res = site_request(&ts, reqwest::Method::HEAD, &id, file, &[]).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["accept-ranges"], "bytes");
+    assert_eq!(res.headers()["content-length"], "1000");
+    assert_eq!(res.headers()["etag"], etag.as_str());
+    let res = site_request(
+        &ts,
+        reqwest::Method::HEAD,
+        &id,
+        file,
+        &[("range", "bytes=-10")],
+    )
+    .await;
+    assert_eq!(res.status(), 206);
+    assert_eq!(res.headers()["content-range"], "bytes 990-999/1000");
+    assert_eq!(res.headers()["content-length"], "10");
+    assert!(res.bytes().await.unwrap().is_empty());
+
+    // An older version's file, immutable and untagged, takes ranges too.
+    let res = site_request(
+        &ts,
+        get(),
+        &id,
+        "/_clax/v/1/clip.mp4",
+        &[("range", "bytes=100-199")],
+    )
+    .await;
+    assert_eq!(res.status(), 206);
+    assert_eq!(res.headers()["content-range"], "bytes 100-199/1000");
+    assert_eq!(
+        res.headers()["cache-control"],
+        "private, max-age=31536000, immutable"
+    );
+    assert!(!res.headers().contains_key("etag"));
+    assert_eq!(res.bytes().await.unwrap(), bytes[100..200]);
+
+    // A page is no stored file: it takes no range.
+    let res = site_request(&ts, get(), &id, "/", &[("range", "bytes=0-3")]).await;
+    assert_eq!(res.status(), 200);
+    assert!(!res.headers().contains_key("accept-ranges"));
+}
+
+#[tokio::test]
+async fn an_asset_answers_a_byte_range() {
+    let ts = TestServer::spawn().await;
+    let id = id_of(&ts.publish("A", &[("index.html", "<p>")]).await);
+    let bytes = video();
+    let up = ts
+        .upload_asset(&id, "clip.mp4", "video/mp4", bytes.clone())
+        .await;
+    let url = up["url"].as_str().unwrap().to_string();
+    let get = || reqwest::Method::GET;
+    let res = site_request(&ts, get(), &id, &url, &[]).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["accept-ranges"], "bytes");
+    assert_eq!(res.headers()["content-length"], "1000");
+    assert_eq!(res.bytes().await.unwrap(), bytes);
+    let res = site_request(&ts, get(), &id, &url, &[("range", "bytes=500-509")]).await;
+    assert_eq!(res.status(), 206);
+    let h = res.headers();
+    assert_eq!(h["content-range"], "bytes 500-509/1000");
+    assert_eq!(h["content-length"], "10");
+    assert_eq!(h["content-type"], "video/mp4");
+    assert_eq!(h["cache-control"], "private, max-age=31536000, immutable");
+    assert_eq!(h["referrer-policy"], "no-referrer");
+    assert!(
+        h.get_all("content-security-policy")
+            .iter()
+            .any(|v| v == "sandbox")
+    );
+    assert_eq!(res.bytes().await.unwrap(), bytes[500..510]);
+    let res = site_request(&ts, get(), &id, &url, &[("range", "bytes=-1")]).await;
+    assert_eq!(res.status(), 206);
+    assert_eq!(res.bytes().await.unwrap(), bytes[999..]);
+    let res = site_request(&ts, get(), &id, &url, &[("range", "bytes=2000-2001")]).await;
+    assert_eq!(res.status(), 416);
+    assert_eq!(res.headers()["content-range"], "bytes */1000");
+    // An asset has no tag, so any If-Range serves it all.
+    let res = site_request(
+        &ts,
+        get(),
+        &id,
+        &url,
+        &[("range", "bytes=0-0"), ("if-range", "\"x\"")],
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.bytes().await.unwrap(), bytes);
+    let res = site_request(
+        &ts,
+        reqwest::Method::HEAD,
+        &id,
+        &url,
+        &[("range", "bytes=0-0")],
+    )
+    .await;
+    assert_eq!(res.status(), 206);
+    assert_eq!(res.headers()["content-length"], "1");
+}
