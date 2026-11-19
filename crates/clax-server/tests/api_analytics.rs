@@ -390,6 +390,56 @@ async fn a_person_who_does_not_administer_it_is_admin_only() {
     assert!(h.ts.store.analytics_on(&id(&aid)).unwrap());
 }
 
+/// The `artifact` of the shell's bootstrap of `/a/<aid>` in the browser
+/// holding session `cookie`.
+async fn boot_artifact(h: &Hosted, cookie: &str, aid: &str) -> Value {
+    const OPEN: &str = r#"<script type="application/json" id="clax-boot">"#;
+    let html = h
+        .request(Some(cookie), Method::GET, &format!("/a/{aid}"), Value::Null)
+        .await
+        .text()
+        .await
+        .unwrap();
+    let start = html.find(OPEN).expect("a bootstrap block") + OPEN.len();
+    let end = start + html[start..].find("</script>").unwrap();
+    let boot: Value = serde_json::from_str(&html[start..end]).unwrap();
+    boot["artifact"]["artifact"].clone()
+}
+
+#[tokio::test]
+async fn the_shells_bootstrap_carries_the_setting_for_who_administers_it_alone() {
+    let h = Hosted::new().await;
+    let owner = h.owner().await;
+    let aid = h.artifact("Booted").await;
+    let (sam, pid) = h.member(&owner, "Sam").await;
+    let (s, v) = h
+        .send(
+            Some(&owner),
+            Method::PUT,
+            &format!("/api/hosted/artifacts/{aid}/shares"),
+            json!({"person": pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let a = boot_artifact(&h, &owner, &aid).await;
+    assert_eq!(a["analytics"], "on", "{a}");
+    let (s, v) = h
+        .send(
+            Some(&owner),
+            Method::PATCH,
+            &format!("/api/artifacts/{aid}"),
+            json!({"analytics": "off"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let a = boot_artifact(&h, &owner, &aid).await;
+    assert_eq!(a["analytics"], "off", "{a}");
+    // An editor reads the page, not its setting.
+    let a = boot_artifact(&h, &sam, &aid).await;
+    assert_eq!(a["id"], json!(aid), "{a}");
+    assert!(a.get("analytics").is_none(), "{a}");
+}
+
 #[tokio::test]
 async fn a_local_clax_takes_no_analytics_and_has_no_read() {
     let ts = TestServer::spawn().await;
