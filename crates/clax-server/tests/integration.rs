@@ -148,6 +148,8 @@ mod api_queue_previews;
 mod api_queue_reporter;
 #[cfg(any(not(clax_split), clax_split = "api_queue_requests"))]
 mod api_queue_requests;
+#[cfg(any(not(clax_split), clax_split = "api_queue_rights"))]
+mod api_queue_rights;
 #[cfg(any(not(clax_split), clax_split = "api_queues"))]
 mod api_queues;
 #[cfg(any(not(clax_split), clax_split = "api_quickstart"))]

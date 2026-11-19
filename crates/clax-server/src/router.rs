@@ -486,6 +486,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/people/me/grants/{gid}/narrow",
             axum::routing::put(people::narrow_grant),
         )
+        .route(
+            "/api/people/grants/{gid}/elevate",
+            axum::routing::put(people::elevate_grant).delete(people::unelevate_grant),
+        )
         .route("/api/people/{pid}", delete(people::revoke_person))
         .route(
             "/api/people/{pid}/reinstate",

@@ -4996,6 +4996,14 @@ mod delivery {
             .id;
         w.st.set_member(DAEMON, &qid, &w.sam, Some(clax_core::queue::Role::Triage))
             .unwrap();
+        // His agent's token may work the queue: he grants it every action.
+        let gid = w.st.get_session(&w.sid).unwrap().unwrap().grant_id.unwrap();
+        let all = clax_core::rights::Rights::parse(&serde_json::json!([
+            {"type": "clax-queues", "actions": clax_core::rights::QUEUE_ACTIONS, "locations": ["*"]}
+        ]))
+        .unwrap();
+        w.st.raise_grant(DAEMON, &gid, Some(&w.sam), Some(all), None, None)
+            .unwrap();
         w.st.watch_queue(&qid, &w.sid).unwrap();
         let tok = crate::queues::ReporterToken {
             queue_id: qid.clone(),
