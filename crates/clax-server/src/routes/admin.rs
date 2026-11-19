@@ -759,20 +759,43 @@ pub fn browser_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         .is_some_and(|a| !a.trim().is_empty());
     let token = st.secret_meta(&SecretSlot::Cloudflare)?.is_some();
     let configured = crate::bot::browser_configured(st, bot)?;
-    let unavailable = if configured {
-        Value::Null
-    } else if !bot.browser {
-        json!("this host opens no browser")
-    } else if bot.kek.is_none() {
-        json!("no key-encryption key holds the Cloudflare token")
-    } else {
-        json!("the Cloudflare account ID and API token are not both set (Web access)")
-    };
+    let unavailable =
+        match browser_unavailable(configured, bot.browser, bot.kek.is_some(), account && token) {
+            Some(why) => json!(why),
+            None => Value::Null,
+        };
     v["configured"] = json!(configured);
     v["unavailable"] = unavailable;
     v["cloudflare"] = json!({"account": account, "token": token});
     v["sources"] = Value::Object(sources);
     Ok(v)
+}
+
+/// Why browser use is off whatever the settings say, or `None` when the
+/// host can open browsers (`configured`): the host opens none
+/// (`host_opens`), it holds no key-encryption key (`kek`), the account ID
+/// and token are not both set (`both_set`), or they are and the token does
+/// not open with this key (sealed under another, or for another origin).
+fn browser_unavailable(
+    configured: bool,
+    host_opens: bool,
+    kek: bool,
+    both_set: bool,
+) -> Option<&'static str> {
+    if configured {
+        None
+    } else if !host_opens {
+        Some("this host opens no browser")
+    } else if !kek {
+        Some("no key-encryption key holds the Cloudflare token")
+    } else if both_set {
+        Some(
+            "the Cloudflare API token cannot be opened with this instance's key-encryption key; \
+             set it again (Web access)",
+        )
+    } else {
+        Some("the Cloudflare account ID and API token are not both set (Web access)")
+    }
 }
 
 /// `GET /api/admin/browser` (see the module documentation).
@@ -1877,4 +1900,35 @@ pub async fn usage(
         })
         .await?;
     Ok(Json(v))
+}
+
+#[cfg(test)]
+#[warn(clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+
+    /// A token that is set but does not open is told apart from one that
+    /// is not set, so the admin knows to set it again.
+    #[test]
+    fn a_set_token_that_does_not_open_says_to_set_it_again() {
+        assert_eq!(browser_unavailable(true, true, true, true), None);
+        assert_eq!(
+            browser_unavailable(false, false, true, true),
+            Some("this host opens no browser")
+        );
+        assert_eq!(
+            browser_unavailable(false, true, false, true),
+            Some("no key-encryption key holds the Cloudflare token")
+        );
+        assert!(
+            browser_unavailable(false, true, true, false)
+                .unwrap()
+                .contains("not both set")
+        );
+        assert!(
+            browser_unavailable(false, true, true, true)
+                .unwrap()
+                .contains("set it again")
+        );
+    }
 }
