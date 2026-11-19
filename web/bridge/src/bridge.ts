@@ -47,7 +47,9 @@
  * run of the draft's test files (`clax:tests`). In a frame named
  * `MIGRATE_FRAME` it ends the page's markup before any of it runs, and
  * answers `clax:migrate` with the test part's run of an app bundle's
- * migration (`clax:migration`).
+ * migration (`clax:migration`). In a top-level window named `TEST_WINDOW`
+ * (a ClaxBot browser test's page) it defines `window.claxTest`, read-only,
+ * whose `run` gives the test part's run of the saved tests it names.
  * The daemon serves it right after the doctype (first in the skeleton's
  * `<head>` for a fragment), and only the document's first bridge tag runs, so
  * `window.claude` exists before any page script; shell
@@ -84,7 +86,7 @@ import { followInPlace, linkToHandOver } from "./nav";
 import type { CommentPart, Parts } from "./parts/types";
 import { type Clock, retrying } from "./part-loader";
 import { PickFlow } from "./pick";
-import { type Anchor, type AnchorResult, type Box, type BridgeToShell, INSPECT_FRAME, MIGRATE_FRAME } from "./protocol";
+import { type Anchor, type AnchorResult, type Box, type BridgeToShell, INSPECT_FRAME, MIGRATE_FRAME, TEST_WINDOW, type TestRun } from "./protocol";
 import { Rpc } from "./rpc";
 import type { Routes } from "./routes";
 import { whenParsed } from "./parsed";
@@ -223,6 +225,13 @@ type PartName = keyof Parts;
     data: script?.dataset, meta, framed, name: window.name, origin: location.origin, win: window,
     nav: navigator as CountWorld["nav"], doc: document, perf: performance, Observer: self.PerformanceObserver,
     fetch: fetch.bind(window), clock,
+  });
+
+  // A ClaxBot browser test's page (`TEST_WINDOW`, top level): its driver
+  // runs the saved tests through the test part, once the page's use()
+  // calls have answered, as the inspect view's do.
+  if (!framed && window.name === TEST_WINDOW) Object.defineProperty(window, "claxTest", {
+    value: Object.freeze({ run: (o: TestRun) => usesSettled(USES_MS).then(() => parts.test()).then(t => t.run(window, o, clock)) }),
   });
 
   if (!framed) return; // opened directly: there is no shell

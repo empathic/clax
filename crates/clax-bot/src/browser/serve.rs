@@ -114,6 +114,29 @@ impl Pages {
             Pages::Draft(_, n) | Pages::Version(_, n) => *n,
         }
     }
+
+    /// Every saved test file of the target
+    /// ([`super::opts::is_test_file`]: `tests/<name>.test.js`), in path
+    /// order.
+    ///
+    /// # Errors
+    /// In words: the version is gone, or the store failed.
+    pub async fn test_files(&self, store: &Store) -> Result<Vec<String>, String> {
+        let saved = |paths: &mut dyn Iterator<Item = &String>| -> Vec<String> {
+            paths
+                .filter(|p| super::opts::is_test_file(p))
+                .cloned()
+                .collect()
+        };
+        match self {
+            Pages::Draft(files, _) => Ok(saved(&mut files.keys())),
+            Pages::Version(aid, n) => match store.get_version(aid, *n) {
+                Ok(Some(v)) => Ok(saved(&mut v.files.keys())),
+                Ok(None) => Err(format!("the artifact has no version {n}")),
+                Err(e) => Err(e.to_string()),
+            },
+        }
+    }
 }
 
 /// One request the browser paused (`Fetch.requestPaused`).
@@ -609,6 +632,56 @@ mod tests {
             .answer(&get(&site.origin.url("_clax/blob/nope")), &src, &st, "p")
             .await;
         assert_eq!(d.failed(), Some(404));
+    }
+
+    /// `{tests: true}` runs every `tests/<name>.test.js` of the target
+    /// (a name may hold `/`, as the inspect view's may), in path order:
+    /// the draft's (edits not yet committed included) or the version's,
+    /// and nothing else.
+    #[tokio::test]
+    async fn tests_true_lists_the_targets_test_files() {
+        let (_d, st) = store();
+        let mut files = BTreeMap::new();
+        for path in [
+            "index.html",
+            "tests/b.test.js",
+            "tests/a.test.js",
+            "tests/helper.js",
+            "tests/deep/c.test.js",
+            "a.test.js",
+        ] {
+            files.insert(path.to_string(), entry("x", "text/javascript"));
+        }
+        let draft = Pages::Draft(files, 1);
+        assert_eq!(
+            draft.test_files(&st).await.unwrap(),
+            ["tests/a.test.js", "tests/b.test.js", "tests/deep/c.test.js"]
+        );
+        let req: clax_core::publish::PublishRequest = serde_json::from_value(json!({
+            "title": "Report",
+            "files": {
+                "index.html": {"content": "<p>v1</p>", "encoding": "utf8"},
+                "tests/form.test.js": {"content": "test('x', () => {});", "encoding": "utf8"},
+                "tests/util.js": {"content": "export {};", "encoding": "utf8"}
+            }
+        }))
+        .unwrap();
+        let aid = st
+            .create_artifact(
+                &AuditCtx::DAEMON,
+                clax_core::publish::validate(req).unwrap(),
+                None,
+            )
+            .unwrap()
+            .0
+            .id;
+        let aid = ArtifactId::parse(&aid).unwrap();
+        let version = Pages::Version(aid.clone(), 1);
+        assert_eq!(
+            version.test_files(&st).await.unwrap(),
+            ["tests/form.test.js"]
+        );
+        assert!(Pages::Version(aid, 7).test_files(&st).await.is_err());
     }
 
     #[tokio::test]

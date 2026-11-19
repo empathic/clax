@@ -467,3 +467,47 @@ async fn an_undeclared_browser_call_is_refused() {
     assert_eq!(env.browser.opened(), 0);
     assert!(browser_events(&env).is_empty());
 }
+
+#[tokio::test]
+async fn saved_tests_results_come_through() {
+    let env = Env::new().await;
+    let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen = asked.clone();
+    env.browser.opens(move || {
+        let seen = seen.clone();
+        Ok(FakeChrome::page(PageModel::new().evaluate(move |p| {
+            let e = p["expression"].as_str().unwrap_or_default();
+            if e.contains("claxTest") {
+                seen.lock().unwrap().push(e.to_string());
+                json!({"result": {"type": "object", "value": {"passed": 1, "skipped": 0,
+                    "failed": [{"name": "submits", "error": "expected true"}]}}})
+            } else {
+                json!({"result": {"type": "undefined"}})
+            }
+        })))
+    });
+    let (run, v) = one_script(
+        &env,
+        "test",
+        "await clax.files.write('tests/form.test.js', \"test('submits', () => expect(false).toBe(true));\");
+         return await clax.browser.test(null, {tests: true});",
+    )
+    .await;
+    assert_eq!(
+        v["tests"],
+        json!({"passed": 1, "failed": [{"name": "submits", "error": "expected true"}], "skipped": 0})
+    );
+    assert_eq!(v["passed"], false);
+    // The draft's saved test, written in this script, is the one run.
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert!(
+        asked[0].contains(r#""files":["tests/form.test.js"]"#),
+        "{asked:?}"
+    );
+    let calls = script_calls(&env, &run, 0);
+    assert_eq!(
+        calls[1]["browser"]["tests"],
+        json!({"passed": 1, "failed": 1})
+    );
+}

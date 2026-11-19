@@ -641,6 +641,16 @@ fn step(v: &Value, field: &str, mode: Mode) -> Result<Step, BrowserError> {
     })
 }
 
+/// Whether `path` names a saved test file: `tests/<name>.test.js`, its
+/// name not empty and holding no `..` (it may hold `/`, as the Clax
+/// app's inspect view allows: `web/shell/src/app/inspect.ts`, `TEST_FILE`).
+#[must_use]
+pub fn is_test_file(path: &str) -> bool {
+    path.strip_prefix("tests/")
+        .and_then(|n| n.strip_suffix(".test.js"))
+        .is_some_and(|n| !n.is_empty() && !n.contains(".."))
+}
+
 fn tests(v: Option<&Value>, mode: Mode) -> Result<Tests, BrowserError> {
     const F: &str = "opts.tests";
     let t = match v {
@@ -654,10 +664,7 @@ fn tests(v: Option<&Value>, mode: Mode) -> Result<Tests, BrowserError> {
             for (i, p) in paths.iter().enumerate() {
                 let field = format!("{F}[{i}]");
                 let s = string(p, &field, 1_000)?;
-                let name = s
-                    .strip_prefix("tests/")
-                    .and_then(|n| n.strip_suffix(".test.js"));
-                if name.is_none_or(|n| n.is_empty() || n.contains("..")) {
+                if !is_test_file(&s) {
                     return Err(bad(&field, "must be a path tests/<name>.test.js"));
                 }
                 out.push(s);

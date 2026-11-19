@@ -20,6 +20,14 @@
 //!    two animation frames pass ([`SETTLE_JS`]).
 //! 5. The steps: an action that fails ends the list (the rest come back
 //!    skipped); an assertion that fails is recorded and the list goes on.
+//!    Then, with `tests`, the target's saved tests
+//!    ([`RequestPolicy::saved_tests`], at most [`MAX_TEST_FILES`]) through
+//!    the bridge's hook ([`saved_tests_js`]): `window.claxTest.run`, which
+//!    the bridge defines in a top-level window the preamble named
+//!    `clax-test` (`web/bridge/src/bridge.ts`), each test at most
+//!    [`TEST_MS`] and all of them within the call's time left. A page with
+//!    no hook (no Clax bridge) answers one failure saying so; any failed
+//!    test fails the result.
 //! 6. Collect: title, final URL, `html` and `text` when asked, and the
 //!    content security policy refusals the preamble recorded (listed as
 //!    blocked, why `csp`).
@@ -56,8 +64,8 @@
 
 use super::cdp::{Cdp, CdpEvent, CdpFail, Got};
 use super::opts::{
-    BrowserOpts, Expect, MAX_EVAL_BYTES, Mode, SETTLE_JS, Step, click_js, eval_js, expect_js,
-    focus_js, scroll_js, wait_js,
+    BrowserOpts, Expect, MAX_EVAL_BYTES, MAX_TEST_FILES, Mode, SETTLE_JS, Step, Tests, click_js,
+    eval_js, expect_js, focus_js, scroll_js, wait_js,
 };
 use super::serve::{Decision, Origin, Paused, Site};
 use super::{BrowserError, BrowserSource, CODE_BROWSER_TIMEOUT, CODE_BROWSER_UNAVAILABLE};
@@ -81,6 +89,10 @@ pub const MAX_REQUESTS: usize = 100;
 pub const MAX_HTML: usize = 100_000;
 /// The most characters of `text`.
 pub const MAX_TEXT_CHARS: usize = 20_000;
+/// The longest one saved test may take, in milliseconds.
+pub const TEST_MS: u32 = 5_000;
+/// The most failures a result's `tests` keeps (as the bridge's harness).
+const MAX_TEST_FAILURES: usize = 50;
 
 /// What answers the requests a page makes.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -88,6 +100,20 @@ pub const MAX_TEXT_CHARS: usize = 20_000;
 pub trait RequestPolicy: MaybeSendSync {
     /// What to do with `req`.
     async fn decide(&self, req: &Paused) -> Decision;
+
+    /// The saved test files `which` names, in the order they run: the
+    /// paths a call named, as named; for `{tests: true}`, the target's
+    /// own, which only a policy that knows the target can list (none by
+    /// default).
+    ///
+    /// # Errors
+    /// In words, when the target's files cannot be listed.
+    async fn saved_tests(&self, which: &Tests) -> Result<Vec<String>, String> {
+        Ok(match which {
+            Tests::Paths(p) => p.clone(),
+            Tests::None | Tests::All => Vec::new(),
+        })
+    }
 }
 
 /// A test's policy: the clax's synthetic origin ([`Site::answer`]).
@@ -105,6 +131,16 @@ impl RequestPolicy for TestPolicy<'_> {
         self.site
             .answer(req, self.source, self.store, self.person)
             .await
+    }
+
+    /// `{tests: true}`: every `tests/<name>.test.js` of the target
+    /// ([`super::serve::Pages::test_files`]).
+    async fn saved_tests(&self, which: &Tests) -> Result<Vec<String>, String> {
+        match which {
+            Tests::None => Ok(Vec::new()),
+            Tests::All => self.site.pages.test_files(self.store).await,
+            Tests::Paths(p) => Ok(p.clone()),
+        }
     }
 }
 
@@ -185,6 +221,44 @@ pub fn preamble_js(mode: Mode) -> String {
     )
 }
 
+/// What runs the saved tests `files` through the bridge's hook, each for
+/// at most `test_ms`, all within `total_ms`: `window.claxTest.run`'s
+/// promise of the harness's `TestResults`, or `null` on a page without
+/// the hook. The bridge's side is pinned by
+/// `web/bridge/test/bridge-clax-test.test.ts`.
+#[must_use]
+pub fn saved_tests_js(files: &[String], test_ms: u32, total_ms: u64) -> String {
+    let order = json!({"files": files, "testMs": test_ms, "totalMs": total_ms});
+    format!(
+        "(() => {{ const t = window.claxTest; return t && typeof t.run === 'function' ? t.run({order}) : null; }})()"
+    )
+}
+
+/// A saved tests' result of one failure, named `tests`, saying `why`.
+fn tests_failed(why: &str) -> Value {
+    json!({"passed": 0, "failed": [{"name": "tests", "error": why}], "skipped": 0})
+}
+
+/// The hook's answer `v` as the result's `tests`: whole numbers, and each
+/// failure's name and error as text, at most [`MAX_TEST_FAILURES`] of
+/// them.
+fn tests_of(v: &Value) -> Value {
+    let (Some(passed), Some(failed), Some(skipped)) = (
+        v["passed"].as_u64(),
+        v["failed"].as_array(),
+        v["skipped"].as_u64(),
+    ) else {
+        return tests_failed("the bridge answered no test results");
+    };
+    let text = |x: &Value| x.as_str().map_or_else(|| x.to_string(), str::to_string);
+    let failed: Vec<Value> = failed
+        .iter()
+        .take(MAX_TEST_FAILURES)
+        .map(|f| json!({"name": text(&f["name"]), "error": text(&f["error"])}))
+        .collect();
+    json!({"passed": passed, "failed": failed, "skipped": skipped})
+}
+
 /// What the collect step evaluates.
 fn collect_js(html: bool, text: bool) -> String {
     format!(
@@ -247,6 +321,8 @@ struct Gathered {
     passed: bool,
     html: Option<String>,
     text: Option<String>,
+    /// The saved tests' results, when the call asked for them.
+    tests: Option<Value>,
 }
 
 /// One test's state while it runs.
@@ -636,7 +712,22 @@ impl Driver<'_> {
             passed,
             html: None,
             text: None,
+            tests: None,
         };
+        if opts.tests != Tests::None && self.cdp.ended().is_none() && loaded.is_ok() {
+            match self.saved_tests(opts).await {
+                Ok(t) => {
+                    if t["failed"].as_array().is_some_and(|f| !f.is_empty()) {
+                        g.passed = false;
+                    }
+                    g.tests = Some(t);
+                }
+                Err(fail) => {
+                    g.passed = false;
+                    self.end(&fail);
+                }
+            }
+        }
         if self.cdp.ended().is_none() && loaded.is_ok() {
             match self.evaluate(&collect_js(opts.html, opts.text)).await {
                 Ok(Ok(v)) => self.collected(&v, &mut g),
@@ -648,6 +739,42 @@ impl Driver<'_> {
             }
         }
         Ok(g)
+    }
+
+    /// Runs the saved tests `opts.tests` names (see the module docs): the
+    /// result's `tests`, or the failure that ended the test.
+    async fn saved_tests(&mut self, opts: &BrowserOpts) -> Result<Value, CdpFail> {
+        let mut files = match self.policy.saved_tests(&opts.tests).await {
+            Ok(f) => f,
+            Err(e) => {
+                return Ok(tests_failed(&format!(
+                    "the saved tests could not be listed: {e}"
+                )));
+            }
+        };
+        let all = files.len();
+        files.truncate(MAX_TEST_FILES);
+        let spent = u64::try_from(self.at_ms()).unwrap_or(0);
+        let total_ms = (u64::from(opts.timeout_s) * 1000)
+            .saturating_sub(spent)
+            .max(1);
+        let mut t = match self
+            .evaluate(&saved_tests_js(&files, TEST_MS, total_ms))
+            .await?
+        {
+            Ok(Value::Null) => tests_failed("the page has no Clax bridge"),
+            Ok(v) => tests_of(&v),
+            Err(e) => tests_failed(&format!("the saved tests did not run: {e}")),
+        };
+        if all > MAX_TEST_FILES
+            && let Some(failed) = t["failed"].as_array_mut()
+        {
+            failed.push(json!({
+                "name": "tests",
+                "error": format!("only the first {MAX_TEST_FILES} of {all} test files ran"),
+            }));
+        }
+        Ok(t)
     }
 
     /// Notes a failure that ended the test after its page loaded.
@@ -1027,6 +1154,9 @@ impl Driver<'_> {
         if let Some(t) = g.text {
             r["text"] = json!(t);
         }
+        if let Some(t) = g.tests {
+            r["tests"] = t;
+        }
         r["truncated"] = json!(truncated);
         r["ms"] = json!(ms);
         r
@@ -1040,7 +1170,7 @@ mod tests {
     use crate::browser::fake::{
         ChromeLog, FakeBrowserSource, FakeChrome, ONE_PIXEL_PNG, PageModel, event, thrown, value,
     };
-    use crate::browser::opts::parse_opts;
+    use crate::browser::opts::{Tests, parse_opts};
     use crate::browser::serve::{Pages, WHY_ORIGIN};
     use crate::browser::{Deadline, Served};
     use crate::draft::DraftEntry;
@@ -1687,6 +1817,138 @@ mod tests {
                 _ => assert_eq!(run.outcome.unwrap()["passed"], true, "{what}"),
             }
         }
+    }
+
+    /// [`Serve`]'s answers, with `files` as the target's saved tests.
+    struct WithTests(Vec<String>);
+
+    #[async_trait::async_trait]
+    impl RequestPolicy for WithTests {
+        async fn decide(&self, req: &Paused) -> Decision {
+            Serve.decide(req).await
+        }
+
+        async fn saved_tests(&self, which: &Tests) -> Result<Vec<String>, String> {
+            Ok(match which {
+                Tests::None => Vec::new(),
+                Tests::All => self.0.clone(),
+                Tests::Paths(p) => p.clone(),
+            })
+        }
+    }
+
+    /// Runs `o` against a page whose step scripts succeed and whose bridge
+    /// hook answers `hook` (the `Runtime.evaluate` result of the saved
+    /// tests' expression), with `tests/a.test.js` and `tests/b.test.js`
+    /// saved.
+    async fn with_saved(o: Value, hook: Value) -> (TestRun, ChromeLog) {
+        let model = PageModel::new().evaluate(move |p| {
+            if p["expression"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("claxTest")
+            {
+                hook.clone()
+            } else {
+                fine(p)
+            }
+        });
+        let chrome = FakeChrome::page(model);
+        let log = chrome.log();
+        let mut cdp = Cdp::new(Box::new(chrome), never(), CancelToken::new());
+        let policy = WithTests(vec!["tests/a.test.js".into(), "tests/b.test.js".into()]);
+        let run = run_test(&mut cdp, &start(), &opts(o), &policy, &clock(), LIMITS).await;
+        (run, log)
+    }
+
+    /// The expressions the page was asked to evaluate, in order.
+    fn evaluated(log: &ChromeLog) -> Vec<String> {
+        log.sent("Runtime.evaluate")
+            .iter()
+            .map(|c| c["params"]["expression"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn saved_tests_run_through_the_bridge_hook() {
+        let (run, log) = with_saved(
+            json!({"steps": [{"click": "#go"}], "tests": true}),
+            value(json!({"passed": 2, "failed": [], "skipped": 1})),
+        )
+        .await;
+        let r = result(&run);
+        assert_eq!(r["tests"], json!({"passed": 2, "failed": [], "skipped": 1}));
+        assert_eq!(r["passed"], true, "{r}");
+        // The hook is called with the target's files, 5 s a test and the
+        // call's time left (the clock did not move: all 60 s of it), its
+        // promise awaited and its value returned.
+        let files = ["tests/a.test.js".to_string(), "tests/b.test.js".to_string()];
+        let expected = saved_tests_js(&files, 5_000, 60_000);
+        assert!(
+            expected.contains(r#"window.claxTest"#)
+                && expected.contains(
+                    r#"{"files":["tests/a.test.js","tests/b.test.js"],"testMs":5000,"totalMs":60000}"#
+                ),
+            "{expected}"
+        );
+        let all = log.sent("Runtime.evaluate");
+        let call = all
+            .iter()
+            .find(|c| c["params"]["expression"] == expected.as_str())
+            .expect("the hook was called");
+        assert_eq!(call["params"]["awaitPromise"], true);
+        assert_eq!(call["params"]["returnByValue"], true);
+        assert_eq!(call["sessionId"], "S");
+        // After the steps, before the collect.
+        let e = evaluated(&log);
+        let at = |needle: &str| e.iter().position(|x| x.contains(needle)).unwrap();
+        assert!(at("elementFromPoint") < at("claxTest"), "{e:?}");
+        assert!(at("claxTest") < at("__claxCsp"), "{e:?}");
+        // Named files run as named.
+        let (run, log) = with_saved(
+            json!({"tests": ["tests/b.test.js"]}),
+            value(json!({"passed": 1, "failed": [], "skipped": 0})),
+        )
+        .await;
+        assert_eq!(result(&run)["tests"]["passed"], 1);
+        assert!(
+            evaluated(&log)
+                .iter()
+                .any(|x| x.contains(r#""files":["tests/b.test.js"]"#))
+        );
+        // Without `tests`, the hook is not called and there is no `tests`.
+        let (run, log) = with_saved(json!({}), value(json!(null))).await;
+        assert!(result(&run).get("tests").is_none());
+        assert!(!evaluated(&log).iter().any(|x| x.contains("claxTest")));
+    }
+
+    #[tokio::test]
+    async fn a_failed_saved_test_fails_the_result() {
+        let failed = json!({"passed": 1, "failed": [{"name": "adds a row", "error": "expected 2, got 1"}], "skipped": 0});
+        let (run, _) = with_saved(json!({"tests": true}), value(failed.clone())).await;
+        let r = result(&run);
+        assert_eq!(r["tests"], failed);
+        assert_eq!(r["passed"], false);
+        // A page without the bridge has no hook: one failure says so.
+        let (run, _) = with_saved(json!({"tests": true}), value(Value::Null)).await;
+        let r = result(&run);
+        assert_eq!(
+            r["tests"],
+            json!({"passed": 0, "failed": [{"name": "tests", "error": "the page has no Clax bridge"}], "skipped": 0})
+        );
+        assert_eq!(r["passed"], false);
+        // A hook that threw: one failure with what it threw.
+        let (run, _) = with_saved(json!({"tests": true}), thrown("Error: boom")).await;
+        let r = result(&run);
+        assert_eq!(r["tests"]["failed"][0]["name"], "tests");
+        assert!(
+            r["tests"]["failed"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("boom"),
+            "{r}"
+        );
+        assert_eq!(r["passed"], false);
     }
 
     #[test]

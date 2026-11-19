@@ -187,6 +187,15 @@ export const INSPECT_FRAME = "clax-inspect";
  * as hidden text), so only an app bundle's migration (`clax:migrate`) runs
  * against the page's `db`. */
 export const MIGRATE_FRAME = "clax-migrate";
+/** The name a ClaxBot browser test gives its top-level window before any
+ * script runs (crates/clax-bot/src/browser/session.rs, `preamble_js`):
+ * there the bridge defines `window.claxTest`, whose `run({files, testMs,
+ * totalMs})` runs the artifact's saved tests with the test part's harness
+ * and answers their `TestResults`. A page that names its own window so
+ * runs its own tests. */
+export const TEST_WINDOW = "clax-test";
+/** What a browser test's driver gives `window.claxTest.run`. */
+export interface TestRun { files: string[]; testMs?: number; totalMs?: number }
 /** One of a page's errors since its first script (`inspect.ts`): an `error`
  * event, an unhandled promise rejection, or a `console.error` call. */
 export interface InspectError { kind: "error" | "unhandledrejection" | "console"; text: string }
