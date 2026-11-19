@@ -74,7 +74,7 @@
     back.el = document.activeElement as HTMLElement | null;
     open = true;
     void load();
-    if (at === "policy") { await tick(); panel?.querySelector<HTMLElement>("input[name=content_security_policy]")?.focus(); }
+    if (at === "policy") { await tick(); panel?.querySelector<HTMLElement>("button[name=content_security_policy]")?.focus(); }
   }
 
   // The Content Security Policy setting, where the daemon says it.

@@ -362,23 +362,22 @@ describe("Share dialog", () => {
     const sent = serve(state);
     const m = mount(ShareDialog, { id: ID, title: "Plan", initial: at("self"), onClose: vi.fn() });
     const root = m.root;
-    const box = root.querySelector<HTMLInputElement>("input[name=content_security_policy]")!;
+    const box = root.querySelector<HTMLButtonElement>("button[name=content_security_policy]")!;
     const confirm = () => root.querySelector("[data-testid=csp-confirm]");
     const idle = () => until(() => root.querySelector("[role=dialog]")!.getAttribute("aria-busy") === "false");
-    expect(box.labels?.[0]?.textContent?.trim()).toBe("Serve this clax without Clax's Content Security Policy");
-    expect(box.checked).toBe(false);
+    expect(root.querySelector("button[name=content_security_policy]")!.textContent).toBe("Serve without Clax's Content Security Policy…");
     expect(confirm()).toBeNull();
     expect(root.querySelector("[data-testid=csp-note]")).toBeNull();
-    // Turning it on shows the explanation first, and sends nothing.
+    // Its button shows the explanation first, and sends nothing.
     flush(() => box.click());
     await until(() => confirm());
     expect(confirm()!.textContent).toContain("Clax then sends no Content-Security-Policy holding its pages to their own site: they may load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.");
-    expect(box.checked, "not on until confirmed").toBe(false);
+    expect(root.querySelector("button[name=content_security_policy]")!.textContent, "not on until confirmed").toBe("Serve without Clax's Content Security Policy…");
     expect(sent).toEqual([]);
     // Cancel sends nothing and leaves it off.
     flush(() => [...confirm()!.querySelectorAll("button")].find(b => b.textContent === "Cancel")!.click());
     expect(confirm()).toBeNull();
-    expect(box.checked).toBe(false);
+    expect(root.querySelector("button[name=content_security_policy]")!.textContent).toBe("Serve without Clax's Content Security Policy…");
     expect(sent).toEqual([]);
     // Confirm sends `unrestricted`, and the clax says it is served unrestricted.
     flush(() => box.click());
@@ -388,21 +387,21 @@ describe("Share dialog", () => {
     await until(() => root.querySelector("[data-testid=csp-note]"));
     await idle();
     expect(sent).toEqual([{ method: "PATCH", url: `/api/artifacts/${ID}`, body: { content_security_policy: "unrestricted" } }]);
-    expect(box.checked).toBe(true);
+    expect(root.querySelector("button[name=content_security_policy]")!.textContent).toBe("Restore Clax's Content Security Policy");
     expect(confirm()).toBeNull();
     expect(root.querySelector("[data-testid=csp-note]")!.textContent).toBe("Served without Clax's Content Security Policy: its pages load and send where they choose.");
-    // Turning it off sends `self` at once, with no question.
+    // Its button then sends `self` at once, with no question.
     state.sharing = at("self");
     flush(() => box.click());
     await until(() => !root.querySelector("[data-testid=csp-note]"));
     await idle();
     expect(confirm()).toBeNull();
     expect(sent[1]).toEqual({ method: "PATCH", url: `/api/artifacts/${ID}`, body: { content_security_policy: "self" } });
-    expect(box.checked).toBe(false);
+    expect(root.querySelector("button[name=content_security_policy]")!.textContent).toBe("Serve without Clax's Content Security Policy…");
     m.unmount();
     // A daemon that does not say offers no such setting.
     const old = mount(ShareDialog, { id: ID, title: "Plan", initial: open({ site_access: "world", site_url }), onClose: vi.fn() });
-    expect(old.root.querySelector("input[name=content_security_policy]")).toBeNull();
+    expect(old.root.querySelector("button[name=content_security_policy]")).toBeNull();
     old.unmount();
   });
 
@@ -420,7 +419,7 @@ describe("Share dialog", () => {
       sent.length = 0;
       const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open({ site_access: "private", content_security_policy: held, site_url }), onClose: vi.fn() });
       const root = m.root;
-      const box = root.querySelector<HTMLInputElement>("input[name=content_security_policy]")!;
+      const box = root.querySelector<HTMLButtonElement>("button[name=content_security_policy]")!;
       expect(!!root.querySelector("[data-testid=csp-note]"), held).toBe(held === "unrestricted");
       flush(() => box.click());
       if (held === "self") {
@@ -430,7 +429,7 @@ describe("Share dialog", () => {
       const err = await until(() => root.querySelector("[role=alert]"));
       expect(err.textContent).toBe("only who manages it changes its Content Security Policy");
       expect(sent).toEqual([{ content_security_policy: held === "unrestricted" ? "self" : "unrestricted" }]);
-      expect(box.checked, held).toBe(held === "unrestricted");
+      expect(root.querySelector("button[name=content_security_policy]")!.textContent, held).toBe(held === "unrestricted" ? "Restore Clax's Content Security Policy" : "Serve without Clax's Content Security Policy…");
       m.unmount();
     }
   });

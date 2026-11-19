@@ -1,12 +1,15 @@
 // The Content Security Policy setting's words (spec
-// 2026-11-15-site-own-content-policy): its label, the explanation shown
-// before it is turned on, and the line an artifact served unrestricted
-// shows; and the words of the notice the artifact page shows when Clax's
+// 2026-11-15-site-own-content-policy): its button's two labels, the
+// explanation shown before `unrestricted` is sent, and the line an artifact
+// served unrestricted shows; and the words of the notice the artifact page shows when Clax's
 // lockdown blocked the page from other sites (`view/blocked.ts`). One
 // wording wherever the setting sits: the hosted Share dialog and the
 // Permissions panel. Pure: the components render it.
 
-export const CSP_LABEL = "Serve this clax without Clax's Content Security Policy";
+/** The setting's button while the clax is `self`: it opens the explanation. */
+export const CSP_UNRESTRICT = "Serve without Clax's Content Security Policy…";
+/** The setting's button while the clax is `unrestricted`: it sends `self`. */
+export const CSP_RESTORE = "Restore Clax's Content Security Policy";
 export const CSP_EXPLAIN = "Clax then sends no Content-Security-Policy holding its pages to their own site: they may load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.";
 export const CSP_NOTE = "Served without Clax's Content Security Policy: its pages load and send where they choose.";
 /** The Permissions panel's heading over the setting. */

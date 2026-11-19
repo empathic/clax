@@ -176,9 +176,13 @@ session would hand a private site's files to anyone who sends
 ### Where a person sees it
 
 - The setting sits beside "open to the world" wherever the shell offers
-  that today, for a caller who may administer the artifact. Its label:
-  "Serve this clax without Clax's Content Security Policy". Its
-  explanation, shown before the change is sent: "Clax then sends no
+  that today, for a caller who may administer the artifact: a line
+  saying what the daemon holds and one button, never a checkbox (it does
+  not change the setting when pressed). While `self` the button reads
+  "Serve without Clax's Content Security Policy…" and opens the
+  explanation with Confirm and Cancel; while `unrestricted` it reads
+  "Restore Clax's Content Security Policy" and sends `self` at once. The
+  explanation, shown before `unrestricted` is sent: "Clax then sends no
   Content-Security-Policy holding its pages to their own site: they may
   load code from, and send anything they can read to, any site. So may
   every later version, whoever publishes it: you, an editor, or an agent

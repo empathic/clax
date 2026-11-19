@@ -52,20 +52,20 @@ test("a blocked notice of a clax at self names the site, opens the setting, and 
     tab.on("request", r => { if (r.method() === "PATCH") patches.push(r.postData() ?? ""); });
     await notice.getByRole("button", { name: "Permissions…" }).click();
     const panel = tab.getByRole("dialog", { name: "Permissions for “Blocked”" });
-    const sw = panel.getByRole("checkbox", { name: "Serve this clax without Clax's Content Security Policy" });
+    const sw = panel.locator("button[name=content_security_policy]");
     await expect(sw).toBeFocused();
-    await expect(sw).not.toBeChecked();
+    await expect(sw).toHaveText("Serve without Clax's Content Security Policy…");
     expect(patches).toEqual([]);
 
-    // On: the explanation first, and nothing sent until the owner confirms.
+    // Its button: the explanation first, and nothing sent until the owner confirms.
     await sw.click();
     const ask = panel.getByTestId("csp-confirm");
     await expect(ask).toContainText("Clax then sends no Content-Security-Policy holding its pages to their own site: they may load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.");
     await expect(ask.getByRole("button", { name: "Confirm" })).toBeFocused();
-    await expect(sw).not.toBeChecked();
+    await expect(sw).toHaveText("Serve without Clax's Content Security Policy…");
     expect(patches).toEqual([]);
     await ask.getByRole("button", { name: "Confirm" }).click();
-    await expect(sw).toBeChecked();
+    await expect(sw).toHaveText("Restore Clax's Content Security Policy");
     await expect(panel.getByTestId("csp-note")).toHaveText("Served without Clax's Content Security Policy: its pages load and send where they choose.");
     expect(patches.map(p => JSON.parse(p))).toEqual([{ content_security_policy: "unrestricted" }]);
     const got = await api(d.base, d.token, `/api/artifacts/${artifact.id}`) as { artifact: { content_security_policy: string } };
