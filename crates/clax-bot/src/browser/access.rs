@@ -14,6 +14,7 @@
 //!
 //! [`Run::browser`]: clax_store::bot_runs::Run::browser
 
+use super::browse::BrowseRule;
 use clax_core::Result;
 use clax_store::Store;
 use clax_store::bot_settings::Setting;
@@ -86,20 +87,6 @@ impl BrowserOff {
             BrowserOff::NotConfigured => "not_configured",
         }
     }
-}
-
-/// Which URLs a browse may start at and go to
-/// (`browser.browse.url_rule`, spec §9.2).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BrowseRule {
-    /// Only URLs in the sender's own words: the default.
-    Sender,
-    /// URLs on these hosts (lowercase, as `browser.browse.allowlist`
-    /// keeps them): `example.com` is that host alone, `*.example.com` its
-    /// subdomains.
-    Allowlist(Vec<String>),
-    /// Any public URL.
-    AnyPublic,
 }
 
 /// What a run may test, as the admin set it.

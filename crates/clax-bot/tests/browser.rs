@@ -1,8 +1,9 @@
-//! `clax.browser.test` in a script (spec
-//! docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §5, §8):
-//! what is loaded, the grant, cap and credits checked before a browser
-//! opens, what is charged and counted, the journal's answer to a step run
-//! again, and the screenshots a script shows the model.
+//! `clax.browser.test` and `clax.browser.browse` in a script (spec
+//! docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §5, §8,
+//! §9): what is loaded, the grant, URL rule, cap and credits checked
+//! before a browser opens, what is charged and counted, the journal's
+//! answer to a step run again, and the screenshots a script shows the
+//! model.
 
 use crate::common::*;
 use crate::resume::crash_once;
@@ -11,7 +12,9 @@ use clax_bot::Next;
 use clax_bot::browser::{
     BrowserError, CODE_BROWSER_BUSY, CODE_BROWSER_UNAVAILABLE, ChromeLog, FakeChrome, PageModel,
 };
+use clax_bot::host::CommentMeta;
 use clax_bot::run::CrashPoint;
+use clax_bot::web::OwnHosts;
 use clax_core::audit::AuditCtx;
 use clax_store::bot_runs::{DriverId, RunStatus, StepKind};
 use clax_store::bot_settings::Setting;
@@ -611,4 +614,300 @@ async fn screenshots_are_kept_under_the_hosts_content_limits() {
     assert!(why.contains("could not be kept"), "{v}");
     // Charged all the same: the browser opened.
     assert_eq!(browser_rows(&env).len(), 1);
+}
+
+/// Sets the admin's browse URL rule.
+fn browse_rule(env: &Env, rule: &str) {
+    env.admin_sets(&[(Setting::BrowserBrowseUrlRule, json!(rule))]);
+}
+
+/// Adds a comment of the sender's saying `text` to the run's request.
+fn sender_says(env: &Env, text: &str) {
+    env.host.lock().context.threads[0]
+        .comments
+        .push(CommentMeta {
+            id: "c-sender".into(),
+            author: "Owner".into(),
+            from_sender: true,
+            at: "2026-10-21T09:30:00Z".into(),
+            text: text.into(),
+        });
+}
+
+#[tokio::test]
+async fn a_browse_opens_its_url_and_is_charged_as_a_browse() {
+    let env = Env::new().await;
+    browse_rule(&env, "any_public");
+    let (run, v) = one_script(
+        &env,
+        "browse",
+        "return await clax.browser.browse('https://public.example/', {viewport: 'phone', steps: [{goto: 'https://public.example/next'}]});",
+    )
+    .await;
+    assert_eq!(env.browser.opened(), 1);
+    assert_eq!(v["passed"], true, "{v}");
+    assert_eq!(v["left"]["browses"], 9, "{v}");
+    assert_eq!(v["left"]["tests"], 0, "{v}");
+    let log = &env.browser.logs()[0];
+    let navigated: Vec<Value> = log
+        .sent("Page.navigate")
+        .iter()
+        .map(|c| c["params"]["url"].clone())
+        .collect();
+    assert_eq!(
+        navigated,
+        [
+            json!("https://public.example/"),
+            json!("https://public.example/next")
+        ]
+    );
+    // Its requests go to the network; nothing of Clax's is served.
+    assert_eq!(log.sent("Fetch.continueRequest").len(), 2);
+    assert!(log.sent("Fetch.fulfillRequest").is_empty());
+    assert_eq!(log.sent("Browser.close").len(), 1);
+    assert_eq!(browser_rows(&env).len(), 1);
+    let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
+    assert_eq!(counted.get("browser.browse"), Some(&1), "{counted:?}");
+    assert_eq!(counted.get("browser.test"), None, "{counted:?}");
+    let calls = script_calls(&env, &run, 0);
+    let b = &calls[0]["browser"];
+    assert_eq!(
+        (&b["url"], &b["viewport"], &b["passed"]),
+        (
+            &json!("https://public.example/"),
+            &json!("phone"),
+            &json!(true)
+        )
+    );
+    let audit = browser_events(&env);
+    assert_eq!(
+        (&audit[0]["op"], &audit[0]["url"], &audit[0]["ok"]),
+        (
+            &json!("browser.browse"),
+            &json!("https://public.example/"),
+            &json!(true)
+        )
+    );
+}
+
+#[tokio::test]
+async fn sender_rule_admits_only_the_senders_urls() {
+    let env = Env::new().await;
+    sender_says(&env, "Compare with https://news.example/story please.");
+    let (run, v) = one_script(
+        &env,
+        "browse",
+        "const codes = [];
+         for (const [url, opts] of [
+           ['https://evil.example/'],
+           ['https://news.example/story', {steps: [{goto: 'https://evil.example/?d=1'}]}],
+           ['https://news.example/story'],
+         ]) {
+           try { codes.push((await clax.browser.browse(url, opts)).passed); }
+           catch (e) { codes.push(e.code); }
+         }
+         return codes;",
+    )
+    .await;
+    assert_eq!(v, json!(["url_not_allowed", "url_not_allowed", true]));
+    assert_eq!(env.browser.opened(), 1);
+    assert_eq!(browser_rows(&env).len(), 1);
+    // Refusals are audited, uncharged and not counted.
+    let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
+    assert_eq!(counted.get("browser.browse"), Some(&1), "{counted:?}");
+    let audit = browser_events(&env);
+    assert_eq!(audit.len(), 3);
+    assert_eq!(audit[1]["code"], "url_not_allowed");
+    assert_eq!(audit[1]["credits_milli"], 0);
+}
+
+#[tokio::test]
+async fn own_hosts_and_private_addresses_are_never_opened() {
+    let env = Env::new().await;
+    browse_rule(&env, "any_public");
+    env.browser.set_own_hosts(Ok(OwnHosts::new(
+        Some("https://clax.example"),
+        Some("sites.example"),
+    )
+    .unwrap()));
+    let (_, v) = one_script(
+        &env,
+        "browse",
+        "const codes = [];
+         for (const url of ['https://clax.example/a/x', 'https://x.sites.example/',
+                            'http://127.0.0.1:9222/json', 'http://localhost/',
+                            'http://169.254.169.254/latest/meta-data/', 'file:///etc/passwd']) {
+           try { await clax.browser.browse(url); codes.push('opened'); }
+           catch (e) { codes.push(e.code); }
+         }
+         return codes;",
+    )
+    .await;
+    assert_eq!(v, json!(vec!["url_not_allowed"; 6]));
+    assert_eq!(env.browser.opened(), 0);
+    assert!(browser_rows(&env).is_empty());
+
+    // An instance that cannot name its own hosts browses nothing.
+    let env = Env::new().await;
+    browse_rule(&env, "any_public");
+    env.browser
+        .set_own_hosts(Err("the public origin is not a URL".into()));
+    let (_, v) = one_script(
+        &env,
+        "browse",
+        "try { await clax.browser.browse('https://public.example/'); return 'opened'; }
+         catch (e) { return e.code; }",
+    )
+    .await;
+    assert_eq!(v, "browser_unavailable");
+    assert_eq!(env.browser.opened(), 0);
+}
+
+#[tokio::test]
+async fn a_browse_page_reaches_only_what_the_rule_admits() {
+    let env = Env::new().await;
+    browse_rule(&env, "allowlist");
+    env.admin_sets(&[(
+        Setting::BrowserBrowseAllowlist,
+        json!(["news.example", "*.news.example"]),
+    )]);
+    env.browser.resolves_private("intranet.news.example");
+    env.browser.opens(|| {
+        Ok(FakeChrome::page(PageModel::new().requests(&[
+            ("https://cdn.news.example/app.js", "Script"),
+            ("https://intranet.news.example/", "Fetch"),
+            ("http://10.1.2.3/", "Image"),
+            ("https://evil.example/?d=x", "Image"),
+        ])))
+    });
+    let (_, v) = one_script(
+        &env,
+        "browse",
+        "return (await clax.browser.browse('https://news.example/')).requests.blocked;",
+    )
+    .await;
+    assert_eq!(
+        v,
+        json!([
+            {"url": "https://intranet.news.example/", "why": "private"},
+            {"url": "http://10.1.2.3/", "why": "private"},
+            {"url": "https://evil.example/?d=x", "why": "rule"},
+        ])
+    );
+    let log = &env.browser.logs()[0];
+    assert_eq!(log.sent("Fetch.continueRequest").len(), 2);
+}
+
+#[tokio::test]
+async fn a_replayed_browse_opens_no_browser() {
+    let env = Env::new().await;
+    browse_rule(&env, "any_public");
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Browse",
+        "return (await clax.browser.browse('https://public.example/')).passed;",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_browser("browse");
+    let mut a = env.deps();
+    crash_once(
+        &mut a,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    let out = env.drive(&a, &run, &DriverId::mint()).await;
+    assert_eq!(
+        out.last().unwrap().next,
+        Next::Waiting(clax_bot::Wait::Crashed)
+    );
+    assert_eq!(browser_rows(&env).len(), 1, "charged when it returned");
+    // The admin narrows the rule meanwhile: the replay answers from the
+    // journal, not from the rule.
+    browse_rule(&env, "sender");
+    env.clock.advance(61);
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(script_result(&env, &run, 0)["value"], true);
+    assert_eq!(env.browser.opened(), 1);
+    assert_eq!(browser_rows(&env).len(), 1);
+    assert_eq!(browser_events(&env).len(), 1);
+}
+
+#[tokio::test]
+async fn browse_counts_against_its_own_cap() {
+    let env = Env::new().await;
+    browse_rule(&env, "any_public");
+    env.admin_sets(&[(Setting::BrowserMaxBrowsesPerRun, json!(1))]);
+    let (_, v) = one_script(
+        &env,
+        "test,browse",
+        "const a = await clax.browser.browse('https://public.example/');
+         let code;
+         try { await clax.browser.browse('https://public.example/'); } catch (e) { code = e.code; }
+         const t = await clax.browser.test();
+         return [a.left.browses, code, t.left.tests, t.left.browses];",
+    )
+    .await;
+    assert_eq!(v, json!([0, "browser_cap", 9, 0]));
+    assert_eq!(env.browser.opened(), 2);
+}
+
+#[tokio::test]
+async fn browse_needs_its_own_switch_and_the_web_choice() {
+    // A run made without browse cannot call it.
+    let env = Env::new().await;
+    browse_rule(&env, "any_public");
+    let (_, v) = one_script(
+        &env,
+        "test",
+        "try { await clax.browser.browse('https://public.example/'); return 'opened'; }
+         catch (e) { return e.code; }",
+    )
+    .await;
+    assert_eq!(v, "browser_disabled");
+    assert_eq!(env.browser.opened(), 0);
+
+    // The person turns their web choice off mid-run: browsing stops.
+    let env = Env::new().await;
+    browse_rule(&env, "any_public");
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Browse",
+        "const codes = [];
+         try { await clax.browser.browse('https://public.example/'); codes.push('opened'); }
+         catch (e) { codes.push(e.code); }
+         codes.push((await clax.browser.test()).passed);
+         return codes;",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_browser("test,browse");
+    let deps = env.deps();
+    let d = DriverId::mint();
+    assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
+    env.store
+        .set_web_choice(&AuditCtx::DAEMON, OWNER, false)
+        .unwrap();
+    env.drive(&deps, &run, &d).await;
+    assert_eq!(
+        script_result(&env, &run, 0)["value"],
+        json!(["browser_disabled", true])
+    );
+    assert_eq!(env.browser.opened(), 1);
+}
+
+#[tokio::test]
+async fn tests_are_refused_under_browse() {
+    let env = Env::new().await;
+    browse_rule(&env, "any_public");
+    let (_, v) = one_script(
+        &env,
+        "browse",
+        "try { await clax.browser.browse('https://public.example/', {tests: true}); return 'opened'; }
+         catch (e) { return e.code; }",
+    )
+    .await;
+    assert_eq!(v, "invalid_args");
+    assert_eq!(env.browser.opened(), 0);
 }

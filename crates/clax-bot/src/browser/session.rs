@@ -220,19 +220,22 @@ pub struct TestRun {
     pub closed_at: DateTime<Utc>,
 }
 
-/// The script added to every document before its own (spec §6.4, §7.3):
-/// for a test, `window.name = "clax-test"` in the top-level page; a
-/// recorder of content security policy refusals; WebRTC removed, its
+/// The script added to every document before its own (spec §6.4, §7.3,
+/// §9.3): for a test, `window.name = "clax-test"` in the top-level page;
+/// a recorder of content security policy refusals; WebRTC removed, its
 /// connectivity checks being outside both the policy and the Fetch
-/// domain.
+/// domain. A browse also removes WebSocket and WebTransport: their
+/// connections are outside the Fetch domain too, where a test's page is
+/// held to its site's `connect-src 'self'` and a browse's page to no
+/// policy of Clax's.
 #[must_use]
 pub fn preamble_js(mode: Mode) -> String {
-    let name = match mode {
-        Mode::Test => "if (window === window.top) window.name = 'clax-test';",
-        Mode::Browse => "",
+    let (name, gone) = match mode {
+        Mode::Test => ("if (window === window.top) window.name = 'clax-test';", ""),
+        Mode::Browse => ("", ", 'WebSocket', 'WebTransport'"),
     };
     format!(
-        "(() => {{ {name} const seen = []; try {{ Object.defineProperty(window, '__claxCsp', {{value: seen}}); }} catch (e) {{}} document.addEventListener('securitypolicyviolation', (e) => {{ if (seen.length < {MAX_REQUESTS}) seen.push({{url: String(e.blockedURI || ''), directive: String(e.effectiveDirective || '')}}); }}, true); for (const n of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'RTCDataChannel', 'RTCSessionDescription', 'RTCIceCandidate', 'RTCRtpSender', 'RTCRtpReceiver']) {{ try {{ Object.defineProperty(window, n, {{value: undefined, writable: false, configurable: false}}); }} catch (e) {{}} }} }})();"
+        "(() => {{ {name} const seen = []; try {{ Object.defineProperty(window, '__claxCsp', {{value: seen}}); }} catch (e) {{}} document.addEventListener('securitypolicyviolation', (e) => {{ if (seen.length < {MAX_REQUESTS}) seen.push({{url: String(e.blockedURI || ''), directive: String(e.effectiveDirective || '')}}); }}, true); for (const n of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'RTCDataChannel', 'RTCSessionDescription', 'RTCIceCandidate', 'RTCRtpSender', 'RTCRtpReceiver'{gone}]) {{ try {{ Object.defineProperty(window, n, {{value: undefined, writable: false, configurable: false}}); }} catch (e) {{}} }} }})();"
     )
 }
 
@@ -316,6 +319,7 @@ pub async fn run_test(
         loaded: false,
         awaiting_document: false,
         status: 0,
+        browse: start.mode() == Mode::Browse,
         network_urls: BTreeMap::new(),
         shots: Vec::new(),
     };
@@ -366,6 +370,8 @@ struct Driver<'a> {
     /// Whether the next `Document` request is the navigation's.
     awaiting_document: bool,
     status: u16,
+    /// Whether this is a browse, whose requests go to the network.
+    browse: bool,
     /// The URLs of the network's requests, to name a failed load.
     network_urls: BTreeMap<String, String>,
     shots: Vec<Vec<u8>>,
@@ -533,6 +539,16 @@ impl Driver<'_> {
                             )
                             .await?;
                     }
+                    Decision::Continue => {
+                        let session = self.session.clone();
+                        self.cdp
+                            .send_only(
+                                session.as_deref(),
+                                "Fetch.continueRequest",
+                                json!({"requestId": req.request_id}),
+                            )
+                            .await?;
+                    }
                     Decision::Fail { why } => {
                         if document {
                             self.status = 0;
@@ -595,6 +611,25 @@ impl Driver<'_> {
                     .cloned()
                     .unwrap_or_default();
                 self.push_request(false, json!({"url": url, "error": error}));
+            }
+            // A browse's continued requests are answered by the network:
+            // the main frame's document gives the status, and an answer
+            // of 400 or more is listed failed.
+            "Network.responseReceived" if self.browse => {
+                let status = p["response"]["status"]
+                    .as_u64()
+                    .and_then(|s| u16::try_from(s).ok())
+                    .unwrap_or(0);
+                let main = p["type"] == "Document"
+                    && p["frameId"].as_str().is_some()
+                    && p["frameId"].as_str() == self.target.as_deref();
+                if main {
+                    self.status = status;
+                }
+                if status >= 400 {
+                    let url = p["response"]["url"].as_str().unwrap_or_default();
+                    self.push_request(false, json!({"url": url, "status": status}));
+                }
             }
             "Page.loadEventFired" => self.loaded = true,
             "Target.attachedToTarget" => {
@@ -2287,5 +2322,75 @@ mod tests {
         assert!(preamble_js(Mode::Test).contains("window.name = 'clax-test'"));
         assert!(!preamble_js(Mode::Browse).contains("clax-test"));
         assert!(preamble_js(Mode::Browse).contains("RTCPeerConnection"));
+        // A browse's sockets are outside the Fetch domain: removed.
+        assert!(preamble_js(Mode::Browse).contains("'WebSocket', 'WebTransport'"));
+        assert!(!preamble_js(Mode::Test).contains("WebSocket"));
+    }
+
+    #[tokio::test]
+    async fn a_browse_session_blocks_private_requests_and_continues_public_ones() {
+        use crate::browser::browse::{
+            BrowsePolicy, BrowseRule, BrowseScope, WHY_OWN, WHY_PRIVATE, WHY_RULE,
+        };
+        use crate::web::url::OwnHosts;
+        let scope = BrowseScope::new(
+            BrowseRule::Allowlist(vec!["news.example".into(), "*.news.example".into()]),
+            OwnHosts::new(Some("https://clax.example"), None).unwrap(),
+            Default::default(),
+        );
+        let source = FakeBrowserSource::new();
+        source.resolves_private("intranet.news.example");
+        let policy = BrowsePolicy::new(&scope, &source);
+        let chrome = FakeChrome::page(
+            PageModel::new()
+                .evaluate(fine)
+                .requests(&[
+                    ("https://cdn.news.example/app.js", "Script"),
+                    ("http://127.0.0.1:9222/json/version", "XHR"),
+                    ("https://intranet.news.example/admin", "Fetch"),
+                    ("https://clax.example/api/me", "Fetch"),
+                    ("https://evil.example/?d=secret", "Image"),
+                ])
+                .after_load(vec![event(
+                    "Network.responseReceived",
+                    json!({"requestId": "N1", "frameId": "T", "type": "Document",
+                           "response": {"url": "https://news.example/", "status": 203}}),
+                    None,
+                )]),
+        );
+        let log = chrome.log();
+        let mut cdp = Cdp::new(Box::new(chrome), never(), CancelToken::new());
+        let start = Start::Browse {
+            url: "https://news.example/".into(),
+        };
+        let o = parse_opts(&json!({}), Mode::Browse, 60).unwrap();
+        let run = run_test(&mut cdp, &start, &o, &policy, &clock(), LIMITS).await;
+        let r = result(&run);
+        let continued: Vec<String> = log
+            .sent("Fetch.continueRequest")
+            .iter()
+            .map(|c| c["params"]["requestId"].as_str().unwrap().to_string())
+            .collect();
+        // The document and the allowlisted script go to the network.
+        assert_eq!(continued, ["R1", "R2"]);
+        assert!(log.sent("Fetch.fulfillRequest").is_empty());
+        assert_eq!(log.sent("Fetch.failRequest").len(), 4);
+        assert_eq!(
+            r["requests"]["blocked"],
+            json!([
+                {"url": "http://127.0.0.1:9222/json/version", "why": WHY_PRIVATE},
+                {"url": "https://intranet.news.example/admin", "why": WHY_PRIVATE},
+                {"url": "https://clax.example/api/me", "why": WHY_OWN},
+                {"url": "https://evil.example/?d=secret", "why": WHY_RULE},
+            ]),
+            "{r}"
+        );
+        // The status is the network's answer to the main document.
+        assert_eq!(r["status"], 203, "{r}");
+        // The browse preamble, without the test's window name.
+        let pre = log.sent("Page.addScriptToEvaluateOnNewDocument");
+        let src = pre[0]["params"]["source"].as_str().unwrap();
+        assert!(src.contains("'WebSocket'") && !src.contains("clax-test"));
+        assert_eq!(log.sent("Browser.close").len(), 1);
     }
 }

@@ -5,12 +5,13 @@
 //! [`crate::web::FakeWebSource`].
 
 use super::{BrowserError, BrowserSource, CdpTransport, Deadline, Served};
+use crate::web::url::OwnHosts;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use clax_bot_sandbox::CancelToken;
 use futures::FutureExt;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
@@ -484,6 +485,9 @@ pub struct FakeBrowserSource {
     site_headers: Mutex<Vec<(String, String)>>,
     site_api: Mutex<BTreeMap<String, Served>>,
     api_calls: Mutex<Vec<(String, String, String)>>,
+    own_hosts: Mutex<Result<OwnHosts, String>>,
+    private_names: Mutex<BTreeSet<String>>,
+    hosts_asked: Mutex<Vec<String>>,
 }
 
 impl std::fmt::Debug for FakeBrowserSource {
@@ -523,6 +527,9 @@ impl FakeBrowserSource {
             )]),
             site_api: Mutex::new(BTreeMap::new()),
             api_calls: Mutex::new(Vec::new()),
+            own_hosts: Mutex::new(Ok(OwnHosts::default())),
+            private_names: Mutex::new(BTreeSet::new()),
+            hosts_asked: Mutex::new(Vec::new()),
         }
     }
 
@@ -578,6 +585,24 @@ impl FakeBrowserSource {
     #[must_use]
     pub fn api_calls(&self) -> Vec<(String, String, String)> {
         lock(&self.api_calls).clone()
+    }
+
+    /// The instance's own hosts it answers ([`BrowserSource::own_hosts`]),
+    /// or why they cannot be named; none by default.
+    pub fn set_own_hosts(&self, own: Result<OwnHosts, String>) {
+        *lock(&self.own_hosts) = own;
+    }
+
+    /// Answers the name `host` as resolving to a private address
+    /// ([`BrowserSource::host_public`]); every other name is public.
+    pub fn resolves_private(&self, host: &str) {
+        lock(&self.private_names).insert(host.to_string());
+    }
+
+    /// Every name its resolver was asked, in order.
+    #[must_use]
+    pub fn hosts_asked(&self) -> Vec<String> {
+        lock(&self.hosts_asked).clone()
     }
 }
 
@@ -637,5 +662,17 @@ impl BrowserSource for FakeBrowserSource {
                 headers: vec![("Content-Type".into(), "application/json".into())],
                 body: br#"{"error":{"code":"not_found"}}"#.to_vec(),
             })
+    }
+
+    fn own_hosts(&self) -> Result<OwnHosts, String> {
+        lock(&self.own_hosts).clone()
+    }
+
+    async fn host_public(&self, host: &str) -> Result<(), String> {
+        lock(&self.hosts_asked).push(host.to_string());
+        if lock(&self.private_names).contains(host) {
+            return Err(format!("{host} resolves to 10.0.0.1, a private address"));
+        }
+        Ok(())
     }
 }

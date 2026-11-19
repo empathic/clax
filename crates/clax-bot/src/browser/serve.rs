@@ -200,6 +200,10 @@ pub enum Decision {
     /// Fail it (`Fetch.failRequest`, `BlockedByClient`), listed as
     /// blocked with `why`.
     Fail { why: &'static str },
+    /// Let it go to the network (`Fetch.continueRequest`): a browse's
+    /// public request ([`super::browse::BrowsePolicy`]). A test's policy
+    /// never answers it.
+    Continue,
 }
 
 impl Decision {
@@ -465,6 +469,7 @@ mod tests {
         match d {
             Decision::Fulfill(s) => s,
             Decision::Fail { why } => panic!("failed: {why}"),
+            Decision::Continue => panic!("continued"),
         }
     }
 

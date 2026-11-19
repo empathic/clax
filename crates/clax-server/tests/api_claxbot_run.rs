@@ -1962,14 +1962,6 @@ async fn a_run_started_with_browser_on_declares_it() {
         ts.store.run(&run.id).unwrap().unwrap()
     };
     browser_on(&ts).await;
-    // Browsing on too: Clax's surface performs tests alone, so no run
-    // declares a browse.
-    ts.store
-        .set_bot_settings(
-            &AuditCtx::DAEMON,
-            &[(Setting::BrowserBrowseEnabled, Some(json!(true)))],
-        )
-        .unwrap();
     // The daemon's own bot, whose driver gave its runs a browser source.
     let run = start(&ts.state.bot, &threads[0]);
     assert!(ts.state.bot.browser);
@@ -1979,7 +1971,7 @@ async fn a_run_started_with_browser_on_declares_it() {
     assert!(granted.iter().any(|o| o == "browser.test"), "{granted:?}");
     assert!(
         !granted.iter().any(|o| o == "browser.browse"),
-        "{granted:?}"
+        "browsing is off by default: {granted:?}"
     );
     // A host with no browser source (the Worker) never gives the shape.
     let no_source = clax_http::bot::Bot {
@@ -2006,6 +1998,73 @@ async fn a_run_started_with_browser_on_declares_it() {
         .unwrap();
     assert_eq!(res.status(), 200);
     assert_eq!(start(&ts.state.bot, &threads[3]).browser, "");
+}
+
+#[tokio::test]
+async fn a_browse_run_with_the_switch_on_declares_browse() {
+    use clax_core::ArtifactId;
+    use clax_server::routes::bot::{Sender, start_run};
+    use clax_store::bot_runs::RequestKind;
+    use clax_store::roles::OWNER;
+    let fake = FakeMessages::start(vec![]).await;
+    let ts = daemon(&fake).await;
+    let id_of = |v: &Value| v["id"].as_str().unwrap().to_string();
+    let aid = id_of(&ts.publish("Page", &[("index.html", "<p>hi</p>")]).await["artifact"]);
+    let threads: Vec<String> =
+        futures::future::join_all(["One?", "Two?", "Three?"].map(|t| ts.thread(&aid, 1, t)))
+            .await
+            .iter()
+            .map(id_of)
+            .collect();
+    let aid = ArtifactId::parse(&aid).unwrap();
+    let sender = Sender {
+        person: OWNER.into(),
+        agent_grant: None,
+    };
+    let start = |tid: &str| {
+        let run = start_run(
+            &ts.store,
+            &ts.state.bot,
+            &AuditCtx::DAEMON,
+            &sender,
+            &aid,
+            RequestKind::Thread,
+            vec![tid.to_string()],
+        )
+        .unwrap();
+        ts.store.run(&run.id).unwrap().unwrap()
+    };
+    browser_on(&ts).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/browser", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"browse": {"enabled": true, "url_rule": "any_public"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let run = start(&threads[0]);
+    assert_eq!(run.browser, "test,browse");
+    let (_, as_made) = ts.store.run_as_made(&run.id).unwrap().unwrap();
+    let granted = as_made.bindings().unwrap().all()[0].granted().to_vec();
+    assert!(granted.iter().any(|o| o == "browser.browse"), "{granted:?}");
+    // Browsing reaches the web: the person's web choice off leaves it out.
+    ts.store
+        .set_web_choice(&AuditCtx::DAEMON, OWNER, false)
+        .unwrap();
+    assert_eq!(start(&threads[1]).browser, "test");
+    ts.store
+        .set_web_choice(&AuditCtx::DAEMON, OWNER, true)
+        .unwrap();
+    // Testing off, browsing on: a run that browses alone.
+    ts.store
+        .set_bot_settings(
+            &AuditCtx::DAEMON,
+            &[(Setting::BrowserEnabled, Some(json!(false)))],
+        )
+        .unwrap();
+    assert_eq!(start(&threads[2]).browser, "browse");
 }
 
 /// A fake Browser Run on 127.0.0.1: each WebSocket it accepts is a

@@ -17,13 +17,16 @@
 //!    admin or the person may have turned it off since the run started,
 //!    or the source lost its credentials,
 //!    [`crate::browser::BrowserSource::configured`]), or
-//!    `browser_disabled`. `browser.browse` is refused `browser_disabled`
-//!    here whatever the grant: this build does not perform it.
-//! 4. Its arguments hold ([`crate::browser::opts`]: the target, the
-//!    options, every cap), or `invalid_args`.
-//! 5. The target exists: the version the call names, and the page in the
-//!    draft or that version, or `browser_target_not_found`.
-//! 6. The run's tests have room, or `browser_cap`. The count is of the
+//!    `browser_disabled`. Browsing is granted only while the person's web
+//!    choice is on too.
+//! 4. Its arguments hold ([`crate::browser::opts`]: the target or the
+//!    URL, the options, every cap), or `invalid_args`.
+//! 5. `test`: the target exists: the version the call names, and the
+//!    page in the draft or that version, or `browser_target_not_found`.
+//!    `browse`: the URL and every `goto` step's URL may be opened under
+//!    the admin's URL rule ([`crate::browser::browse::BrowseScope::allowed`],
+//!    the sender's URLs read from the request now), or `url_not_allowed`.
+//! 6. The run's tests (or browses) have room, or `browser_cap`. The count is of the
 //!    run's journaled browser calls marked `counted`
 //!    ([`clax_store::Store::bot_spend_counts`]): those whose browser
 //!    opened, and those Browser Run refused, so a script cannot retry a
@@ -36,7 +39,9 @@
 //! 8. The source opens a browser ([`crate::browser::BrowserSource::open`])
 //!    and the test runs ([`run_test`]) on the run's draft as the session
 //!    holds it, edits not yet committed included, or on the version, with
-//!    the source's deadline at the call's time cap from the open.
+//!    the source's deadline at the call's time cap from the open. A browse
+//!    runs on the URL, its page's every request held to the rule's hosts
+//!    ([`crate::browser::browse::BrowsePolicy`]).
 //!
 //! Calls of one step are performed one after the other (the session's
 //! `browsing` lock), so two tests a script starts together never hold
@@ -60,11 +65,13 @@
 //!
 //! Each entry keeps, beside the script's value or the error: `cost_milli`,
 //! the charge; `browser`, what the run panel shows (`target`, `path` and
-//! `viewport` once the arguments hold; then `ms`, `passed`, `steps` as
+//! `viewport` once the arguments hold, or a browse's `url` and
+//! `viewport`; then `ms`, `passed`, `steps` as
 //! `[ok, failed]`, `tests` when saved tests ran, the counts of `errors`,
 //! `console` and `blocked`, and the screenshots' IDs); and `counted`. The
 //! `bot.browser` record names the operation, the version (none for the
-//! draft), the path, the viewport, `ms` and `passed`, beside what the
+//! draft) and the path, or a browse's URL, the viewport, `ms` and
+//! `passed`, beside what the
 //! store adds (`run`, `step`, `credits_milli`) and `ok` or `code`.
 //!
 //! The script's value is the test's result (spec §5.1) with each
@@ -76,9 +83,10 @@
 //! in [`from_browser`] alone).
 
 use super::session::ClaxSession;
+use crate::browser::browse::{BrowsePolicy, BrowseRule, BrowseScope, sender_urls};
 use crate::browser::opts::{self, BrowserOpts, BrowserTarget, Mode, Step};
 use crate::browser::serve::{Pages, Site};
-use crate::browser::session::{Start, TestPolicy, TestRun, run_test};
+use crate::browser::session::{RequestPolicy, Start, TestPolicy, TestRun, run_test};
 use crate::browser::{
     BrowserAccess, BrowserError, BrowserGrant, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_CAP,
     CODE_BROWSER_DISABLED, CODE_BROWSER_TARGET_NOT_FOUND, CODE_BROWSER_UNAVAILABLE,
@@ -229,6 +237,8 @@ fn whole_seconds(ms: i64) -> i64 {
 /// is made with.
 struct Ctx {
     grant: BrowserGrant,
+    /// The call's operation, `browser.test` or `browser.browse`.
+    op: &'static str,
     /// The run's counted tests and browses before the call.
     tests: u32,
     browses: u32,
@@ -339,23 +349,36 @@ impl ClaxSession<'_> {
             }
             Err(e) => return Finish::refused(host_error(&e)),
         };
-        if op == OP_BROWSE {
-            return Finish::refused(HostError::new(
-                CODE_BROWSER_DISABLED,
-                "clax.browser.browse cannot be performed on this instance yet; do without it",
-            ));
-        }
-        let Some(test) = grant.test.clone() else {
-            return Finish::refused(HostError::new(
-                CODE_BROWSER_DISABLED,
-                "the admin turned clax.browser.test off since this run started; do without it",
-            ));
+        let (op, max_per_run, seconds, mode) = if op == OP_BROWSE {
+            let Some(b) = &grant.browse else {
+                return Finish::refused(HostError::new(
+                    CODE_BROWSER_DISABLED,
+                    "browsing was turned off (by the admin, or the person's web choice) since \
+                     this run started; do without clax.browser.browse",
+                ));
+            };
+            (OP_BROWSE, b.max_per_run, b.seconds, Mode::Browse)
+        } else {
+            let Some(t) = &grant.test else {
+                return Finish::refused(HostError::new(
+                    CODE_BROWSER_DISABLED,
+                    "the admin turned clax.browser.test off since this run started; do without it",
+                ));
+            };
+            (OP_TEST, t.max_per_run, t.seconds, Mode::Test)
         };
         // Check 4.
-        let parsed = opts::parse_target(&args[0])
-            .and_then(|t| Ok((t, opts::parse_opts(&args[1], Mode::Test, test.seconds)?)));
-        let (target, options) = match parsed {
-            Ok(x) => x,
+        let options = match opts::parse_opts(&args[1], mode, seconds) {
+            Ok(o) => o,
+            Err(e) => return Finish::refused(from_browser(&e)),
+        };
+        if mode == Mode::Browse {
+            return self
+                .browse(source, call, grant, max_per_run, options, shown)
+                .await;
+        }
+        let target = match opts::parse_target(&args[0]) {
+            Ok(t) => t,
             Err(e) => return Finish::refused(from_browser(&e)),
         };
         *shown = json!({
@@ -384,17 +407,146 @@ impl ClaxSession<'_> {
             Err(e) => return with_audit(Finish::refused(e), vec![]),
         };
         // Checks 6 and 7.
-        let cx = match self.browser_ctx(grant, &test, &options) {
+        let cx = match self.browser_ctx(grant, op, max_per_run, &options) {
             Ok(cx) => cx,
             Err(e) => return with_audit(Finish::refused(e), vec![]),
         };
+        let site = Site::new(&artifact, pages);
+        let policy = TestPolicy {
+            site: &site,
+            source: source.as_ref(),
+            store,
+            person: &run.person,
+        };
+        let start = Start::Test {
+            origin: site.origin.clone(),
+            path: target.path.clone(),
+        };
         // Check 8.
+        let (f, more) = self
+            .open_and_run(source, call, &cx, &options, &start, &policy, shown)
+            .await;
+        with_audit(f, more)
+    }
+
+    /// Checks 5 to 8 of a browse, its options `options` read.
+    async fn browse(
+        &self,
+        source: &Arc<dyn BrowserSource>,
+        call: &Call<'_>,
+        grant: BrowserGrant,
+        max_per_run: u32,
+        options: BrowserOpts,
+        shown: &mut Value,
+    ) -> Finish {
+        let Some(url) = call.args[0].as_str() else {
+            return Finish::refused(HostError::new(
+                crate::api::CODE_BAD_ARGS,
+                "url: must be a string, the public URL to open",
+            ));
+        };
+        *shown = json!({"url": url, "viewport": options.viewport.label()});
+        let audit = [
+            ("url", json!(url)),
+            ("viewport", json!(options.viewport.label())),
+        ];
+        let with_audit = |f: Finish, more: Vec<(&'static str, Value)>| Finish {
+            audit: audit.iter().cloned().chain(more).collect(),
+            ..f
+        };
+        // Check 5.
+        let scope = match self.browse_scope(source.as_ref(), &grant).await {
+            Ok(s) => s,
+            Err(e) => return with_audit(Finish::refused(e), vec![]),
+        };
+        let url = match scope.allowed(url) {
+            Ok(u) => u,
+            Err(e) => return with_audit(Finish::refused(from_browser(&e)), vec![]),
+        };
+        for (i, step) in options.steps.iter().enumerate() {
+            if let Step::Goto(to) = step
+                && let Err(e) = scope.allowed(to)
+            {
+                let e = BrowserError::new(
+                    e.code,
+                    format!("opts.steps[{i}].goto: {}", e.message),
+                    false,
+                );
+                return with_audit(Finish::refused(from_browser(&e)), vec![]);
+            }
+        }
+        // Checks 6 and 7.
+        let cx = match self.browser_ctx(grant, OP_BROWSE, max_per_run, &options) {
+            Ok(cx) => cx,
+            Err(e) => return with_audit(Finish::refused(e), vec![]),
+        };
+        let policy = BrowsePolicy::new(&scope, source.as_ref());
+        let start = Start::Browse {
+            url: url.as_str().to_string(),
+        };
+        // Check 8.
+        let (f, more) = self
+            .open_and_run(source, call, &cx, &options, &start, &policy, shown)
+            .await;
+        with_audit(f, more)
+    }
+
+    /// What a browse under `grant`'s rule may open: the instance's own
+    /// hosts from `source`, and under the sender rule the URLs of the
+    /// request this run answers, read now.
+    async fn browse_scope(
+        &self,
+        source: &dyn BrowserSource,
+        grant: &BrowserGrant,
+    ) -> Result<BrowseScope, HostError> {
+        let rule = grant
+            .browse
+            .as_ref()
+            .map_or(BrowseRule::Sender, |b| b.rule.clone());
+        let own = source.own_hosts().map_err(|why| {
+            HostError::new(
+                CODE_BROWSER_UNAVAILABLE,
+                format!("this instance cannot name its own hosts ({why}), so it browses nothing"),
+            )
+        })?;
+        let sender = if rule == BrowseRule::Sender {
+            let cx = self.provider.host.context(&self.run).await.map_err(|e| {
+                tracing::warn!(
+                    "clax-bot: run {} has no request context for a browse: {e}",
+                    self.run.id
+                );
+                HostError::new(
+                    CODE_BROWSER_UNAVAILABLE,
+                    "the request this run answers could not be read, so no URL can be checked \
+                     against it; do without this page",
+                )
+            })?;
+            sender_urls(&cx)
+        } else {
+            Default::default()
+        };
+        Ok(BrowseScope::new(rule, own, sender))
+    }
+
+    /// Check 8: opens a browser on `source` and runs `start` under
+    /// `policy`, then ends the call ([`ClaxSession::tested`]).
+    #[allow(clippy::too_many_arguments)]
+    async fn open_and_run(
+        &self,
+        source: &Arc<dyn BrowserSource>,
+        call: &Call<'_>,
+        cx: &Ctx,
+        options: &BrowserOpts,
+        start: &Start,
+        policy: &dyn RequestPolicy,
+        shown: &mut Value,
+    ) -> (Finish, Vec<(&'static str, Value)>) {
         let transport = match source.open(self.cx.cancel).await {
             Ok(t) => t,
             Err(e) => {
                 // Refused before Browser Run was asked: not counted.
                 let counted = e.code != CODE_BROWSER_BUSY && e.code != CODE_CANCELLED;
-                return with_audit(
+                return (
                     Finish {
                         counted,
                         ..Finish::refused(from_browser(&e))
@@ -407,28 +559,16 @@ impl ClaxSession<'_> {
             self.provider.clock.now() + chrono::Duration::seconds(i64::from(options.timeout_s)),
         );
         let mut cdp = Cdp::new(transport, deadline, self.cx.cancel.clone());
-        let site = Site::new(&artifact, pages);
-        let policy = TestPolicy {
-            site: &site,
-            source: source.as_ref(),
-            store,
-            person: &run.person,
-        };
-        let start = Start::Test {
-            origin: site.origin.clone(),
-            path: target.path.clone(),
-        };
         let tested = run_test(
             &mut cdp,
-            &start,
-            &options,
-            &policy,
+            start,
+            options,
+            policy,
             self.provider.clock.as_ref(),
             self.provider.browser_limits,
         )
         .await;
-        let (f, more) = self.tested(call, &cx, &options, tested, shown);
-        with_audit(f, more)
+        self.tested(call, cx, options, tested, shown)
     }
 
     /// Check 5: the files of `target`, or `browser_target_not_found`.
@@ -473,12 +613,14 @@ impl ClaxSession<'_> {
         Ok(Pages::Version(artifact.clone(), n))
     }
 
-    /// Checks 6 and 7: the run's counted calls, the line's rate, and the
-    /// person's credits for the call's time cap.
+    /// Checks 6 and 7: the run's counted calls of `op` under its cap
+    /// `max_per_run`, the line's rate, and the person's credits for the
+    /// call's time cap.
     fn browser_ctx(
         &self,
         grant: BrowserGrant,
-        test: &crate::browser::TestGrant,
+        op: &'static str,
+        max_per_run: u32,
         options: &BrowserOpts,
     ) -> Result<Ctx, HostError> {
         let store = self.store();
@@ -487,13 +629,15 @@ impl ClaxSession<'_> {
             .map_err(|e| host_error(&e))?;
         let count = |op: &str| counted.get(op).copied().unwrap_or(0);
         let (tests, browses) = (count(OP_TEST), count(OP_BROWSE));
-        if tests >= test.max_per_run {
+        let (used, what) = if op == OP_BROWSE {
+            (browses, "browses")
+        } else {
+            (tests, "browser tests")
+        };
+        if used >= max_per_run {
             return Err(HostError::new(
                 CODE_BROWSER_CAP,
-                format!(
-                    "this run has used its {} browser tests; work with what you have",
-                    test.max_per_run
-                ),
+                format!("this run has used its {max_per_run} {what}; work with what you have"),
             ));
         }
         let rate = store
@@ -504,7 +648,7 @@ impl ClaxSession<'_> {
                     CODE_BROWSER_UNAVAILABLE,
                     format!(
                         "browser pricing is not configured on this instance (it has no cost \
-                         line {LINE_BROWSER_TIME}); do without clax.browser.test"
+                         line {LINE_BROWSER_TIME}); do without clax.{op}"
                     ),
                 )
             })?;
@@ -520,7 +664,7 @@ impl ClaxSession<'_> {
             return Err(HostError::new(
                 CODE_CREDITS_EXHAUSTED,
                 format!(
-                    "the person you act for has {} credits left this week and a browser test of \
+                    "the person you act for has {} credits left this week and a browser call of \
                      {} s can cost {}; finish with what you have",
                     credits as f64 / 1000.0,
                     options.timeout_s,
@@ -530,6 +674,7 @@ impl ClaxSession<'_> {
         }
         Ok(Ctx {
             grant,
+            op,
             tests,
             browses,
             rate,
@@ -602,7 +747,12 @@ impl ClaxSession<'_> {
                 }
                 v["screenshots"] = Value::Array(handles);
                 v["cost"] = json!(cost as f64 / 1000.0);
-                v["left"] = cx.left(cx.tests + 1, cx.browses, cx.credits - cost);
+                let (tests, browses) = if cx.op == OP_BROWSE {
+                    (cx.tests, cx.browses + 1)
+                } else {
+                    (cx.tests + 1, cx.browses)
+                };
+                v["left"] = cx.left(tests, browses, cx.credits - cost);
                 summarize(shown, &v, ids);
                 more.push(("passed", v["passed"].clone()));
                 Ok(v)

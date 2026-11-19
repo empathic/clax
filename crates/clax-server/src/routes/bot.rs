@@ -1015,21 +1015,16 @@ pub fn admit_run(
 }
 
 /// The browser shape a run of `person` made now has
-/// ([`clax_bot::browser::BrowserAccess::now`]), its browse left out: Clax's
-/// surface performs `browser.test` alone (`clax_bot::clax::browser` refuses
-/// `browser.browse` `browser_disabled`), so no run declares an operation
-/// it would refuse.
+/// ([`clax_bot::browser::BrowserAccess::now`]): `browser.test` and
+/// `browser.browse` as the admin, the person's choices and the host's
+/// source allow them.
 fn run_browser_shape(
     st: &Store,
     bot: &Bot,
     person: &str,
 ) -> clax_core::Result<clax_bot::browser::BrowserShape> {
     let configured = crate::bot::browser_configured(st, bot)?;
-    let shape = clax_bot::browser::BrowserAccess::now(st, person, configured)?.shape();
-    Ok(clax_bot::browser::BrowserShape {
-        test: shape.test,
-        browse: false,
-    })
+    Ok(clax_bot::browser::BrowserAccess::now(st, person, configured)?.shape())
 }
 
 /// Starts a run of `request` on artifact `aid` for `sender`, as `ctx`:

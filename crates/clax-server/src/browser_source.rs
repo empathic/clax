@@ -16,6 +16,15 @@
 //! response headers, its API as the run's person), through the site's own
 //! code ([`DaemonBrowser::serving`]).
 //!
+//! # Browsing
+//!
+//! A browse's page asks two things only the daemon knows
+//! (`clax_bot::browser::browse`): the instance's own hosts, a hosted
+//! daemon's public origin and site domain ([`DaemonBrowser::of`]), and
+//! whether a name resolves to public addresses alone, by the system's
+//! resolver, the one list of local ranges the web tools use
+//! ([`crate::web_source::is_public`]).
+//!
 //! # Concurrency
 //!
 //! At most `browser.max_concurrent` browsers are open at once on the
@@ -33,12 +42,14 @@
 //! status is not.
 
 use crate::cloudflare::{Credentials, credentials, has_credentials, usable};
+use crate::web_source::{Lookup, SystemLookup};
 use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
 use clax_bot::browser::{
     BrowserError, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_UNAVAILABLE, CdpTransport,
     Deadline, Served,
 };
+use clax_bot::web::OwnHosts;
 use clax_bot_sandbox::{CODE_CANCELLED, CancelToken};
 use clax_core::ArtifactId;
 use clax_http::state::AppState;
@@ -89,6 +100,10 @@ pub struct DaemonBrowser {
     /// The daemon whose site a test's page is served as: its bridge
     /// files, its site headers, its site API. `None`: none of them.
     site: Option<AppState>,
+    /// The instance's own hosts, or why they cannot be named.
+    own: Result<OwnHosts, String>,
+    /// The resolver a browse's names are checked with.
+    lookup: Arc<dyn Lookup>,
 }
 
 impl DaemonBrowser {
@@ -103,6 +118,8 @@ impl DaemonBrowser {
             tls: crate::web_source::fetch_tls().map(Arc::new),
             in_use: Arc::new(Mutex::new(0)),
             site: None,
+            own: Ok(OwnHosts::default()),
+            lookup: Arc::new(SystemLookup),
         }
     }
 
@@ -110,7 +127,34 @@ impl DaemonBrowser {
     /// key, and its site's files, headers and API.
     #[must_use]
     pub fn of(state: &AppState) -> DaemonBrowser {
-        DaemonBrowser::new(state.store.clone(), state.bot.kek.clone()).serving(state.clone())
+        let hosted = state.hosted.as_ref();
+        let own = match hosted {
+            Some(h) => OwnHosts::new(
+                Some(h.origin.as_str()),
+                h.sites.as_ref().map(|s| s.domain()),
+            )
+            .map_err(|e| e.to_string()),
+            None => Ok(OwnHosts::default()),
+        };
+        DaemonBrowser::new(state.store.clone(), state.bot.kek.clone())
+            .serving(state.clone())
+            .with_own_hosts(own)
+    }
+
+    /// This source, answering `own` as the instance's own hosts, which a
+    /// browse never reaches (`Err`: why they cannot be named, and every
+    /// browse is refused).
+    #[must_use]
+    pub fn with_own_hosts(mut self, own: Result<OwnHosts, String>) -> DaemonBrowser {
+        self.own = own;
+        self
+    }
+
+    /// This source, checking a browse's names with `lookup`.
+    #[cfg(test)]
+    fn with_lookup(mut self, lookup: Arc<dyn Lookup>) -> DaemonBrowser {
+        self.lookup = lookup;
+        self
     }
 
     /// This source, serving a test's page as `state`'s site serves its
@@ -470,6 +514,29 @@ impl BrowserSource for DaemonBrowser {
             },
         }
     }
+
+    fn own_hosts(&self) -> Result<OwnHosts, String> {
+        self.own.clone()
+    }
+
+    /// Whether every address the system's resolver answers for `host` is
+    /// public; a name that does not resolve is refused too.
+    async fn host_public(&self, host: &str) -> Result<(), String> {
+        let addrs = self
+            .lookup
+            .lookup(host)
+            .await
+            .map_err(|e| format!("{host} does not resolve ({e})"))?;
+        if addrs.is_empty() {
+            return Err(format!("{host} resolves to no address"));
+        }
+        match addrs.iter().find(|ip| !crate::web_source::is_public(**ip)) {
+            Some(bad) => Err(format!(
+                "{host} resolves to {bad}, a private or local address"
+            )),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Artifact `aid`'s site host on `s`, as its pages are served there
@@ -824,5 +891,47 @@ mod tests {
         // A deadline already passed fires at once.
         let mut past = b.deadline(st.now_utc() - chrono::Duration::seconds(1));
         assert!(futures::poll!(&mut past).is_ready());
+    }
+
+    /// Names to addresses, for the browse checks.
+    struct Names;
+
+    impl Lookup for Names {
+        fn lookup(&self, host: &str) -> crate::web_source::LookupFuture {
+            let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+            let r = match host {
+                "public.example" => Ok(vec![ip("93.184.215.14")]),
+                "rebind.example" => Ok(vec![ip("93.184.215.14"), ip("127.0.0.1")]),
+                "metadata.example" => Ok(vec![ip("169.254.169.254")]),
+                "empty.example" => Ok(vec![]),
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no such host",
+                )),
+            };
+            Box::pin(async move { r })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_browse_reaches_only_names_on_public_addresses() {
+        let (_d, st, kek) = configured_store();
+        let b = DaemonBrowser::new(st, Some(kek)).with_lookup(Arc::new(Names));
+        assert_eq!(b.host_public("public.example").await, Ok(()));
+        for refused in [
+            "rebind.example",
+            "metadata.example",
+            "empty.example",
+            "nowhere.example",
+        ] {
+            assert!(b.host_public(refused).await.is_err(), "{refused}");
+        }
+        let why = b.host_public("rebind.example").await.unwrap_err();
+        assert!(why.contains("127.0.0.1"), "{why}");
+        // A local daemon has no own hosts; one that cannot name its hosts
+        // says why.
+        assert_eq!(b.own_hosts(), Ok(OwnHosts::default()));
+        let b = b.with_own_hosts(Err("no host".into()));
+        assert_eq!(b.own_hosts(), Err("no host".to_string()));
     }
 }

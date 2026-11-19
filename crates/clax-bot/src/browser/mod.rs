@@ -36,15 +36,15 @@
 //! [`api::CODE_BAD_ARGS`](crate::api::CODE_BAD_ARGS).
 
 pub mod access;
+pub mod browse;
 pub mod cdp;
 pub mod fake;
 pub mod opts;
 pub mod serve;
 pub mod session;
 
-pub use access::{
-    BrowseGrant, BrowseRule, BrowserAccess, BrowserGrant, BrowserOff, BrowserShape, TestGrant,
-};
+pub use access::{BrowseGrant, BrowserAccess, BrowserGrant, BrowserOff, BrowserShape, TestGrant};
+pub use browse::BrowseRule;
 pub use cdp::{Cdp, CdpEvent, CdpFail};
 pub use fake::{ChromeLog, FakeBrowserSource, FakeChrome, PageModel};
 
@@ -180,4 +180,25 @@ pub trait BrowserSource: MaybeSendSync {
     /// `path_and_query` is percent-encoded as [`BrowserSource::clax_file`]'s
     /// path is.
     async fn site_api(&self, person: &str, artifact: &str, path_and_query: &str) -> Served;
+    /// The instance's own hosts, which a browse never reaches
+    /// ([`browse`]): none by default (a local host's are loopback, which
+    /// every browse refuses already); a hosted one's public origin and
+    /// site domain. `Err` says why they cannot be named, and every browse
+    /// is then refused.
+    ///
+    /// # Errors
+    /// As above.
+    fn own_hosts(&self) -> Result<crate::web::url::OwnHosts, String> {
+        Ok(crate::web::url::OwnHosts::default())
+    }
+    /// Whether the name `host` resolves, by the host's resolver, to public
+    /// addresses alone ([`crate::web::url::is_local_addr`]): a browse's
+    /// page reaches no other name ([`browse::BrowsePolicy`]). A host
+    /// that cannot resolve names refuses every one (the default).
+    ///
+    /// # Errors
+    /// Why `host` may not be reached, in words.
+    async fn host_public(&self, host: &str) -> Result<(), String> {
+        Err(format!("this host cannot check where {host} resolves"))
+    }
 }

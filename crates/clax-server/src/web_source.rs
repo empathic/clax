@@ -116,7 +116,7 @@ pub trait Lookup: Send + Sync + 'static {
 }
 
 /// The system's resolver (`getaddrinfo`, through tokio).
-struct SystemLookup;
+pub(crate) struct SystemLookup;
 
 impl Lookup for SystemLookup {
     fn lookup(&self, host: &str) -> LookupFuture {
