@@ -5,6 +5,7 @@
 
 mod common;
 
+mod browser;
 mod cancel;
 mod driver;
 mod endings;

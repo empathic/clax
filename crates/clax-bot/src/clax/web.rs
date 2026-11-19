@@ -497,7 +497,7 @@ impl ClaxSession<'_> {
     }
 
     /// The store the session's rows are in.
-    fn store(&self) -> &clax_store::Store {
+    pub(super) fn store(&self) -> &clax_store::Store {
         &self.provider.store
     }
 
@@ -805,7 +805,7 @@ impl ClaxSession<'_> {
     }
 
     /// The person's credits left this week.
-    fn week_left(&self) -> Result<i64, HostError> {
+    pub(super) fn week_left(&self) -> Result<i64, HostError> {
         Ok(self
             .store()
             .week_usage(&self.run.person, self.provider.clock.now())
@@ -815,7 +815,7 @@ impl ClaxSession<'_> {
 
     /// The key the run's person's calls are on now: their own when they
     /// turned it on, else the one the run was made on.
-    fn key_source(&self) -> KeySource {
+    pub(super) fn key_source(&self) -> KeySource {
         self.store()
             .key_source_of(&self.run.person)
             .unwrap_or(self.run.key_source)

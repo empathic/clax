@@ -5,6 +5,8 @@ use super::session::{ClaxSession, State};
 use super::tally::Tally;
 use super::{browser, web};
 use crate::api;
+use crate::browser::BrowserSource;
+use crate::browser::session::SessionLimits;
 use crate::draft::Draft;
 use crate::host::BotHost;
 use crate::run::bot_ctx;
@@ -23,8 +25,8 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
 /// Clax's own surface (`src/clax.d.ts`): a run's draft of its artifact,
-/// its threads, the artifact's documents and the web, over the server's
-/// [`BotHost`] and the store.
+/// its threads, the artifact's documents, the web and the browser, over
+/// the server's [`BotHost`] and the store.
 ///
 /// A session ([`SurfaceProvider::begin`]) loads the run's draft at the
 /// base the committed steps left it and performs each call as
@@ -50,6 +52,11 @@ pub struct ClaxProvider {
     /// Where web calls are sent; `None` on a host without a source,
     /// where every web call is refused `web_disabled`.
     pub(super) web: Option<Arc<dyn WebSource>>,
+    /// Where browsers come from; `None` on a host without a source,
+    /// where every browser call is refused `browser_disabled`.
+    pub(super) browser: Option<Arc<dyn BrowserSource>>,
+    /// What a browser test is held to: its screenshots' longest side.
+    pub(super) browser_limits: SessionLimits,
     /// The clock of credits weeks.
     pub(super) clock: Arc<dyn Clock>,
     /// The row of the run the provider was made for, when it was made
@@ -61,6 +68,7 @@ impl std::fmt::Debug for ClaxProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClaxProvider")
             .field("web", &self.web.is_some())
+            .field("browser", &self.browser.is_some())
             .field("run", &self.run.as_ref().map(|r| &r.id))
             .finish_non_exhaustive()
     }
@@ -81,6 +89,10 @@ impl ClaxProvider {
             store,
             host,
             web,
+            browser: None,
+            browser_limits: SessionLimits {
+                image_side: crate::policy::DEFAULT_IMAGE_SIDE,
+            },
             clock,
             run: None,
         }
@@ -90,10 +102,28 @@ impl ClaxProvider {
     /// `web_disabled`), over the same store, host and clock.
     #[must_use]
     pub fn with_web(&self, web: Option<Arc<dyn WebSource>>) -> ClaxProvider {
+        ClaxProvider { web, ..self.same() }
+    }
+
+    /// This provider, opening browsers from `browser` (none: each
+    /// browser call is refused `browser_disabled`), over the same store,
+    /// host, web source and clock.
+    #[must_use]
+    pub fn with_browser(&self, browser: Option<Arc<dyn BrowserSource>>) -> ClaxProvider {
+        ClaxProvider {
+            browser,
+            ..self.same()
+        }
+    }
+
+    /// A copy of this provider.
+    fn same(&self) -> ClaxProvider {
         ClaxProvider {
             store: self.store.clone(),
             host: self.host.clone(),
-            web,
+            web: self.web.clone(),
+            browser: self.browser.clone(),
+            browser_limits: self.browser_limits,
             clock: self.clock.clone(),
             run: self.run.clone(),
         }
@@ -137,12 +167,10 @@ impl SurfaceProvider for ClaxProvider {
 
     fn for_run(&self, row: &Run, _binding: &BindingAsStored) -> Option<Arc<dyn SurfaceProvider>> {
         Some(Arc::new(
-            ClaxProvider::new(
-                self.store.clone(),
-                self.host.clone(),
-                self.web.clone(),
-                self.clock.clone(),
-            )
+            ClaxProvider {
+                run: None,
+                ..self.same()
+            }
             .for_run(row.clone()),
         ))
     }
@@ -183,6 +211,7 @@ impl SurfaceProvider for ClaxProvider {
                 created: false,
                 moved: false,
             }),
+            browsing: tokio::sync::Mutex::new(()),
         }))
     }
 

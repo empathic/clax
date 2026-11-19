@@ -2,10 +2,12 @@
 //! one scripted reply per request, in order, recording the usage it
 //! reported), a store on a scratch home with an injected clock, a run on a
 //! one-page artifact, and the deps that drive it (the QuickJS sandbox, a
-//! [`FakeBotHost`] over the store, a [`FakeWebSource`]).
+//! [`FakeBotHost`] over the store, a [`FakeWebSource`], a
+//! [`FakeBrowserSource`]).
 
 #![allow(dead_code)]
 
+use clax_bot::browser::{BrowserShape, FakeBrowserSource};
 use clax_bot::host::{ArtifactMeta, CommentMeta, FakeBotHost, RequestContext, ThreadMeta};
 use clax_bot::run::{Deps, Keys, RunSettings, SettingsSource};
 use clax_bot::web::{FakeWebSource, WebShape};
@@ -433,6 +435,8 @@ pub struct Env {
     pub instance_key: bool,
     /// The web source [`Env::deps`] gives runs.
     pub web: Arc<FakeWebSource>,
+    /// The browser source [`Env::deps`] gives runs.
+    pub browser: Arc<FakeBrowserSource>,
     /// The run's thread, another thread of the artifact, and a thread of
     /// another artifact, all in the store.
     pub t1: String,
@@ -564,6 +568,7 @@ impl Env {
             hub: Arc::new(EventHub::new()),
             instance_key: true,
             web: Arc::new(FakeWebSource::new()),
+            browser: Arc::new(FakeBrowserSource::new()),
             t1,
             t2,
             foreign,
@@ -641,7 +646,7 @@ impl Env {
     }
 
     pub fn run_with(&self, request: RequestKind, model: &str, key_source: KeySource) -> String {
-        self.run_shaped(request, model, key_source, "", vec![self.t1.clone()])
+        self.run_shaped(request, model, key_source, "", "", vec![self.t1.clone()])
     }
 
     /// The web source runs get from [`Env::deps`].
@@ -667,6 +672,21 @@ impl Env {
             "claude-sonnet-5-5",
             KeySource::Instance,
             shape,
+            "",
+            vec![self.t1.clone()],
+        )
+    }
+
+    /// A thread run that declares the browser operations of `shape`
+    /// (`"test"`, `"browse"` or `"test,browse"`), with those operations
+    /// turned on by the admin.
+    pub fn run_with_browser(&self, shape: &str) -> String {
+        self.run_shaped(
+            RequestKind::Thread,
+            "claude-sonnet-5-5",
+            KeySource::Instance,
+            "",
+            shape,
             vec![self.t1.clone()],
         )
     }
@@ -680,27 +700,36 @@ impl Env {
             "claude-sonnet-5-5",
             KeySource::Instance,
             shape,
+            "",
             vec![self.t1.clone(), self.t2.clone()],
         )
     }
 
-    /// A run on `threads` that declares the web operations of `web`,
-    /// which the admin turns on.
+    /// A run on `threads` that declares the web operations of `web` and
+    /// the browser operations of `browser`, which the admin turns on.
     fn run_shaped(
         &self,
         request: RequestKind,
         model: &str,
         key_source: KeySource,
         web: &str,
+        browser: &str,
         threads: Vec<String>,
     ) -> String {
         let shape = WebShape::parse(web);
+        let browser = BrowserShape::parse(browser);
         let mut on = Vec::new();
         if shape.search {
             on.push((Setting::WebSearchEnabled, json!(true)));
         }
         if shape.fetch {
             on.push((Setting::WebFetchEnabled, json!(true)));
+        }
+        if browser.test {
+            on.push((Setting::BrowserEnabled, json!(true)));
+        }
+        if browser.browse {
+            on.push((Setting::BrowserBrowseEnabled, json!(true)));
         }
         if !on.is_empty() {
             self.admin_sets(&on);
@@ -718,7 +747,7 @@ impl Env {
                     base_version: 1,
                     agent_grant: None,
                     web: shape.as_str().into(),
-                    browser: String::new(),
+                    browser: browser.as_str().into(),
                 },
             )
             .unwrap()
@@ -743,6 +772,7 @@ impl Env {
             ..RetryPolicy::default()
         };
         d.with_web(self.web.clone())
+            .with_browser(self.browser.clone())
     }
 
     pub fn deps(&self) -> Deps {

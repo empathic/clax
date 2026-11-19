@@ -219,6 +219,21 @@ impl Providers {
         }
     }
 
+    /// Registers Clax's own surface again as it last registered it, but
+    /// opening its browsers from `browser` (with none, each browser call
+    /// is refused `browser_disabled`). Nothing changes when no provider
+    /// of Clax's is registered so, as for [`Providers::set_clax_web`].
+    pub(crate) fn set_clax_browser(
+        &mut self,
+        browser: Option<Arc<dyn crate::browser::BrowserSource>>,
+    ) {
+        if let Some(clax) = self.clax.take() {
+            let clax = Arc::new(clax.with_browser(browser));
+            self.register(CLAX_SURFACE, clax.clone());
+            self.clax = Some(clax);
+        }
+    }
+
     /// The run whose row is `row` and which was made as `made`, as the
     /// run loop knows it, with the provider of each of its bindings:
     /// see the module documentation. Nothing is read from the store;

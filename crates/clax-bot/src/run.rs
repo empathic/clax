@@ -349,6 +349,14 @@ impl Deps {
         self
     }
 
+    /// These deps, opening the browsers of Clax's own surface from
+    /// `browser` (the registry's `set_clax_browser`).
+    #[must_use]
+    pub fn with_browser(mut self, browser: Arc<dyn crate::browser::BrowserSource>) -> Deps {
+        self.providers.set_clax_browser(Some(browser));
+        self
+    }
+
     /// These deps, with no web source: Clax's own surface refuses every
     /// web call `web_disabled` (the registry's `set_clax_web`).
     #[must_use]

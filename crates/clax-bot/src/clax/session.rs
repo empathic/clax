@@ -99,6 +99,10 @@ pub(super) struct ClaxSession<'s> {
     /// Whether an earlier step of the run created an artifact.
     pub created_before: bool,
     pub state: Mutex<State>,
+    /// Held while a browser call is performed, so that the step's
+    /// browser calls open one browser after another, each counted and
+    /// charged before the next is checked ([`super::browser`]).
+    pub browsing: tokio::sync::Mutex<()>,
 }
 
 impl ClaxSession<'_> {

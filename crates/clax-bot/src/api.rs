@@ -491,8 +491,8 @@ mod tests {
         ], "tests": true, "timeout_s": 30}]);
         assert_eq!(check_args("browser.test", &ok).unwrap().len(), 2);
         assert!(check_args("browser.test", &json!([])).is_ok());
-        let e = check_args("browser.test", &json!([null, {"steps": [{"clik": "#go"}]}]))
-            .unwrap_err();
+        let e =
+            check_args("browser.test", &json!([null, {"steps": [{"clik": "#go"}]}])).unwrap_err();
         assert_eq!(e.code, CODE_BAD_ARGS);
         assert!(e.message.contains("argument 2 (opts).steps[0]"), "{e}");
         let e = check_args("browser.test", &json!([null, {"viewport": "watch"}])).unwrap_err();

@@ -46,7 +46,7 @@ pub use access::{
     BrowseGrant, BrowseRule, BrowserAccess, BrowserGrant, BrowserOff, BrowserShape, TestGrant,
 };
 pub use cdp::{Cdp, CdpEvent, CdpFail};
-pub use fake::{FakeBrowserSource, FakeChrome, PageModel};
+pub use fake::{ChromeLog, FakeBrowserSource, FakeChrome, PageModel};
 
 use chrono::{DateTime, Utc};
 use clax_bot_sandbox::{CancelToken, MaybeSend, MaybeSendSync};
