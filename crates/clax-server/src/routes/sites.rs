@@ -97,7 +97,7 @@ pub async fn suggest(
 ) -> Result<Json<Value>, ApiError> {
     owner_reads(&who)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let pu = page_url(&s, &q.url)?;
+    let pu = page_url(&q.url)?;
     let title = clean_title(q.title.as_deref().unwrap_or(""), "");
     let origin = pu.key.origin.clone();
     let o = origin.clone();
@@ -220,9 +220,8 @@ async fn join_batch(
 
 /// `POST /api/live/sites/join` `{origin, with}` (the owner: the token or the
 /// extension; each an origin or a page URL): joins `origin` (with the site
-/// it is in) to the site of `with`, which must have live pages; the
-/// daemon's own origin is refused (`own_origin`). From then on both are one
-/// site: lookups by path from any of its origins find the site's pages, its
+/// it is in) to the site of `with`, which must have live pages. From then
+/// on both are one site: lookups by path from any of its origins find the site's pages, its
 /// threads list together, and a watch on any of its origins covers them
 /// all, origins joined later included. A page of `origin` whose path the
 /// site has a page of is merged into it as moves are, at most
@@ -244,8 +243,8 @@ pub async fn join(
     body: Result<Json<JoinBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = super::artifacts::body(body)?;
-    let origin = origin_of(&s, &b.origin)?;
-    let with = origin_of(&s, &b.with)?;
+    let origin = origin_of(&b.origin)?;
+    let with = origin_of(&b.with)?;
     let rc = RefileCtx::of(&s, audit.clone());
     let st2 = s.clone();
     let (site, joined, moved, remaining) = s
@@ -297,7 +296,7 @@ pub async fn split(
     body: Result<Json<SplitBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = super::artifacts::body(body)?;
-    let origin = origin_of(&s, &b.origin)?;
+    let origin = origin_of(&b.origin)?;
     let o = origin.clone();
     let st2 = s.clone();
     let (split, site) = s
@@ -344,8 +343,8 @@ pub async fn answer(
     body: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = super::artifacts::body(body)?;
-    let origin = origin_of(&s, &b.origin)?;
-    let with = origin_of(&s, &b.with)?;
+    let origin = origin_of(&b.origin)?;
+    let with = origin_of(&b.with)?;
     let a = b.answer.clone();
     s.store_call(move |st| st.answer_join(&audit, &origin, &with, &a))
         .await?;
