@@ -607,7 +607,9 @@ whole working tree and the `v*` tags, the two Bazel-setup tests on the
 Cargo, Bazel and package manifests and Bazel's own files. A pass is
 recorded under `~/.cache/clax-checks/` (`CLAX_CHECKS_CACHE`) by its key, so
 a new worktree at contents some worktree checked skips them too; delete the
-directory to rerun them. CI keeps no such record and runs every one. Tests that
+directory to rerun them. CI keeps the records on its Bazel sticky disk
+(`CLAX_CHECKS_CACHE` in `.github/workflows/ci.yml`): a pull request skips a
+check that main passed on the same files. Tests that
 need a real harness CLI, a model or credentials (`scripts/verify-harnesses.sh`
 against real harnesses, the smoke scripts) stay native and manual, as
 before.
