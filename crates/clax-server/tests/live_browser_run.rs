@@ -234,12 +234,30 @@ async fn a_browser_test_runs_in_real_browser_run() {
     ] {
         assert!(sent.contains(want), "{want} in {sent}");
     }
-    // The stylesheet was asked for and served from the synthetic origin.
+    // The stylesheet was asked for and served from the synthetic origin:
+    // the request Chrome paused for style.css was fulfilled with a 200.
     let frames = frames.lock().unwrap().clone();
-    let served = frames.iter().any(|(out, f)| {
-        *out && f.contains("\"Fetch.fulfillRequest\"") && f.contains("\"responseCode\":200")
+    let parsed = |out: bool| {
+        frames
+            .iter()
+            .filter(move |(o, _)| *o == out)
+            .filter_map(|(_, f)| serde_json::from_str::<Value>(f).ok())
+    };
+    let paused = parsed(false)
+        .find(|v| {
+            v["method"] == "Fetch.requestPaused"
+                && v["params"]["request"]["url"]
+                    .as_str()
+                    .is_some_and(|u| u.ends_with("/style.css"))
+        })
+        .and_then(|v| v["params"]["requestId"].as_str().map(str::to_string))
+        .expect("the stylesheet's request was paused");
+    let served = parsed(true).any(|v| {
+        v["method"] == "Fetch.fulfillRequest"
+            && v["params"]["requestId"] == paused.as_str()
+            && v["params"]["responseCode"] == 200
     });
-    assert!(served, "a request was fulfilled");
+    assert!(served, "the stylesheet's request was fulfilled with a 200");
     // Browser.close was sent and answered.
     let close_id = frames
         .iter()
