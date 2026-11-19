@@ -101,7 +101,7 @@ The bridge reports nothing:
 The server counts nothing (and still answers 204, so a page learns nothing
 about the rules) for a request with `Sec-GPC: 1`, a User-Agent that names a
 bot, crawler, spider, preview fetcher or headless browser (a short fixed
-list in `clax_core::analytics`), an artifact that is deleted, hidden or
+list in `clax_core::analytics`, `is_bot`) or is empty, an artifact that is deleted, hidden or
 `off`, a local Clax, or a client over its rate (below).
 
 A page's own `history.pushState` routes are not page views: one load, one
@@ -130,7 +130,8 @@ Content-Type: application/json
   `""`. The bridge never sends a path or query of it.
 - `load_ms` is the navigation entry's `loadEventStart`
   (`performance.getEntriesByType("navigation")[0]`), rounded; `null`
-  without one.
+  without one. For a prerendered page both timings count from its
+  activation (`activationStart`), floored at 0.
 - `lcp_ms` is the latest `largest-contentful-paint` entry seen by then
   through a `PerformanceObserver` with `buffered: true`, rounded; `null`
   where the browser has none (Safari). It is the paint as of load, not the
@@ -166,7 +167,9 @@ an alternative with `revisit:` the eager bridge's budget can no longer
 take it. If the measured growth exceeds the headroom, the `bridge` budget
 is raised by hand to the measured size and recorded, as earlier raises
 were (qualifier records on `web/perf/bundle-budget.json`); see Open
-question 1.
+question 1. Measured with Task 2: the baseline had reached its 6732
+budget by then, and the report added 521 gzip bytes (6732 to 7253, the
+budget raised to 7253 and recorded).
 
 `web/bridge/src/count.ts` exports one function taking its world (the
 script tag's dataset, `navigator`, `document`, `performance`,
@@ -418,7 +421,10 @@ pass at the next sweep.
 
 Retention: rows of `analytics_days`, `analytics_dims` and
 `analytics_timings` whose day is more than 13 calendar months before today
-(`day < date(today, '-13 months')`) are deleted in bounded passes, at each
+(`day < clax_core::analytics::oldest_kept(today)`: the same day of the month
+13 months back, or that month's last day where it is shorter, as chrono's
+`checked_sub_months` gives; SQLite's `date(today, '-13 months')` would
+overflow 31 March into 3 March instead) are deleted in bounded passes, at each
 rollover and in the existing prune passes (the native core's pruner,
 `prune_wake`, and the Worker's `prune_wanted`), so an instance with no
 views for a while still sheds its old rows at its next prune. Nothing else

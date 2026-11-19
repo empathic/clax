@@ -3,7 +3,9 @@
  * It exposes `window.claude.use(name)`, which resolves the frozen namespace of
  * each capability this view gets and `null` for the rest (see `use.ts`).
  * `db`, `assets`, `user` and `room` call the page's own origin
- * (`/_clax/api/…`, caps/origin.ts), framed or top-level; the others are the
+ * (`/_clax/api/…`, caps/origin.ts), framed or top-level, as does the
+ * page-view report a tag with `data-count="1"` asks for (`count.ts`, one per
+ * load, on a hosted Clax); the others are the
  * framing shell's, and unframed they resolve `null`. Calls to the shell and
  * its answers travel as `clax:use`/`call`/`event` messages (see `protocol.ts`),
  * queued until the shell's welcome. When framed, it greets the shell with `clax:hello`
@@ -75,6 +77,7 @@ import type { Resolved } from "./anchor";
 import { acceptFromShell, forwardedKey, pageShortcut, shellOrigins } from "./channel";
 import { type Blocked, BlockedLog, lockdownRefusal } from "./blocked";
 import { commentsContext } from "./comments-context";
+import { type CountWorld, count } from "./count";
 import { type ErrorRing, installErrorRing } from "./inspect";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
@@ -213,6 +216,14 @@ type PartName = keyof Parts;
     // A page that already defined a non-configurable window.claude wins.
     console.warn("clax: could not install window.claude", e);
   }
+
+  // One page-view report per load when the tag asks for it (`count.ts`),
+  // with `fetch` as it is now, before any page script.
+  count({
+    data: script?.dataset, meta, framed, name: window.name, origin: location.origin, win: window,
+    nav: navigator as CountWorld["nav"], doc: document, perf: performance, Observer: self.PerformanceObserver,
+    fetch: fetch.bind(window), clock,
+  });
 
   if (!framed) return; // opened directly: there is no shell
 
