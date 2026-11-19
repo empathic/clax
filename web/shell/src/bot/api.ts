@@ -65,6 +65,15 @@ export type MeBot = {
   provider_host?: string | null;
   web?: MeWeb;
   browser?: MeBrowser;
+  capabilities?: MeCapability[];
+};
+/** The five capabilities, each granted, priced and turned off on its own (spec 2026-11-19-claxbot-browser §4.2). */
+export type CapabilityId = "web.search" | "web.fetch" | "browser.open.url" | "browser.open.artifact" | "browser.open.content";
+/** One capability as `GET /api/me/bot` shows it to the person: `offered` the admin's switch is on and the host can perform it, `granted` an admin grant gives it to them, `on` it reaches their runs now, `why_off` why not, and what one `per` costs them in milli-credits (null without its line). */
+export type MeCapability = {
+  id: CapabilityId; offered: boolean; granted: boolean; on: boolean;
+  why_off: "not_offered" | "not_configured" | "not_granted" | "person_off" | null;
+  price_milli: number | null; per: "request" | "minute";
 };
 /** Whether ClaxBot may search and read the web for this person (`GET
  * /api/me/bot`): `on` their own choice (on by default), `offered` whether
@@ -373,6 +382,8 @@ export const useOwnKey = (use_own: boolean) => call<MeBot>("/api/me/bot", "PUT",
 export const setWebChoice = (web: boolean) => call<MeBot>("/api/me/bot", "PUT", { web });
 /** Lets ClaxBot's runs for this person test pages in a browser, or not. */
 export const setBrowserChoice = (browser: boolean) => call<MeBot>("/api/me/bot", "PUT", { browser });
+/** Turns the person's grant of one capability to their runs on or off. */
+export const setCapabilityChoice = (id: CapabilityId, on: boolean) => call<MeBot>("/api/me/bot", "PUT", { capabilities: { [id]: on } });
 export const meUsage = (week?: string) => call<MeUsage>(`/api/me/usage${query({ week })}`);
 
 /** A refusal from a failed model call (502 `provider_error`), with how it failed. */
@@ -444,37 +455,53 @@ export type WebSettings = {
   /** Why web use is off whatever the credentials: the instance's configured public origin or site domain names no host, or the host's own source cannot run where it runs (a Worker under `wrangler dev --local`). Null otherwise. */
   unavailable: string | null;
   checking: boolean;
-  search: { enabled: boolean; provider: WebProvider; gateway: string; byok_alias: string; limit: number; max_per_run: number };
-  fetch: { enabled: boolean; url_rule: UrlRule; allowlist: string[]; max_per_run: number };
+  search: { enabled: boolean; provider: WebProvider; gateway: string; byok_alias: string; limit: number; max_per_run: number } & CapabilityState;
+  fetch: { enabled: boolean; url_rule: UrlRule; allowlist: string[]; max_per_run: number } & CapabilityState;
   cloudflare: { account_id: string; token: KeyInfo };
   sources: Record<string, Source>;
 };
 /** What `PUT /api/admin/web` changes: any of the editable fields. */
 export type WebPatch = {
   search?: Partial<Pick<WebSettings["search"], "enabled" | "provider" | "gateway" | "byok_alias" | "limit" | "max_per_run">>;
-  fetch?: Partial<WebSettings["fetch"]>;
+  fetch?: Partial<Pick<WebSettings["fetch"], "enabled" | "url_rule" | "allowlist" | "max_per_run">>;
   cloudflare?: { account_id?: string };
 };
 export const getAdminWeb = () => call<WebSettings>("/api/admin/web");
 export const putAdminWeb = (patch: WebPatch) => call<WebSettings>("/api/admin/web", "PUT", patch);
 export const putWebToken = (token: string) => call<WebSettings>("/api/admin/web/token", "PUT", { token });
 export const deleteWebToken = () => call<WebSettings>("/api/admin/web/token", "DELETE");
-/** Which public URLs a browse may open: those in the sender's own words, the allowlist's hosts, or any. */
-export type BrowseRule = "sender" | "allowlist" | "any_public";
-/** `GET /api/admin/browser`: browser testing's settings (`test`), browsing public pages' (`browse`), the browsers open at once on the instance, `configured` whether the host can open browsers now (on a daemon, with the Cloudflare account ID and token of Web access), `unavailable` why browser use is off whatever the settings (else null), whether the Cloudflare account ID and token are set, and where each value comes from by its dotted name (`test.seconds`, `max_concurrent`). */
+/** What the admin page shows of a capability beside its settings, read-only: one request's price (`price_milli`) or a browser minute's, whether the host can perform it now, and why not whatever the settings. */
+export type CapabilityState = { price_milli?: number | null; price_milli_per_minute?: number | null; configured: boolean; unavailable: string | null };
+/** Which public URLs a browser session may open: those in the sender's own words, those a source of the run holds, the allowlist's hosts, or any. */
+export type BrowseRule = "sender" | "sourced" | "allowlist" | "any_public";
+/** `GET /api/admin/browser`: the three `browser.open` capabilities (`url`, `artifact`, `content`), each with its switch, its per-run cap and its state; the browser family's settings; `configured` whether the host can open browsers now (on a daemon, with the Cloudflare account ID and token of Web access), `unavailable` why browser use is off whatever the settings (else null), whether the Cloudflare account ID and token are set, and where each value comes from by its dotted name (`artifact.enabled`, `max_concurrent`). */
 export type BrowserSettings = {
-  test: { enabled: boolean; max_per_run: number; seconds: number };
-  browse: { enabled: boolean; url_rule: BrowseRule; allowlist: string[]; max_per_run: number };
-  max_concurrent: number;
+  url: { enabled: boolean; url_rule: BrowseRule; allowlist: string[]; max_per_run: number } & CapabilityState;
+  artifact: { enabled: boolean; max_per_run: number } & CapabilityState;
+  content: { enabled: boolean; max_per_run: number } & CapabilityState;
+  call_seconds: number; idle_seconds: number; max_seconds: number; max_open_per_run: number; max_concurrent: number;
   configured: boolean;
   unavailable: string | null;
   cloudflare: { account: boolean; token: boolean };
   sources: Record<string, Source>;
 };
 /** What `PUT /api/admin/browser` changes: any of the settings' fields. */
-export type BrowserPatch = { test?: Partial<BrowserSettings["test"]>; browse?: Partial<BrowserSettings["browse"]>; max_concurrent?: number };
+export type BrowserPatch = {
+  url?: Partial<Pick<BrowserSettings["url"], "enabled" | "url_rule" | "allowlist" | "max_per_run">>;
+  artifact?: Partial<Pick<BrowserSettings["artifact"], "enabled" | "max_per_run">>;
+  content?: Partial<Pick<BrowserSettings["content"], "enabled" | "max_per_run">>;
+  call_seconds?: number; idle_seconds?: number; max_seconds?: number; max_open_per_run?: number; max_concurrent?: number;
+};
 export const getAdminBrowser = () => call<BrowserSettings>("/api/admin/browser");
 export const putAdminBrowser = (patch: BrowserPatch) => call<BrowserSettings>("/api/admin/browser", "PUT", patch);
+/** One live grant the admin made (`GET /api/admin/bot/grants`): of `capability`, to everyone on the instance or to one person. */
+export type AdminGrant = { id: string; capability: CapabilityId; grantee: "everyone" | "person"; person: PersonKey | null; issued_at: string };
+export const getAdminGrants = () => call<{ grants: AdminGrant[] }>("/api/admin/bot/grants");
+/** Grants `capability` to everyone on the instance, or to one person. */
+export const grantCapability = (capability: CapabilityId, to: "everyone" | PersonKey) =>
+  call<{ grants: AdminGrant[] }>("/api/admin/bot/grants", "POST", { capability, grantee: to === "everyone" ? "everyone" : { person: to } });
+/** Revokes one of the admin's grants, and the grants it issued. */
+export const revokeGrant = (id: string) => call<{ grants: AdminGrant[] }>(`/api/admin/bot/grants/${e(id)}`, "DELETE");
 export const providerModels = () => call<ProviderModels>("/api/admin/provider/models");
 /** `POST /api/admin/pricing/tokenulator`: refreshes the price catalog, then
  * prices `model`'s token lines from it, as `providerId` (its tokenulator.dev

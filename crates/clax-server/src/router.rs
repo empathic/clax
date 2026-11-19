@@ -624,6 +624,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             get(admin::browser).put(admin::set_browser),
         )
         .route(
+            "/api/admin/bot/grants",
+            get(admin::grants).post(admin::grant),
+        )
+        .route("/api/admin/bot/grants/{id}", delete(admin::revoke_grant))
+        .route(
             "/api/admin/pricing",
             get(admin::pricing).put(admin::set_pricing),
         )

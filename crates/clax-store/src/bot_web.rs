@@ -175,6 +175,23 @@ impl Store {
         self.set_family_choice(ctx, person, &BROWSER_CAPABILITIES, on)
     }
 
+    /// Turns `person`'s grant of capability `cap` to their runs on or off,
+    /// as `ctx`: off revokes it; on issues it under the admin grant that
+    /// gives them `cap`, a capability they do not hold left as it is.
+    /// Returns whether a grant changed.
+    ///
+    /// # Errors
+    /// `unknown_capability`; the store's.
+    pub fn set_cap_choice(&self, ctx: &AuditCtx, person: &str, cap: &str, on: bool) -> Result<bool> {
+        let Some(cap) = crate::bot_grants::CAPABILITIES.iter().find(|c| **c == cap) else {
+            return Err(clax_core::CoreError::invalid(
+                "unknown_capability",
+                format!("no capability is named {cap}"),
+            ));
+        };
+        self.set_family_choice(ctx, person, &[*cap], on)
+    }
+
     fn family_reaches_runs(&self, person: &str, caps: &[&str]) -> Result<bool> {
         let held = self.person_caps(person)?;
         Ok(caps.iter().all(|c| held[*c].reaches_runs()))

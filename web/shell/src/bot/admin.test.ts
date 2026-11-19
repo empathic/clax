@@ -10,7 +10,7 @@ import AdminUsage from "./AdminUsage.svelte";
 import AdminBrowser from "./AdminBrowser.svelte";
 import AdminWeb from "./AdminWeb.svelte";
 import type { ModelPricing } from "./api";
-import { BROWSER_LINE, adminPerson, browserSettings, defaultPriced, errorDetail, listing, meBot, modelPricing, pricing, provider, providerFailure, unitPricing, usage, webSettings, WEB_LINES } from "./fixtures";
+import { adminPerson, browserSettings, defaultPriced, errorDetail, listing, meBot, modelPricing, pricing, provider, providerFailure, unitPricing, usage, webSettings, WEB_LINES } from "./fixtures";
 import { forget } from "./me";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
@@ -526,52 +526,105 @@ describe("Admin › Web", () => {
 });
 
 describe("Admin › Browser", () => {
-  const BROWSER_PRICING = pricing({ lines: [...pricing().lines, BROWSER_LINE] });
+  const GRANT = { id: "g1", capability: "browser.open.artifact" as const, grantee: "everyone" as const, person: null, issued_at: "2026-10-21T09:00:00Z" };
+  const SAMS = { id: "g2", capability: "browser.open.artifact" as const, grantee: "person" as const, person: "p_sam", issued_at: "2026-10-21T09:05:00Z" };
 
   it("the_browser_page_shows_and_saves_its_settings", async () => {
     const calls = stubFetch({
       "GET /api/admin/browser": browserSettings({ configured: false, unavailable: "the Cloudflare account ID and API token are not both set (Web access)", cloudflare: { account: true, token: false }, sources: { max_concurrent: "file" } }),
-      "GET /api/admin/pricing": BROWSER_PRICING,
-      "PUT /api/admin/browser": (b: unknown) => browserSettings({ test: { ...browserSettings().test, ...(b as { test: object }).test } }),
+      "GET /api/admin/bot/grants": { grants: [] },
+      "GET /api/admin/people": [SAM],
+      "PUT /api/admin/browser": (b: unknown) => browserSettings({ artifact: { ...browserSettings().artifact, ...(b as { artifact: object }).artifact }, call_seconds: 90 }),
     });
     const m = mount(AdminBrowser, {});
     await settle();
     const text = m.root.textContent!;
-    expect(text).toContain("Browser testing is off: the Cloudflare account ID and API token are not both set (Web access)");
+    expect(text).toContain("The browser is off: the Cloudflare account ID and API token are not both set (Web access)");
     expect(text).toContain("Cloudflare account ID: set · API token: not set");
     expect(m.root.querySelector<HTMLAnchorElement>('a[href="/settings/web#aw-cf"]')).not.toBeNull();
     expect(text).toContain("The token needs the Browser Rendering – Edit permission, beside Workers AI Read and AI Gateway Read.");
-    expect(text).toContain("Browser time costs 9 credits per browser hour, by the millisecond");
-    const test = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Browser testing"]')!;
-    expect(test.getAttribute("aria-checked")).toBe("false");
-    expect(m.root.querySelector<HTMLInputElement>("#ab-concurrent")!.readOnly).toBe(true);
+    expect(text).toContain("Browser time costs 0.15 credits a minute, by the millisecond.");
+    expect(m.root.querySelector<HTMLInputElement>("#ab-max_concurrent")!.readOnly).toBe(true);
     // A time outside 10 to 120 seconds is refused before anything is sent.
-    const seconds = m.root.querySelector<HTMLInputElement>("#ab-seconds")!;
+    const seconds = m.root.querySelector<HTMLInputElement>("#ab-call_seconds")!;
     type(seconds, "121");
     click(button(m.root, "Save"));
     await settle();
-    expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("Seconds per test is a whole number from 10 to 120.");
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("Seconds per call is a whole number from 10 to 120.");
     expect(calls.some(c => c.method === "PUT")).toBe(false);
     type(seconds, "90");
-    click(test);
+    click(m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Open the run\'s clax"]')!);
     click(button(m.root, "Save"));
     await settle();
-    expect(calls.find(c => c.method === "PUT")).toEqual({ url: "/api/admin/browser", method: "PUT", body: { test: { enabled: true, seconds: 90 } } });
-    expect(m.root.querySelector('[role="status"]')!.textContent).toContain("Saved.");
-    expect(m.root.querySelector('[role="switch"][aria-label="Browser testing"]')!.getAttribute("aria-checked")).toBe("true");
+    expect(calls.find(c => c.method === "PUT")).toEqual({ url: "/api/admin/browser", method: "PUT", body: { artifact: { enabled: true }, call_seconds: 90 } });
+    expect(m.root.querySelector('.acts [role="status"]')!.textContent).toContain("Saved.");
   });
 
-  it("browse_shows_its_risk_and_any_public_warns", async () => {
+  it("each_capability_has_its_own_card", async () => {
     const calls = stubFetch({
       "GET /api/admin/browser": browserSettings(),
-      "GET /api/admin/pricing": BROWSER_PRICING,
-      "PUT /api/admin/browser": (b: unknown) => browserSettings({ browse: { ...browserSettings().browse, ...(b as { browse: object }).browse } }),
+      "GET /api/admin/bot/grants": { grants: [] },
+      "GET /api/admin/people": [SAM],
+      "PUT /api/admin/browser": (b: unknown) => browserSettings({ content: { ...browserSettings().content, ...(b as { content: object }).content } }),
     });
     const m = mount(AdminBrowser, {});
     await settle();
-    expect(m.root.textContent).toContain("A page can steer ClaxBot, and ClaxBot writes what it types, the code it runs and the URLs it opens: it can type data into a form on a site it may open, and under Any public URL send an artifact's data to any site. Under the other rules a browsed page reaches only the hosts the rule admits, so what a page loads from elsewhere is left out. Browsing also needs each person's web switch on.");
+    const titles = [...m.root.querySelectorAll("section.bcard > h3")].map(h => h.textContent);
+    expect(titles).toEqual(["Open a public URL", "Open the run's clax", "Open supplied content", "Browser sessions"]);
+    // Each card has its switch, its cap and its grants; none is granted.
+    for (const label of ["Open public URLs", "Open the run's clax", "Open supplied content"]) {
+      expect(m.root.querySelector(`[role="switch"][aria-label="${label}"]`)).not.toBeNull();
+    }
+    expect(m.root.querySelectorAll(".capcard").length).toBe(3);
+    expect(m.root.textContent).toContain("Granted to no one: switched on, it reaches no run until you grant it.");
+    // A switch changes its own capability alone.
+    click(m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Open supplied content"]')!);
+    type(m.root.querySelector<HTMLInputElement>("#ab-max-content")!, "3");
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ content: { enabled: true, max_per_run: 3 } });
+  });
+
+  it("a_card_lists_and_revokes_its_grants", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/browser": browserSettings(),
+      "GET /api/admin/bot/grants": { grants: [SAMS, GRANT] },
+      "GET /api/admin/people": [SAM, MIA],
+      "DELETE /api/admin/bot/grants/g1": { grants: [SAMS] },
+      "POST /api/admin/bot/grants": { grants: [SAMS, { ...SAMS, id: "g3", capability: "browser.open.content" }] },
+    });
+    const m = mount(AdminBrowser, {});
+    await settle();
+    const card = m.root.querySelector<HTMLElement>("#cap-browser-open-artifact-h")!.closest("section")!;
+    // Everyone on this instance first, then each person by name.
+    expect([...card.querySelectorAll(".capgrants li span")].map(x => x.textContent)).toEqual(["Everyone on this instance", "Sam"]);
+    // The other cards show none of this card's grants.
+    const content = m.root.querySelector<HTMLElement>("#cap-browser-open-content-h")!.closest("section")!;
+    expect(content.querySelectorAll(".capgrants li").length).toBe(0);
+    click(card.querySelector<HTMLElement>('button[aria-label="Revoke the run\'s clax from everyone on this instance"]')!);
+    await settle();
+    expect(calls.find(c => c.method === "DELETE")!.url).toBe("/api/admin/bot/grants/g1");
+    expect([...card.querySelectorAll(".capgrants li span")].map(x => x.textContent)).toEqual(["Sam"]);
+    // Granting to a person names them.
+    choose(content.querySelector<HTMLSelectElement>("#cap-browser-open-content-to")!, "p_sam");
+    click([...content.querySelectorAll("button")].find(b => b.textContent === "Grant")!);
+    await settle();
+    expect(calls.find(c => c.method === "POST")!.body).toEqual({ capability: "browser.open.content", grantee: { person: "p_sam" } });
+    expect([...content.querySelectorAll(".capgrants li span")].map(x => x.textContent)).toEqual(["Sam"]);
+  });
+
+  it("url_rule_any_public_warns", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/browser": browserSettings(),
+      "GET /api/admin/bot/grants": { grants: [] },
+      "GET /api/admin/people": [],
+      "PUT /api/admin/browser": (b: unknown) => browserSettings({ url: { ...browserSettings().url, ...(b as { url: object }).url } }),
+    });
+    const m = mount(AdminBrowser, {});
+    await settle();
+    expect(m.root.textContent).toContain("A page can steer ClaxBot, and ClaxBot writes what it types, the code it runs and the URLs it opens");
     const rule = m.root.querySelector<HTMLSelectElement>("#ab-rule")!;
-    expect([...rule.options].map(o => [o.value, o.textContent])).toEqual([["sender", "Only URLs in the sender's own words"], ["allowlist", "Allowlist"], ["any_public", "Any public URL"]]);
+    expect([...rule.options].map(o => o.value)).toEqual(["sender", "sourced", "allowlist", "any_public"]);
     expect(m.root.querySelector("#ab-allow")).toBeNull();
     expect(m.root.textContent).not.toContain("Any public URL ClaxBot writes may be opened");
     choose(rule, "any_public");
@@ -579,16 +632,16 @@ describe("Admin › Browser", () => {
     choose(rule, "allowlist");
     expect(m.root.textContent).not.toContain("Any public URL ClaxBot writes may be opened");
     type(m.root.querySelector<HTMLTextAreaElement>("#ab-allow") as unknown as HTMLInputElement, "docs.example.com\n*.rust-lang.org");
-    click(m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Browse public pages"]')!);
+    click(m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Open public URLs"]')!);
     click(button(m.root, "Save"));
     await settle();
-    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ browse: { enabled: true, url_rule: "allowlist", allowlist: ["docs.example.com", "*.rust-lang.org"] } });
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ url: { enabled: true, url_rule: "allowlist", allowlist: ["docs.example.com", "*.rust-lang.org"] } });
   });
 
   it("is a tab of the admin screen, after Web access", async () => {
-    stubFetch({ "GET /api/me/bot": meBot({ role: "admin" }), "GET /api/admin/browser": browserSettings(), "GET /api/admin/pricing": BROWSER_PRICING });
+    stubFetch({ "GET /api/me/bot": meBot({ role: "admin" }), "GET /api/admin/browser": browserSettings(), "GET /api/admin/bot/grants": { grants: [] }, "GET /api/admin/people": [] });
     const m = mount(AdminPage, { tab: "browser" });
-    await vi.waitFor(() => expect(m.root.textContent).toContain("Browser testing"));
+    await vi.waitFor(() => expect(m.root.textContent).toContain("Open the run's clax"));
     expect(m.root.querySelector("h2")!.textContent).toBe("Browser");
   });
 });

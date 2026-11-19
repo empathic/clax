@@ -3,7 +3,7 @@
 //! their own ClaxBot state, key and usage, and runs.
 //!
 //! - `GET /api/me/bot` → the caller's state ([`me_view`]); `PUT
-//!   /api/me/bot {use_own?, web?, browser?}`, `PUT /api/me/bot/key {key}` and `DELETE
+//!   /api/me/bot {use_own?, web?, browser?, capabilities?}`, `PUT /api/me/bot/key {key}` and `DELETE
 //!   /api/me/bot/key` change their own key and answer the same. A key is
 //!   write-only: no answer carries it.
 //! - `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}`:
@@ -219,9 +219,65 @@ fn browser_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value>
     }))
 }
 
+/// `GET /api/me/bot`'s `capabilities`: each of the five, in the order
+/// they are shown, as `{id, offered, granted, on, why_off, price_milli,
+/// per}`: `offered` when the admin's switch is on and the host can
+/// perform it; `granted` when an admin grant gives it to the person; `on`
+/// when it reaches their runs now; `why_off` why not (`not_offered`,
+/// `not_configured`, `not_granted`, `person_off`) or null; `price_milli`
+/// what one `per` (`request`, or `minute` of browser time) costs them at
+/// their key source, null without its line.
+fn capabilities_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
+    use clax_bot::capability::{Capabilities, Capability, Family};
+    let web = crate::bot::web_configured(st, bot)?;
+    let browser = crate::bot::browser_configured(st, bot)?;
+    let configured = |c: Capability| match c {
+        Capability::WebSearch => web.search,
+        Capability::WebFetch => web.fetch,
+        c => c.family() == Family::Browser && browser,
+    };
+    let caps = Capabilities::now(st, person, &configured)?;
+    let held = st.person_caps(person)?;
+    let source = key_source(st, bot, person)?.unwrap_or(KeySource::Instance);
+    let request = |line: String| -> clax_core::Result<Value> {
+        if st.cost_line(&line)?.is_none() {
+            return Ok(Value::Null);
+        }
+        Ok(json!(st.one_request_milli(&line, source)?))
+    };
+    let provider = st.bot_setting(Setting::WebSearchProvider)?;
+    let minute = json!(minute_milli(st, source)?);
+    let mut out = Vec::new();
+    for c in Capability::ALL {
+        let (price, per) = match c {
+            Capability::WebSearch => (
+                request(format!("web.search.{}", provider.as_str().unwrap_or("ceramic")))?,
+                "request",
+            ),
+            Capability::WebFetch => (request("web.fetch".into())?, "request"),
+            _ => (minute.clone(), "minute"),
+        };
+        let offered = st.bot_setting(c.switch())?.as_bool() == Some(true) && configured(c);
+        let why_off = match caps.get(c) {
+            Ok(_) => Value::Null,
+            Err(off) => json!(off.as_str()),
+        };
+        out.push(json!({
+            "id": c.id(),
+            "offered": offered,
+            "granted": held.get(c.id()).is_some_and(|h| h.granted_by.is_some()),
+            "on": caps.get(c).is_ok(),
+            "why_off": why_off,
+            "price_milli": price,
+            "per": per,
+        }));
+    }
+    Ok(Value::Array(out))
+}
+
 /// What a minute of browser time costs on a `ks` key, in milli-credits,
 /// as a test is charged for it; `None` without the `browser.time` line.
-fn minute_milli(st: &Store, ks: KeySource) -> clax_core::Result<Option<i64>> {
+pub(crate) fn minute_milli(st: &Store, ks: KeySource) -> clax_core::Result<Option<i64>> {
     use clax_store::credits::{Applies, row_credits_milli};
     let Some(rate) = st.rate_of(clax_store::credits::LINE_BROWSER_TIME)? else {
         return Ok(None);
@@ -280,6 +336,7 @@ pub fn me_view(
         "week": st.week_usage_now(person)?,
         "web": web_view(st, bot, person)?,
         "browser": browser_view(st, bot, person)?,
+        "capabilities": capabilities_view(st, bot, person)?,
     });
     if let Some(code) = refused {
         v["unavailable_reason"] = json!(unavailable(code));
@@ -330,12 +387,17 @@ pub struct MeBody {
     web: Option<bool>,
     #[serde(default)]
     browser: Option<bool>,
+    #[serde(default)]
+    capabilities: Option<std::collections::BTreeMap<String, bool>>,
 }
 
-/// `PUT /api/me/bot {use_own?, web?, browser?}`, at least one (else 400
-/// `empty_request`): whether the caller's runs use their own key (404 when
-/// they have none), whether they allow ClaxBot the web tools, and whether
-/// they let it test pages in a browser.
+/// `PUT /api/me/bot {use_own?, web?, browser?, capabilities?}`, at least
+/// one (else 400 `empty_request`): whether the caller's runs use their own
+/// key (404 when they have none); `capabilities` `{<id>: bool}` turns the
+/// caller's grant of each named capability to their runs on or off (one
+/// they do not hold left as it is; 400 `unknown_capability` for a name
+/// that is none, before anything is written); `web` sets both web
+/// capabilities, and `browser` the three `browser.open` kinds.
 pub async fn me_put(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -347,10 +409,22 @@ pub async fn me_put(
     d.refuse_agents()?;
     let (caller, person) = me(&s, &d).await?;
     let b = body(req)?;
-    if b.use_own.is_none() && b.web.is_none() && b.browser.is_none() {
+    if b.use_own.is_none() && b.web.is_none() && b.browser.is_none() && b.capabilities.is_none() {
         return Err(ApiError::bad_request(
             "empty_request",
-            "give use_own, web or browser",
+            "give use_own, web, browser or capabilities",
+        ));
+    }
+    if let Some(unknown) = b
+        .capabilities
+        .iter()
+        .flatten()
+        .map(|(id, _)| id)
+        .find(|id| !clax_store::bot_grants::CAPABILITIES.contains(&id.as_str()))
+    {
+        return Err(ApiError::bad_request(
+            "unknown_capability",
+            format!("no capability is named {unknown}"),
         ));
     }
     let bot = s.bot.clone();
@@ -370,6 +444,9 @@ pub async fn me_put(
             }
             if let Some(on) = b.browser {
                 st.set_browser_choice(&ctx, &person, on)?;
+            }
+            for (id, on) in b.capabilities.iter().flatten() {
+                st.set_cap_choice(&ctx, &person, id, *on)?;
             }
             me_view(st, &bot, &who, &caller, &person)
         })

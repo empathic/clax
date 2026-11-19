@@ -185,7 +185,7 @@ async fn a_browser_test_runs_in_real_browser_run() {
     put(
         &ts,
         "/api/admin/browser",
-        json!({"test": {"enabled": true}}),
+        json!({"artifact": {"enabled": true}}),
     )
     .await;
     let aid = ts

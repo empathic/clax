@@ -95,8 +95,8 @@ export const webSettings = (o: Partial<WebSettings> = {}): WebSettings => ({
   configured: { search: false, fetch: true },
   unavailable: null,
   checking: false,
-  search: { enabled: false, provider: "ceramic", gateway: "default", byok_alias: "", limit: 5, max_per_run: 10 },
-  fetch: { enabled: false, url_rule: "sourced", allowlist: [], max_per_run: 20 },
+  search: { enabled: false, provider: "ceramic", gateway: "default", byok_alias: "", limit: 5, max_per_run: 10, price_milli: 25, configured: false, unavailable: null },
+  fetch: { enabled: false, url_rule: "sourced", allowlist: [], max_per_run: 20, price_milli: 50, configured: true, unavailable: null },
   cloudflare: { account_id: "", token: { set: false, last4: null, set_at: null, last_ok_at: null } },
   sources: {}, ...o,
 });
@@ -107,9 +107,12 @@ export const WEB_LINES: CostLine[] = [
   { id: "web.search.linkup", label: "Web search (Linkup)", unit: "kreq", cost_micro_usd: 5_000_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
   { id: "web.fetch", label: "Web fetch", unit: "kreq", cost_micro_usd: 500_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
 ];
+/** As `GET /api/admin/browser` answers: every `browser.open` kind off at its defaults, a daemon with its Cloudflare account. */
 export const browserSettings = (o: Partial<BrowserSettings> = {}): BrowserSettings => ({
-  test: { enabled: false, max_per_run: 10, seconds: 60 },
-  browse: { enabled: false, url_rule: "sender", allowlist: [], max_per_run: 10 },
+  url: { enabled: false, url_rule: "sender", allowlist: [], max_per_run: 5, price_milli_per_minute: 150, configured: true, unavailable: null },
+  artifact: { enabled: false, max_per_run: 10, price_milli_per_minute: 150, configured: true, unavailable: null },
+  content: { enabled: false, max_per_run: 10, price_milli_per_minute: 150, configured: true, unavailable: null },
+  call_seconds: 60, idle_seconds: 300, max_seconds: 1800, max_open_per_run: 1,
   max_concurrent: 2,
   configured: true,
   unavailable: null,

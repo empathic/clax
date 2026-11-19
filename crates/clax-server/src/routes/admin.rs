@@ -38,16 +38,29 @@
 //!   token (503 `no_kek` without a key-encryption key); the token is
 //!   write-only, shown as `key_info` (`last4`), and bound to Cloudflare's
 //!   API origin whatever the model base URL is.
-//! - `GET/PUT /api/admin/browser`: browser testing's settings, `{test:
-//!   {enabled, max_per_run, seconds}, browse: {enabled, url_rule,
-//!   allowlist, max_per_run}, max_concurrent}`, with `configured` (the
-//!   host can open browsers now: on a daemon, with the Cloudflare account
-//!   ID and token of `/api/admin/web`), `unavailable` (why browser use is
-//!   off whatever the settings, else null), `cloudflare {account, token}`
-//!   (whether each is set) and `sources` keyed `test.enabled`,
-//!   `max_concurrent` and so on; `PUT` takes the settings' shape, any field
-//!   may be left out and a null puts it back to its default, refused as
-//!   `PUT /api/admin/web` refuses.
+//!   Each of `search` and `fetch` also answers, read-only, its capability's
+//!   `price_milli` (one request on its line, at the instance's key; null
+//!   without the line), `configured` and `unavailable`.
+//! - `GET/PUT /api/admin/browser`: the three `browser.open` capabilities,
+//!   each `{enabled, max_per_run, price_milli_per_minute, configured,
+//!   unavailable}` (`url` also `url_rule` and `allowlist`), under `url`,
+//!   `artifact` and `content`, and the browser family's settings
+//!   (`call_seconds`, `idle_seconds`, `max_seconds`, `max_open_per_run`,
+//!   `max_concurrent`), with `configured` (the host can open browsers now:
+//!   on a daemon, with the Cloudflare account ID and token of
+//!   `/api/admin/web`), `unavailable` (why browser use is off whatever the
+//!   settings, else null), `cloudflare {account, token}` (whether each is
+//!   set) and `sources` keyed `artifact.enabled`, `max_concurrent` and so
+//!   on; `PUT` takes the settings' shape, any field may be left out and a
+//!   null puts it back to its default, refused as `PUT /api/admin/web`
+//!   refuses. A capability switched on is granted to no one: the admin
+//!   grants it (`/api/admin/bot/grants`).
+//! - `GET /api/admin/bot/grants` lists the live grants the admin made
+//!   (to everyone, or to a person), `POST` `{capability, grantee:
+//!   "everyone" | {person}}` issues one (an instance-wide grant issues
+//!   every person's grant to their runs), `DELETE
+//!   /api/admin/bot/grants/<id>` revokes one and what it issued; each is
+//!   recorded as `bot.grant`.
 //! - `GET/PUT /api/admin/pricing`: the credit price, the free tier, the
 //!   default token rates, `require_explicit_price` and the cost lines,
 //!   with each priced model's rates and where they come from (`models`)
@@ -563,6 +576,24 @@ pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         "the Cloudflare token",
     )?;
     let configured = crate::bot::web_configured(st, bot)?;
+    let provider = st.bot_setting(Setting::WebSearchProvider)?;
+    let lines = [
+        (
+            "search",
+            format!("web.search.{}", provider.as_str().unwrap_or("ceramic")),
+            configured.search,
+        ),
+        ("fetch", clax_store::credits::LINE_WEB_FETCH.to_string(), configured.fetch),
+    ];
+    for (group, line, on) in lines {
+        let g = groups.entry(group.to_string()).or_insert_with(|| json!({}));
+        g["price_milli"] = match st.cost_line(&line)? {
+            Some(_) => json!(st.one_request_milli(&line, clax_store::credits::KeySource::Instance)?),
+            None => Value::Null,
+        };
+        g["configured"] = json!(on);
+        g["unavailable"] = json!(bot.web_check.why());
+    }
     let mut v = json!({
         "configured": {"search": configured.search, "fetch": configured.fetch},
         "unavailable": bot.web_check.why(),
@@ -710,17 +741,27 @@ pub async fn clear_web_token(
 // ---------------------------------------------------------------------------
 
 /// The browser settings by their place in the page: (group, field,
-/// setting); the empty group is the top level.
+/// setting); the empty group is the top level. Each `browser.open` kind
+/// is a group of its own (`url`, `artifact`, `content`); the family's
+/// settings are the top level.
 const BROWSER: &[(&str, &str, Setting)] = &[
-    ("test", "enabled", Setting::BrowserOpenArtifactEnabled),
-    ("test", "max_per_run", Setting::BrowserOpenArtifactMaxPerRun),
-    ("test", "seconds", Setting::BrowserCallSeconds),
-    ("browse", "enabled", Setting::BrowserOpenUrlEnabled),
-    ("browse", "url_rule", Setting::BrowserOpenUrlUrlRule),
-    ("browse", "allowlist", Setting::BrowserOpenUrlAllowlist),
-    ("browse", "max_per_run", Setting::BrowserOpenUrlMaxPerRun),
+    ("url", "enabled", Setting::BrowserOpenUrlEnabled),
+    ("url", "url_rule", Setting::BrowserOpenUrlUrlRule),
+    ("url", "allowlist", Setting::BrowserOpenUrlAllowlist),
+    ("url", "max_per_run", Setting::BrowserOpenUrlMaxPerRun),
+    ("artifact", "enabled", Setting::BrowserOpenArtifactEnabled),
+    ("artifact", "max_per_run", Setting::BrowserOpenArtifactMaxPerRun),
+    ("content", "enabled", Setting::BrowserOpenContentEnabled),
+    ("content", "max_per_run", Setting::BrowserOpenContentMaxPerRun),
+    ("", "call_seconds", Setting::BrowserCallSeconds),
+    ("", "idle_seconds", Setting::BrowserSessionIdleSeconds),
+    ("", "max_seconds", Setting::BrowserSessionMaxSeconds),
+    ("", "max_open_per_run", Setting::BrowserMaxOpenPerRun),
     ("", "max_concurrent", Setting::BrowserMaxConcurrent),
 ];
+
+/// The groups of [`BROWSER`]: one per `browser.open` kind.
+const BROWSER_KINDS: [&str; 3] = ["url", "artifact", "content"];
 
 /// A browser setting's name in `sources` and in a refusal.
 fn browser_field(group: &str, field: &str) -> String {
@@ -738,7 +779,7 @@ fn browser_field(group: &str, field: &str) -> String {
 /// The store's.
 pub fn browser_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
     let eff = st.effective_bot_settings()?;
-    let mut v = json!({"test": {}, "browse": {}});
+    let mut v = json!({"url": {}, "artifact": {}, "content": {}});
     let mut sources = serde_json::Map::new();
     for (group, field, setting) in BROWSER {
         let entry = eff.get(setting);
@@ -764,6 +805,12 @@ pub fn browser_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
             Some(why) => json!(why),
             None => Value::Null,
         };
+    let price = super::bot::minute_milli(st, clax_store::credits::KeySource::Instance)?;
+    for kind in BROWSER_KINDS {
+        v[kind]["price_milli_per_minute"] = json!(price);
+        v[kind]["configured"] = json!(configured);
+        v[kind]["unavailable"] = unavailable.clone();
+    }
     v["configured"] = json!(configured);
     v["unavailable"] = unavailable;
     v["cloudflare"] = json!({"account": account, "token": token});
@@ -817,7 +864,7 @@ pub async fn browser(
     Ok(Json(v))
 }
 
-/// `PUT /api/admin/browser {test?, browse?, max_concurrent?}`: each field
+/// `PUT /api/admin/browser {url?, artifact?, content?, call_seconds?, …}`: each field
 /// given is set (null: back to its default). 400 `unknown_setting` for a
 /// field the page does not show; a value its kind refuses is 400 and one
 /// the daemon's configuration sets 409 `setting_overridden`, as `PUT
@@ -845,12 +892,12 @@ pub async fn set_browser(
     let mut changes: Vec<(Setting, Option<Value>)> = Vec::new();
     for (k, v) in b {
         match (k.as_str(), v) {
-            (group @ ("test" | "browse"), Value::Object(fields)) => {
+            (group @ ("url" | "artifact" | "content"), Value::Object(fields)) => {
                 for (field, v) in fields {
                     changes.push((setting_of(group, &field)?, (!v.is_null()).then_some(v)));
                 }
             }
-            ("test" | "browse", _) => {
+            ("url" | "artifact" | "content", _) => {
                 return Err(ApiError::bad_request(
                     "invalid_body",
                     format!("{k} must be an object of its fields"),
@@ -865,6 +912,148 @@ pub async fn set_browser(
             let ctx = audit.resolve(st)?;
             st.set_bot_settings(&ctx, &changes)?;
             browser_view(st, &bot)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+// ---------------------------------------------------------------------------
+// Grants
+// ---------------------------------------------------------------------------
+
+/// The live grants the admin made, as `GET /api/admin/bot/grants` lists
+/// them: each `{id, capability, grantee, person, issued_at}`, `grantee`
+/// `everyone` or `person`, `person` the person's key (null for everyone),
+/// the instance-wide grants first, then by capability.
+///
+/// # Errors
+/// The store's.
+pub fn grants_view(st: &Store) -> clax_core::Result<Value> {
+    use clax_store::bot_grants::{GrantFilter, Grantee};
+    let mut rows: Vec<(bool, String, Value)> = st
+        .cap_grants(&GrantFilter {
+            live: true,
+            ..GrantFilter::default()
+        })?
+        .into_iter()
+        .filter_map(|g| {
+            let person = match Grantee::parse(&g.grantee).ok()? {
+                Grantee::Everyone => None,
+                Grantee::Person(k) => Some(k),
+                Grantee::RunsOf(_) => return None,
+            };
+            let row = json!({
+                "id": g.id,
+                "capability": g.capability,
+                "grantee": if person.is_some() { "person" } else { "everyone" },
+                "person": person,
+                "issued_at": g.issued_at,
+            });
+            Some((person.is_some(), g.capability, row))
+        })
+        .collect();
+    rows.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    Ok(json!({"grants": rows.into_iter().map(|(_, _, r)| r).collect::<Vec<_>>()}))
+}
+
+/// `GET /api/admin/bot/grants` (see the module documentation).
+pub async fn grants(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    Ok(Json(s.store_call(grants_view).await?))
+}
+
+/// `POST /api/admin/bot/grants`'s body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantBody {
+    capability: String,
+    grantee: GranteeBody,
+}
+
+/// Whom an admin grant is to: `"everyone"`, or `{"person": <key>}`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum GranteeBody {
+    Everyone(String),
+    Person { person: String },
+}
+
+/// `POST /api/admin/bot/grants {capability, grantee}`: issues the
+/// admin's grant of `capability` to everyone or to one person; answers
+/// the grants. 400 `unknown_capability`, `invalid_grantee` (not
+/// `everyone`, or a person this instance does not have) or
+/// `grant_exists`.
+pub async fn grant(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    req: Result<Json<GrantBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    use clax_store::bot_grants::{GRANTER_INSTANCE, Grantee};
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let b = body(req)?;
+    let v = s
+        .store_call(move |st| {
+            let grantee = match b.grantee {
+                GranteeBody::Everyone(e) if e == clax_store::bot_grants::EVERYONE => {
+                    Grantee::Everyone
+                }
+                GranteeBody::Person { person } if st.person_keys()?.contains(&person) => {
+                    Grantee::Person(person)
+                }
+                _ => {
+                    return Err(CoreError::invalid(
+                        "invalid_grantee",
+                        "grant to \"everyone\" or to {\"person\": <a person of this instance>}",
+                    ));
+                }
+            };
+            let ctx = audit.resolve(st)?;
+            st.issue_cap_grant(
+                &ctx,
+                &b.capability,
+                GRANTER_INSTANCE,
+                &grantee.as_text(),
+                None,
+            )?;
+            grants_view(st)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `DELETE /api/admin/bot/grants/<id>`: revokes the admin's grant `id`
+/// and every grant issued under it; answers the grants. 404 for no admin
+/// grant of that ID.
+pub async fn revoke_grant(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    id: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    use clax_store::bot_grants::{GrantFilter, Grantee};
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let id = path(id)?;
+    let v = s
+        .store_call(move |st| {
+            let admins = st.cap_grants(&GrantFilter::default())?;
+            let ours = admins.iter().find(|g| g.id == id).is_some_and(|g| {
+                !matches!(Grantee::parse(&g.grantee), Ok(Grantee::RunsOf(_)) | Err(_))
+            });
+            if !ours {
+                return Err(CoreError::NotFound);
+            }
+            let ctx = audit.resolve(st)?;
+            st.revoke_cap_grant(&ctx, &id)?;
+            grants_view(st)
         })
         .await?;
     Ok(Json(v))

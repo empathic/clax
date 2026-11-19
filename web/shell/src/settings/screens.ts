@@ -76,7 +76,7 @@ export const SCREENS: Screen[] = [
       { title: "Credits this week", at: "#me-w", words: "usage meter limit resets" },
       { title: "Use my own Anthropic key", at: "#me-k", words: "model key api key byok" },
       { title: "Your key's last failed request", at: "#me-k", words: "model key error failure refused provider said" },
-      { title: "Let ClaxBot search and read the web", at: "#me-web", words: "web search fetch" },
+      { title: "What ClaxBot may do for you", at: "#me-caps", words: "web search fetch read pages browser open public pages clax content capabilities" },
       { title: "Your runs", at: "#me-r", words: "history" },
     ],
   },
@@ -132,10 +132,12 @@ export const SCREENS: Screen[] = [
     ],
   },
   {
-    id: "browser", group: "ClaxBot", title: "Browser", line: "Whether ClaxBot may test the pages it builds in a browser, and browse public pages.", when: c => c.admin,
+    id: "browser", group: "ClaxBot", title: "Browser", line: "Whether ClaxBot may open a browser on a public URL, on the clax it builds or on content it supplies, and who holds each.", when: c => c.admin,
     items: [
-      { title: "Browser testing", at: "#ab-on", words: "turn on off browser run test pages screenshots tests per run seconds per test browsers at once" },
-      { title: "Browsing public pages", at: "#ab-b", words: "browse allowlist allowed hosts any public url sender browses per run" },
+      { title: "Open a public URL", at: "#ab-url", words: "browse allowlist allowed hosts any public url sender sessions per run grant revoke" },
+      { title: "Open the run's clax", at: "#ab-artifact", words: "browser run test pages screenshots tests per run grant revoke" },
+      { title: "Open supplied content", at: "#ab-content", words: "render html files record grant revoke" },
+      { title: "Browser sessions", at: "#ab-family", words: "seconds per call idle longest session sessions open at once browsers at once" },
     ],
   },
   {

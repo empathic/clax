@@ -1935,7 +1935,7 @@ async fn browser_on(ts: &TestServer) {
             "/api/admin/web/token",
             json!({"token": "cf-token-for-tests-1234"}),
         ),
-        ("/api/admin/browser", json!({"test": {"enabled": true}})),
+        ("/api/admin/browser", json!({"artifact": {"enabled": true}})),
     ] {
         let res = ts
             .client
@@ -2062,7 +2062,7 @@ async fn a_browse_run_with_the_switch_on_declares_browse() {
         .client
         .put(format!("{}/api/admin/browser", ts.base))
         .header("cookie", ts.owner_cookie())
-        .json(&json!({"browse": {"enabled": true, "url_rule": "any_public"}}))
+        .json(&json!({"url": {"enabled": true, "url_rule": "any_public"}}))
         .send()
         .await
         .unwrap();

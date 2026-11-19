@@ -495,6 +495,16 @@ impl Store {
         })
     }
 
+    /// Every person key of the instance: the owner, then each connected
+    /// person, revoked ones included, by public ID (whom an instance-wide
+    /// grant covers).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn person_keys(&self) -> Result<Vec<String>> {
+        self.with_read(person_keys_in)
+    }
+
     /// The grants `filter` selects, oldest first.
     ///
     /// # Errors
