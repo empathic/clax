@@ -252,6 +252,7 @@ pub const ROWS: &[Row] = &[
     page("consoleMessages", "consoleMessages", &[], &[]),
     page("pageErrors", "pageErrors", &[], &[]),
     page("failedRequests", "failedRequests", &[], &[]),
+    page("record", "record", O, &[req("seconds", Kind::Int), TIMEOUT]),
     Row {
         needs: Some(Capability::OpenArtifact),
         ..page(
@@ -652,6 +653,12 @@ pub const DECLS: &[Decl] = &[
         "failedRequests",
         "failedRequests(): Promise<{ failed: { url: string; status?: number; error?: string }[]; blocked: { url: string; why: string }[] }>;",
         "Clax's own: the requests that failed, and those the session blocked.",
+    ),
+    d(
+        "Page",
+        "record",
+        "record(opts: { seconds: number }): Promise<BrowserClip>;",
+        "Clax's own: what the page shows for 1 to 10 seconds, as frames; return `frames` to see them.",
     ),
     Decl {
         needs: Some(Capability::OpenArtifact),

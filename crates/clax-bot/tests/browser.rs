@@ -1531,3 +1531,64 @@ async fn two_calls_in_one_promise_all_run_in_order() {
     let rows = browser_rows(&env);
     assert_eq!(rows.len(), 4, "{rows:?}");
 }
+
+/// A recording keeps each frame Chrome sent as an item of the run's
+/// content and the clip as a manifest naming them, and answers four
+/// evenly spaced frames to look at.
+#[tokio::test]
+async fn a_recording_keeps_its_frames_and_a_manifest() {
+    let env = Env::new().await;
+    let clock = env.clock.clone();
+    opens(&env, move || {
+        let clock = clock.clone();
+        let mut n = 0;
+        page_of(buttons()).on(move |cmd: &Value| {
+            let method = cmd["method"].as_str().unwrap_or_default();
+            if method != "Page.startScreencast" && method != "Page.screencastFrameAck" {
+                return None;
+            }
+            if method == "Page.screencastFrameAck" {
+                clock.advance_millis(200);
+            }
+            n += 1;
+            let data = base64::engine::general_purpose::STANDARD.encode([0xff, 0xd8, 0xff, n]);
+            Some(vec![
+                clax_bot::browser::fake::answer(cmd, json!({})),
+                clax_bot::browser::fake::event(
+                    "Page.screencastFrame",
+                    json!({"data": data, "sessionId": n, "metadata": {}}),
+                    Some("S"),
+                ),
+            ])
+        })
+    });
+    let (run, v) = one_script_with(
+        &env,
+        "browser.open.content",
+        "const page = await clax.browser.open({ html: '<p>moving</p>' });
+         const clip = await page.record({ seconds: 2 });
+         let refused;
+         try { await page.record({ seconds: 11 }); } catch (e) { refused = e.code; }
+         await page.close();
+         return { clip, refused };",
+    )
+    .await;
+    let clip = &v["clip"];
+    assert_eq!(v["refused"], "invalid_args");
+    assert_eq!(clip["count"], 10, "{clip}");
+    assert_eq!(clip["ms"], 2000);
+    assert_eq!(clip["frames"].as_array().unwrap().len(), 4);
+    let row = env
+        .store
+        .bot_content_of(&run, clip["clip"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.media_type, "application/vnd.clax.frames+json");
+    let bytes = env.store.bot_content_bytes(&row).unwrap().unwrap();
+    let m: Value = serde_json::from_slice(&bytes).unwrap();
+    let frames = m["frames"].as_array().unwrap();
+    assert_eq!(frames.len(), 10);
+    assert_eq!(frames[1]["at_ms"], 200);
+    assert_eq!(frames[0]["item"], clip["frames"][0]["id"]);
+    assert_eq!(frames[9]["item"], clip["frames"][3]["id"]);
+}

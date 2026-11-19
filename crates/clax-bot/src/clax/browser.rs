@@ -802,6 +802,14 @@ impl Performer for SessionOp {
                 let row = layer::row(Op::Page, action, false)
                     .ok_or_else(|| bad(format!("action: `{action}` is not a page action")))?;
                 let args = checked(row, a.get(2))?;
+                if action == "record"
+                    && !args["seconds"].as_i64().is_some_and(|n| {
+                        (crate::browser::record::MIN_SECONDS..=crate::browser::record::MAX_SECONDS)
+                            .contains(&n)
+                    })
+                {
+                    return Err(bad("args.seconds: must be 1 to 10"));
+                }
                 (
                     Some(SessionCall::Page {
                         action: action.to_string(),
@@ -987,7 +995,16 @@ impl Performer for SessionOp {
         let mut ok = a.ok;
         let mut error = a.error.clone();
         let mut value = a.value.clone();
-        if !a.shots.is_empty() {
+        if value.get("record").is_some() {
+            match s.keep_clip(call, &value["record"], &a.shots) {
+                Ok(clip) => value = clip,
+                Err(why) => {
+                    ok = false;
+                    error = Some(why);
+                    value = Value::Null;
+                }
+            }
+        } else if !a.shots.is_empty() {
             let kept: Vec<Kept> = a
                 .shots
                 .iter()
@@ -1077,6 +1094,43 @@ impl ClaxSession<'_> {
             .ok()
             .flatten()
             .map(|r| r.kind)
+    }
+
+    /// A recording's answer (spec §6.6, [`crate::browser::record`]): each
+    /// frame of `frames` (JPEG) kept as an item of the run's content, the
+    /// clip's manifest as one more, and `{frames, clip, ms, count}`, at
+    /// most [`crate::browser::record::SHOWN`] frames evenly spaced.
+    /// `record` is the driver's `{at, ms, width, height}`.
+    fn keep_clip(
+        &self,
+        call: &Call<'_>,
+        record: &Value,
+        frames: &[Vec<u8>],
+    ) -> Result<Value, String> {
+        use crate::browser::record::{MANIFEST_MEDIA_TYPE, manifest, shown};
+        let mut handles = Vec::with_capacity(frames.len());
+        let mut items = Vec::with_capacity(frames.len());
+        for (i, jpeg) in frames.iter().enumerate() {
+            let h = self.keep_item(call, jpeg, "image/jpeg", "recording")?;
+            let at = record["at"][i].as_i64().unwrap_or(0);
+            items.push((h["id"].as_str().unwrap_or_default().to_string(), at));
+            handles.push(h);
+        }
+        let side = |k: &str| u32::try_from(record[k].as_u64().unwrap_or(0)).unwrap_or(0);
+        let m = manifest(side("width"), side("height"), &items);
+        let clip = self.keep_item(
+            call,
+            m.to_string().as_bytes(),
+            MANIFEST_MEDIA_TYPE,
+            "recording",
+        )?;
+        let picked: Vec<Value> = shown(handles.len())
+            .into_iter()
+            .map(|i| handles[i].clone())
+            .collect();
+        Ok(
+            json!({"frames": picked, "clip": clip["id"], "ms": record["ms"], "count": handles.len()}),
+        )
     }
 
     /// The run's draft as this step holds it now.
@@ -1382,8 +1436,14 @@ impl ClaxSession<'_> {
     /// Keeps one screenshot as an item of the run's content, noted as
     /// `call`'s: its handle, or why it could not be kept.
     fn keep_screenshot(&self, call: &Call<'_>, png: &[u8]) -> Kept {
+        self.keep_item(call, png, "image/png", "screenshot")
+    }
+
+    /// Keeps `bytes` of `media_type` as an item of the run's content,
+    /// noted as `call`'s: its handle, or why the `what` could not be kept.
+    fn keep_item(&self, call: &Call<'_>, bytes: &[u8], media_type: &str, what: &str) -> Kept {
         let store = self.store();
-        let size = clax_core::media::sniff(png).ok();
+        let size = clax_core::media::sniff(bytes).ok();
         let id: String = clax_core::secret::random_bytes::<16>()
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -1394,17 +1454,17 @@ impl ClaxSession<'_> {
             surface: clax_store::bot_runs::CLAX_SURFACE,
             registration_id: None,
             name: None,
-            media_type: "image/png",
+            media_type,
             width: size.as_ref().map(|s| s.width),
             height: size.as_ref().map(|s| s.height),
-            bytes: png,
+            bytes,
         };
         let row = store
             .put_bot_content(&new, self.provider.content_limits)
-            .map_err(|e| format!("the screenshot could not be kept: {e}"))?;
+            .map_err(|e| format!("the {what} could not be kept: {e}"))?;
         store
             .note_bot_content(&row.id, call.op, &call.place.key, call.place.step, None)
-            .map_err(|e| format!("the screenshot could not be kept: {e}"))?;
+            .map_err(|e| format!("the {what} could not be kept: {e}"))?;
         Ok(row.handle())
     }
 }

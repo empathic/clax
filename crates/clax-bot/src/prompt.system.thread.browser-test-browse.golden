@@ -216,6 +216,8 @@ interface BrowserResult {
   left: BrowserLeft;
 }
 
+/** A recording (`page.record`): at most 4 of its frames, evenly spaced, and the clip, an item of the run's content the run panel plays. */
+interface BrowserClip { frames: Image[]; clip: string; ms: number; count: number }
 type BrowserSource =
   | { url: string }
   | { artifact: "draft" | number; path?: string };
@@ -253,6 +255,8 @@ interface Page {
   pageErrors(): Promise<Error[]>;
   /** Clax's own: the requests that failed, and those the session blocked. */
   failedRequests(): Promise<{ failed: { url: string; status?: number; error?: string }[]; blocked: { url: string; why: string }[] }>;
+  /** Clax's own: what the page shows for 1 to 10 seconds, as frames; return `frames` to see them. */
+  record(opts: { seconds: number }): Promise<BrowserClip>;
   /** Clax's own: runs the clax's saved tests (all, or these paths under `tests/`) in this page. */
   runTests(paths?: string[]): Promise<{ passed: number; failed: { name: string; error: string }[]; skipped: number }>;
   /** Ends the session, which costs by the second while open. */

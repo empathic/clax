@@ -99,6 +99,8 @@ interface BrowserLeft {
   credits: number;
 }
 
+/** A recording (`page.record`): at most 4 of its frames, evenly spaced, and the clip, an item of the run's content the run panel plays. */
+interface BrowserClip { frames: Image[]; clip: string; ms: number; count: number }
 type BrowserSource =
   | { html: string; files?: Record<string, string | { base64: string } | Image> };
 /** Playwright's `Page`, as far as declared here. Every method that reaches the browser is one charged call; a failure on the page throws (a `TimeoutError` when its time ran out), a session that ended throws a `HostError`. */
@@ -135,6 +137,8 @@ interface Page {
   pageErrors(): Promise<Error[]>;
   /** Clax's own: the requests that failed, and those the session blocked. */
   failedRequests(): Promise<{ failed: { url: string; status?: number; error?: string }[]; blocked: { url: string; why: string }[] }>;
+  /** Clax's own: what the page shows for 1 to 10 seconds, as frames; return `frames` to see them. */
+  record(opts: { seconds: number }): Promise<BrowserClip>;
   /** Ends the session, which costs by the second while open. */
   close(): Promise<{ ms: number; cost: number }>;
 }

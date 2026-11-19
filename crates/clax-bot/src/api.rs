@@ -388,6 +388,9 @@ fn with_page(decl: &str, caps: &CapSet) -> String {
     if caps.has(Capability::OpenContent) {
         kinds.push("{ html: string; files?: Record<string, string | { base64: string } | Image> }");
     }
+    types.push_str(
+        "/** A recording (`page.record`): at most 4 of its frames, evenly spaced, and the clip, an item of the run's content the run panel plays. */\ninterface BrowserClip { frames: Image[]; clip: string; ms: number; count: number }\n",
+    );
     types.push_str("type BrowserSource =\n");
     for k in &kinds {
         types.push_str(&format!("  | {k}\n"));

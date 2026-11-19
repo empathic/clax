@@ -44,6 +44,7 @@ pub mod layer;
 pub mod live;
 pub mod locate;
 pub mod opts;
+pub mod record;
 pub mod serve;
 pub mod session;
 

@@ -70,7 +70,9 @@
 
 use super::cdp::CdpFail;
 use super::live::{Answered, SessionTimes};
-use super::locate::{LocatorStep, Resolved, TextMatch, describe, normalized, parse_locator, resolve};
+use super::locate::{
+    LocatorStep, Resolved, TextMatch, describe, normalized, parse_locator, resolve,
+};
 use super::session::{Driver, SessionLimits};
 use super::{BrowserSource, Deadline};
 use chrono::{DateTime, Duration, Utc};
@@ -248,7 +250,10 @@ fn strict(name: &str, desc: &str, r: &Resolved) -> String {
 fn disabled(r: &Resolved, i: usize) -> bool {
     let t = &r.tree;
     let control = |n: &super::locate::Node| {
-        matches!(n.name.as_str(), "button" | "input" | "select" | "textarea" | "optgroup" | "option" | "fieldset")
+        matches!(
+            n.name.as_str(),
+            "button" | "input" | "select" | "textarea" | "optgroup" | "option" | "fieldset"
+        )
     };
     if control(&t.nodes[i]) && t.nodes[i].attr("disabled").is_some() {
         return true;
@@ -272,8 +277,20 @@ fn editable(r: &Resolved, i: usize) -> bool {
     let n = &r.tree.nodes[i];
     let kind = match n.name.as_str() {
         "input" => !matches!(
-            n.attr("type").unwrap_or("text").to_ascii_lowercase().as_str(),
-            "checkbox" | "radio" | "button" | "submit" | "reset" | "image" | "file" | "hidden" | "range" | "color"
+            n.attr("type")
+                .unwrap_or("text")
+                .to_ascii_lowercase()
+                .as_str(),
+            "checkbox"
+                | "radio"
+                | "button"
+                | "submit"
+                | "reset"
+                | "image"
+                | "file"
+                | "hidden"
+                | "range"
+                | "color"
         ),
         "textarea" | "select" => true,
         _ => n.attr("contenteditable").is_some_and(|v| v != "false"),
@@ -282,7 +299,10 @@ fn editable(r: &Resolved, i: usize) -> bool {
 }
 
 /// The box of `backend`: `(x, y, width, height)`, or why it has none.
-async fn rect(d: &mut Driver<'_>, backend: i64) -> Result<Result<(f64, f64, f64, f64), String>, CdpFail> {
+async fn rect(
+    d: &mut Driver<'_>,
+    backend: i64,
+) -> Result<Result<(f64, f64, f64, f64), String>, CdpFail> {
     match d
         .page_call("DOM.getBoxModel", json!({"backendNodeId": backend}))
         .await
@@ -340,7 +360,10 @@ async fn attempt(
             // Scrolled into view first, so the box and the point are the
             // viewport's.
             match d
-                .page_call("DOM.scrollIntoViewIfNeeded", json!({"backendNodeId": backend}))
+                .page_call(
+                    "DOM.scrollIntoViewIfNeeded",
+                    json!({"backendNodeId": backend}),
+                )
                 .await
             {
                 Ok(_) | Err(CdpFail::Protocol(_)) => {}
@@ -436,7 +459,8 @@ fn missed(name: &str, ms: i64, desc: &str, m: Missed) -> Answered {
     match m {
         Missed::Strict(msg) => fail(msg, false),
         Missed::Timeout(last) => {
-            let mut log = format!("{name}: Timeout {ms}ms exceeded.\nCall log:\n  - waiting for {desc}");
+            let mut log =
+                format!("{name}: Timeout {ms}ms exceeded.\nCall log:\n  - waiting for {desc}");
             if last != format!("waiting for {desc}") {
                 log.push_str(&format!("\n  - {last}"));
             }
@@ -471,7 +495,12 @@ async fn mouse_event(
 }
 
 /// A click of `count` presses at `point`.
-async fn click_at(d: &mut Driver<'_>, point: (f64, f64), button: &str, count: i64) -> Result<(), CdpFail> {
+async fn click_at(
+    d: &mut Driver<'_>,
+    point: (f64, f64),
+    button: &str,
+    count: i64,
+) -> Result<(), CdpFail> {
     mouse_event(d, "mouseMoved", point, "none", 0).await?;
     for n in 1..=count.max(1) {
         mouse_event(d, "mousePressed", point, button, n).await?;
@@ -508,7 +537,10 @@ fn key_of(name: &str) -> Option<super::opts::Key> {
         "Alt" => named("Alt", "AltLeft", 18),
         "Meta" | "ControlOrMeta" => named("Meta", "MetaLeft", 91),
         "Insert" => named("Insert", "Insert", 45),
-        f if f.len() >= 2 && f.starts_with('F') && f[1..].parse::<u32>().is_ok_and(|n| (1..=12).contains(&n)) => {
+        f if f.len() >= 2
+            && f.starts_with('F')
+            && f[1..].parse::<u32>().is_ok_and(|n| (1..=12).contains(&n)) =>
+        {
             let n: u32 = f[1..].parse().unwrap_or(1);
             named(f, f, 111 + n)
         }
@@ -528,7 +560,12 @@ fn modifier_bit(key: &str) -> i64 {
 }
 
 /// One key event of `k` (`keyDown`, `keyUp`) with `modifiers`.
-async fn key_event(d: &mut Driver<'_>, ty: &str, k: &super::opts::Key, modifiers: i64) -> Result<(), CdpFail> {
+async fn key_event(
+    d: &mut Driver<'_>,
+    ty: &str,
+    k: &super::opts::Key,
+    modifiers: i64,
+) -> Result<(), CdpFail> {
     let mut p = json!({
         "type": if ty == "keyDown" && k.text.is_none() { "rawKeyDown" } else { ty },
         "key": k.key,
@@ -548,7 +585,11 @@ async fn key_event(d: &mut Driver<'_>, ty: &str, k: &super::opts::Key, modifiers
 /// `keyboard.press` of `combo` (`Control+a`): the modifiers down, the
 /// key down and up, the modifiers up.
 async fn press_combo(d: &mut Driver<'_>, combo: &str) -> Result<Result<(), String>, CdpFail> {
-    let parts: Vec<&str> = if combo == "+" { vec!["+"] } else { combo.split('+').collect() };
+    let parts: Vec<&str> = if combo == "+" {
+        vec!["+"]
+    } else {
+        combo.split('+').collect()
+    };
     let mut keys = Vec::new();
     for p in &parts {
         match key_of(p) {
@@ -668,7 +709,11 @@ pub(super) async fn perform(
         }
         "allTextContents" => {
             let r = resolve(d, &steps).await?;
-            let texts: Vec<Value> = r.found.iter().map(|&i| json!(cut(&r.tree.text(i), MAX_TEXT))).collect();
+            let texts: Vec<Value> = r
+                .found
+                .iter()
+                .map(|&i| json!(cut(&r.tree.text(i), MAX_TEXT)))
+                .collect();
             return Ok(ok(Value::Array(texts)));
         }
         "isVisible" | "isHidden" => {
@@ -680,7 +725,11 @@ pub(super) async fn perform(
                 Some(&i) => rect(d, r.tree.nodes[i].backend).await?.is_ok(),
                 None => false,
             };
-            return Ok(ok(json!(if action == "isVisible" { visible } else { !visible })));
+            return Ok(ok(json!(if action == "isVisible" {
+                visible
+            } else {
+                !visible
+            })));
         }
         "waitFor" => return wait_for_state(d, timing, &name, &steps, args).await,
         _ => {}
@@ -690,7 +739,9 @@ pub(super) async fn perform(
         "hover" => HOVER,
         "fill" | "pressSequentially" => EDIT,
         "press" | "focus" | "selectOption" => INPUT,
-        "textContent" | "innerText" | "inputValue" | "getAttribute" | "isEnabled" | "isChecked" => ATTACHED,
+        "textContent" | "innerText" | "inputValue" | "getAttribute" | "isEnabled" | "isChecked" => {
+            ATTACHED
+        }
         "scrollIntoViewIfNeeded" | "screenshot" => VISIBLE,
         other => return Ok(fail(format!("locator.{other} is not an action"), false)),
     };
@@ -698,14 +749,19 @@ pub(super) async fn perform(
         Ok(b) => b,
         Err(e) => return Ok(fail(format!("{name}: {e}"), false)),
     };
-    let t = match wait_for_target(d, timing, until, &name, &steps, needs, position_of(args)).await? {
+    let t = match wait_for_target(d, timing, until, &name, &steps, needs, position_of(args)).await?
+    {
         Ok(t) => t,
         Err(m) => return Ok(missed(&name, ms, &desc, m)),
     };
     let node = &t.resolved.tree.nodes[t.index];
     Ok(match action {
         "click" => {
-            let count = args.get("clickCount").and_then(Value::as_i64).unwrap_or(1).clamp(1, 3);
+            let count = args
+                .get("clickCount")
+                .and_then(Value::as_i64)
+                .unwrap_or(1)
+                .clamp(1, 3);
             click_at(d, t.point, button, count).await?;
             settle_after(d).await?;
             ok(Value::Null)
@@ -728,7 +784,10 @@ pub(super) async fn perform(
                     settle_after(d).await?;
                     match on_element(d, t.backend, CHECKED_FN, &[]).await? {
                         Ok(Value::Bool(now)) if now == want => ok(Value::Null),
-                        _ => fail(format!("{name}: Clicking the checkbox did not change its state"), false),
+                        _ => fail(
+                            format!("{name}: Clicking the checkbox did not change its state"),
+                            false,
+                        ),
                     }
                 }
                 Ok(_) => fail(format!("{name}: Not a checkbox or radio button"), false),
@@ -736,8 +795,12 @@ pub(super) async fn perform(
             }
         }
         "fill" => {
-            let value = args.get("value").and_then(Value::as_str).unwrap_or_default();
-            d.page_call("DOM.focus", json!({"backendNodeId": t.backend})).await?;
+            let value = args
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            d.page_call("DOM.focus", json!({"backendNodeId": t.backend}))
+                .await?;
             if let Err(e) = on_element(d, t.backend, SELECT_TEXT_FN, &[]).await? {
                 return Ok(fail(format!("{name}: {e}"), false));
             }
@@ -746,19 +809,22 @@ pub(super) async fn perform(
                 key_event(d, "keyDown", &del, 0).await?;
                 key_event(d, "keyUp", &del, 0).await?;
             } else {
-                d.page_call("Input.insertText", json!({"text": value})).await?;
+                d.page_call("Input.insertText", json!({"text": value}))
+                    .await?;
             }
             ok(Value::Null)
         }
         "pressSequentially" => {
             let text = args.get("text").and_then(Value::as_str).unwrap_or_default();
-            d.page_call("DOM.focus", json!({"backendNodeId": t.backend})).await?;
+            d.page_call("DOM.focus", json!({"backendNodeId": t.backend}))
+                .await?;
             type_text(d, text).await?;
             ok(Value::Null)
         }
         "press" => {
             let key = args.get("key").and_then(Value::as_str).unwrap_or_default();
-            d.page_call("DOM.focus", json!({"backendNodeId": t.backend})).await?;
+            d.page_call("DOM.focus", json!({"backendNodeId": t.backend}))
+                .await?;
             match press_combo(d, key).await? {
                 Ok(()) => {
                     settle_after(d).await?;
@@ -768,7 +834,8 @@ pub(super) async fn perform(
             }
         }
         "focus" => {
-            d.page_call("DOM.focus", json!({"backendNodeId": t.backend})).await?;
+            d.page_call("DOM.focus", json!({"backendNodeId": t.backend}))
+                .await?;
             ok(Value::Null)
         }
         "selectOption" => {
@@ -805,16 +872,25 @@ pub(super) async fn perform(
         "isEnabled" => ok(json!(!disabled(&t.resolved, t.index))),
         "isChecked" => match on_element(d, t.backend, CHECKED_FN, &[]).await? {
             Ok(Value::Bool(b)) => ok(json!(b)),
-            _ => fail(format!("{name}: Error: Not a checkbox or radio button"), false),
+            _ => fail(
+                format!("{name}: Error: Not a checkbox or radio button"),
+                false,
+            ),
         },
         "scrollIntoViewIfNeeded" => {
-            d.page_call("DOM.scrollIntoViewIfNeeded", json!({"backendNodeId": t.backend}))
-                .await?;
+            d.page_call(
+                "DOM.scrollIntoViewIfNeeded",
+                json!({"backendNodeId": t.backend}),
+            )
+            .await?;
             ok(Value::Null)
         }
         "screenshot" => {
-            d.page_call("DOM.scrollIntoViewIfNeeded", json!({"backendNodeId": t.backend}))
-                .await?;
+            d.page_call(
+                "DOM.scrollIntoViewIfNeeded",
+                json!({"backendNodeId": t.backend}),
+            )
+            .await?;
             let (x, y, w, h) = match rect(d, t.backend).await? {
                 Ok(b) => b,
                 Err(why) => return Ok(fail(format!("{name}: {why}"), false)),
@@ -825,7 +901,10 @@ pub(super) async fn perform(
                 m["cssVisualViewport"]["pageX"].as_f64().unwrap_or(0.0),
                 m["cssVisualViewport"]["pageY"].as_f64().unwrap_or(0.0),
             );
-            match d.capture((x + sx, y + sy, w, h), true, timing.limits).await? {
+            match d
+                .capture((x + sx, y + sy, w, h), true, timing.limits)
+                .await?
+            {
                 Ok(()) => ok(json!({"screenshot": d.shots.len() - 1})),
                 Err(e) => fail(format!("{name}: {e}"), false),
             }
@@ -853,9 +932,15 @@ async fn wait_for_state(
     args: &Value,
 ) -> Result<Answered, CdpFail> {
     let desc = describe(steps);
-    let state = args.get("state").and_then(Value::as_str).unwrap_or("visible");
+    let state = args
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("visible");
     if !matches!(state, "attached" | "detached" | "visible" | "hidden") {
-        return Ok(fail(format!("{name}: state must be attached, detached, visible or hidden"), false));
+        return Ok(fail(
+            format!("{name}: state must be attached, detached, visible or hidden"),
+            false,
+        ));
     }
     let (ms, until) = timing.until(args, ACTION_MS);
     d.cdp.set_deadline(timing.deadline(until));
@@ -892,7 +977,9 @@ async fn wait_for_state(
         }
     }
     Ok(fail(
-        format!("{name}: Timeout {ms}ms exceeded.\nCall log:\n  - waiting for {desc} to be {state}"),
+        format!(
+            "{name}: Timeout {ms}ms exceeded.\nCall log:\n  - waiting for {desc} to be {state}"
+        ),
         true,
     ))
 }
@@ -906,7 +993,11 @@ fn expected_of(v: &Value) -> Option<TextMatch> {
         }),
         Value::Object(o) => Some(TextMatch::Regex {
             source: o.get("regex")?.as_str()?.to_string(),
-            flags: o.get("flags").and_then(Value::as_str).unwrap_or("").to_string(),
+            flags: o
+                .get("flags")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
         }),
         _ => None,
     }
@@ -934,7 +1025,11 @@ async fn texts_match(
                 .iter()
                 .map(|s| {
                     let s = normalized(s);
-                    if contains { s.contains(&want) } else { s == want }
+                    if contains {
+                        s.contains(&want)
+                    } else {
+                        s == want
+                    }
                 })
                 .collect())
         }
@@ -984,14 +1079,24 @@ async fn check(
         let Some(want) = args.get("count").and_then(Value::as_u64) else {
             return Ok(Err("toHaveCount needs a count".into()));
         };
-        return Ok(Ok((r.found.len() as u64 == want, r.found.len().to_string())));
+        return Ok(Ok((
+            r.found.len() as u64 == want,
+            r.found.len().to_string(),
+        )));
     }
     if matches!(matcher, "toHaveText" | "toContainText") {
         let contains = matcher == "toContainText";
         let texts: Vec<String> = r.found.iter().map(|&i| r.tree.text(i)).collect();
         let shown_texts = || {
-            let t: Vec<String> = texts.iter().map(|s| format!("\"{}\"", normalized(s))).collect();
-            if texts.len() == 1 { t[0].clone() } else { format!("[{}]", t.join(", ")) }
+            let t: Vec<String> = texts
+                .iter()
+                .map(|s| format!("\"{}\"", normalized(s)))
+                .collect();
+            if texts.len() == 1 {
+                t[0].clone()
+            } else {
+                format!("[{}]", t.join(", "))
+            }
         };
         return Ok(match args.get("expected") {
             Some(Value::Array(want)) => {
@@ -1013,7 +1118,9 @@ async fn check(
                 }
             }
             Some(w) => match expected_of(w) {
-                None => Err(format!("{matcher} takes a string, a RegExp or an array of them")),
+                None => Err(format!(
+                    "{matcher} takes a string, a RegExp or an array of them"
+                )),
                 Some(want) => {
                     if r.found.len() > 1 {
                         return Ok(Err(strict(&format!("expect.{matcher}"), &desc, &r)));
@@ -1034,7 +1141,10 @@ async fn check(
     }
     let Some(&i) = r.found.first() else {
         // No element: hidden, and nothing else holds.
-        return Ok(Ok((matcher == "toBeHidden", "<element(s) not found>".into())));
+        return Ok(Ok((
+            matcher == "toBeHidden",
+            "<element(s) not found>".into(),
+        )));
     };
     let backend = r.tree.nodes[i].backend;
     Ok(match matcher {
@@ -1051,7 +1161,9 @@ async fn check(
         "toBeChecked" => {
             let want = args.get("checked").and_then(Value::as_bool).unwrap_or(true);
             match on_element(d, backend, CHECKED_FN, &[]).await? {
-                Ok(Value::Bool(b)) => Ok((b == want, if b { "checked" } else { "unchecked" }.into())),
+                Ok(Value::Bool(b)) => {
+                    Ok((b == want, if b { "checked" } else { "unchecked" }.into()))
+                }
                 _ => Err("Not a checkbox or radio button".into()),
             }
         }
@@ -1081,13 +1193,17 @@ async fn check(
             };
             let got = r.tree.nodes[i].attr(n).map(str::to_string);
             match (args.get("value").filter(|v| !v.is_null()), got) {
-                (None, g) => Ok((g.is_some(), g.map_or("<no attribute>".into(), |v| format!("\"{v}\"")))),
+                (None, g) => Ok((
+                    g.is_some(),
+                    g.map_or("<no attribute>".into(), |v| format!("\"{v}\"")),
+                )),
                 (Some(_), None) => Ok((false, "<no attribute>".into())),
                 (Some(w), Some(g)) => match expected_of(w) {
                     None => Err("toHaveAttribute's value is a string or a RegExp".into()),
                     Some(TextMatch::Text { text, .. }) => Ok((g == text, format!("\"{g}\""))),
                     Some(re) => {
-                        let hit = super::locate::text_matches(d, &re, std::slice::from_ref(&g)).await?[0];
+                        let hit =
+                            super::locate::text_matches(d, &re, std::slice::from_ref(&g)).await?[0];
                         Ok((hit, format!("\"{g}\"")))
                     }
                 },
@@ -1099,7 +1215,11 @@ async fn check(
 
 /// What a matcher expects, in its failure's words.
 fn expectation(matcher: &str, args: &Value) -> String {
-    let field = |k: &str| args.get(k).and_then(expected_of).map_or_else(|| args[k].to_string(), |t| shown_expected(&t));
+    let field = |k: &str| {
+        args.get(k)
+            .and_then(expected_of)
+            .map_or_else(|| args[k].to_string(), |t| shown_expected(&t))
+    };
     match matcher {
         "toBeVisible" => "visible".into(),
         "toBeHidden" => "hidden".into(),
@@ -1154,7 +1274,10 @@ pub(super) async fn expect(
         Err(e) => return Ok(fail(format!("expect.{matcher}: {e}"), false)),
     };
     let subject = if steps.is_some() { "locator" } else { "page" };
-    let call = format!("expect({subject}).{}{matcher}()", if not { "not." } else { "" });
+    let call = format!(
+        "expect({subject}).{}{matcher}()",
+        if not { "not." } else { "" }
+    );
     let (ms, until) = timing.until(args, EXPECT_MS);
     d.cdp.set_deadline(timing.deadline(until));
     let mut received = String::from("<nothing yet>");
@@ -1208,7 +1331,11 @@ pub(super) async fn page(
             let k = args.get("key").and_then(Value::as_str).unwrap_or_default();
             match key_of(k) {
                 Some(key) => {
-                    let ty = if action == "keyboard.down" { "keyDown" } else { "keyUp" };
+                    let ty = if action == "keyboard.down" {
+                        "keyDown"
+                    } else {
+                        "keyUp"
+                    };
                     key_event(d, ty, &key, 0).await?;
                     ok(Value::Null)
                 }
@@ -1223,23 +1350,39 @@ pub(super) async fn page(
             }
         }
         "keyboard.type" => {
-            type_text(d, args.get("text").and_then(Value::as_str).unwrap_or_default()).await?;
+            type_text(
+                d,
+                args.get("text").and_then(Value::as_str).unwrap_or_default(),
+            )
+            .await?;
             ok(Value::Null)
         }
         "keyboard.insertText" => {
             let text = args.get("text").and_then(Value::as_str).unwrap_or_default();
-            d.page_call("Input.insertText", json!({"text": text})).await?;
+            d.page_call("Input.insertText", json!({"text": text}))
+                .await?;
             ok(Value::Null)
         }
         "mouse.move" => {
             let (Some(x), Some(y)) = (num("x"), num("y")) else {
                 return Ok(Some(fail(format!("{name}: x and y are numbers"), false)));
             };
-            let steps = args.get("steps").and_then(Value::as_i64).unwrap_or(1).clamp(1, 100);
+            let steps = args
+                .get("steps")
+                .and_then(Value::as_i64)
+                .unwrap_or(1)
+                .clamp(1, 100);
             let (fx, fy) = d.mouse;
             for s in 1..=steps {
                 let k = s as f64 / steps as f64;
-                mouse_event(d, "mouseMoved", (fx + (x - fx) * k, fy + (y - fy) * k), "none", 0).await?;
+                mouse_event(
+                    d,
+                    "mouseMoved",
+                    (fx + (x - fx) * k, fy + (y - fy) * k),
+                    "none",
+                    0,
+                )
+                .await?;
             }
             ok(Value::Null)
         }
@@ -1248,7 +1391,11 @@ pub(super) async fn page(
                 Ok(b) => b,
                 Err(e) => return Ok(Some(fail(format!("{name}: {e}"), false))),
             };
-            let ty = if action == "mouse.down" { "mousePressed" } else { "mouseReleased" };
+            let ty = if action == "mouse.down" {
+                "mousePressed"
+            } else {
+                "mouseReleased"
+            };
             let at = d.mouse;
             mouse_event(d, ty, at, button, 1).await?;
             ok(Value::Null)
@@ -1264,7 +1411,10 @@ pub(super) async fn page(
             let count = if action == "mouse.dblclick" {
                 2
             } else {
-                args.get("clickCount").and_then(Value::as_i64).unwrap_or(1).clamp(1, 3)
+                args.get("clickCount")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1)
+                    .clamp(1, 3)
             };
             click_at(d, (x, y), button, count).await?;
             ok(Value::Null)
@@ -1282,7 +1432,10 @@ pub(super) async fn page(
         "setViewportSize" => {
             let size = &args["size"];
             let (Some(w), Some(h)) = (size["width"].as_u64(), size["height"].as_u64()) else {
-                return Ok(Some(fail(format!("{name}: size is {{width, height}}"), false)));
+                return Ok(Some(fail(
+                    format!("{name}: size is {{width, height}}"),
+                    false,
+                )));
             };
             if !(200..=3_840).contains(&w) || !(200..=4_000).contains(&h) {
                 return Ok(Some(fail(
@@ -1305,7 +1458,10 @@ pub(super) async fn page(
         "waitForLoadState" => {
             let state = args.get("state").and_then(Value::as_str).unwrap_or("load");
             if !matches!(state, "load" | "domcontentloaded" | "networkidle") {
-                return Ok(Some(fail(format!("{name}: state must be load, domcontentloaded or networkidle"), false)));
+                return Ok(Some(fail(
+                    format!("{name}: state must be load, domcontentloaded or networkidle"),
+                    false,
+                )));
             }
             let (ms, until) = timing.until(args, NAVIGATION_MS);
             d.cdp.set_deadline(timing.deadline(until));
@@ -1322,7 +1478,10 @@ pub(super) async fn page(
         }
         "waitForURL" => {
             let Some(want) = args.get("url").and_then(expected_of) else {
-                return Ok(Some(fail(format!("{name}: url is a string or a RegExp"), false)));
+                return Ok(Some(fail(
+                    format!("{name}: url is a string or a RegExp"),
+                    false,
+                )));
             };
             let (ms, until) = timing.until(args, NAVIGATION_MS);
             d.cdp.set_deadline(timing.deadline(until));
@@ -1333,7 +1492,10 @@ pub(super) async fn page(
                     Ok(_) => {}
                     Err(CdpFail::Deadline) => {
                         break fail(
-                            format!("{name}: Timeout {ms}ms exceeded.\n  waiting for navigation to {}", shown_expected(&want)),
+                            format!(
+                                "{name}: Timeout {ms}ms exceeded.\n  waiting for navigation to {}",
+                                shown_expected(&want)
+                            ),
                             true,
                         );
                     }
@@ -1343,7 +1505,10 @@ pub(super) async fn page(
                     Ok(()) => {}
                     Err(CdpFail::Deadline) => {
                         break fail(
-                            format!("{name}: Timeout {ms}ms exceeded.\n  waiting for navigation to {}", shown_expected(&want)),
+                            format!(
+                                "{name}: Timeout {ms}ms exceeded.\n  waiting for navigation to {}",
+                                shown_expected(&want)
+                            ),
                             true,
                         );
                     }
@@ -1355,7 +1520,10 @@ pub(super) async fn page(
             let h = d.page_call("Page.getNavigationHistory", json!({})).await?;
             let at = h["currentIndex"].as_i64().unwrap_or(0);
             let to = if action == "goBack" { at - 1 } else { at + 1 };
-            let entry = usize::try_from(to).ok().and_then(|i| h["entries"].get(i)).cloned();
+            let entry = usize::try_from(to)
+                .ok()
+                .and_then(|i| h["entries"].get(i))
+                .cloned();
             match entry {
                 None => ok(Value::Null),
                 Some(e) => {
@@ -1365,14 +1533,27 @@ pub(super) async fn page(
                     match d.history(e["id"].as_i64().unwrap_or(0), &url).await {
                         Ok(Ok(())) => {
                             settle_after(d).await?;
-                            ok(json!({"url": d.url, "status": d.status, "ok": (200..300).contains(&d.status)}))
+                            ok(
+                                json!({"url": d.url, "status": d.status, "ok": (200..300).contains(&d.status)}),
+                            )
                         }
                         Ok(Err(e)) => fail(format!("{name}: {e}"), false),
-                        Err(CdpFail::Deadline) => fail(format!("{name}: Timeout {ms}ms exceeded."), true),
+                        Err(CdpFail::Deadline) => {
+                            fail(format!("{name}: Timeout {ms}ms exceeded."), true)
+                        }
                         Err(e) => return Err(e),
                     }
                 }
             }
+        }
+        "record" => {
+            let seconds = args.get("seconds").and_then(Value::as_i64).unwrap_or(1);
+            let r = super::record::record(d, timing, seconds).await?;
+            let at: Vec<i64> = r.frames.iter().map(|(at, _)| *at).collect();
+            d.shots.extend(r.frames.into_iter().map(|(_, jpeg)| jpeg));
+            ok(
+                json!({"record": {"at": at, "ms": r.ms, "width": d.viewport.width, "height": d.viewport.height}}),
+            )
         }
         "consoleMessages" => {
             let from = d.console.len().saturating_sub(MAX_CONSOLE_ANSWERED);
@@ -1391,7 +1572,10 @@ pub(super) async fn page(
             ok(json!({"failed": last(&d.failed), "blocked": last(&d.blocked)}))
         }
         "screenshot" => {
-            let full = args.get("fullPage").and_then(Value::as_bool).unwrap_or(false);
+            let full = args
+                .get("fullPage")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let m = d.page_call("Page.getLayoutMetrics", json!({})).await?;
             let n = |v: &Value| v.as_f64().unwrap_or(0.0);
             let clip = if full {
@@ -1399,7 +1583,12 @@ pub(super) async fn page(
                 (0.0, 0.0, n(&c["width"]), n(&c["height"]))
             } else {
                 let v = &m["cssLayoutViewport"];
-                (n(&v["pageX"]), n(&v["pageY"]), n(&v["clientWidth"]), n(&v["clientHeight"]))
+                (
+                    n(&v["pageX"]),
+                    n(&v["pageY"]),
+                    n(&v["clientWidth"]),
+                    n(&v["clientHeight"]),
+                )
             };
             match d.capture(clip, full, timing.limits).await? {
                 Ok(()) => ok(json!({"screenshot": d.shots.len() - 1})),
@@ -1414,12 +1603,15 @@ pub(super) async fn page(
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
-    use crate::browser::fake::{ChromeLog, Dom, El, FakeBrowserSource, FakeChrome, PageModel, el, value};
+    use crate::browser::fake::{
+        ChromeLog, Dom, El, FakeBrowserSource, FakeChrome, PageModel, el, value,
+    };
     use crate::browser::live::{BrowserSessions, CallCtx, SessionCall, SessionTimes};
     use crate::browser::opts::Viewport;
     use crate::browser::serve::{Decision, Origin, Paused};
     use crate::browser::session::{RequestPolicy, SessionLimits, Start};
     use crate::browser::{BrowserError, Served};
+    use base64::Engine as _;
     use clax_bot_sandbox::CancelToken;
     use clax_core::ArtifactId;
     use clax_core::working::ManualClock;
@@ -1469,11 +1661,22 @@ mod tests {
     }
 
     async fn world_with(model: PageModel) -> World {
+        world_clocked(model, Arc::new(ManualClock::at("2026-11-19T10:00:00Z"))).await
+    }
+
+    async fn world_clocked(model: PageModel, clock: Arc<ManualClock>) -> World {
         let src = Arc::new(FakeBrowserSource::new());
         let model = std::sync::Mutex::new(Some(model));
-        src.opens(move || Ok(FakeChrome::page(model.lock().unwrap().take().expect("one open"))));
-        let clock = Arc::new(ManualClock::at("2026-11-19T10:00:00Z"));
-        let sessions = BrowserSessions::new(src.clone(), clock.clone(), SessionLimits { image_side: 2_000 });
+        src.opens(move || {
+            Ok(FakeChrome::page(
+                model.lock().unwrap().take().expect("one open"),
+            ))
+        });
+        let sessions = BrowserSessions::new(
+            src.clone(),
+            clock.clone(),
+            SessionLimits { image_side: 2_000 },
+        );
         sessions
             .open(
                 "run-1",
@@ -1502,7 +1705,10 @@ mod tests {
 
     impl World {
         fn ctx(&self) -> CallCtx {
-            CallCtx::new(self.clock.now() + chrono::Duration::seconds(60), CancelToken::new())
+            CallCtx::new(
+                self.clock.now() + chrono::Duration::seconds(60),
+                CancelToken::new(),
+            )
         }
 
         async fn act(&self, locator: Value, action: &str, args: Value) -> Answered {
@@ -1576,25 +1782,66 @@ mod tests {
             self.log
                 .sent("Runtime.evaluate")
                 .iter()
-                .filter(|c| c["params"]["expression"].as_str().is_some_and(|e| e.contains("clax:frame")))
+                .filter(|c| {
+                    c["params"]["expression"]
+                        .as_str()
+                        .is_some_and(|e| e.contains("clax:frame"))
+                })
                 .count()
         }
     }
 
     fn button(name: &str, x: f64) -> El {
-        el("button").text(name).rect(x, 0.0, 100.0, 40.0).role("button", name)
+        el("button")
+            .text(name)
+            .rect(x, 0.0, 100.0, 40.0)
+            .role("button", name)
     }
 
     fn form() -> Dom {
         Dom::new(vec![
-            el("h1").attr("class", "title").text("Hello world").rect(0.0, 0.0, 400.0, 40.0).role("heading", "Hello world").level(1),
+            el("h1")
+                .attr("class", "title")
+                .text("Hello world")
+                .rect(0.0, 0.0, 400.0, 40.0)
+                .role("heading", "Hello world")
+                .level(1),
             el("form")
                 .rect(0.0, 100.0, 600.0, 400.0)
-                .child(el("label").attr("for", "email").text("Email address").rect(0.0, 100.0, 100.0, 20.0))
-                .child(el("input").attr("id", "email").attr("placeholder", "you@example.com").rect(0.0, 120.0, 200.0, 20.0).role("textbox", "Email address").value(""))
-                .child(el("input").attr("aria-label", "Search").attr("placeholder", "Search the site").rect(0.0, 150.0, 200.0, 20.0).role("searchbox", "Search").value(""))
-                .child(el("button").attr("class", "primary").attr("data-testid", "go").text("Save draft").rect(0.0, 200.0, 100.0, 40.0).role("button", "Save draft")),
-            el("button").text("Save").rect(300.0, 0.0, 100.0, 40.0).role("button", "Save"),
+                .child(
+                    el("label")
+                        .attr("for", "email")
+                        .text("Email address")
+                        .rect(0.0, 100.0, 100.0, 20.0),
+                )
+                .child(
+                    el("input")
+                        .attr("id", "email")
+                        .attr("placeholder", "you@example.com")
+                        .rect(0.0, 120.0, 200.0, 20.0)
+                        .role("textbox", "Email address")
+                        .value(""),
+                )
+                .child(
+                    el("input")
+                        .attr("aria-label", "Search")
+                        .attr("placeholder", "Search the site")
+                        .rect(0.0, 150.0, 200.0, 20.0)
+                        .role("searchbox", "Search")
+                        .value(""),
+                )
+                .child(
+                    el("button")
+                        .attr("class", "primary")
+                        .attr("data-testid", "go")
+                        .text("Save draft")
+                        .rect(0.0, 200.0, 100.0, 40.0)
+                        .role("button", "Save draft"),
+                ),
+            el("button")
+                .text("Save")
+                .rect(300.0, 0.0, 100.0, 40.0)
+                .role("button", "Save"),
             el("ul")
                 .child(el("li").text("one apple").rect(0.0, 600.0, 100.0, 20.0))
                 .child(el("li").text("two pears").rect(0.0, 620.0, 100.0, 20.0)),
@@ -1626,42 +1873,96 @@ mod tests {
         ] {
             assert_eq!(w.count(locator.clone()).await, json!(n), "{locator}");
         }
-        let label = w.act(json!([{"label": "Email"}]), "getAttribute", json!({"name": "id"})).await;
+        let label = w
+            .act(
+                json!([{"label": "Email"}]),
+                "getAttribute",
+                json!({"name": "id"}),
+            )
+            .await;
         assert_eq!(label.value, json!("email"));
-        let last = w.act(json!([{"css": "li"}, {"nth": -1}]), "textContent", json!({})).await;
+        let last = w
+            .act(
+                json!([{"css": "li"}, {"nth": -1}]),
+                "textContent",
+                json!({}),
+            )
+            .await;
         assert_eq!(last.value, json!("two pears"));
         // A step that does not parse fails the call, naming it.
         let bad = w.act(json!([{"role": "buton"}]), "count", json!({})).await;
-        assert_eq!(bad.error.as_deref(), Some("locator.count: locator[0]: buton is not an ARIA role"));
+        assert_eq!(
+            bad.error.as_deref(),
+            Some("locator.count: locator[0]: buton is not an ARIA role")
+        );
     }
 
     #[tokio::test]
     async fn a_chain_scopes_its_next_step() {
         let w = world(form()).await;
-        assert_eq!(w.count(json!([{"css": "form"}, {"role": "button"}])).await, json!(1));
-        assert_eq!(w.count(json!([{"css": "form"}, {"text": "Hello"}])).await, json!(0));
-        let name = w.act(json!([{"css": "form"}, {"role": "button"}]), "innerText", json!({})).await;
+        assert_eq!(
+            w.count(json!([{"css": "form"}, {"role": "button"}])).await,
+            json!(1)
+        );
+        assert_eq!(
+            w.count(json!([{"css": "form"}, {"text": "Hello"}])).await,
+            json!(0)
+        );
+        let name = w
+            .act(
+                json!([{"css": "form"}, {"role": "button"}]),
+                "innerText",
+                json!({}),
+            )
+            .await;
         assert_eq!(name.value, json!("Save draft"));
     }
 
     #[tokio::test]
     async fn role_names_match_as_substrings_unless_exact() {
         let w = world(form()).await;
-        assert_eq!(w.count(json!([{"role": "button", "name": "save"}])).await, json!(2));
-        assert_eq!(w.count(json!([{"role": "button", "name": "Save", "exact": true}])).await, json!(1));
-        assert_eq!(w.count(json!([{"role": "button", "name": "save", "exact": true}])).await, json!(0));
-        assert_eq!(describe(&parse_locator(&json!([{"role": "button", "name": "Save", "exact": true}, {"nth": 0}])).unwrap()),
-            "getByRole('button', { name: 'Save', exact: true }).first()");
+        assert_eq!(
+            w.count(json!([{"role": "button", "name": "save"}])).await,
+            json!(2)
+        );
+        assert_eq!(
+            w.count(json!([{"role": "button", "name": "Save", "exact": true}]))
+                .await,
+            json!(1)
+        );
+        assert_eq!(
+            w.count(json!([{"role": "button", "name": "save", "exact": true}]))
+                .await,
+            json!(0)
+        );
+        assert_eq!(
+            describe(
+                &parse_locator(
+                    &json!([{"role": "button", "name": "Save", "exact": true}, {"nth": 0}])
+                )
+                .unwrap()
+            ),
+            "getByRole('button', { name: 'Save', exact: true }).first()"
+        );
     }
 
     #[tokio::test]
     async fn two_matches_are_a_strict_mode_violation() {
         let w = world(form()).await;
-        let a = w.act(json!([{"role": "button", "name": "Save"}]), "click", json!({})).await;
+        let a = w
+            .act(
+                json!([{"role": "button", "name": "Save"}]),
+                "click",
+                json!({}),
+            )
+            .await;
         assert!(!a.ok && !a.timeout, "{a:?}");
         let e = a.error.unwrap();
         assert!(e.starts_with("locator.click: Error: strict mode violation: getByRole('button', { name: 'Save' }) resolved to 2 elements:"), "{e}");
-        assert!(e.contains("1) <button class=\"primary\" data-testid=\"go\">Save draft</button>"), "{e}");
+        assert!(
+            e.contains("1) <button class=\"primary\" data-testid=\"go\">Save draft</button>"),
+            "{e}"
+        );
         assert!(e.contains("2) <button>Save</button>"), "{e}");
         assert!(w.mouse().is_empty(), "nothing was clicked");
         assert_eq!(w.frame_waits(), 0, "answered at once");
@@ -1670,8 +1971,13 @@ mod tests {
     }
 
     fn covered(states: usize) -> Dom {
-        let overlay = el("div").attr("class", "overlay").rect(0.0, 0.0, 1280.0, 800.0).z(10);
-        let mut s: Vec<Vec<El>> = (0..states).map(|_| vec![button("Book", 100.0), overlay.clone()]).collect();
+        let overlay = el("div")
+            .attr("class", "overlay")
+            .rect(0.0, 0.0, 1280.0, 800.0)
+            .z(10);
+        let mut s: Vec<Vec<El>> = (0..states)
+            .map(|_| vec![button("Book", 100.0), overlay.clone()])
+            .collect();
         s.push(vec![button("Book", 100.0)]);
         Dom::states(s)
     }
@@ -1679,7 +1985,13 @@ mod tests {
     #[tokio::test]
     async fn click_waits_until_the_cover_is_gone() {
         let w = world(covered(2)).await;
-        let a = w.act(json!([{"role": "button", "name": "Book"}]), "click", json!({})).await;
+        let a = w
+            .act(
+                json!([{"role": "button", "name": "Book"}]),
+                "click",
+                json!({}),
+            )
+            .await;
         assert!(a.ok, "{a:?}");
         assert!(w.frame_waits() >= 2);
         assert_eq!(
@@ -1691,13 +2003,24 @@ mod tests {
             ]
         );
         let pressed = &w.log.sent("Input.dispatchMouseEvent")[1]["params"];
-        assert_eq!((&pressed["button"], &pressed["clickCount"], &pressed["buttons"]), (&json!("left"), &json!(1), &json!(1)));
+        assert_eq!(
+            (
+                &pressed["button"],
+                &pressed["clickCount"],
+                &pressed["buttons"]
+            ),
+            (&json!("left"), &json!(1), &json!(1))
+        );
     }
 
     #[tokio::test]
     async fn click_times_out_naming_the_cover() {
         let w = world_with(model(covered(1_000_000)).frame_limit(5)).await;
-        let call = w.act(json!([{"role": "button", "name": "Book"}]), "click", json!({"timeout": 2000}));
+        let call = w.act(
+            json!([{"role": "button", "name": "Book"}]),
+            "click",
+            json!({"timeout": 2000}),
+        );
         futures::pin_mut!(call);
         let waits = |log: &ChromeLog| log.sent("Runtime.evaluate").len();
         let before = waits(&w.log);
@@ -1711,7 +2034,9 @@ mod tests {
         assert!(!a.ok && a.timeout, "{a:?}");
         assert_eq!(
             a.error.as_deref(),
-            Some("locator.click: Timeout 2000ms exceeded.\nCall log:\n  - waiting for getByRole('button', { name: 'Book' })\n  - element is covered by <div class=\"overlay\">")
+            Some(
+                "locator.click: Timeout 2000ms exceeded.\nCall log:\n  - waiting for getByRole('button', { name: 'Book' })\n  - element is covered by <div class=\"overlay\">"
+            )
         );
         assert!(w.mouse().is_empty());
     }
@@ -1728,67 +2053,154 @@ mod tests {
         let a = w.act(json!([{"role": "button"}]), "click", json!({})).await;
         assert!(a.ok, "{a:?}");
         assert_eq!(w.mouse()[0], ("mouseMoved".to_string(), 100.0, 20.0));
-        assert_eq!(w.log.sent("DOM.getBoxModel").len(), 4, "two measures an attempt, two attempts");
+        assert_eq!(
+            w.log.sent("DOM.getBoxModel").len(),
+            4,
+            "two measures an attempt, two attempts"
+        );
     }
 
     #[tokio::test]
     async fn fill_selects_and_inserts() {
         let w = world(form()).await;
-        let a = w.act(json!([{"label": "Email"}]), "fill", json!({"value": "ada@example.com"})).await;
+        let a = w
+            .act(
+                json!([{"label": "Email"}]),
+                "fill",
+                json!({"value": "ada@example.com"}),
+            )
+            .await;
         assert!(a.ok, "{a:?}");
         let methods: Vec<String> = w
             .log
             .methods()
             .into_iter()
-            .filter(|m| matches!(m.as_str(), "DOM.focus" | "Runtime.callFunctionOn" | "Input.insertText"))
+            .filter(|m| {
+                matches!(
+                    m.as_str(),
+                    "DOM.focus" | "Runtime.callFunctionOn" | "Input.insertText"
+                )
+            })
             .collect();
-        assert_eq!(methods, ["DOM.focus", "Runtime.callFunctionOn", "Input.insertText"]);
-        assert!(w.log.sent("Runtime.callFunctionOn")[0]["params"]["functionDeclaration"].as_str().unwrap().contains("this.select"));
-        assert_eq!(w.log.sent("Input.insertText")[0]["params"]["text"], "ada@example.com");
-        let v = w.act(json!([{"label": "Email"}]), "inputValue", json!({})).await;
+        assert_eq!(
+            methods,
+            ["DOM.focus", "Runtime.callFunctionOn", "Input.insertText"]
+        );
+        assert!(
+            w.log.sent("Runtime.callFunctionOn")[0]["params"]["functionDeclaration"]
+                .as_str()
+                .unwrap()
+                .contains("this.select")
+        );
+        assert_eq!(
+            w.log.sent("Input.insertText")[0]["params"]["text"],
+            "ada@example.com"
+        );
+        let v = w
+            .act(json!([{"label": "Email"}]), "inputValue", json!({}))
+            .await;
         assert_eq!(v.value, json!("ada@example.com"));
-        assert!(w.expect(Some(json!([{"label": "Email"}])), "toHaveValue", json!({"value": "ada@example.com"})).await.ok);
+        assert!(
+            w.expect(
+                Some(json!([{"label": "Email"}])),
+                "toHaveValue",
+                json!({"value": "ada@example.com"})
+            )
+            .await
+            .ok
+        );
         // A second fill replaces the value.
-        w.act(json!([{"label": "Email"}]), "fill", json!({"value": "x"})).await;
-        assert_eq!(w.act(json!([{"label": "Email"}]), "inputValue", json!({})).await.value, json!("x"));
+        w.act(json!([{"label": "Email"}]), "fill", json!({"value": "x"}))
+            .await;
+        assert_eq!(
+            w.act(json!([{"label": "Email"}]), "inputValue", json!({}))
+                .await
+                .value,
+            json!("x")
+        );
     }
 
     #[tokio::test]
     async fn count_and_is_visible_do_not_wait() {
         let w = world(form()).await;
         assert_eq!(w.count(json!([{"text": "Booked"}])).await, json!(0));
-        let v = w.act(json!([{"text": "Booked"}]), "isVisible", json!({})).await;
+        let v = w
+            .act(json!([{"text": "Booked"}]), "isVisible", json!({}))
+            .await;
         assert_eq!(v.value, json!(false));
-        let h = w.act(json!([{"text": "Booked"}]), "isHidden", json!({})).await;
+        let h = w
+            .act(json!([{"text": "Booked"}]), "isHidden", json!({}))
+            .await;
         assert_eq!(h.value, json!(true));
-        let all = w.act(json!([{"css": "li"}]), "allTextContents", json!({})).await;
+        let all = w
+            .act(json!([{"css": "li"}]), "allTextContents", json!({}))
+            .await;
         assert_eq!(all.value, json!(["one apple", "two pears"]));
         assert_eq!(w.frame_waits(), 0);
     }
 
     fn appears(after: usize) -> Dom {
         let mut s: Vec<Vec<El>> = (0..after).map(|_| vec![button("Book", 0.0)]).collect();
-        s.push(vec![button("Book", 0.0), el("p").text("Booked").rect(0.0, 100.0, 100.0, 20.0)]);
+        s.push(vec![
+            button("Book", 0.0),
+            el("p").text("Booked").rect(0.0, 100.0, 100.0, 20.0),
+        ]);
         Dom::states(s)
     }
 
     #[tokio::test]
     async fn expect_retries_in_the_browser_and_answers_once() {
         let w = world(appears(3)).await;
-        let a = w.expect(Some(json!([{"text": "Booked"}])), "toBeVisible", json!({})).await;
+        let a = w
+            .expect(Some(json!([{"text": "Booked"}])), "toBeVisible", json!({}))
+            .await;
         assert!(a.ok, "{a:?}");
         assert_eq!(w.log.sent("DOM.getDocument").len(), 4);
         assert_eq!(w.frame_waits(), 3);
-        assert!(w.expect(Some(json!([{"text": "Booked"}])), "toHaveText", json!({"expected": "Booked"})).await.ok);
-        assert!(w.expect(Some(json!([{"text": "Booked"}])), "toContainText", json!({"expected": "ook"})).await.ok);
-        assert!(w.expect(None, "toHaveTitle", json!({"title": "Hello"})).await.ok);
+        assert!(
+            w.expect(
+                Some(json!([{"text": "Booked"}])),
+                "toHaveText",
+                json!({"expected": "Booked"})
+            )
+            .await
+            .ok
+        );
+        assert!(
+            w.expect(
+                Some(json!([{"text": "Booked"}])),
+                "toContainText",
+                json!({"expected": "ook"})
+            )
+            .await
+            .ok
+        );
+        assert!(
+            w.expect(None, "toHaveTitle", json!({"title": "Hello"}))
+                .await
+                .ok
+        );
     }
 
     #[tokio::test]
     async fn expect_not_waits_for_the_condition_to_stop() {
-        let spinner = el("div").attr("class", "spinner").text("Loading").rect(0.0, 0.0, 20.0, 20.0);
-        let w = world(Dom::states(vec![vec![spinner.clone()], vec![spinner], vec![]])).await;
-        let a = w.expect(Some(json!([{"css": ".spinner"}])), "toBeVisible", json!({"not": true})).await;
+        let spinner = el("div")
+            .attr("class", "spinner")
+            .text("Loading")
+            .rect(0.0, 0.0, 20.0, 20.0);
+        let w = world(Dom::states(vec![
+            vec![spinner.clone()],
+            vec![spinner],
+            vec![],
+        ]))
+        .await;
+        let a = w
+            .expect(
+                Some(json!([{"css": ".spinner"}])),
+                "toBeVisible",
+                json!({"not": true}),
+            )
+            .await;
         assert!(a.ok, "{a:?}");
         assert_eq!(w.log.sent("DOM.getDocument").len(), 3);
     }
@@ -1796,10 +2208,20 @@ mod tests {
     #[tokio::test]
     async fn to_have_text_with_an_array_matches_in_order() {
         let w = world_with(model(form()).frame_limit(3)).await;
-        let ok = w.expect(Some(json!([{"css": "li"}])), "toHaveText", json!({"expected": ["one apple", {"regex": "pears$", "flags": ""}]})).await;
+        let ok = w
+            .expect(
+                Some(json!([{"css": "li"}])),
+                "toHaveText",
+                json!({"expected": ["one apple", {"regex": "pears$", "flags": ""}]}),
+            )
+            .await;
         assert!(ok.ok, "{ok:?}");
         let docs = w.log.sent("DOM.getDocument").len();
-        let call = w.expect(Some(json!([{"css": "li"}])), "toHaveText", json!({"expected": ["two pears", "one apple"], "timeout": 1000}));
+        let call = w.expect(
+            Some(json!([{"css": "li"}])),
+            "toHaveText",
+            json!({"expected": ["two pears", "one apple"], "timeout": 1000}),
+        );
         futures::pin_mut!(call);
         // Four checks: three waits in the page answered, the fourth not.
         tokio::select! {
@@ -1812,7 +2234,9 @@ mod tests {
         assert!(!a.ok && a.timeout);
         assert_eq!(
             a.error.as_deref(),
-            Some("expect(locator).toHaveText() failed\n\nLocator: locator('li')\nExpected: [\"two pears\", \"one apple\"]\nReceived: [\"one apple\", \"two pears\"]\nTimeout: 1000ms")
+            Some(
+                "expect(locator).toHaveText() failed\n\nLocator: locator('li')\nExpected: [\"two pears\", \"one apple\"]\nReceived: [\"one apple\", \"two pears\"]\nTimeout: 1000ms"
+            )
         );
     }
 
@@ -1827,20 +2251,41 @@ mod tests {
                 a = &mut call => panic!("answered: {a:?}"),
                 () = w.log.wait_sent("DOM.getDocument", docs + 1) => {}
             }
-            assert_eq!(*w.src.deadlines().last().unwrap(), w.clock.now() + chrono::Duration::seconds(60));
+            assert_eq!(
+                *w.src.deadlines().last().unwrap(),
+                w.clock.now() + chrono::Duration::seconds(60)
+            );
             w.clock.advance(60);
             w.src.fire_until(w.clock.now());
             let a = call.await;
-            assert!(a.error.unwrap().starts_with("locator.click: Timeout 60000ms exceeded."));
+            assert!(
+                a.error
+                    .unwrap()
+                    .starts_with("locator.click: Timeout 60000ms exceeded.")
+            );
         }
     }
 
     #[tokio::test]
     async fn evaluate_calls_the_source_with_its_arg() {
         let w = world_with(PageModel::new().dom(form()).evaluate(|p| {
-            if p["expression"].as_str().is_some_and(|e| e.starts_with("((x) => x.a * 2)(")) { value(json!(42)) } else { value(json!(true)) }
-        })).await;
-        let a = w.page("evaluate", json!({"source": "(x) => x.a * 2", "arg": {"a": 21}})).await.unwrap();
+            if p["expression"]
+                .as_str()
+                .is_some_and(|e| e.starts_with("((x) => x.a * 2)("))
+            {
+                value(json!(42))
+            } else {
+                value(json!(true))
+            }
+        }))
+        .await;
+        let a = w
+            .page(
+                "evaluate",
+                json!({"source": "(x) => x.a * 2", "arg": {"a": 21}}),
+            )
+            .await
+            .unwrap();
         assert_eq!(a.value, json!(42));
         assert_eq!(
             w.log.sent("Runtime.evaluate").last().unwrap()["params"],
@@ -1851,18 +2296,36 @@ mod tests {
     #[tokio::test]
     async fn a_regex_step_matches_in_the_page() {
         let w = world(form()).await;
-        assert_eq!(w.count(json!([{"text": {"regex": "^hello", "flags": "i"}}])).await, json!(1));
-        assert_eq!(w.count(json!([{"text": {"regex": "^hello", "flags": ""}}])).await, json!(0));
+        assert_eq!(
+            w.count(json!([{"text": {"regex": "^hello", "flags": "i"}}]))
+                .await,
+            json!(1)
+        );
+        assert_eq!(
+            w.count(json!([{"text": {"regex": "^hello", "flags": ""}}]))
+                .await,
+            json!(0)
+        );
         let tests: Vec<String> = w
             .log
             .sent("Runtime.evaluate")
             .iter()
-            .filter_map(|c| c["params"]["expression"].as_str().filter(|e| e.contains("clax:regex")).map(str::to_string))
+            .filter_map(|c| {
+                c["params"]["expression"]
+                    .as_str()
+                    .filter(|e| e.contains("clax:regex"))
+                    .map(str::to_string)
+            })
             .collect();
         assert_eq!(tests.len(), 2);
-        assert!(tests[0].contains("new RegExp(a[0], a[1])") && tests[0].contains("[\"^hello\",\"i\",["), "{}", tests[0]);
+        assert!(
+            tests[0].contains("new RegExp(a[0], a[1])") && tests[0].contains("[\"^hello\",\"i\",["),
+            "{}",
+            tests[0]
+        );
         assert_eq!(
-            w.count(json!([{"role": "button", "name": {"regex": "draft$", "flags": ""}}])).await,
+            w.count(json!([{"role": "button", "name": {"regex": "draft$", "flags": ""}}]))
+                .await,
             json!(1)
         );
     }
@@ -1870,14 +2333,20 @@ mod tests {
     #[tokio::test]
     async fn page_actions_send_their_input() {
         let w = world(form()).await;
-        w.page("keyboard.press", json!({"key": "Control+a"})).await.unwrap();
+        w.page("keyboard.press", json!({"key": "Control+a"}))
+            .await
+            .unwrap();
         let keys: Vec<(String, String, i64)> = w
             .log
             .sent("Input.dispatchKeyEvent")
             .iter()
             .map(|c| {
                 let p = &c["params"];
-                (p["type"].as_str().unwrap().into(), p["key"].as_str().unwrap().into(), p["modifiers"].as_i64().unwrap())
+                (
+                    p["type"].as_str().unwrap().into(),
+                    p["key"].as_str().unwrap().into(),
+                    p["modifiers"].as_i64().unwrap(),
+                )
             })
             .collect();
         assert_eq!(
@@ -1889,26 +2358,133 @@ mod tests {
                 ("keyUp".to_string(), "Control".to_string(), 0)
             ]
         );
-        assert!(w.log.sent("Input.dispatchKeyEvent")[1]["params"].get("text").is_none(), "a chord types nothing");
-        w.page("mouse.click", json!({"x": 10, "y": 20})).await.unwrap();
-        w.page("mouse.wheel", json!({"deltaX": 0, "deltaY": 300})).await.unwrap();
+        assert!(
+            w.log.sent("Input.dispatchKeyEvent")[1]["params"]
+                .get("text")
+                .is_none(),
+            "a chord types nothing"
+        );
+        w.page("mouse.click", json!({"x": 10, "y": 20}))
+            .await
+            .unwrap();
+        w.page("mouse.wheel", json!({"deltaX": 0, "deltaY": 300}))
+            .await
+            .unwrap();
         let wheel = w.log.sent("Input.dispatchMouseEvent").last().unwrap()["params"].clone();
-        assert_eq!(wheel, json!({"type": "mouseWheel", "x": 10.0, "y": 20.0, "deltaX": 0.0, "deltaY": 300.0}));
-        w.page("setViewportSize", json!({"size": {"width": 390, "height": 844}})).await.unwrap();
-        let vp = w.log.sent("Emulation.setDeviceMetricsOverride").last().unwrap()["params"].clone();
+        assert_eq!(
+            wheel,
+            json!({"type": "mouseWheel", "x": 10.0, "y": 20.0, "deltaX": 0.0, "deltaY": 300.0})
+        );
+        w.page(
+            "setViewportSize",
+            json!({"size": {"width": 390, "height": 844}}),
+        )
+        .await
+        .unwrap();
+        let vp = w
+            .log
+            .sent("Emulation.setDeviceMetricsOverride")
+            .last()
+            .unwrap()["params"]
+            .clone();
         assert_eq!((&vp["width"], &vp["height"]), (&json!(390), &json!(844)));
-        let bad = w.page("setViewportSize", json!({"size": {"width": 10, "height": 844}})).await.unwrap();
+        let bad = w
+            .page(
+                "setViewportSize",
+                json!({"size": {"width": 10, "height": 844}}),
+            )
+            .await
+            .unwrap();
         assert!(!bad.ok);
-        let shot = w.act(json!([{"testId": "go"}]), "screenshot", json!({})).await;
+        let shot = w
+            .act(json!([{"testId": "go"}]), "screenshot", json!({}))
+            .await;
         assert_eq!(shot.value, json!({"screenshot": 0}));
         assert_eq!(shot.shots.len(), 1);
         let clip = w.log.sent("Page.captureScreenshot").last().unwrap()["params"]["clip"].clone();
-        assert_eq!((&clip["x"], &clip["y"], &clip["width"]), (&json!(0.0), &json!(200.0), &json!(100.0)));
+        assert_eq!(
+            (&clip["x"], &clip["y"], &clip["width"]),
+            (&json!(0.0), &json!(200.0), &json!(100.0))
+        );
         let f = w.page("failedRequests", json!({})).await.unwrap();
         assert_eq!(f.value, json!({"failed": [], "blocked": []}));
-        assert_eq!(w.page("consoleMessages", json!({})).await.unwrap().value, json!([]));
-        assert_eq!(w.page("pageErrors", json!({})).await.unwrap().value, json!([]));
-        let check = w.expect(None, "toHaveURL", json!({"url": {"regex": "clax-test\\.invalid/$", "flags": ""}})).await;
+        assert_eq!(
+            w.page("consoleMessages", json!({})).await.unwrap().value,
+            json!([])
+        );
+        assert_eq!(
+            w.page("pageErrors", json!({})).await.unwrap().value,
+            json!([])
+        );
+        let check = w
+            .expect(
+                None,
+                "toHaveURL",
+                json!({"url": {"regex": "clax-test\\.invalid/$", "flags": ""}}),
+            )
+            .await;
         assert!(check.ok, "{check:?}");
+    }
+
+    /// A page that sends a screencast frame when the screencast starts
+    /// and after each acknowledgement, each 50 ms after the last.
+    fn screencasting(clock: Arc<ManualClock>) -> PageModel {
+        let mut n = 0;
+        model(form()).on(move |cmd: &Value| {
+            let method = cmd["method"].as_str().unwrap_or_default();
+            if method != "Page.startScreencast" && method != "Page.screencastFrameAck" {
+                return None;
+            }
+            if method == "Page.screencastFrameAck" {
+                clock.advance_millis(50);
+            }
+            n += 1;
+            let data = base64::engine::general_purpose::STANDARD.encode(format!("jpeg{n}"));
+            Some(vec![
+                crate::browser::fake::answer(cmd, json!({})),
+                crate::browser::fake::event(
+                    "Page.screencastFrame",
+                    json!({"data": data, "sessionId": n, "metadata": {}}),
+                    Some("S"),
+                ),
+            ])
+        })
+    }
+
+    #[tokio::test]
+    async fn every_frame_is_acknowledged() {
+        let clock = Arc::new(ManualClock::at("2026-11-19T10:00:00Z"));
+        let w = world_clocked(screencasting(clock.clone()), clock).await;
+        let a = w.page("record", json!({"seconds": 1})).await.unwrap();
+        assert!(a.ok, "{a:?}");
+        let acks = w.log.sent("Page.screencastFrameAck");
+        let sent = w.log.sent("Page.startScreencast");
+        assert_eq!(
+            sent[0]["params"],
+            json!({"format": "jpeg", "quality": 70, "maxWidth": 2000, "maxHeight": 2000})
+        );
+        // A frame every 50 ms for a second, and the one at its end: each
+        // acknowledged, by its own ID.
+        assert_eq!(acks.len(), 21);
+        for (i, ack) in acks.iter().enumerate() {
+            assert_eq!(ack["params"]["sessionId"], json!(i + 1));
+        }
+        assert_eq!(w.log.sent("Page.stopScreencast").len(), 1);
+        // Kept at most every 125 ms: at 0, 150, 300, ... 900.
+        let r = &a.value["record"];
+        assert_eq!(r["at"], json!([0, 150, 300, 450, 600, 750, 900]));
+        assert_eq!(a.shots.len(), 7);
+        assert_eq!(a.shots[0], b"jpeg1");
+        assert_eq!(r["ms"], 1000);
+    }
+
+    #[tokio::test]
+    async fn ten_seconds_is_the_most() {
+        let clock = Arc::new(ManualClock::at("2026-11-19T10:00:00Z"));
+        let w = world_clocked(screencasting(clock.clone()), clock).await;
+        let a = w.page("record", json!({"seconds": 60})).await.unwrap();
+        assert!(a.ok, "{a:?}");
+        assert_eq!(a.value["record"]["ms"], 10_000);
+        assert_eq!(w.log.sent("Page.screencastFrameAck").len(), 201);
     }
 }

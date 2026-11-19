@@ -1497,6 +1497,12 @@ pub fn layer_calls() -> Vec<LayerCall> {
         ),
         page("pageErrors", "page.pageErrors()", "pageErrors", json!({})),
         page(
+            "record",
+            "page.record({ seconds: 2 })",
+            "record",
+            json!({"seconds": 2}),
+        ),
+        page(
             "failedRequests",
             "page.failedRequests()",
             "failedRequests",
@@ -1958,6 +1964,22 @@ return 'done';",
                 "undefined"
             ])),
         )),
+        layered(Case {
+            calls: vec![
+                open(),
+                call(
+                    "browser.page",
+                    json!(["s1", "record", {"seconds": 3}]),
+                    answered(json!({"frames": [], "clip": "c1", "ms": 3000, "count": 0})),
+                ),
+            ],
+            ..case(
+                "page_record_makes_one_call",
+                "const page = await clax.browser.open({ url: 'https://x.test/' });
+return (await page.record({ seconds: 3 })).clip;",
+                ok(json!("c1")),
+            )
+        }),
         layered(Case {
             calls: vec![
                 open(),

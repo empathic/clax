@@ -149,7 +149,7 @@
   };
   defineProperty(globalThis, "console", { value: consoleObject, writable: true, configurable: true });
 
-  // The browser layer (spec §6.9): rows as clax-bot's browser/layer.rs.
+  // Browser layer (spec §6.9), rows as clax-bot's browser/layer.rs
   const table =
   // browser-layer-table:begin
   [
@@ -167,6 +167,7 @@
   ["Page","consoleMessages","page","consoleMessages",[]],
   ["Page","pageErrors","page","pageErrors",[]],
   ["Page","failedRequests","page","failedRequests",[]],
+  ["Page","record","page","record",["opts"]],
   ["Page","runTests","page","runTests",["paths"]],
   ["Page","close","close",null,[]],
   ["Keyboard","down","page","keyboard.down",["key"]],
