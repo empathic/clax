@@ -279,7 +279,7 @@ async fn a_thread_run_on_a_joined_artifact_calls_its_host_and_gets_its_answer() 
     let web = d.ts.store.run(&run).unwrap().unwrap().web;
     assert_eq!(
         bindings.of("clax").unwrap(),
-        &clax_bot::joins::clax_binding(&aid, &web)
+        &clax_bot::joins::clax_binding(&aid, &web, "")
     );
 
     let ticking = {
@@ -482,7 +482,10 @@ async fn with_its_host_away_a_join_binds_nothing() {
     d.clock.advance(20);
     let run = d.send(&aid, &tid).await;
     let row = d.ts.store.run(&run).unwrap().unwrap();
-    assert_eq!(d.bindings(&run), Bindings::clax(&aid, &row.web));
+    assert_eq!(
+        d.bindings(&run),
+        Bindings::clax(&aid, &row.web, &row.browser)
+    );
     d.driver.run_until_idle(BUDGET).await;
     let system = &systems(&fake)[0];
     assert!(!system.contains("desk"), "{system}");
@@ -724,7 +727,7 @@ async fn a_join_binds_into_its_registrants_runs_alone() {
     };
     let without = clax_http::bot::Bot::default();
     let as_sent = |bot: &clax_http::bot::Bot, sender: &Sender, aid: &str| {
-        clax_server::routes::bot_joins::joined_bindings(&ts.store, bot, sender, aid, "", &[])
+        clax_server::routes::bot_joins::joined_bindings(&ts.store, bot, sender, aid, "", "", &[])
             .unwrap()
     };
     let by = |person: &str| Sender {
@@ -768,7 +771,7 @@ async fn a_join_binds_into_no_run_whose_threads_hold_anyone_elses_comment() {
     };
     let unjoined = |run: &str, aid: &str| {
         let web = d.ts.store.run(run).unwrap().unwrap().web;
-        assert_eq!(d.bindings(run), Bindings::clax(aid, &web), "{run}");
+        assert_eq!(d.bindings(run), Bindings::clax(aid, &web, ""), "{run}");
     };
     // Two threads ClaxBot answered before any join.
     let (answered, answered_tid) = d.page().await;
@@ -1022,7 +1025,7 @@ fn joins_a_run_cannot_take_are_logged_and_the_run_is_made_without_them() {
         )
     };
     let many: Vec<StoredBinding> = (0..9).map(|n| binding(&format!("s{n}"), n)).collect();
-    let made = clax_bot::joins::bindings_with("a1", "", many).expect("seven are bound");
+    let made = clax_bot::joins::bindings_with("a1", "", "", many).expect("seven are bound");
     assert_eq!(made.all().len(), 8);
     let text = log.text();
     assert!(
@@ -1030,7 +1033,7 @@ fn joins_a_run_cannot_take_are_logged_and_the_run_is_made_without_them() {
         "{text}"
     );
     let twice = vec![binding("desk", 1), binding("desk", 2)];
-    assert_eq!(clax_bot::joins::bindings_with("a1", "", twice), None);
+    assert_eq!(clax_bot::joins::bindings_with("a1", "", "", twice), None);
     let text = log.text();
     assert!(
         text.contains("the joins on a1 make no bindings") && text.contains("with no join"),

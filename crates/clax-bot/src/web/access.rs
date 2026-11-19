@@ -626,6 +626,7 @@ mod tests {
                     base_version: 1,
                     agent_grant: None,
                     web: shape.as_str().into(),
+                    browser: String::new(),
                 },
             )
             .unwrap();
@@ -733,6 +734,7 @@ mod tests {
                     base_version: 1,
                     agent_grant: None,
                     web: "search,fetch".into(),
+                    browser: String::new(),
                 },
             )
             .unwrap();

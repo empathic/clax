@@ -79,6 +79,8 @@ pub enum Unit {
     Run,
     /// A thousand requests (web search and web fetch).
     Kreq,
+    /// An hour of a browser open (browser tests), counted in milliseconds.
+    BrowserHour,
 }
 
 impl Unit {
@@ -93,6 +95,7 @@ impl Unit {
         Unit::GbMonth,
         Unit::Run,
         Unit::Kreq,
+        Unit::BrowserHour,
     ];
 
     /// The unit's stored name.
@@ -107,6 +110,7 @@ impl Unit {
             Unit::GbMonth => "gb_month",
             Unit::Run => "run",
             Unit::Kreq => "kreq",
+            Unit::BrowserHour => "browser_h",
         }
     }
 
@@ -117,7 +121,7 @@ impl Unit {
 
     /// How many base quantities one line unit is: 10^6 tokens, 1024 MiB ×
     /// 1000 ms, 10^6 requests, 2^30 bytes × 30 days of seconds, one run,
-    /// 10^3 requests.
+    /// 10^3 requests, 3,600,000 ms of a browser open.
     pub fn base(self) -> i64 {
         match self {
             Unit::MtokInput
@@ -129,6 +133,7 @@ impl Unit {
             Unit::GbMonth => (1 << 30) * 30 * 86_400,
             Unit::Run => 1,
             Unit::Kreq => 1_000,
+            Unit::BrowserHour => 3_600_000,
         }
     }
 
@@ -812,6 +817,13 @@ pub const LINE_TOOLPATH_STORAGE: &str = "toolpath.storage";
 pub const LINE_HARNESS_FEE: &str = "harness.run";
 /// The web fetch line's ID.
 pub const LINE_WEB_FETCH: &str = "web.fetch";
+/// The browser time line's ID: a browser test's measured time, in
+/// milliseconds of a [`Unit::BrowserHour`].
+pub const LINE_BROWSER_TIME: &str = "browser.time";
+
+/// The browser time line's list price in micro-USD per browser hour
+/// (Cloudflare Browser Run, $0.09).
+const BROWSER_HOUR_COST_MICRO_USD: i64 = 90_000;
 
 /// The web search line of search provider `provider`.
 pub fn web_search_line(provider: &str) -> String {
@@ -993,6 +1005,29 @@ pub(crate) fn seed_web_lines(tx: &Transaction<'_>) -> Result<()> {
         INFRA_MARGIN_BP,
         "estimate: Worker subrequest and Durable Object time per fetch (set by the admin)",
     ])?;
+    Ok(())
+}
+
+/// Seeds the browser line (migration 67's Rust step): [`LINE_BROWSER_TIME`]
+/// at Browser Run's list price per browser hour, at the infrastructure
+/// margin, charged on every key (the instance's Cloudflare account pays
+/// whatever model key the person uses). A line that exists (an admin
+/// changed it) is left as it is.
+pub(crate) fn seed_browser_line(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO cost_lines (id, label, unit, cost_micro_usd, margin_bp,
+            fixed_credits_milli, applies, source, model, updated_by, updated_at)
+         VALUES (?1, 'Browser time', ?2, ?3, ?4, NULL, ?5, ?6, NULL, 'migration',
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        params![
+            LINE_BROWSER_TIME,
+            Unit::BrowserHour.as_str(),
+            BROWSER_HOUR_COST_MICRO_USD,
+            INFRA_MARGIN_BP,
+            Applies::Always.as_str(),
+            "Cloudflare Browser Run list price, $0.09 per browser hour (check)",
+        ],
+    )?;
     Ok(())
 }
 
@@ -2551,6 +2586,7 @@ mod tests {
                 base_version: 1,
                 agent_grant: None,
                 web: String::new(),
+                browser: String::new(),
             },
         )
         .unwrap();
@@ -2585,6 +2621,7 @@ mod tests {
                     base_version: 1,
                     agent_grant: None,
                     web: String::new(),
+                    browser: String::new(),
                 },
             )
             .unwrap();
@@ -2882,6 +2919,7 @@ mod tests {
                 base_version: 1,
                 agent_grant: None,
                 web: String::new(),
+                browser: String::new(),
             },
         )
         .unwrap();
@@ -2934,8 +2972,8 @@ mod tests {
         }
         assert_eq!(
             lines.len(),
-            4 * 4 + 4 + 4,
-            "model lines, infrastructure, web"
+            4 * 4 + 4 + 4 + 1,
+            "model lines, infrastructure, web, browser"
         );
         assert_eq!(
             st.cost_line("claude-sonnet-5-5.cache_write")
@@ -3327,5 +3365,29 @@ mod tests {
     fn kreq_round_trips_and_has_base_1000() {
         assert_eq!(Unit::parse("kreq"), Some(Unit::Kreq));
         assert_eq!(Unit::Kreq.base(), 1_000);
+    }
+
+    #[test]
+    fn migration_67_seeds_the_browser_line() {
+        let (_d, st) = store();
+        let l = st.cost_line(LINE_BROWSER_TIME).unwrap().unwrap();
+        assert_eq!(
+            (l.unit, l.cost_micro_usd, l.applies, l.margin_bp),
+            (Unit::BrowserHour, 90_000, Applies::Always, INFRA_MARGIN_BP)
+        );
+        assert_eq!(l.fixed_credits_milli, None);
+        assert_eq!(
+            l.source,
+            "Cloudflare Browser Run list price, $0.09 per browser hour (check)"
+        );
+    }
+
+    #[test]
+    fn browser_h_round_trips_with_base_3_600_000() {
+        assert_eq!(Unit::parse("browser_h"), Some(Unit::BrowserHour));
+        assert_eq!(Unit::BrowserHour.as_str(), "browser_h");
+        assert_eq!(Unit::BrowserHour.base(), 3_600_000);
+        assert!(Unit::ALL.contains(&Unit::BrowserHour));
+        assert!(!Unit::BrowserHour.is_tokens());
     }
 }

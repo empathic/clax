@@ -367,6 +367,17 @@ fn body_class(kind: &str, field: &str) -> Class {
             | "code" | "stored",
         ) => Safe,
         ("bot.web", "query" | "url" | "response") => Text,
+        // A browser call (spec 2026-11-19-claxbot-browser §11): the version
+        // and path of the artifact it loaded, the viewport (a preset's name
+        // or `<w>x<h>`), its time, outcome, Browser Run's session ID, its
+        // charge and error code are codes and numbers; a browsed URL is the
+        // model's or a page's text.
+        (
+            "bot.browser",
+            "run" | "step" | "op" | "version" | "path" | "viewport" | "ms" | "passed" | "session"
+            | "credits_milli" | "ok" | "code",
+        ) => Safe,
+        ("bot.browser", "url") => Text,
         ("bot.run_end", "run" | "outcome" | "credits_milli") => Safe,
         ("bot.run_end", "reason") => Text,
         ("bot.cancel", "run" | "by") => Safe,
@@ -398,6 +409,8 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("admin.settings", "fields") => Safe,
         // A person's own choice of the web tools: their key and a flag.
         ("me.web", "person" | "value") => Safe,
+        // A person's own choice of browser use: their key and a flag.
+        ("me.browser", "person" | "value") => Safe,
         // External artifacts and report queues (spec
         // 2026-10-27-clax-sdk-design §6.6): an app's opaque IDs, titles,
         // revisions and metadata are its users' text; a page URL can carry

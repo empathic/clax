@@ -637,8 +637,9 @@ impl Desk {
                 .expect("the join binds an operation")
             })
             .collect();
-        let bindings = clax_bot::joins::bindings_with(&row.artifact_id, &row.web, joined)
-            .expect("bindings of version 2");
+        let bindings =
+            clax_bot::joins::bindings_with(&row.artifact_id, &row.web, &row.browser, joined)
+                .expect("bindings of version 2");
         set_row(
             &self.env,
             &run,

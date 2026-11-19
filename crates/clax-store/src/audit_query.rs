@@ -537,6 +537,7 @@ mod tests {
                     base_version: 1,
                     agent_grant: None,
                     web: String::new(),
+                    browser: String::new(),
                 },
             )
             .unwrap();

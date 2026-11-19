@@ -5,7 +5,9 @@
 //!   person unless they turn them off, whatever the instance's
 //!   `web.*.enabled` settings say; the instance settings still decide
 //!   whether the tools exist at all. The choice is a row of
-//!   `bot_person_prefs`, kept per person key.
+//!   `bot_person_prefs`, kept per person key. The same row keeps their
+//!   choice of browser use (migration 67, spec 2026-11-19-claxbot-browser
+//!   §10.2), a switch of its own beside the web one.
 //! - The Spend transaction (§4.2, §7.2): a web call's journal entry, its
 //!   usage row and (for a fetch) its page commit together, before the
 //!   script sees the answer ([`Store::spend_journaled`]). The usage row is
@@ -176,6 +178,57 @@ impl Store {
                 params![person, on, self.now()],
             )?;
             let rec = AuditRecord::new(AuditKind::MeWeb, self.now())
+                .with("person", person)
+                .with("value", on);
+            self.record_audit(tx, ctx, rec)?;
+            Ok(true)
+        })
+    }
+
+    /// Whether `person` allows ClaxBot a browser (spec
+    /// 2026-11-19-claxbot-browser §10.2): `true` when they never chose.
+    /// Their web choice ([`Store::web_choice`]) is a separate switch.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn browser_choice(&self, person: &str) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(
+                c.prepare_cached("SELECT browser FROM bot_person_prefs WHERE person = ?1")?
+                    .query_row(params![person], |r| r.get::<_, bool>(0))
+                    .optional()?
+                    .unwrap_or(true),
+            )
+        })
+    }
+
+    /// Sets whether `person` allows ClaxBot a browser, as `ctx`; a change
+    /// is recorded as `me.browser {person, value}`. The person's web choice
+    /// is left as it is (on, for a person who never chose). Returns whether
+    /// the choice changed.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn set_browser_choice(&self, ctx: &AuditCtx, person: &str, on: bool) -> Result<bool> {
+        self.with_tx(|tx| {
+            let was: bool = tx
+                .query_row(
+                    "SELECT browser FROM bot_person_prefs WHERE person = ?1",
+                    params![person],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(true);
+            if was == on {
+                return Ok(false);
+            }
+            tx.execute(
+                "INSERT INTO bot_person_prefs (person, web, browser, set_at) VALUES (?1, 1, ?2, ?3)
+                 ON CONFLICT (person) DO UPDATE
+                    SET browser = excluded.browser, set_at = excluded.set_at",
+                params![person, on, self.now()],
+            )?;
+            let rec = AuditRecord::new(AuditKind::MeBrowser, self.now())
                 .with("person", person)
                 .with("value", on);
             self.record_audit(tx, ctx, rec)?;
@@ -398,6 +451,7 @@ mod tests {
                     base_version: 1,
                     agent_grant: None,
                     web: "search,fetch".into(),
+                    browser: String::new(),
                 },
             )
             .unwrap();
@@ -791,5 +845,38 @@ mod tests {
         assert!(st.set_web_choice(DAEMON, OWNER, true).unwrap());
         assert!(st.web_choice(OWNER).unwrap());
         assert!(st.web_choice("someone-else").unwrap());
+    }
+
+    #[test]
+    fn a_person_turns_the_browser_off_and_back() {
+        let (_d, st) = store();
+        assert!(st.browser_choice(OWNER).unwrap());
+        assert!(!st.set_browser_choice(DAEMON, OWNER, true).unwrap());
+        assert!(st.set_browser_choice(DAEMON, OWNER, false).unwrap());
+        assert!(!st.browser_choice(OWNER).unwrap());
+        assert!(st.web_choice(OWNER).unwrap(), "the web choice is its own");
+        assert!(!st.set_browser_choice(DAEMON, OWNER, false).unwrap());
+        let events: Vec<String> = st
+            .events_after(0, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "me.browser")
+            .map(|e| e.body)
+            .collect();
+        assert_eq!(events.len(), 1, "one change, one event");
+        assert!(events[0].contains("\"value\":false"), "{}", events[0]);
+        assert!(events[0].contains(OWNER), "{}", events[0]);
+        assert!(st.set_web_choice(DAEMON, OWNER, false).unwrap());
+        assert!(
+            !st.browser_choice(OWNER).unwrap(),
+            "the web choice keeps it"
+        );
+        assert!(st.set_browser_choice(DAEMON, OWNER, true).unwrap());
+        assert!(st.browser_choice(OWNER).unwrap());
+        assert!(
+            !st.web_choice(OWNER).unwrap(),
+            "the browser choice keeps it"
+        );
+        assert!(st.browser_choice("someone-else").unwrap());
     }
 }

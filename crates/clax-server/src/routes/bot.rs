@@ -994,6 +994,7 @@ pub fn start_run(
             .shape()
             .as_str()
             .to_string(),
+        browser: String::new(),
     };
     // The surfaces whose hosts joined the artifact and are connected now
     // are bound too (`super::bot_joins`); with none, the run is made as
@@ -1004,6 +1005,7 @@ pub fn start_run(
         sender,
         aid.as_str(),
         &new.web,
+        &new.browser,
         &new.thread_ids,
     )?;
     match joined {

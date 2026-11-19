@@ -23,7 +23,7 @@ fn desk() -> Definition {
 /// run is made with it ([`crate::joins::clax_binding`]), on web grant
 /// `web`.
 fn clax(web: &str) -> Binding {
-    let stored = crate::joins::clax_binding("A1", web);
+    let stored = crate::joins::clax_binding("A1", web, "");
     Binding {
         surface: CLAX_SURFACE.into(),
         hash: None,

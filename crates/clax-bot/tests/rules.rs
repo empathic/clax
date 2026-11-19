@@ -113,6 +113,7 @@ async fn the_fake_host_passes_the_host_conformance_suite() {
                     base_version: 1,
                     agent_grant: None,
                     web: String::new(),
+                    browser: String::new(),
                 },
             )
             .unwrap()

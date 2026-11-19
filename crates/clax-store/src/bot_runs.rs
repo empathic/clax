@@ -248,6 +248,10 @@ pub struct Run {
     /// tools), `"search"`, `"fetch"` or `"search,fetch"`. Written when the
     /// run is made and never changed.
     pub web: String,
+    /// The shape of the run's browser grant when it was made: `""` (no
+    /// browser), `"test"`, `"browse"` or `"test,browse"`. Written when the
+    /// run is made and never changed.
+    pub browser: String,
 }
 
 /// What `bot_runs` keeps of a run's parking, beside [`Run`]
@@ -364,6 +368,8 @@ pub struct NewRun {
     pub agent_grant: Option<String>,
     /// The shape of its web grant ([`Run::web`]).
     pub web: String,
+    /// The shape of its browser grant ([`Run::browser`]).
+    pub browser: String,
 }
 
 /// The surface every run made so far is of: Clax's own, which declares
@@ -583,7 +589,9 @@ impl StoredBinding {
     /// beyond those every run of the surface has, as the surface names
     /// them, without the surface's name. For `clax` these are the web
     /// operations the run was made with (`web.search`, `web.fetch`, in
-    /// that order: what [`Run::web`] records). An empty list is a run
+    /// that order: what [`Run::web`] records), then its browser operations
+    /// (`browser.test`, `browser.browse`, in that order: what
+    /// [`Run::browser`] records). An empty list is a run
     /// with the surface's standing operations and no more, not a run
     /// with none. Empty for a binding of version 2, which says its
     /// operations whole ([`StoredBinding::operations`]).
@@ -653,15 +661,23 @@ fn names(value: &Value) -> Option<Vec<String>> {
 impl Bindings {
     /// The bindings of a `clax` run on artifact `artifact_id` whose web
     /// grant has the shape `web` ([`Run::web`]: `search` and `fetch`,
-    /// comma-separated; any other part names no operation): version 1.
+    /// comma-separated) and whose browser grant has the shape `browser`
+    /// ([`Run::browser`]: `test` and `browse`, comma-separated); any other
+    /// part names no operation: version 1. The web operations come first,
+    /// then the browser's, each in a fixed order.
     #[must_use]
-    pub fn clax(artifact_id: &str, web: &str) -> Bindings {
-        let has = |part: &str| web.split(',').any(|p| p == part);
-        let granted = [("search", "web.search"), ("fetch", "web.fetch")]
-            .into_iter()
-            .filter(|(part, _)| has(part))
-            .map(|(_, op)| op.to_string())
-            .collect();
+    pub fn clax(artifact_id: &str, web: &str, browser: &str) -> Bindings {
+        let has = |shape: &str, part: &str| shape.split(',').any(|p| p == part);
+        let granted = [
+            (web, "search", "web.search"),
+            (web, "fetch", "web.fetch"),
+            (browser, "test", "browser.test"),
+            (browser, "browse", "browser.browse"),
+        ]
+        .into_iter()
+        .filter(|(shape, part, _)| has(shape, part))
+        .map(|(_, _, op)| op.to_string())
+        .collect();
         Bindings {
             v: BINDINGS_VERSION,
             bindings: vec![StoredBinding {
@@ -940,7 +956,7 @@ impl NewRun {
     /// on its artifact.
     #[must_use]
     pub fn bindings(&self) -> Bindings {
-        Bindings::clax(&self.artifact_id, &self.web)
+        Bindings::clax(&self.artifact_id, &self.web, &self.browser)
     }
 
     /// The run's request (`bot_runs.request_json`).
@@ -1004,7 +1020,7 @@ pub struct Committed {
 
 const RUN_COLS: &str = "id, artifact_id, person, request, thread_ids_json, status, reason, model,
     key_source, base_version, credits_milli, claimed_by, claimed_at, created_at, updated_at, ended_at,
-    agent_grant, due_at, web";
+    agent_grant, due_at, web, browser";
 
 /// Column `i` of a `bot_runs` row, `column`, as the `T` its text names.
 /// A value `parse` does not know is an error naming the column and the
@@ -1093,6 +1109,7 @@ fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
         agent_grant: r.get(16)?,
         due_at: r.get(17)?,
         web: s(18)?,
+        browser: s(19)?,
     })
 }
 
@@ -1117,6 +1134,7 @@ fn as_made(
         base_version: run.base_version,
         agent_grant: run.agent_grant.clone(),
         web: run.web.clone(),
+        browser: run.browser.clone(),
     };
     RunAsMade {
         kind: kind.unwrap_or_else(|| before_64().kind()),
@@ -1179,6 +1197,19 @@ const STEP_COLS: &str =
 pub(crate) fn run_in(c: &Connection, id: &str) -> Result<Option<Run>> {
     Ok(
         c.prepare_cached(&format!("SELECT {RUN_COLS} FROM bot_runs WHERE id = ?1"))?
+            .query_row(params![id], row_to_run)
+            .optional()?,
+    )
+}
+
+/// [`run_in`] on a database migrated only as far as migrations 63 to 66
+/// leave `bot_runs`, before migration 67 adds `bot_runs.browser`: the run
+/// reads with no browser grant, as migration 67's default gives it.
+#[cfg(test)]
+pub(crate) fn run_before_browser_in(c: &Connection, id: &str) -> Result<Option<Run>> {
+    let cols = RUN_COLS.replace(", web, browser", ", web, '' AS browser");
+    Ok(
+        c.prepare(&format!("SELECT {cols} FROM bot_runs WHERE id = ?1"))?
             .query_row(params![id], row_to_run)
             .optional()?,
     )
@@ -1795,9 +1826,9 @@ impl Store {
             tx.execute(
                 "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
                     model, key_source, base_version, created_at, updated_at, agent_grant, web,
-                    kind, bindings_json, request_json)
+                    kind, bindings_json, request_json, browser)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?9, ?10, ?11,
-                    ?12, ?13, ?14)",
+                    ?12, ?13, ?14, ?15)",
                 params![
                     id,
                     new.artifact_id,
@@ -1812,7 +1843,8 @@ impl Store {
                     new.web,
                     new.kind(),
                     bindings.map_or_else(|| new.bindings().to_json(), Bindings::to_json),
-                    serde_json::to_string(&new.clax_request()).expect("serialisable IDs")
+                    serde_json::to_string(&new.clax_request()).expect("serialisable IDs"),
+                    new.browser
                 ],
             )?;
             let mut rec = AuditRecord::new(AuditKind::BotRunStart, now)
@@ -1898,7 +1930,7 @@ impl Store {
             ))?
             .query_row(params![id], |r| {
                 let run = row_to_run(r)?;
-                let made = as_made(&run, r.get(19)?, r.get(20)?, r.get(21)?);
+                let made = as_made(&run, r.get(20)?, r.get(21)?, r.get(22)?);
                 Ok((run, made))
             })
             .optional()?)
@@ -1920,7 +1952,7 @@ impl Store {
                 ))?
                 .query_row(params![id], |r| {
                     let run = row_to_run(r)?;
-                    let made = as_made(&run, r.get(19)?, r.get(20)?, r.get(21)?);
+                    let made = as_made(&run, r.get(20)?, r.get(21)?, r.get(22)?);
                     Ok((run, made))
                 })
                 .optional()?;
@@ -3628,6 +3660,7 @@ mod tests {
                 base_version: 1,
                 agent_grant: None,
                 web: String::new(),
+                browser: String::new(),
             },
         )
     }
@@ -3753,6 +3786,50 @@ mod tests {
     }
 
     #[test]
+    fn a_run_keeps_its_browser_shape() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None).to_string();
+        let made = st
+            .create_run_exclusive(
+                &bot(),
+                NewRun {
+                    artifact_id: aid.clone(),
+                    person: OWNER.into(),
+                    request: RequestKind::Thread,
+                    thread_ids: vec!["t1".into()],
+                    model: "claude-sonnet-5-5".into(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                    web: String::new(),
+                    browser: "test".into(),
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let (run, as_made) = st.run_as_made(&made.id).unwrap().unwrap();
+        assert_eq!(run.browser, "test");
+        let bindings = as_made.bindings().unwrap();
+        assert_eq!(bindings.bindings[0].granted(), ["browser.test"]);
+        assert_eq!(kept(&st, &run.id).1, bindings, "kept as made");
+        // The browser's operations follow the web's, in a fixed order,
+        // whatever order the shape names them in.
+        assert_eq!(
+            Bindings::clax(&aid, "fetch,search", "browse,test").bindings[0].granted(),
+            ["web.search", "web.fetch", "browser.test", "browser.browse"]
+        );
+        assert_eq!(
+            Bindings::clax(&aid, "", "browse").bindings[0].granted(),
+            ["browser.browse"]
+        );
+        assert!(
+            Bindings::clax(&aid, "", "Test,web").bindings[0]
+                .granted()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn a_new_run_keeps_its_kind_its_clax_binding_and_its_request() {
         let (_d, st) = store();
         let aid = artifact(&st, None).to_string();
@@ -3769,6 +3846,7 @@ mod tests {
                     base_version: 1,
                     agent_grant: None,
                     web: web.into(),
+                    browser: String::new(),
                 },
             )
             .unwrap()
@@ -4083,7 +4161,7 @@ mod tests {
 
     #[test]
     fn bindings_are_read_only_at_the_version_this_build_knows() {
-        let made = Bindings::clax("7q3k9mzx2b4t", "search,fetch");
+        let made = Bindings::clax("7q3k9mzx2b4t", "search,fetch", "");
         let text = made.to_json();
         assert_eq!(
             text,
@@ -4104,7 +4182,7 @@ mod tests {
         assert!(read.of("shell").is_none());
         assert_eq!(read.all(), std::slice::from_ref(clax));
         assert!(
-            Bindings::clax("a", "fetch,other,Search")
+            Bindings::clax("a", "fetch,other,Search", "")
                 .of("clax")
                 .unwrap()
                 .granted()
@@ -4310,6 +4388,7 @@ mod tests {
                 base_version: 1,
                 agent_grant: None,
                 web: String::new(),
+                browser: String::new(),
             },
         );
         assert!(matches!(again, Err(CoreError::NotFound)), "{again:?}");
@@ -4607,6 +4686,7 @@ mod tests {
             base_version: 1,
             agent_grant: None,
             web: String::new(),
+            browser: String::new(),
         };
         assert_eq!(
             code(st.create_run(&bot(), new(KeySource::Instance))),
@@ -5616,6 +5696,7 @@ mod tests {
                     base_version: 1,
                     agent_grant: None,
                     web: String::new(),
+                    browser: String::new(),
                 },
             )
             .unwrap();
@@ -5865,7 +5946,7 @@ mod tests {
 
         // A binding of version 1 says no operations, no registration and
         // no prompt file, whatever its text holds.
-        let v1 = Bindings::clax("7q3k9mzx2b4t", "fetch");
+        let v1 = Bindings::clax("7q3k9mzx2b4t", "fetch", "");
         assert_eq!(v1.version(), 1);
         let clax = v1.of("clax").unwrap();
         assert_eq!((clax.operations(), clax.registration()), (None, None));
@@ -6209,6 +6290,7 @@ mod tests {
                 due_at: None,
                 agent_grant: None,
                 web: String::new(),
+                browser: String::new(),
             }
         );
         assert_eq!(run.artifact(), None);
@@ -6336,7 +6418,7 @@ mod tests {
         );
         assert_eq!(
             refused(NewRunOf {
-                bindings: Bindings::clax("7q3k9mzx2b4t", ""),
+                bindings: Bindings::clax("7q3k9mzx2b4t", "", ""),
                 ..triage()
             }),
             "run_invalid",

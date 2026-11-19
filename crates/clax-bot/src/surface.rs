@@ -3220,7 +3220,7 @@ mod tests {
     fn a_stored_binding_gives_the_standing_operations_and_the_granted_ones() {
         let standing = |op: &str| !op.starts_with("web.");
         let of = |web: &str| {
-            let stored = Bindings::clax("7q3k9mzx2b4t", web);
+            let stored = Bindings::clax("7q3k9mzx2b4t", web, "");
             Binding::from_stored(
                 stored.of(CLAX_SURFACE).expect("the clax binding"),
                 crate::api::definition(),

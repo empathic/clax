@@ -622,6 +622,7 @@ mod tests {
             base_version: 1,
             agent_grant: None,
             web: String::new(),
+            browser: String::new(),
         };
         let bound = |artifact: &str| {
             Bindings::bound(vec![
@@ -649,7 +650,7 @@ mod tests {
             "run_invalid"
         );
         assert_eq!(
-            code(st.create_run_exclusive_bound(DAEMON, new(), &Bindings::clax(&page, ""))),
+            code(st.create_run_exclusive_bound(DAEMON, new(), &Bindings::clax(&page, "", ""))),
             "run_invalid"
         );
         let run = st
