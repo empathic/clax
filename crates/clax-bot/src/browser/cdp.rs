@@ -294,6 +294,16 @@ impl Cdp {
         self.watched = (target, session);
     }
 
+    /// Bounds every later wait by `deadline` instead, the cancellation
+    /// kept: a wait the old deadline ended no longer answers that (an
+    /// action's own timeout within its call's).
+    pub fn set_deadline(&mut self, deadline: Deadline) {
+        self.deadline = deadline;
+        if self.ended == Some(Ended::Deadline) {
+            self.ended = None;
+        }
+    }
+
     /// Bounds every later wait by `deadline` and `cancel` instead: a wait
     /// the old deadline or cancellation ended no longer answers that. A
     /// closed socket and a lost page stay so.

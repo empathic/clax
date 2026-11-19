@@ -482,6 +482,10 @@ pub(super) struct Driver<'a> {
     pub(super) url: String,
     /// The preamble's identifier (`Page.addScriptToEvaluateOnNewDocument`).
     preamble: Option<String>,
+    /// Where the mouse is, in the viewport's CSS pixels.
+    pub(super) mouse: (f64, f64),
+    /// The window the page is shown in.
+    pub(super) viewport: super::opts::Viewport,
 }
 
 /// The most network request URLs kept to name failed loads.
@@ -586,6 +590,8 @@ impl<'a> Driver<'a> {
             shots: Vec::new(),
             url: String::new(),
             preamble: None,
+            mouse: (0.0, 0.0),
+            viewport: super::opts::Viewport::desktop(),
         }
     }
 
@@ -1008,6 +1014,58 @@ impl<'a> Driver<'a> {
         Ok(Ok(()))
     }
 
+    /// Waits for the page's load event, when it has not fired since the
+    /// last navigation.
+    pub(super) async fn wait_loaded(&mut self) -> Result<(), CdpFail> {
+        while !self.loaded {
+            let e = self.cdp.next_event().await?;
+            self.handle(e).await?;
+        }
+        Ok(())
+    }
+
+    /// Goes to history entry `id` (at `url`) and waits for its load.
+    pub(super) async fn history(&mut self, id: i64, url: &str) -> Result<Result<(), String>, CdpFail> {
+        self.navigation("Page.navigateToHistoryEntry", json!({"entryId": id}), Some(url), true)
+            .await
+    }
+
+    /// A screenshot of `clip` `(x, y, width, height)` of the page (beyond
+    /// the viewport when `beyond`), scaled so its longer side is at most
+    /// `limits.image_side`, kept in [`Driver::shots`]; `Err` says why
+    /// there is none.
+    pub(super) async fn capture(
+        &mut self,
+        (x, y, w, h): (f64, f64, f64, f64),
+        beyond: bool,
+        limits: SessionLimits,
+    ) -> Result<Result<(), String>, CdpFail> {
+        if w <= 0.0 || h <= 0.0 {
+            return Ok(Err("there is nothing to capture (no size)".to_string()));
+        }
+        let longest = w.max(h) * self.viewport.scale;
+        let scale = (f64::from(limits.image_side) / longest).min(1.0);
+        let scale = (scale * 10_000.0).floor() / 10_000.0;
+        let shot = self
+            .page_call(
+                "Page.captureScreenshot",
+                json!({
+                    "format": "png",
+                    "clip": {"x": x, "y": y, "width": w, "height": h, "scale": scale},
+                    "captureBeyondViewport": beyond,
+                }),
+            )
+            .await?;
+        let Some(bytes) = shot["data"]
+            .as_str()
+            .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+        else {
+            return Ok(Err("the browser answered no image".to_string()));
+        };
+        self.shots.push(bytes);
+        Ok(Ok(()))
+    }
+
     /// Two animation frames after the load: every paused request was
     /// answered as it came.
     pub(super) async fn settle(&mut self) -> Result<(), CdpFail> {
@@ -1239,6 +1297,7 @@ impl<'a> Driver<'a> {
         // `Fetch.enable`.
         self.browser_call("Target.setAutoAttach", auto_attach())
             .await?;
+        self.viewport = viewport.clone();
         let vp = viewport;
         let mut setup = vec![
             ("Fetch.enable", fetch_patterns()),

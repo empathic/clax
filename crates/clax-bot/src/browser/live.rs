@@ -740,12 +740,25 @@ impl Task {
                             }
                         }
                     }
+                    let timing = super::act::Timing {
+                        clock: &*self.clock,
+                        source: &*self.source,
+                        call_until: until,
+                        times: self.times,
+                        limits: self.limits,
+                    };
                     let r = match converted {
                         Some(_) => match d.become_browse().await {
-                            Ok(()) => perform(&mut d, &call, self.limits, self.times).await,
+                            Ok(()) => perform(&mut d, &call, &timing).await,
                             Err(e) => Err(e),
                         },
-                        None => perform(&mut d, &call, self.limits, self.times).await,
+                        None => perform(&mut d, &call, &timing).await,
+                    };
+                    // The lifetime ends the session, whatever the call
+                    // answered as it ran out.
+                    let r = match r {
+                        Ok(_) if self.clock.now() >= self.lifetime => Err(CdpFail::Deadline),
+                        other => other,
                     };
                     let at_ms = self.at_ms();
                     if let Some(e) = lock(&self.reg).sessions.get_mut(&self.id) {
@@ -943,15 +956,24 @@ fn failed(error: String) -> Answered {
 async fn perform(
     d: &mut Driver<'_>,
     call: &SessionCall,
-    limits: SessionLimits,
-    times: SessionTimes,
+    timing: &super::act::Timing<'_>,
 ) -> Result<Answered, CdpFail> {
     let mut a = match call {
-        SessionCall::Page { action, args } => page(d, action, args, times).await?,
-        SessionCall::Act { action, .. } => failed(format!("locator.{action} is not an action")),
-        SessionCall::Expect { matcher, .. } => failed(format!("{matcher} is not a matcher")),
+        SessionCall::Page { action, args } => match super::act::page(d, timing, action, args).await? {
+            Some(a) => a,
+            None => page(d, action, args, timing.times).await?,
+        },
+        SessionCall::Act {
+            locator,
+            action,
+            args,
+        } => super::act::perform(d, timing, locator, action, args).await?,
+        SessionCall::Expect {
+            locator,
+            matcher,
+            args,
+        } => super::act::expect(d, timing, locator.as_ref(), matcher, args).await?,
     };
-    let _ = limits;
     a.shots = std::mem::take(&mut d.shots);
     Ok(a)
 }

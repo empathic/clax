@@ -36,10 +36,12 @@
 //! [`api::CODE_BAD_ARGS`](crate::api::CODE_BAD_ARGS).
 
 pub mod access;
+pub mod act;
 pub mod browse;
 pub mod cdp;
 pub mod fake;
 pub mod live;
+pub mod locate;
 pub mod opts;
 pub mod serve;
 pub mod session;

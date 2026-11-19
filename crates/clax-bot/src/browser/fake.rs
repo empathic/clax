@@ -314,6 +314,15 @@ pub struct PageModel {
     outstanding: Vec<String>,
     /// The URL last navigated to, which `Page.reload` loads again.
     url: String,
+    /// The page's document, when the test gives one ([`PageModel::dom`]).
+    dom: Option<Dom>,
+    /// How many waits in the page (`clax:frame`) are answered; the rest
+    /// never are.
+    frame_limit: Option<usize>,
+    frames: usize,
+    /// The URLs navigated to, and where in them the page is.
+    history: Vec<String>,
+    at: usize,
 }
 
 impl Default for PageModel {
@@ -329,6 +338,11 @@ impl Default for PageModel {
             navigating: None,
             outstanding: Vec::new(),
             url: String::new(),
+            dom: None,
+            frame_limit: None,
+            frames: 0,
+            history: Vec::new(),
+            at: 0,
         }
     }
 }
@@ -380,6 +394,24 @@ impl PageModel {
         self
     }
 
+    /// The page's document ([`Dom`]): `DOM.*`, `Accessibility.queryAXTree`,
+    /// `Runtime.callFunctionOn` on its elements and the input it takes are
+    /// answered from it.
+    #[must_use]
+    pub fn dom(mut self, dom: Dom) -> PageModel {
+        self.dom = Some(dom);
+        self
+    }
+
+    /// Answers the first `n` waits in the page (`clax:frame`) and never
+    /// the rest, so a driver that would wait for ever waits for its
+    /// deadline.
+    #[must_use]
+    pub fn frame_limit(mut self, n: usize) -> PageModel {
+        self.frame_limit = Some(n);
+        self
+    }
+
     /// The bytes every screenshot answers.
     #[must_use]
     pub fn screenshot(mut self, png: Vec<u8>) -> PageModel {
@@ -427,6 +459,11 @@ impl PageModel {
         if let Some(frames) = (self.on)(cmd) {
             return frames;
         }
+        if let Some(dom) = &mut self.dom
+            && let Some(frames) = dom.answer(cmd)
+        {
+            return frames;
+        }
         let params = &cmd["params"];
         match cmd["method"].as_str().unwrap_or_default() {
             "Target.createBrowserContext" => vec![answer(cmd, json!({"browserContextId": "CTX"}))],
@@ -441,10 +478,33 @@ impl PageModel {
                 answer(cmd, json!({"sessionId": "S"})),
             ],
             "Browser.close" => vec![answer(cmd, json!({})), CLOSE],
-            "Page.navigate" | "Page.reload" => {
-                let url = match params["url"].as_str() {
-                    Some(u) => u.to_string(),
-                    None => self.url.clone(),
+            "Page.getNavigationHistory" => {
+                let entries: Vec<Value> = self
+                    .history
+                    .iter()
+                    .enumerate()
+                    .map(|(i, u)| json!({"id": i, "url": u, "userTypedURL": u, "title": "", "transitionType": "link"}))
+                    .collect();
+                vec![answer(cmd, json!({"currentIndex": self.at, "entries": entries}))]
+            }
+            "Page.navigate" | "Page.reload" | "Page.navigateToHistoryEntry" => {
+                let url = match (params["url"].as_str(), params["entryId"].as_u64()) {
+                    (Some(u), _) => {
+                        self.history.truncate(self.at + 1);
+                        if self.history.is_empty() {
+                            self.history.push(u.to_string());
+                        } else {
+                            self.history.push(u.to_string());
+                            self.at = self.history.len() - 1;
+                        }
+                        u.to_string()
+                    }
+                    (None, Some(id)) => {
+                        let i = usize::try_from(id).unwrap_or(0).min(self.history.len().saturating_sub(1));
+                        self.at = i;
+                        self.history.get(i).cloned().unwrap_or_default()
+                    }
+                    (None, None) => self.url.clone(),
                 };
                 self.url = url.clone();
                 let (id, e) = self.paused(&url, "Document");
@@ -486,6 +546,28 @@ impl PageModel {
                 frames
             }
             "Runtime.evaluate" => {
+                let e = params["expression"].as_str().unwrap_or_default();
+                if e.contains("clax:frame") {
+                    self.frames += 1;
+                    if self.frame_limit.is_some_and(|n| self.frames > n) {
+                        return Vec::new();
+                    }
+                    return vec![answer(cmd, value(json!(true)))];
+                }
+                if e.contains("clax:regex") {
+                    let args: Value = e
+                        .rfind("})(")
+                        .and_then(|at| serde_json::from_str(e[at + 3..].trim_end_matches(')')).ok())
+                        .unwrap_or(Value::Null);
+                    let (src, flags) = (args[0].as_str().unwrap_or(""), args[1].as_str().unwrap_or(""));
+                    let hits: Vec<bool> = args[2]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|t| fake_regex(src, flags, t.as_str().unwrap_or("")))
+                        .collect();
+                    return vec![answer(cmd, value(json!(hits)))];
+                }
                 let result = (self.evaluate)(params);
                 vec![answer(cmd, result)]
             }
@@ -506,6 +588,497 @@ impl PageModel {
             _ => vec![answer(cmd, json!({}))],
         }
     }
+}
+
+/// One element (or text) of a [`Dom`]: its tag, attributes, children,
+/// box, accessibility role and name, and its live state.
+#[derive(Clone, Debug, Default)]
+pub struct El {
+    pub tag: String,
+    pub attrs: Vec<(String, String)>,
+    /// A text node's text (its `tag` is `#text`).
+    pub text: Option<String>,
+    pub children: Vec<El>,
+    /// Its boxes `(x, y, width, height)`, one per `DOM.getBoxModel` asked
+    /// of it, the last repeated; none: not rendered.
+    pub rects: Vec<(f64, f64, f64, f64)>,
+    /// Higher is on top at a point.
+    pub z: i32,
+    /// Its accessibility role and name, and whether the tree ignores it.
+    pub role: Option<(String, String)>,
+    pub ignored: bool,
+    pub checked: Option<bool>,
+    pub value: Option<String>,
+    pub level: Option<u32>,
+}
+
+/// An element `tag`.
+#[must_use]
+pub fn el(tag: &str) -> El {
+    El {
+        tag: tag.to_string(),
+        ..El::default()
+    }
+}
+
+impl El {
+    #[must_use]
+    pub fn attr(mut self, k: &str, v: &str) -> El {
+        self.attrs.push((k.to_string(), v.to_string()));
+        self
+    }
+    /// A text child.
+    #[must_use]
+    pub fn text(mut self, t: &str) -> El {
+        self.children.push(El {
+            tag: "#text".into(),
+            text: Some(t.to_string()),
+            ..El::default()
+        });
+        self
+    }
+    #[must_use]
+    pub fn child(mut self, c: El) -> El {
+        self.children.push(c);
+        self
+    }
+    #[must_use]
+    pub fn rect(mut self, x: f64, y: f64, w: f64, h: f64) -> El {
+        self.rects.push((x, y, w, h));
+        self
+    }
+    #[must_use]
+    pub fn z(mut self, z: i32) -> El {
+        self.z = z;
+        self
+    }
+    #[must_use]
+    pub fn role(mut self, role: &str, name: &str) -> El {
+        self.role = Some((role.to_string(), name.to_string()));
+        self
+    }
+    #[must_use]
+    pub fn ignored(mut self) -> El {
+        self.ignored = true;
+        self
+    }
+    #[must_use]
+    pub fn checked(mut self, c: bool) -> El {
+        self.checked = Some(c);
+        self
+    }
+    #[must_use]
+    pub fn value(mut self, v: &str) -> El {
+        self.value = Some(v.to_string());
+        self
+    }
+    #[must_use]
+    pub fn level(mut self, l: u32) -> El {
+        self.level = Some(l);
+        self
+    }
+}
+
+/// A flattened node of a [`Dom`]: its ID is its index plus one (as
+/// `nodeId` and `backendNodeId` both).
+#[derive(Clone, Debug)]
+struct Flat {
+    el: El,
+    parent: Option<usize>,
+    children: Vec<usize>,
+    boxes_asked: usize,
+}
+
+/// A page's document for [`PageModel::dom`]: the documents its
+/// successive `DOM.getDocument` calls see (the last repeated), so a test
+/// says how the page changes between a driver's attempts; the focus, the
+/// selection and the input `Input.insertText` types into.
+#[derive(Clone, Debug, Default)]
+pub struct Dom {
+    states: Vec<El>,
+    served: usize,
+    flat: Vec<Flat>,
+    focused: Option<usize>,
+    /// Whether the focused element's text is selected (by `select()`), so
+    /// typing replaces it.
+    selected: bool,
+}
+
+impl Dom {
+    /// A document whose `<body>` holds `body`, the same at every attempt.
+    #[must_use]
+    pub fn new(body: Vec<El>) -> Dom {
+        Dom::states(vec![body])
+    }
+
+    /// A document whose `<body>` holds each of `states` in turn, one per
+    /// `DOM.getDocument`, the last repeated.
+    #[must_use]
+    pub fn states(states: Vec<Vec<El>>) -> Dom {
+        let docs = states
+            .into_iter()
+            .map(|body| {
+                let mut b = el("body").rect(0.0, 0.0, 1280.0, 800.0);
+                b.children = body;
+                El {
+                    tag: "#document".into(),
+                    children: vec![el("html").rect(0.0, 0.0, 1280.0, 800.0).child(b)],
+                    ..El::default()
+                }
+            })
+            .collect();
+        let mut d = Dom {
+            states: docs,
+            ..Dom::default()
+        };
+        d.flatten(0);
+        d
+    }
+
+    fn flatten(&mut self, state: usize) {
+        let keep: Vec<(Option<String>, Option<bool>, usize)> = self
+            .flat
+            .iter()
+            .map(|f| (f.el.value.clone(), f.el.checked, f.boxes_asked))
+            .collect();
+        self.flat.clear();
+        let root = self.states[state.min(self.states.len() - 1)].clone();
+        self.push(root, None);
+        // What the page changed (typed values, checks) and the boxes asked
+        // live on across attempts of the same shape.
+        if keep.len() == self.flat.len() {
+            for (f, (v, c, b)) in self.flat.iter_mut().zip(keep) {
+                f.el.value = v.or(f.el.value.take());
+                f.el.checked = c.or(f.el.checked);
+                f.boxes_asked = b;
+            }
+        }
+    }
+
+    fn push(&mut self, mut e: El, parent: Option<usize>) -> usize {
+        let at = self.flat.len();
+        let children = std::mem::take(&mut e.children);
+        self.flat.push(Flat {
+            el: e,
+            parent,
+            children: Vec::new(),
+            boxes_asked: 0,
+        });
+        for c in children {
+            let ci = self.push(c, Some(at));
+            self.flat[at].children.push(ci);
+        }
+        at
+    }
+
+    fn node_json(&self, i: usize) -> Value {
+        let f = &self.flat[i];
+        let mut n = json!({
+            "nodeId": i + 1,
+            "backendNodeId": i + 1,
+            "nodeName": f.el.tag.to_uppercase(),
+            "nodeType": if f.el.tag == "#text" { 3 } else if f.el.tag == "#document" { 9 } else { 1 },
+        });
+        if let Some(t) = &f.el.text {
+            n["nodeValue"] = json!(t);
+        }
+        if !f.el.attrs.is_empty() {
+            n["attributes"] = json!(f.el.attrs.iter().flat_map(|(k, v)| [k.clone(), v.clone()]).collect::<Vec<_>>());
+        }
+        n["children"] = json!(f.children.iter().map(|&c| self.node_json(c)).collect::<Vec<_>>());
+        n
+    }
+
+    fn inside(&self, outer: usize, inner: usize) -> bool {
+        let mut at = Some(inner);
+        while let Some(i) = at {
+            if i == outer {
+                return true;
+            }
+            at = self.flat[i].parent;
+        }
+        false
+    }
+
+    /// Whether element `i` matches a simple selector: compounds of a tag,
+    /// `#id`, `.class` and `[attr]` or `[attr="v"]`, joined by spaces.
+    fn matches(&self, i: usize, selector: &str) -> bool {
+        let parts: Vec<&str> = selector.split_whitespace().collect();
+        let Some((last, before)) = parts.split_last() else {
+            return false;
+        };
+        if !self.compound(i, last) {
+            return false;
+        }
+        let mut at = self.flat[i].parent;
+        for p in before.iter().rev() {
+            loop {
+                let Some(a) = at else { return false };
+                at = self.flat[a].parent;
+                if self.compound(a, p) {
+                    break;
+                }
+            }
+        }
+        true
+    }
+
+    fn compound(&self, i: usize, c: &str) -> bool {
+        let e = &self.flat[i].el;
+        if e.tag.starts_with('#') {
+            return false;
+        }
+        let attr = |k: &str| e.attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        let mut rest = c;
+        let tag_end = rest.find(['#', '.', '[']).unwrap_or(rest.len());
+        let (tag, tail) = rest.split_at(tag_end);
+        if !tag.is_empty() && tag != "*" && tag != e.tag {
+            return false;
+        }
+        rest = tail;
+        while !rest.is_empty() {
+            let (kind, body) = rest.split_at(1);
+            let end = body.find(['#', '.', '[']).unwrap_or(body.len());
+            let (part, tail) = if kind == "[" {
+                let close = body.find(']').unwrap_or(body.len());
+                (&body[..close], &body[(close + 1).min(body.len())..])
+            } else {
+                body.split_at(end)
+            };
+            let ok = match kind {
+                "#" => attr("id") == Some(part),
+                "." => attr("class").is_some_and(|c| c.split_whitespace().any(|x| x == part)),
+                "[" => match part.split_once('=') {
+                    Some((k, v)) => attr(k) == Some(v.trim_matches('"').trim_matches('\'')),
+                    None => attr(part).is_some(),
+                },
+                _ => false,
+            };
+            if !ok {
+                return false;
+            }
+            rest = tail;
+        }
+        true
+    }
+
+    fn by_id(&self, v: &Value) -> Option<usize> {
+        let id = v.as_i64()?;
+        usize::try_from(id - 1).ok().filter(|&i| i < self.flat.len())
+    }
+
+    fn rect_of(&mut self, i: usize) -> Option<(f64, f64, f64, f64)> {
+        let f = &mut self.flat[i];
+        let r = f.el.rects.get(f.boxes_asked.min(f.el.rects.len().saturating_sub(1))).copied();
+        f.boxes_asked += 1;
+        r
+    }
+
+    fn texts(&self, i: usize) -> String {
+        let f = &self.flat[i];
+        if let Some(t) = &f.el.text {
+            return t.clone();
+        }
+        f.children.iter().map(|&c| self.texts(c)).collect()
+    }
+
+    /// The answer to `cmd`, when it is a command of the document.
+    fn answer(&mut self, cmd: &Value) -> Option<Vec<Value>> {
+        let p = &cmd["params"];
+        let method = cmd["method"].as_str().unwrap_or_default();
+        let result = match method {
+            "DOM.getDocument" => {
+                self.flatten(self.served);
+                self.served += 1;
+                json!({"root": self.node_json(0)})
+            }
+            "DOM.querySelectorAll" => {
+                let scope = self.by_id(&p["nodeId"]).unwrap_or(0);
+                let sel = p["selector"].as_str().unwrap_or_default();
+                let ids: Vec<usize> = (0..self.flat.len())
+                    .filter(|&i| i != scope && self.inside(scope, i) && sel.split(',').any(|s| self.matches(i, s.trim())))
+                    .map(|i| i + 1)
+                    .collect();
+                json!({"nodeIds": ids})
+            }
+            "Accessibility.queryAXTree" => {
+                let scope = self.by_id(&p["backendNodeId"]).unwrap_or(0);
+                let role = p["role"].as_str().unwrap_or_default();
+                let nodes: Vec<Value> = (0..self.flat.len())
+                    .filter(|&i| self.inside(scope, i))
+                    .filter_map(|i| {
+                        let e = &self.flat[i].el;
+                        let (r, name) = e.role.as_ref()?;
+                        (r == role).then(|| {
+                            let mut props = Vec::new();
+                            if let Some(c) = e.checked {
+                                props.push(json!({"name": "checked", "value": {"type": "tristate", "value": c.to_string()}}));
+                            }
+                            if let Some(l) = e.level {
+                                props.push(json!({"name": "level", "value": {"type": "integer", "value": l}}));
+                            }
+                            json!({"nodeId": format!("ax{i}"), "ignored": e.ignored, "role": {"type": "role", "value": r}, "name": {"type": "computedString", "value": name}, "properties": props, "backendDOMNodeId": i + 1})
+                        })
+                    })
+                    .collect();
+                json!({"nodes": nodes})
+            }
+            "DOM.getBoxModel" => {
+                let i = self.by_id(&p["backendNodeId"])?;
+                match self.rect_of(i) {
+                    Some((x, y, w, h)) => {
+                        let quad = json!([x, y, x + w, y, x + w, y + h, x, y + h]);
+                        json!({"model": {"content": quad, "padding": quad, "border": quad, "margin": quad, "width": w, "height": h}})
+                    }
+                    None => return Some(vec![error(cmd, "Could not compute box model.")]),
+                }
+            }
+            "DOM.getNodeForLocation" => {
+                let (x, y) = (p["x"].as_f64().unwrap_or(0.0), p["y"].as_f64().unwrap_or(0.0));
+                let hit = (0..self.flat.len())
+                    .filter(|&i| {
+                        let e = &self.flat[i].el;
+                        !e.tag.starts_with('#')
+                            && e.rects.last().is_some_and(|&(rx, ry, w, h)| x >= rx && x <= rx + w && y >= ry && y <= ry + h)
+                    })
+                    .max_by_key(|&i| (self.flat[i].el.z, i));
+                match hit {
+                    Some(i) => json!({"backendNodeId": i + 1, "nodeId": i + 1, "frameId": "F"}),
+                    None => return Some(vec![error(cmd, "No node found at given location")]),
+                }
+            }
+            "DOM.resolveNode" => {
+                let i = self.by_id(&p["backendNodeId"])?;
+                json!({"object": {"type": "object", "subtype": "node", "objectId": format!("node-{}", i + 1)}})
+            }
+            "DOM.focus" => {
+                self.focused = self.by_id(&p["backendNodeId"]);
+                self.selected = false;
+                json!({})
+            }
+            "DOM.scrollIntoViewIfNeeded" => json!({}),
+            "Input.insertText" => {
+                if let Some(i) = self.focused {
+                    let t = p["text"].as_str().unwrap_or_default();
+                    let e = &mut self.flat[i].el;
+                    let before = if self.selected { String::new() } else { e.value.clone().unwrap_or_default() };
+                    e.value = Some(before + t);
+                    self.selected = false;
+                }
+                json!({})
+            }
+            "Runtime.callFunctionOn" => {
+                let i = p["objectId"]
+                    .as_str()
+                    .and_then(|o| o.strip_prefix("node-"))
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|n| n.checked_sub(1))?;
+                let f = p["functionDeclaration"].as_str().unwrap_or_default();
+                let thrown = |m: &str| json!({"result": {"type": "object", "subtype": "error"}, "exceptionDetails": {"text": "Uncaught", "exception": {"description": format!("Error: {m}")}}});
+                if f.contains("clax:selectOption") {
+                    let wanted = &p["arguments"][0]["value"];
+                    let opts: Vec<(String, String)> = self.flat[i]
+                        .children
+                        .iter()
+                        .filter(|&&c| self.flat[c].el.tag == "option")
+                        .map(|&c| {
+                            let v = self.flat[c].el.attrs.iter().find(|(k, _)| k == "value").map(|(_, v)| v.clone());
+                            let label = self.texts(c);
+                            (v.unwrap_or_else(|| label.clone()), label)
+                        })
+                        .collect();
+                    let w = &wanted[0];
+                    match opts.iter().find(|(v, l)| w["value"].as_str() == Some(v) || w["label"].as_str() == Some(l)) {
+                        Some((v, _)) => {
+                            self.flat[i].el.value = Some(v.clone());
+                            value(json!([v]))
+                        }
+                        None => thrown("did not find some options"),
+                    }
+                } else if f.contains("this.checked") {
+                    match self.flat[i].el.checked {
+                        Some(c) => value(json!(c)),
+                        None => value(json!(false)),
+                    }
+                } else if f.contains("this.value") {
+                    match &self.flat[i].el.value {
+                        Some(v) => value(json!(v)),
+                        None => thrown("Not an input element"),
+                    }
+                } else if f.contains("this.innerText") {
+                    value(json!(self.texts(i)))
+                } else if f.contains("this.select") {
+                    self.selected = true;
+                    json!({"result": {"type": "undefined"}})
+                } else if f.contains("document.activeElement") {
+                    value(json!(self.focused == Some(i)))
+                } else {
+                    json!({"result": {"type": "undefined"}})
+                }
+            }
+            "Input.dispatchMouseEvent" => {
+                // A press and release on a checkbox toggles it.
+                if p["type"] == "mouseReleased" {
+                    let (x, y) = (p["x"].as_f64().unwrap_or(0.0), p["y"].as_f64().unwrap_or(0.0));
+                    let hit = (0..self.flat.len())
+                        .filter(|&i| self.flat[i].el.rects.last().is_some_and(|&(rx, ry, w, h)| x >= rx && x <= rx + w && y >= ry && y <= ry + h))
+                        .max_by_key(|&i| (self.flat[i].el.z, i));
+                    if let Some(i) = hit
+                        && let Some(c) = self.flat[i].el.checked
+                    {
+                        self.flat[i].el.checked = Some(!c);
+                    }
+                }
+                json!({})
+            }
+            _ => return None,
+        };
+        Some(vec![answer(cmd, result)])
+    }
+}
+
+/// Whether `text` matches the JavaScript pattern `source` with `flags`,
+/// for the patterns a test sends: literal text, `^` and `$`, `|`, `.`
+/// and `.*`; `i` folds case.
+fn fake_regex(source: &str, flags: &str, text: &str) -> bool {
+    let fold = flags.contains('i');
+    let (src, text) = if fold {
+        (source.to_lowercase(), text.to_lowercase())
+    } else {
+        (source.to_string(), text.to_string())
+    };
+    src.split('|').any(|alt| {
+        let start = alt.starts_with('^');
+        let end = alt.ends_with('$') && !alt.ends_with("\\$");
+        let body = alt.trim_start_matches('^');
+        let body = if end { &body[..body.len() - 1] } else { body };
+        let at_from = |from: usize| -> Option<usize> { glob_at(body, &text[from..]).map(|n| from + n) };
+        if start {
+            at_from(0).is_some_and(|n| !end || n == text.len())
+        } else {
+            (0..=text.len())
+                .filter(|&i| text.is_char_boundary(i))
+                .any(|i| at_from(i).is_some_and(|n| !end || n == text.len()))
+        }
+    })
+}
+
+/// The length of `text`'s prefix `pat` matches (`.` any one character,
+/// `.*` any run, `\` escapes), the longest.
+fn glob_at(pat: &str, text: &str) -> Option<usize> {
+    let p: Vec<char> = pat.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    fn go(p: &[char], t: &[char], used: usize) -> Option<usize> {
+        match p {
+            [] => Some(used),
+            ['.', '*', rest @ ..] => (0..=t.len()).rev().find_map(|k| go(rest, &t[k..], used + k)),
+            ['\\', c, rest @ ..] => (t.first() == Some(c)).then(|| go(rest, &t[1..], used + 1)).flatten(),
+            ['.', rest @ ..] => (!t.is_empty()).then(|| go(rest, &t[1..], used + 1)).flatten(),
+            [c, rest @ ..] => (t.first() == Some(c)).then(|| go(rest, &t[1..], used + 1)).flatten(),
+        }
+    }
+    let n = go(&p, &t, 0)?;
+    Some(t[..n].iter().collect::<String>().len())
 }
 
 type Opener = Box<dyn FnMut() -> Result<FakeChrome, BrowserError> + Send>;
