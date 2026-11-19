@@ -173,7 +173,7 @@ impl SurfaceProvider for ClaxProvider {
     /// Every operation but the web's and the browser's, which a run has
     /// by its grants.
     fn standing(&self, op: &str) -> bool {
-        api::declared(op, api::OpShape::default())
+        api::declared(op, &crate::capability::CapSet::default())
     }
 
     /// A web or browser operation the run did not declare is refused in

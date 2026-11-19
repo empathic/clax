@@ -649,7 +649,7 @@ mod tests {
             "run_invalid"
         );
         assert_eq!(
-            code(st.create_run_exclusive_bound(DAEMON, new(), &Bindings::clax(&page, "", ""))),
+            code(st.create_run_exclusive_bound(DAEMON, new(), &Bindings::clax(&page, ""))),
             "run_invalid"
         );
         let run = st

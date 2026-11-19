@@ -9,7 +9,7 @@
 use super::tests::host_surface;
 use super::*;
 use crate::golden::golden;
-use crate::web::WebShape;
+use crate::capability::Capability as C;
 
 /// The host protocol's contract fixture, whose `files` hold the
 /// surface `desk`.
@@ -21,10 +21,10 @@ fn desk() -> Definition {
 }
 
 /// A clax run of `kind`'s binding of Clax's own surface, as a joined
-/// run is made with it ([`crate::joins::clax_binding`]), on web grant
-/// `web`.
-fn clax(web: &str) -> Binding {
-    let stored = crate::joins::clax_binding("A1", web, "");
+/// run is made with it ([`crate::joins::clax_binding`]), holding the
+/// capabilities `caps`.
+fn clax(caps: &str) -> Binding {
+    let stored = crate::joins::clax_binding("A1", caps);
     Binding {
         surface: CLAX_SURFACE.into(),
         hash: None,
@@ -55,36 +55,18 @@ fn run_of(kind: &str, bindings: Vec<Binding>) -> RunInfo {
     }
 }
 
-const SHAPES: [(&str, WebShape); 4] = [
-    (
-        "",
-        WebShape {
-            search: false,
-            fetch: false,
-        },
-    ),
-    (
-        "search",
-        WebShape {
-            search: true,
-            fetch: false,
-        },
-    ),
-    (
-        "fetch",
-        WebShape {
-            search: false,
-            fetch: true,
-        },
-    ),
-    (
-        "search,fetch",
-        WebShape {
-            search: true,
-            fetch: true,
-        },
-    ),
-];
+/// Each set of web capabilities, as its text and as its set.
+fn shapes() -> [(&'static str, CapSet); 4] {
+    [
+        ("", CapSet::default()),
+        ("web.search", [C::WebSearch].into_iter().collect()),
+        ("web.fetch", [C::WebFetch].into_iter().collect()),
+        (
+            "web.search,web.fetch",
+            [C::WebSearch, C::WebFetch].into_iter().collect(),
+        ),
+    ]
+}
 
 /// A thread run that the fixture's `desk` joined with the operations a
 /// join gives it while Clax stores no content (every one but the
@@ -156,7 +138,7 @@ fn a_run_of_claxs_kind_with_nothing_joined_is_sent_what_it_was() {
     let desk = desk();
     let clax_def = crate::api::definition();
     let away = &*crate::registry::NOTHING;
-    for (web, shape) in SHAPES {
+    for (web, shape) in shapes() {
         for kind in [RequestKind::Thread, RequestKind::Brief] {
             let name = format!("clax.{}", kind.as_str());
             for others in [
@@ -173,12 +155,12 @@ fn a_run_of_claxs_kind_with_nothing_joined_is_sent_what_it_was() {
                 }
                 assert_eq!(
                     system_of(&run, clax_def, &bound, None).unwrap(),
-                    system_prompt(kind, shape),
+                    system_prompt(kind, &shape),
                     "{name} {web:?}"
                 );
                 assert_eq!(
                     system_pieces_of(&run, clax_def, &bound, None).unwrap(),
-                    system_pieces(kind, shape),
+                    system_pieces(kind, &shape),
                     "{name} {web:?}"
                 );
             }

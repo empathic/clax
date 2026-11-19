@@ -3219,26 +3219,26 @@ mod tests {
     #[test]
     fn a_stored_binding_gives_the_standing_operations_and_the_granted_ones() {
         let standing = |op: &str| !op.starts_with("web.") && !op.starts_with("browser.");
-        let of = |web: &str, browser: &str| {
-            let stored = Bindings::clax("7q3k9mzx2b4t", web, browser);
+        let of = |caps: &str| {
+            let stored = Bindings::clax("7q3k9mzx2b4t", caps);
             Binding::from_stored(
                 stored.of(CLAX_SURFACE).expect("the clax binding"),
                 crate::api::definition(),
                 standing,
             )
         };
-        let plain = of("", "");
+        let plain = of("");
         assert_eq!(plain.surface, "clax");
         assert_eq!(plain.hash, None);
         assert_eq!(plain.scope, json!({"artifact": "7q3k9mzx2b4t"}));
         assert_eq!(plain.operations.len(), 22);
         assert!(plain.has("draft.publish") && !plain.has("web.search") && !plain.has("web.fetch"));
         assert!(!plain.has("browser.test") && !plain.has("browser.browse"));
-        let fetch = of("fetch", "");
+        let fetch = of("web.fetch");
         assert!(fetch.has("web.fetch") && !fetch.has("web.search"));
-        let test = of("", "test");
+        let test = of("browser.open.artifact");
         assert!(test.has("browser.test") && !test.has("browser.browse"));
-        let both = of("search,fetch", "test,browse");
+        let both = of("web.search,web.fetch,browser.open.artifact,browser.open.url");
         let names: Vec<&str> = crate::api::definition()
             .operations()
             .map(|o| o.name)

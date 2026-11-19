@@ -22,6 +22,7 @@
 
 use crate::api;
 use crate::bot_surfaces::{Snapshot, allow_patterns};
+use crate::capability::CapSet;
 use crate::surface::Binding;
 use clax_store::bot_runs::{Bindings, CLAX_SURFACE, StoredBinding};
 use clax_surface::{Access, Limits, RunScope};
@@ -32,19 +33,19 @@ use serde_json::Value;
 pub const MAX_JOINED: usize = 7;
 
 /// The `clax` binding of a run of Clax's own kind on artifact
-/// `artifact_id` whose web grant has the shape `web` ([`clax_store::bot_runs::Run::web`])
-/// and whose browser grant has the shape `browser`
-/// ([`clax_store::bot_runs::Run::browser`]), as a binding of version 2: every operation the run would have with
+/// `artifact_id` holding the capabilities `caps`
+/// ([`clax_store::bot_runs::Run::caps`]), as a binding of version 2:
+/// every operation the run would have with
 /// bindings of version 1 ([`Bindings::clax`], read as
 /// [`Binding::from_stored`] reads it with Clax's standing rule), listed,
 /// on the scope `{"artifact": "<ID>"}`, with no hash, registration or
 /// prompt file.
 #[must_use]
-pub fn clax_binding(artifact_id: &str, web: &str, browser: &str) -> StoredBinding {
-    let v1 = Bindings::clax(artifact_id, web, browser);
+pub fn clax_binding(artifact_id: &str, caps: &str) -> StoredBinding {
+    let v1 = Bindings::clax(artifact_id, caps);
     let stored = v1.of(CLAX_SURFACE).expect("a clax run's one binding");
     let had = Binding::from_stored(stored, api::definition(), |op| {
-        api::declared(op, api::OpShape::default())
+        api::declared(op, &CapSet::default())
     });
     StoredBinding::bound(
         CLAX_SURFACE,
@@ -147,8 +148,9 @@ pub fn joined_scope(artifact_id: &str, thread_ids: &[String]) -> Value {
     serde_json::json!({"clax": {"artifact": artifact_id, "thread_ids": thread_ids}})
 }
 
-/// The bindings of a run of Clax's own kind on `artifact_id`, with web
-/// grant `web` and browser grant `browser`, that the joins' bindings `joined` were bound into: its
+/// The bindings of a run of Clax's own kind on `artifact_id`, holding
+/// the capabilities `caps`, that the joins' bindings `joined` were bound
+/// into: its
 /// `clax` binding ([`clax_binding`]) first, then the first
 /// [`MAX_JOINED`] of `joined` in their order; those past it are left out
 /// and named in the log. `None` for no joined binding, and for a set
@@ -158,8 +160,7 @@ pub fn joined_scope(artifact_id: &str, thread_ids: &[String]) -> Value {
 #[must_use]
 pub fn bindings_with(
     artifact_id: &str,
-    web: &str,
-    browser: &str,
+    caps: &str,
     joined: Vec<StoredBinding>,
 ) -> Option<Bindings> {
     if joined.is_empty() {
@@ -176,7 +177,7 @@ pub fn bindings_with(
             left.join(", ")
         );
     }
-    let mut all = vec![clax_binding(artifact_id, web, browser)];
+    let mut all = vec![clax_binding(artifact_id, caps)];
     all.extend(joined.into_iter().take(MAX_JOINED));
     match Bindings::bound(all) {
         Ok(bindings) => Some(bindings),
@@ -203,12 +204,12 @@ mod tests {
     #[test]
     fn the_clax_binding_lists_what_a_run_of_its_web_grant_has() {
         let def = api::definition();
-        for web in ["", "search", "fetch", "search,fetch"] {
-            let v1 = Bindings::clax("a1", web, "");
+        for web in ["", "web.search", "web.fetch", "web.search,web.fetch"] {
+            let v1 = Bindings::clax("a1", web);
             let had = Binding::from_stored(v1.of(CLAX_SURFACE).unwrap(), def, |op| {
-                api::declared(op, api::OpShape::default())
+                api::declared(op, &CapSet::default())
             });
-            let v2 = clax_binding("a1", web, "");
+            let v2 = clax_binding("a1", web);
             assert_eq!(v2.operations(), Some(had.operations.as_slice()), "{web:?}");
             assert_eq!(v2.scope(), &serde_json::json!({"artifact": "a1"}));
             assert_eq!(
@@ -395,7 +396,7 @@ mod tests {
         );
         // The bindings of a joined run: `clax`'s first, the joined ones
         // after, at most seven of them; none joined is no bindings.
-        assert!(bindings_with("a1", "", "", Vec::new()).is_none());
+        assert!(bindings_with("a1", "", Vec::new()).is_none());
         let many: Vec<StoredBinding> = (0..9)
             .map(|n| {
                 StoredBinding::bound(
@@ -408,7 +409,7 @@ mod tests {
                 )
             })
             .collect();
-        let made = bindings_with("a1", "", "", many).unwrap();
+        let made = bindings_with("a1", "", many).unwrap();
         let names: Vec<&str> = made.all().iter().map(StoredBinding::surface).collect();
         assert_eq!(names, ["clax", "s0", "s1", "s2", "s3", "s4", "s5", "s6"]);
     }

@@ -81,8 +81,8 @@ fn scopes(joins: &[Join]) -> Vec<ClaxScope> {
 }
 
 /// The bindings a run of Clax's own kind sent by `sender` on artifact
-/// `aid` for the threads `thread_ids`, with web grant `web` and browser
-/// grant `browser`, is made with when joins on `aid` bind
+/// `aid` for the threads `thread_ids`, holding the capabilities `caps`,
+/// is made with when joins on `aid` bind
 /// into it (`clax_bot::joins::bindings_with`); `None` when none does,
 /// and the run is made as a run with no join is. Nothing is asked of the
 /// hub when the host keeps none ([`Bot::joins`]), when an agent of
@@ -101,8 +101,7 @@ pub fn joined_bindings(
     bot: &Bot,
     sender: &Sender,
     aid: &str,
-    web: &str,
-    browser: &str,
+    caps: &str,
     thread_ids: &[String],
 ) -> Result<Option<Bindings>> {
     let Some(binder) = &bot.joins else {
@@ -136,8 +135,7 @@ pub fn joined_bindings(
     let scope = clax_bot::joins::joined_scope(aid, thread_ids);
     Ok(clax_bot::joins::bindings_with(
         aid,
-        web,
-        browser,
+        caps,
         binder.joined(&theirs, &scope),
     ))
 }
@@ -485,11 +483,10 @@ mod tests {
             request_json: "{}".into(),
         };
         let hides = |bindings: String| hides_hosts_of(true, || Ok(Some(made(bindings)))).unwrap();
-        assert!(!hides(Bindings::clax("a1", "", "").to_json()));
+        assert!(!hides(Bindings::clax("a1", "").to_json()));
         assert!(hides(json!({"v": 99, "bindings": []}).to_string()));
         let joined = clax_bot::joins::bindings_with(
             "a1",
-            "",
             "",
             vec![clax_store::bot_runs::StoredBinding::bound(
                 "desk",

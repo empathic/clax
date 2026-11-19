@@ -7,7 +7,7 @@
 use super::tests::host_surface;
 use super::*;
 use crate::golden::golden;
-use crate::web::WebShape;
+use crate::capability::{CapSet, Capability};
 use clax_surface::RunScope;
 
 /// ClaxShell's surface file as the surfaces design writes it.
@@ -458,20 +458,14 @@ fn a_run_of_claxs_own_kind_is_sent_claxs_prompt() {
     let ops: Vec<&str> = clax.operations().map(|o| o.name).collect();
     let run = run_of("clax.brief", vec![binding(clax, &ops)], json!({}));
     let bound = [(&run.bindings[0], &shell)];
-    let every = crate::api::OpShape {
-        web: WebShape::BOTH,
-        browser: crate::browser::BrowserShape {
-            test: true,
-            browse: true,
-        },
-    };
+    let every: CapSet = Capability::ALL.into_iter().collect();
     assert_eq!(
         system_of(&run, &shell, &bound, Some("not a prompt file")).unwrap(),
-        system_prompt(RequestKind::Brief, every)
+        system_prompt(RequestKind::Brief, &every)
     );
     assert_eq!(
         system_pieces_of(&run, &shell, &bound, None).unwrap(),
-        system_pieces(RequestKind::Brief, every)
+        system_pieces(RequestKind::Brief, &every)
     );
 }
 
@@ -670,7 +664,7 @@ fn a_hosts_run_is_told_how_a_call_fails_and_how_a_long_one_is_awaited() {
     // Clax's own head is the core's with Clax's words, and no run of
     // Clax's has an operation that waits.
     assert!(
-        crate::api::dts(WebShape::default()).starts_with(&standard::declaration_head(
+        crate::api::dts(&CapSet::default()).starts_with(&standard::declaration_head(
             " files.* and draft.* change only the run's draft,\n// which the artifact gets on \
              draft.publish; db.* and threads.* writes\n// take effect at once.",
             false

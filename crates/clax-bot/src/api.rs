@@ -20,8 +20,7 @@
 //! provider's own (`crate::clax`'s session, which names each operation
 //! it performs).
 
-use crate::browser::{self, BrowserShape};
-use crate::web::{self, WebShape};
+use crate::capability::{CapSet, Capability};
 use clax_bot_sandbox::HostError;
 use clax_surface::{Author, Definition, Limits, Operation};
 use serde_json::Value;
@@ -104,7 +103,7 @@ pub fn op(name: &str) -> Option<OpSpec> {
 }
 
 /// Every operation's name, for the sandbox, which is built once for every
-/// run: `web.*` and `browser.*` too, whatever a run's shape declares.
+/// run: `web.*` and `browser.*` too, whatever a run's capabilities declare.
 #[must_use]
 pub fn op_names() -> Vec<String> {
     definition()
@@ -164,37 +163,44 @@ pub fn target(name: &str, args: &[Value], artifact: &str) -> Option<String> {
     }
 }
 
-/// The operations a run of Clax's own kind has beyond those every run
-/// has: its web shape and its browser shape, each fixed when the run is
-/// made ([`clax_store::bot_runs::Run::web`],
-/// [`clax_store::bot_runs::Run::browser`]). A web shape alone is the
-/// shape with no browser operation, which declares what it did before
-/// the browser, byte for byte.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct OpShape {
-    pub web: WebShape,
-    pub browser: BrowserShape,
+/// The operations of Clax's own surface a capability allows, each with
+/// the capability (spec 2026-11-19-claxbot-browser §4.2), in the order a
+/// binding lists them: what [`clax_store::bot_runs::CLAX_GRANTED`] grants,
+/// as [`Capability`]s. `browser.open.content` allows none of them.
+pub(crate) const GRANTED: [(&str, Capability); 4] = [
+    ("web.search", Capability::WebSearch),
+    ("web.fetch", Capability::WebFetch),
+    ("browser.test", Capability::OpenArtifact),
+    ("browser.browse", Capability::OpenUrl),
+];
+
+/// The capability the operation `name` needs, when one does: the
+/// operations of [`GRANTED`]. Every other operation a run of Clax's own
+/// kind has whatever its capabilities.
+#[must_use]
+pub(crate) fn needs(name: &str) -> Option<Capability> {
+    GRANTED.iter().find(|(op, _)| *op == name).map(|(_, c)| *c)
 }
 
-impl From<WebShape> for OpShape {
-    fn from(web: WebShape) -> OpShape {
-        OpShape {
-            web,
-            browser: BrowserShape::default(),
-        }
-    }
+/// Whether a run holding `caps` (its capabilities when it was made,
+/// [`clax_store::bot_runs::Run::caps`]) declares the operation named
+/// `name`: every operation but `web.*` and `browser.*`, and each of those
+/// whose capability `caps` holds ([`needs`]).
+pub(crate) fn declared(name: &str, caps: &CapSet) -> bool {
+    needs(name).is_none_or(|c| caps.has(c))
 }
 
-/// Whether a run of `shape` declares the operation named `name`: every
-/// operation but `web.*` and `browser.*`, and those its shape has.
-pub(crate) fn declared(name: &str, shape: OpShape) -> bool {
-    match name {
-        web::OP_SEARCH => shape.web.search,
-        web::OP_FETCH => shape.web.fetch,
-        browser::OP_TEST => shape.browser.test,
-        browser::OP_BROWSE => shape.browser.browse,
-        _ => true,
-    }
+/// The capabilities a run whose binding has the operations `has` names
+/// shows in its declaration: those of [`GRANTED`] whose operation it has.
+/// A capability that allows no operation of the surface
+/// (`browser.open.content`) cannot be told from a binding.
+#[must_use]
+pub(crate) fn caps_of(has: &dyn Fn(&str) -> bool) -> CapSet {
+    GRANTED
+        .iter()
+        .filter(|(op, _)| has(op))
+        .map(|(_, c)| *c)
+        .collect()
 }
 
 /// What the comment at the head of the declaration says of charged
@@ -217,12 +223,12 @@ const CLAX_HEAD_NOTE: &str = " files.* and draft.* change only the run's draft,\
                               // which the artifact gets on draft.publish; db.* and threads.* \
                               writes\n// take effect at once.";
 
-/// The TypeScript declaration of the API a run of `shape` has, as its
+/// The TypeScript declaration of the API a run holding `caps` has, as its
 /// system prompt carries it: every operation, but each of `web.*` and
-/// `browser.*` only when the shape has it, and no `web` or `browser`
-/// namespace without one of its operations. (The sandbox knows every
-/// operation whatever the shape, [`op_names`]; one not declared is
-/// refused when called.)
+/// `browser.*` only when `caps` holds its capability ([`declared`]), and
+/// no `web` or `browser` namespace without one of its operations. (The
+/// sandbox knows every operation whatever the capabilities,
+/// [`op_names`]; one not declared is refused when called.)
 ///
 /// The operations and their types are [`definition`]'s, as
 /// [`clax_surface::declaration`] writes them for a model. Around them
@@ -230,32 +236,33 @@ const CLAX_HEAD_NOTE: &str = " files.* and draft.* change only the run's draft,\
 /// and the script's clock with Clax's own on what its calls change
 /// ([`CLAX_HEAD_NOTE`]), then, in a run with a charged operation, what
 /// it says of those ([`charged_note`]), and after them the `console` a
-/// script has. A [`WebShape`] is the shape with no browser operation.
+/// script has. A set of web capabilities alone declares what a web shape
+/// declared before the browser, byte for byte.
 #[must_use]
-pub fn dts(shape: impl Into<OpShape>) -> String {
-    dts_with(shape.into(), &[], &|_| false)
+pub fn dts(caps: &CapSet) -> String {
+    dts_with(caps, &[], &|_| false)
         .expect("one surface puts each of its names on `clax` once")
 }
 
 /// [`dts`] of a run of Clax's own kind that a join bound other surfaces
-/// into (`crate::joins`): the operations of `shape`, then those of
+/// into (`crate::joins`): the operations of `caps`, then those of
 /// `others` that `has_other` names, each surface's under its name on
 /// `clax` ([`clax_surface::declaration`]), and, when the run has one of
 /// theirs, the core's words on how a call to a host's surface fails
 /// ([`crate::prompt::standard::HOST_NOTE`]) after Clax's own. With no
-/// operation of `others` it is [`dts`] of `shape`, byte for byte.
+/// operation of `others` it is [`dts`] of `caps`, byte for byte.
 ///
 /// # Errors
 /// Two of the surfaces put one name on `clax`.
 pub(crate) fn dts_with(
-    shape: OpShape,
+    caps: &CapSet,
     others: &[&Definition],
     has_other: &dyn Fn(&str) -> bool,
 ) -> Result<String, String> {
     let clax = definition();
     let has = |name: &str| {
         if clax.operation(name).is_some() {
-            declared(name, shape)
+            declared(name, caps)
         } else {
             has_other(name)
         }
@@ -276,13 +283,14 @@ pub(crate) fn dts_with(
         CLAX_HEAD_NOTE.to_string()
     };
     let mut out = crate::prompt::standard::declaration_head(&note, waits);
-    let charged: Vec<&str> = [
-        (shape.web.any(), "web.*"),
-        (shape.browser.any(), "browser.*"),
-    ]
-    .into_iter()
-    .filter_map(|(on, name)| on.then_some(name))
-    .collect();
+    let charged: Vec<&str> = [("web.", "web.*"), ("browser.", "browser.*")]
+        .into_iter()
+        .filter(|(prefix, _)| {
+            clax.operations()
+                .any(|o| o.name.starts_with(prefix) && declared(o.name, caps))
+        })
+        .map(|(_, name)| name)
+        .collect();
     if !charged.is_empty() {
         out.push_str(&charged_note(&charged.join(" and ")));
     }
@@ -296,8 +304,9 @@ pub(crate) fn dts_with(
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
-    use crate::browser::BrowserShape;
+    use crate::capability::Capability as C;
     use crate::golden::golden;
+    use crate::{browser, web};
     use serde_json::json;
 
     /// The sandbox refuses exactly the names `clax-surface` keeps from
@@ -407,47 +416,26 @@ mod tests {
         );
     }
 
-    /// The `browser` namespace is declared only in a run whose shape has
-    /// one of its operations, each operation only when the shape has
-    /// it, with what the head says of charged calls naming it.
+    /// The `browser` namespace is declared only in a run holding a
+    /// capability that allows one of its operations, with what the head
+    /// says of charged calls naming it. `browser.open.content` allows no
+    /// operation of this version, so it alone declares no namespace.
     #[test]
-    fn dts_declares_browser_only_with_its_shape() {
-        let with = |test: bool, browse: bool| {
-            dts(OpShape {
-                web: WebShape::default(),
-                browser: BrowserShape { test, browse },
-            })
-        };
-        let none = with(false, false);
+    fn browser_namespace_needs_an_open_capability() {
+        let with = |caps: &[C]| dts(&caps.iter().copied().collect());
+        let none = with(&[]);
         assert!(!none.contains("browser"), "{none}");
         assert!(!none.contains("BrowserResult"), "{none}");
-        assert_eq!(none, dts(WebShape::default()));
+        assert_eq!(with(&[C::OpenContent]), none);
 
-        let test = with(true, false);
-        assert!(test.contains("  browser: {\n"), "{test}");
-        assert!(
-            test.contains(
-                "test(target?: BrowserTarget, opts?: BrowserOpts): Promise<BrowserResult>;"
-            ),
-            "{test}"
-        );
-        assert!(test.contains("interface BrowserResult"), "{test}");
-        assert!(test.contains("screenshots: Image[];"), "{test}");
-        assert!(!test.contains("browse("), "{test}");
-        assert!(test.contains("// browser.* calls are charged"), "{test}");
-        assert!(!test.contains("web.*"), "{test}");
+        let url = with(&[C::OpenUrl]);
+        assert!(url.contains("  browser: {\n"), "{url}");
+        assert!(url.contains("browse(url: string"), "{url}");
+        assert!(!url.contains("test(target"), "{url}");
+        assert!(url.contains("// browser.* calls are charged"), "{url}");
+        assert!(!url.contains("web.*"), "{url}");
 
-        let browse = with(false, true);
-        assert!(browse.contains("browse(url: string"), "{browse}");
-        assert!(!browse.contains("test(target"), "{browse}");
-
-        let all = dts(OpShape {
-            web: WebShape::BOTH,
-            browser: BrowserShape {
-                test: true,
-                browse: true,
-            },
-        });
+        let all = with(&C::ALL);
         assert!(
             all.contains("// web.* and browser.* calls are charged"),
             "{all}"
@@ -460,20 +448,64 @@ mod tests {
             all.contains("fetch(url") && all.contains("search(query"),
             "{all}"
         );
+        // The capability each charged operation needs is the one the
+        // store's binding grants it for, operation for operation.
+        assert_eq!(
+            GRANTED.map(|(op, c)| (op, c.id())),
+            clax_store::bot_runs::CLAX_GRANTED.map(|(c, op)| (op, c))
+        );
+        assert_eq!(
+            [web::OP_SEARCH, web::OP_FETCH, browser::OP_TEST, browser::OP_BROWSE],
+            GRANTED.map(|(op, _)| op)
+        );
+        let charged: Vec<&str> = definition()
+            .operations()
+            .filter(|o| o.op.access == Access::Spend)
+            .map(|o| o.name)
+            .collect();
+        assert_eq!(charged, GRANTED.map(|(op, _)| op));
+    }
 
-        // `declared` says the same, operation by operation.
-        let shape = OpShape {
-            web: WebShape::default(),
-            browser: BrowserShape {
-                test: true,
-                browse: false,
-            },
-        };
-        assert!(declared("browser.test", shape));
-        assert!(!declared("browser.browse", shape));
-        assert!(!declared("web.fetch", shape));
-        assert!(declared("files.read", shape));
-        assert!(!declared("browser.test", OpShape::default()));
+    /// `browser.test` is declared only with `browser.open.artifact`, and
+    /// `declared` says what the declaration does, operation by operation.
+    #[test]
+    fn test_needs_the_artifact_capability() {
+        let artifact: CapSet = [C::OpenArtifact].into_iter().collect();
+        let test = dts(&artifact);
+        assert!(test.contains("  browser: {\n"), "{test}");
+        assert!(
+            test.contains(
+                "test(target?: BrowserTarget, opts?: BrowserOpts): Promise<BrowserResult>;"
+            ),
+            "{test}"
+        );
+        assert!(test.contains("interface BrowserResult"), "{test}");
+        assert!(!test.contains("browse("), "{test}");
+        for others in [
+            vec![C::OpenUrl],
+            vec![C::OpenContent],
+            vec![C::WebSearch, C::WebFetch, C::OpenUrl, C::OpenContent],
+        ] {
+            let caps: CapSet = others.iter().copied().collect();
+            assert!(!declared("browser.test", &caps), "{others:?}");
+            assert!(!dts(&caps).contains("test(target"), "{others:?}");
+        }
+        assert!(declared("browser.test", &artifact));
+        assert!(!declared("browser.browse", &artifact));
+        assert!(!declared("web.fetch", &artifact));
+        assert!(declared("files.read", &artifact));
+        assert!(declared("files.read", &CapSet::default()));
+        assert!(!declared("browser.test", &CapSet::default()));
+        // A binding's operations give back the capabilities that declare
+        // them, all but content's.
+        let all: CapSet = C::ALL.into_iter().collect();
+        let back = caps_of(&|op| declared(op, &all));
+        assert_eq!(
+            back,
+            [C::WebSearch, C::WebFetch, C::OpenUrl, C::OpenArtifact]
+                .into_iter()
+                .collect()
+        );
     }
 
     /// A browser call's arguments are checked against the declaration
@@ -503,38 +535,19 @@ mod tests {
         assert!(check_args("browser.browse", &json!([])).is_err());
     }
 
-    /// A shape with no browser operation declares what the web shape
-    /// alone declared before the browser, byte for byte.
+    /// A set of web capabilities alone declares what the web shape it
+    /// replaced declared, byte for byte (the goldens are main's).
     #[test]
-    fn a_web_shape_alone_declares_what_it_did() {
-        for web in [
-            WebShape::default(),
-            WebShape {
-                search: true,
-                fetch: false,
-            },
-            WebShape {
-                search: false,
-                fetch: true,
-            },
-            WebShape::BOTH,
-        ] {
-            let shape = OpShape {
-                web,
-                browser: BrowserShape::default(),
-            };
-            assert_eq!(OpShape::from(web), shape);
-            assert_eq!(dts(shape), dts(web));
-        }
+    fn a_web_capability_set_declares_what_it_did() {
         golden(
             "the clax API declaration without web",
             "src/api.d.ts.golden",
-            &dts(OpShape::default()),
+            &dts(&CapSet::default()),
         );
         golden(
             "the clax API declaration with web",
             "src/api.web.d.ts.golden",
-            &dts(OpShape::from(WebShape::BOTH)),
+            &dts(&[C::WebSearch, C::WebFetch].into_iter().collect()),
         );
     }
 
@@ -847,23 +860,17 @@ mod tests {
 
     #[test]
     fn fetch_alone_declares_no_search() {
-        let d = dts(WebShape {
-            search: false,
-            fetch: true,
-        });
+        let d = dts(&[C::WebFetch].into_iter().collect());
         assert!(d.contains("  web: {\n"), "{d}");
         assert!(d.contains("fetch(url: string"), "{d}");
         assert!(d.contains("interface WebPage"), "{d}");
         assert!(!d.contains("search("), "{d}");
         assert!(!d.contains("SearchResult"), "{d}");
-        let d = dts(WebShape {
-            search: true,
-            fetch: false,
-        });
+        let d = dts(&[C::WebSearch].into_iter().collect());
         assert!(d.contains("search(query: string"), "{d}");
         assert!(!d.contains("fetch("), "{d}");
         assert!(!d.contains("WebPage"), "{d}");
-        assert!(!dts(WebShape::default()).contains("web"));
+        assert!(!dts(&CapSet::default()).contains("web"));
     }
 
     #[test]

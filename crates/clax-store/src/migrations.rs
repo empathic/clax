@@ -8621,7 +8621,7 @@ mod tests {
 
     /// What making `run` now would keep as its bindings.
     fn made_bindings(run: &crate::bot_runs::Run) -> crate::bot_runs::Bindings {
-        crate::bot_runs::Bindings::clax(&run.artifact_id, &run.web, &run.browser)
+        crate::bot_runs::Bindings::clax(&run.artifact_id, &run.caps)
     }
 
     /// The indexes of `bot_runs` in `c`, each with the text that made it

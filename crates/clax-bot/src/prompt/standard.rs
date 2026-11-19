@@ -392,6 +392,7 @@ declare const mail: {
             has: &has,
             declarations: declaration.strip_suffix('\n').unwrap(),
             others,
+            after_rules: &|_| None,
             images,
             messages: false,
         };

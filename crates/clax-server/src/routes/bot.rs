@@ -1079,8 +1079,7 @@ pub fn start_run(
         bot,
         sender,
         aid.as_str(),
-        &clax_store::bot_runs::web_shape(&new.caps),
-        &clax_store::bot_runs::browser_shape(&new.caps),
+        &new.caps,
         &new.thread_ids,
     )?;
     match joined {

@@ -260,6 +260,17 @@ pub struct Run {
     pub browser: String,
 }
 
+/// The operations of Clax's own surface a capability allows, as
+/// [`Bindings::clax`] grants them: each capability ID with one operation,
+/// in the order a binding lists them (spec 2026-11-19-claxbot-browser
+/// §4.2). `browser.open.content` allows no operation of this table.
+pub const CLAX_GRANTED: [(&str, &str); 4] = [
+    ("web.search", "web.search"),
+    ("web.fetch", "web.fetch"),
+    ("browser.open.artifact", "browser.test"),
+    ("browser.open.url", "browser.browse"),
+];
+
 /// The capabilities text (`bot_runs.caps`) of a run whose web shape is
 /// `web` (`search`, `fetch`) and whose browser shape is `browser`
 /// (`test` for `browser.open.artifact`, `browse` for `browser.open.url`),
@@ -726,25 +737,20 @@ fn names(value: &Value) -> Option<Vec<String>> {
 }
 
 impl Bindings {
-    /// The bindings of a `clax` run on artifact `artifact_id` whose web
-    /// grant has the shape `web` ([`Run::web`]: `search` and `fetch`,
-    /// comma-separated) and whose browser grant has the shape `browser`
-    /// ([`Run::browser`]: `test` and `browse`, comma-separated); any other
-    /// part names no operation: version 1. The web operations come first,
-    /// then the browser's, each in a fixed order.
+    /// The bindings of a `clax` run on artifact `artifact_id` whose
+    /// capabilities are `caps` ([`Run::caps`]: capability IDs,
+    /// comma-separated): version 1, granting each operation a capability
+    /// of `caps` allows ([`CLAX_GRANTED`]), in that table's order. A part
+    /// that names no capability, or one no operation of this version
+    /// needs (`browser.open.content`), grants nothing.
     #[must_use]
-    pub fn clax(artifact_id: &str, web: &str, browser: &str) -> Bindings {
-        let has = |shape: &str, part: &str| shape.split(',').any(|p| p == part);
-        let granted = [
-            (web, "search", "web.search"),
-            (web, "fetch", "web.fetch"),
-            (browser, "test", "browser.test"),
-            (browser, "browse", "browser.browse"),
-        ]
-        .into_iter()
-        .filter(|(shape, part, _)| has(shape, part))
-        .map(|(_, _, op)| op.to_string())
-        .collect();
+    pub fn clax(artifact_id: &str, caps: &str) -> Bindings {
+        let has = |c: &str| caps.split(',').any(|p| p == c);
+        let granted = CLAX_GRANTED
+            .iter()
+            .filter(|(cap, _)| has(cap))
+            .map(|(_, op)| (*op).to_string())
+            .collect();
         Bindings {
             v: BINDINGS_VERSION,
             bindings: vec![StoredBinding {
@@ -1023,11 +1029,7 @@ impl NewRun {
     /// on its artifact.
     #[must_use]
     pub fn bindings(&self) -> Bindings {
-        Bindings::clax(
-            &self.artifact_id,
-            &web_shape(&self.caps),
-            &browser_shape(&self.caps),
-        )
+        Bindings::clax(&self.artifact_id, &self.caps)
     }
 
     /// The run's request (`bot_runs.request_json`).
@@ -3915,17 +3917,24 @@ mod tests {
         assert_eq!(bindings.bindings[0].granted(), ["browser.test"]);
         assert_eq!(kept(&st, &run.id).1, bindings, "kept as made");
         // The browser's operations follow the web's, in a fixed order,
-        // whatever order the shape names them in.
+        // whatever order the capabilities are named in.
         assert_eq!(
-            Bindings::clax(&aid, "fetch,search", "browse,test").bindings[0].granted(),
+            Bindings::clax(
+                &aid,
+                "web.fetch,browser.open.url,web.search,browser.open.artifact"
+            )
+            .bindings[0]
+                .granted(),
             ["web.search", "web.fetch", "browser.test", "browser.browse"]
         );
         assert_eq!(
-            Bindings::clax(&aid, "", "browse").bindings[0].granted(),
+            Bindings::clax(&aid, "browser.open.url").bindings[0].granted(),
             ["browser.browse"]
         );
+        // Content allows no operation yet; an unknown part grants nothing.
         assert!(
-            Bindings::clax(&aid, "", "Test,web").bindings[0]
+            Bindings::clax(&aid, "browser.open.content,Test,web,search")
+                .bindings[0]
                 .granted()
                 .is_empty()
         );
@@ -4262,7 +4271,7 @@ mod tests {
 
     #[test]
     fn bindings_are_read_only_at_the_version_this_build_knows() {
-        let made = Bindings::clax("7q3k9mzx2b4t", "search,fetch", "");
+        let made = Bindings::clax("7q3k9mzx2b4t", "web.search,web.fetch");
         let text = made.to_json();
         assert_eq!(
             text,
@@ -4283,7 +4292,7 @@ mod tests {
         assert!(read.of("shell").is_none());
         assert_eq!(read.all(), std::slice::from_ref(clax));
         assert!(
-            Bindings::clax("a", "fetch,other,Search", "")
+            Bindings::clax("a", "web.fetch,other,web.Search")
                 .of("clax")
                 .unwrap()
                 .granted()
@@ -6044,7 +6053,7 @@ mod tests {
 
         // A binding of version 1 says no operations, no registration and
         // no prompt file, whatever its text holds.
-        let v1 = Bindings::clax("7q3k9mzx2b4t", "fetch", "");
+        let v1 = Bindings::clax("7q3k9mzx2b4t", "web.fetch");
         assert_eq!(v1.version(), 1);
         let clax = v1.of("clax").unwrap();
         assert_eq!((clax.operations(), clax.registration()), (None, None));
@@ -6517,7 +6526,7 @@ mod tests {
         );
         assert_eq!(
             refused(NewRunOf {
-                bindings: Bindings::clax("7q3k9mzx2b4t", "", ""),
+                bindings: Bindings::clax("7q3k9mzx2b4t", ""),
                 ..triage()
             }),
             "run_invalid",
