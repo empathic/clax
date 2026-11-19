@@ -573,6 +573,21 @@ impl Driver<'_> {
                 self.push_request(false, json!({"url": url, "error": error}));
             }
             "Page.loadEventFired" => self.loaded = true,
+            // A dialog holds the page's main thread until it is answered:
+            // it is accepted at once and noted in the console.
+            "Page.javascriptDialogOpening" => {
+                let kind = p["type"].as_str().unwrap_or("alert").to_string();
+                let message = p["message"].as_str().unwrap_or_default().to_string();
+                self.push_console("info", &format!("{kind} dialog, accepted: {message}"));
+                let session = ev.session.clone().or_else(|| self.session.clone());
+                self.cdp
+                    .send_only(
+                        session.as_deref(),
+                        "Page.handleJavaScriptDialog",
+                        json!({"accept": true, "promptText": ""}),
+                    )
+                    .await?;
+            }
             _ => {}
         }
         Ok(())
@@ -639,6 +654,12 @@ impl Driver<'_> {
                     if let Some(e) = a.get("errorText").and_then(Value::as_str) {
                         self.awaiting_document = false;
                         return Ok(Err(e.to_string()));
+                    }
+                    // A same-document navigation (a new fragment) answers
+                    // no loaderId and fires no load event.
+                    if a.get("loaderId").is_none() {
+                        self.awaiting_document = false;
+                        self.loaded = true;
                     }
                     break;
                 }
@@ -1178,6 +1199,7 @@ mod tests {
     use clax_core::ArtifactId;
     use clax_core::working::ManualClock;
     use futures::FutureExt;
+    use std::sync::Arc;
 
     const AID: &str = "abcdefghjkmn";
 
@@ -1949,6 +1971,70 @@ mod tests {
             "{r}"
         );
         assert_eq!(r["passed"], false);
+    }
+
+    #[tokio::test]
+    async fn a_dialog_is_accepted_and_noted() {
+        // The click's script opens a confirm(), which holds its answer
+        // until the dialog is answered.
+        let held = Arc::new(std::sync::Mutex::new(None::<Value>));
+        let h = held.clone();
+        let (run, log) = run(
+            PageModel::new().evaluate(fine).on(move |cmd: &Value| {
+                let e = cmd["params"]["expression"].as_str().unwrap_or_default();
+                if e.contains("elementFromPoint") {
+                    *h.lock().unwrap() = Some(cmd.clone());
+                    return Some(vec![event(
+                        "Page.javascriptDialogOpening",
+                        json!({"type": "confirm", "message": "Delete?", "url": "x"}),
+                        Some("S"),
+                    )]);
+                }
+                if cmd["method"] == "Page.handleJavaScriptDialog" {
+                    let click = h.lock().unwrap().take().expect("a held click");
+                    return Some(vec![
+                        crate::browser::fake::answer(cmd, json!({})),
+                        crate::browser::fake::answer(&click, fine(&click["params"])),
+                    ]);
+                }
+                None
+            }),
+            json!({"steps": [{"click": "#delete"}]}),
+        )
+        .await;
+        let r = result(&run);
+        assert_eq!(r["steps"][0], json!({"ok": true}), "{r}");
+        assert_eq!(r["passed"], true);
+        let sent = log.sent("Page.handleJavaScriptDialog");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["sessionId"], "S");
+        assert_eq!(sent[0]["params"]["accept"], true);
+        assert!(
+            r["console"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("confirm dialog, accepted: Delete?"),
+            "{r}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_goto_to_a_fragment_waits_for_no_load() {
+        // A same-document navigation: no loaderId, no load event.
+        let (run, _log) = run(
+            PageModel::new().evaluate(fine).on(|cmd: &Value| {
+                let url = cmd["params"]["url"].as_str().unwrap_or_default();
+                (cmd["method"] == "Page.navigate" && url.contains('#')).then(|| {
+                    vec![crate::browser::fake::answer(cmd, json!({"frameId": "F"}))]
+                })
+            }),
+            json!({"steps": [{"goto": "index.html#settings"}, {"eval": "document.title"}]}),
+        )
+        .await;
+        let r = result(&run);
+        assert_eq!(r["steps"][0], json!({"ok": true}), "{r}");
+        assert_eq!(r["steps"][1], json!({"ok": true, "value": "Hello"}));
+        assert_eq!(r["passed"], true);
     }
 
     #[test]
