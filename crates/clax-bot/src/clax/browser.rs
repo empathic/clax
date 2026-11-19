@@ -39,8 +39,9 @@
 //! 8. The source opens a browser ([`crate::browser::BrowserSource::open`])
 //!    and the test runs ([`run_test`]) on the run's draft as the session
 //!    holds it, edits not yet committed included, or on the version, with
-//!    the source's deadline at the call's time cap from the open. A browse
-//!    runs on the URL, its page's every request held to the rule's hosts
+//!    the source's deadline at the call's time cap from before the open,
+//!    which it bounds too. A browse runs on the URL, its page's every
+//!    request held to the rule's hosts
 //!    ([`crate::browser::browse::BrowsePolicy`]).
 //!
 //! Calls of one step are performed one after the other (the session's
@@ -90,8 +91,8 @@ use crate::browser::serve::{Pages, Site};
 use crate::browser::session::{RequestPolicy, Start, TestPolicy, TestRun, run_test};
 use crate::browser::{
     BrowserAccess, BrowserError, BrowserGrant, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_CAP,
-    CODE_BROWSER_DISABLED, CODE_BROWSER_TARGET_NOT_FOUND, CODE_BROWSER_UNAVAILABLE,
-    CODE_CREDITS_EXHAUSTED, Cdp, OP_BROWSE, OP_TEST,
+    CODE_BROWSER_DISABLED, CODE_BROWSER_TARGET_NOT_FOUND, CODE_BROWSER_TIMEOUT,
+    CODE_BROWSER_UNAVAILABLE, CODE_CREDITS_EXHAUSTED, Cdp, OP_BROWSE, OP_TEST,
 };
 use crate::host::host_error;
 use crate::surface::{Answer, Call, Fields, err_json, recorded};
@@ -581,9 +582,33 @@ impl ClaxSession<'_> {
         audit: &[(&'static str, Value)],
         shown: &mut Value,
     ) -> (Finish, Vec<(&'static str, Value)>) {
-        let transport = match source.open(self.cx.cancel).await {
-            Ok(t) => t,
-            Err(e) => {
+        // The call's time cap bounds the open too: an upgrade that stalls
+        // ends at the deadline, counted (Browser Run was asked) and not
+        // charged (no browser opened).
+        let mut deadline = source.deadline(
+            self.provider.clock.now() + chrono::Duration::seconds(i64::from(options.timeout_s)),
+        );
+        let opening = futures::future::select(source.open(self.cx.cancel), &mut deadline).await;
+        let transport = match opening {
+            futures::future::Either::Right(((), _)) => {
+                let e = BrowserError::new(
+                    CODE_BROWSER_TIMEOUT,
+                    format!(
+                        "Browser Run did not open a browser within the call's {} s",
+                        options.timeout_s
+                    ),
+                    true,
+                );
+                return (
+                    Finish {
+                        counted: true,
+                        ..Finish::refused(from_browser(&e))
+                    },
+                    vec![],
+                );
+            }
+            futures::future::Either::Left((Ok(t), _)) => t,
+            futures::future::Either::Left((Err(e), _)) => {
                 // Refused before Browser Run was asked: not counted.
                 let counted = e.code != CODE_BROWSER_BUSY && e.code != CODE_CANCELLED;
                 return (
@@ -607,9 +632,6 @@ impl ClaxSession<'_> {
             opened_at: self.provider.clock.now(),
             armed: true,
         };
-        let deadline = source.deadline(
-            self.provider.clock.now() + chrono::Duration::seconds(i64::from(options.timeout_s)),
-        );
         let mut cdp = Cdp::new(transport, deadline, self.cx.cancel.clone());
         let tested = run_test(
             &mut cdp,

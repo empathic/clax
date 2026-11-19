@@ -557,6 +557,27 @@ async fn a_failure_after_opening_is_charged_at_most_the_time_cap_and_counts() {
     );
 }
 
+/// An open that stalls is bounded by the call's time cap, not only by
+/// the source's own timeout: it answers browser_timeout, counted and not
+/// charged.
+#[tokio::test]
+async fn an_open_that_stalls_ends_at_the_calls_deadline() {
+    let env = Env::new().await;
+    env.browser.hang_on_open();
+    env.browser.fire_deadline();
+    let (run, v) = one_script(
+        &env,
+        "test",
+        "try { await clax.browser.test(); return 'tested'; } catch (e) { return e.code; }",
+    )
+    .await;
+    assert_eq!(v, "browser_timeout");
+    assert_eq!(env.browser.opened(), 1);
+    assert_eq!(browser_rows(&env), Vec::<i64>::new());
+    let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
+    assert_eq!(counted.get("browser.test"), Some(&1), "{counted:?}");
+}
+
 /// The run is cancelled while its browser is open: the sandbox drops the
 /// call, and the browser's time so far is still charged, counted,
 /// journaled and audited, once.

@@ -488,6 +488,7 @@ pub struct FakeBrowserSource {
     own_hosts: Mutex<Result<OwnHosts, String>>,
     private_names: Mutex<BTreeSet<String>>,
     hosts_asked: Mutex<Vec<String>>,
+    hangs: AtomicBool,
 }
 
 impl std::fmt::Debug for FakeBrowserSource {
@@ -530,7 +531,14 @@ impl FakeBrowserSource {
             own_hosts: Mutex::new(Ok(OwnHosts::default())),
             private_names: Mutex::new(BTreeSet::new()),
             hosts_asked: Mutex::new(Vec::new()),
+            hangs: AtomicBool::new(false),
         }
+    }
+
+    /// Makes each later open count as reaching Browser Run and then never
+    /// answer, as an upgrade that stalls.
+    pub fn hang_on_open(&self) {
+        self.hangs.store(true, Ordering::SeqCst);
     }
 
     /// Opens what `f` makes, each time: a browser, or the refusal.
@@ -616,6 +624,10 @@ impl BrowserSource for FakeBrowserSource {
                 "the run was cancelled",
                 false,
             ));
+        }
+        if self.hangs.load(Ordering::SeqCst) {
+            self.opened.fetch_add(1, Ordering::SeqCst);
+            return std::future::pending().await;
         }
         let chrome = {
             let mut opener = lock(&self.opener);
