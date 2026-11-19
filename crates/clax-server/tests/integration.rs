@@ -225,6 +225,8 @@ mod golden_single_owner;
 mod harness_ids;
 #[cfg(any(not(clax_split), clax_split = "hosted_pages"))]
 mod hosted_pages;
+#[cfg(any(not(clax_split), clax_split = "live_browser_run"))]
+mod live_browser_run;
 #[cfg(any(not(clax_split), clax_split = "overlay_files"))]
 mod overlay_files;
 #[cfg(any(not(clax_split), clax_split = "sample_anthropic"))]

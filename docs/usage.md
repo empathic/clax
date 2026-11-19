@@ -734,6 +734,13 @@ uninstall` takes it away again.
   real `clax serve` and `fake_host` processes, across a restart of the
   daemon: run it after changing the protocol's routes, its hub or
   `fake_host`.
+- `just browser-live` (`crates/clax-server/tests/live_browser_run.rs`,
+  gating nothing, billing a few seconds of browser time) runs one ClaxBot
+  browser test against real Cloudflare Browser Run, with
+  `CLAX_LIVE_BROWSER_RUN_ACCOUNT` and `CLAX_LIVE_BROWSER_RUN_TOKEN` (a
+  token with Browser Rendering – Edit) from the environment: run it after
+  changing `DaemonBrowser` or the CDP session. Without both variables the
+  test passes at once, so CI and `just check` run it as a no-op.
 
 Tests wait on conditions, never on time: no sleep stands in for a
 condition, no wall-clock budget decides a result, and timed rules run on
