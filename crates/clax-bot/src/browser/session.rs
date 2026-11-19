@@ -93,6 +93,11 @@ pub const MAX_TEXT_CHARS: usize = 20_000;
 pub const TEST_MS: u32 = 5_000;
 /// The most failures a result's `tests` keeps (as the bridge's harness).
 const MAX_TEST_FAILURES: usize = 50;
+/// The most characters of a saved test failure's name or error, of the
+/// page's title, and of its URL: each comes from the page's own code.
+const MAX_TEST_TEXT: usize = 1_000;
+const MAX_TITLE: usize = 1_000;
+const MAX_URL: usize = 10_000;
 
 /// What answers the requests a page makes.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -250,7 +255,10 @@ fn tests_of(v: &Value) -> Value {
     ) else {
         return tests_failed("the bridge answered no test results");
     };
-    let text = |x: &Value| x.as_str().map_or_else(|| x.to_string(), str::to_string);
+    let text = |x: &Value| {
+        let s = x.as_str().map_or_else(|| x.to_string(), str::to_string);
+        cut_chars(&s, MAX_TEST_TEXT).0
+    };
     let failed: Vec<Value> = failed
         .iter()
         .take(MAX_TEST_FAILURES)
@@ -259,12 +267,12 @@ fn tests_of(v: &Value) -> Value {
     json!({"passed": passed, "failed": failed, "skipped": skipped})
 }
 
-/// What the collect step evaluates.
+/// What the collect step evaluates: `html` and `text` cut in the page at
+/// their caps in UTF-16 code units, never inside a surrogate pair, with
+/// their whole lengths, which say whether they were cut.
 fn collect_js(html: bool, text: bool) -> String {
     format!(
-        "(() => ({{title: document.title, url: location.href, csp: Array.isArray(window.__claxCsp) ? window.__claxCsp.slice() : [], html: {html} ? document.documentElement.outerHTML.slice(0, {h}) : null, htmlLength: {html} ? document.documentElement.outerHTML.length : 0, text: {text} && document.body ? document.body.innerText.slice(0, {t}) : null, textLength: {text} && document.body ? document.body.innerText.length : 0}}))()",
-        h = MAX_HTML + 1,
-        t = MAX_TEXT_CHARS + 1,
+        "(() => {{ const cut = (s, n) => {{ const r = s.slice(0, n); return /[\\uD800-\\uDBFF]$/.test(r) ? r.slice(0, -1) : r; }}; const h = {html} ? document.documentElement.outerHTML : ''; const t = {text} && document.body ? document.body.innerText : ''; return {{title: document.title, url: location.href, csp: Array.isArray(window.__claxCsp) ? window.__claxCsp.slice() : [], html: {html} ? cut(h, {MAX_HTML}) : null, htmlLength: h.length, text: {text} && document.body ? cut(t, {MAX_TEXT_CHARS}) : null, textLength: t.length}}; }})()"
     )
 }
 
@@ -818,25 +826,31 @@ impl Driver<'_> {
     /// Takes the collect step's value into `g`.
     fn collected(&mut self, v: &Value, g: &mut Gathered) {
         if let Some(t) = v["title"].as_str() {
-            g.title = t.to_string();
+            g.title = cut_chars(t, MAX_TITLE).0;
         }
         if let Some(u) = v["url"].as_str() {
-            g.url = u.to_string();
+            g.url = cut_chars(u, MAX_URL).0;
         }
         for c in v["csp"].as_array().into_iter().flatten() {
             let url = c["url"].as_str().unwrap_or_default().to_string();
             self.push_request(true, json!({"url": url, "why": "csp"}));
         }
+        // The page's own lengths say whether it cut; the bound is kept
+        // here too, the page being the artifact's code.
+        let longer = |len: &Value, max: usize| {
+            len.as_u64()
+                .is_some_and(|n| usize::try_from(n).map_or(true, |n| n > max))
+        };
         if let Some(h) = v["html"].as_str() {
             let (h, was_cut) = cut_chars(h, MAX_HTML);
-            if was_cut {
+            if was_cut || longer(&v["htmlLength"], MAX_HTML) {
                 self.cut("html");
             }
             g.html = Some(h);
         }
         if let Some(t) = v["text"].as_str() {
             let (t, was_cut) = cut_chars(t, MAX_TEXT_CHARS);
-            if was_cut {
+            if was_cut || longer(&v["textLength"], MAX_TEXT_CHARS) {
                 self.cut("text");
             }
             g.text = Some(t);
@@ -1019,10 +1033,16 @@ impl Driver<'_> {
             },
             Step::Eval(expr) => match self.evaluate(&eval_js(expr)).await? {
                 Err(e) => Err(e),
-                Ok(v) if v["tooLong"] == true => Err(format!(
-                    "the value is over {} KiB as JSON",
-                    MAX_EVAL_BYTES / 1024
-                )),
+                // Measured here too: the page can replace what measures it.
+                Ok(v)
+                    if v["tooLong"] == true
+                        || v["json"].as_str().is_some_and(|j| j.len() > MAX_EVAL_BYTES) =>
+                {
+                    Err(format!(
+                        "the value is over {} KiB as JSON",
+                        MAX_EVAL_BYTES / 1024
+                    ))
+                }
                 Ok(v) => match v["json"].as_str().map(serde_json::from_str::<Value>) {
                     Some(Ok(value)) => Ok(Some(value)),
                     _ => Err("the value cannot be written as JSON".to_string()),
@@ -2059,6 +2079,50 @@ mod tests {
         assert!(e.opened);
         assert_eq!(log.sent("Browser.close").len(), 1);
         assert_eq!(log.closes(), 1);
+    }
+
+    #[tokio::test]
+    async fn what_the_page_answers_is_capped_here_too() {
+        // A page that replaced what measures in it: an eval value over
+        // the cap, a long title, HTML it says it cut by code units (60,000
+        // emoji: 120,000 units, under 100,000 characters once cut).
+        let emoji = "\u{1f600}".repeat(50_000);
+        let (run, _log) = run(
+            PageModel::new().evaluate(move |p: &Value| {
+                let e = p["expression"].as_str().unwrap_or_default();
+                if e.contains("JSON.stringify(v)") {
+                    let big = format!("\"{}\"", "x".repeat(MAX_EVAL_BYTES + 1));
+                    value(json!({"json": big}))
+                } else if e.contains("__claxCsp") && e.contains("title") {
+                    value(json!({
+                        "title": "t".repeat(5_000), "url": "https://abcdefghjkmn.clax-test.invalid/",
+                        "csp": [], "html": emoji, "htmlLength": 120_000, "text": null, "textLength": 0,
+                    }))
+                } else {
+                    fine(p)
+                }
+            }),
+            json!({"steps": [{"eval": "big"}], "html": true}),
+        )
+        .await;
+        let r = result(&run);
+        assert_eq!(r["steps"][0]["ok"], false);
+        assert!(
+            r["steps"][0]["error"].as_str().unwrap().contains("16 KiB"),
+            "{}",
+            r["steps"][0]
+        );
+        assert_eq!(r["title"].as_str().unwrap().chars().count(), MAX_TITLE);
+        assert!(r["truncated"].as_array().unwrap().contains(&json!("html")));
+    }
+
+    #[test]
+    fn a_saved_test_failure_is_cut() {
+        let t = tests_of(&json!({"passed": 0, "skipped": 0, "failed": [{"name": "n".repeat(5_000), "error": "e"}]}));
+        assert_eq!(
+            t["failed"][0]["name"].as_str().unwrap().len(),
+            MAX_TEST_TEXT
+        );
     }
 
     #[tokio::test]
