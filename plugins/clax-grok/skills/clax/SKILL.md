@@ -80,6 +80,8 @@ dark mode, and on a phone:
   `publish_public`'s `content_security_policy`): its pages may then load
   from, connect to and post to any site, and register a service worker of
   their own.
+- On a hosted Clax the bridge reports one page view per page load to the
+  site's own `/_clax/api/analytics`; a page needs to do nothing.
 - `icon.svg` at the top of the files is the app's icon, a square
   full-bleed design. Every publish refuses one that breaks these rules
   (`invalid_icon`), and a version a git push makes leaves it out, naming
