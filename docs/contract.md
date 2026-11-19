@@ -6993,11 +6993,9 @@ versions is a snapshot of the page, taken when a comment is posted.
   any other fragment is dropped, and the route is cut to 512 bytes at a
   character boundary. `http://LOCALHOST:5173/settings?tab=billing&utm_source=x#top`
   is origin `http://localhost:5173`, path `/settings`, route `?tab=billing`.
-  A URL on the daemon's own port whose host is `localhost`, any
-  `*.localhost`, a loopback or unspecified IP address (`127.0.0.0/8`,
-  `[::1]`, `0.0.0.0`, `[::]`), or the host the daemon is reached at is
-  refused with 400 `own_origin`: Clax's own pages have their own comment
-  mode.
+  The daemon's own pages are live pages like any other: the shell's
+  screens, and an artifact's view, whose live-page threads are kept apart
+  from the artifact's own.
 - **`GET /api/live/pages?url=<page URL>`** answers `{page, route, rule}`:
   the live page the URL names, or `null`, the URL's route, or `null`, and
   the merge rule that maps the URL's path (see "Site-wide threads"), or
@@ -7048,7 +7046,7 @@ versions is a snapshot of the page, taken when a comment is posted.
   replies_armed}, page, covered}` (`covered`: the artifact IDs of the
   covered pages); 400 `unknown_session` for a missing or ended session
   (checked before anything is written, so it makes no page), and the URL
-  errors above (`own_origin` too). The page is made before the scope watch
+  errors above. The page is made before the scope watch
   is written: when the page cannot be made, the call fails and leaves no
   scope watch. Watching the same URL again
   sets its `replies_armed`. A `scope` watch is armed while any of the
@@ -7161,7 +7159,7 @@ the extension's credential; anything else is 403 `forbidden`.
   `pattern` (that rule's pattern, else `null`). A canonical page's
   `page_url` is not a URL to open; its threads' `page_url`s are.
 - **`GET /api/live/site?origin=<origin>`** (`origin` may be any URL of the
-  origin; the daemon's own origin is 400 `own_origin`) answers `{origin,
+  origin) answers `{origin,
   rules, pages}`. `rules` are the origin's merge rules in force, oldest
   first. `pages` are the origin's live pages that have threads, newest
   activity first, each `{page, summary, threads}`: `summary` is `{open,
@@ -7214,7 +7212,7 @@ the extension's credential; anything else is 403 `forbidden`.
   topics (`artifact:<aid>`, `gallery`) but not `site:`, `thread_deleted`
   (for clients that know only that), then the thread's `thread` on the new
   page. 400 `cross_origin` for a page of another origin, writing nothing;
-  the URL errors of `POST /api/live/threads` (`own_origin` too); 404 for a
+  the URL errors of `POST /api/live/threads`; 404 for a
   missing thread, or one that is not a live page's.
 - **Merge rules.** A rule `{origin, pattern}` says that the live pages of
   `origin` whose path `pattern` matches are one page: the **canonical
@@ -7235,8 +7233,7 @@ the extension's credential; anything else is 403 `forbidden`.
   always names its canonical page. Otherwise, when several rules of the
   origin match a path, the one with the most literal segments wins, then
   the one with the most `:name` segments, then the oldest. An origin holds
-  at most 64 rules in force (400 `too_many_rules`); the daemon's own origin
-  is 400 `own_origin`. A rule is `{id, origin, pattern, page_url,
+  at most 64 rules in force (400 `too_many_rules`). A rule is `{id, origin, pattern, page_url,
   created_at, deleting}`, where `page_url` is the canonical page's URL
   (the origin followed by the pattern).
   - `POST /api/live/rules` `{origin, pattern}` (`origin` may be any URL of
@@ -7286,8 +7283,7 @@ suggests a join and the owner confirms; nothing joins on its own. The
 routes are under `/api/live/` (hidden from the LAN), take the `Origin` rule
 of the viewer routes, and follow the owner rules above: reads need an owner
 credential, writes the token or the extension's credential (else 403
-`forbidden`). Each origin a route takes may be any URL of it; the daemon's
-own origin is 400 `own_origin`.
+`forbidden`). Each origin a route takes may be any URL of it.
 
 - **A site** is `{key, name, joined, origins}`: `key` is the origin its
   live pages and merge rules are kept under, `name` its most recently used

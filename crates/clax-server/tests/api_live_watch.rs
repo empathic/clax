@@ -211,7 +211,7 @@ async fn ending_the_session_ends_its_scope_watches() {
 }
 
 #[tokio::test]
-async fn a_scope_watch_refuses_the_daemons_own_pages_and_unknown_sessions() {
+async fn a_scope_watch_takes_the_daemons_own_pages_and_refuses_unknown_sessions() {
     let ts = TestServer::spawn().await;
     let s = ts.register_session("claude", "w-7").await;
     let sid = s["id"].as_str().unwrap();
@@ -225,11 +225,7 @@ async fn a_scope_watch_refuses_the_daemons_own_pages_and_unknown_sessions() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 400);
-    assert_eq!(
-        res.json::<Value>().await.unwrap()["error"]["code"],
-        "own_origin"
-    );
+    assert_eq!(res.status(), 200, "the daemon's own pages are watched too");
     let res = ts
         .client
         .put(format!("{}/api/sessions/{sid}/live-watches", ts.base))
