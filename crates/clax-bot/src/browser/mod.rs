@@ -40,6 +40,7 @@ pub mod cdp;
 pub mod fake;
 pub mod opts;
 pub mod serve;
+pub mod session;
 
 pub use access::{
     BrowseGrant, BrowseRule, BrowserAccess, BrowserGrant, BrowserOff, BrowserShape, TestGrant,
