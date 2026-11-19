@@ -49,7 +49,14 @@
 // - room sockets a page opens on its site host through its site session
 //   (Sam's, on a board shared with him, and the owner's) reopen across the
 //   wake as their holders, and removing Sam's share closes his (4403
-//   `revoked`) and leaves the owner's open.
+//   `revoked`) and leaves the owner's open;
+// - a world visitor's load of a counted page (its bridge tag marked
+//   `data-count`) is reported through the Worker to the instance and
+//   counted once, its country the one workerd's `request.cf` names, never
+//   the `CF-IPCountry` it sent; the alarm writes the batch (aged 1 ms here,
+//   `CLAX_TEST_ANALYTICS_BATCH_MS`), which the read route still answers
+//   after a simulated wake, and the alarm is then set no later than the
+//   UTC day's rollover.
 //
 // Prints one line per check and a JSON summary; exits non-zero on the first
 // failure. `node e2e-hosted.mjs --no-build` skips the build;
@@ -311,6 +318,9 @@ async function main() {
     REPO_DEV_ROUTES: "1",
     CLAX_LIVE_PEOPLE_SEATS: "1",
     CLAX_LIVE_GUEST_SEATS: "1",
+    // A batch of page views is written once 1 ms old, by the alarm that
+    // follows (MIN_ALARM_MS ahead), rather than a minute on.
+    CLAX_TEST_ANALYTICS_BATCH_MS: "1",
   });
   const browser = await chromium.launch();
   let w;
@@ -843,6 +853,47 @@ async function main() {
       await joined(adaRoom, "the owner's site room socket answers after the share is removed");
       check(true, "the owner's site room socket stays open");
     }
+
+    // Site analytics, on the world-open site (no browser has loaded its
+    // page yet): a visit counted with Cloudflare's country, never the
+    // visitor's own header, written by the alarm and read after a wake.
+    const marked = await raw(`${openHost}/`);
+    check(marked.status === 200 && /<script[^>]*data-count="1"[^>]*><\/script>/.test(marked.text), "a world-open site's page is served marked for counting", marked.text.slice(0, 400));
+    const visitor = await browser.newContext({
+      // Headless Chromium names itself, and a headless browser is not counted.
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      extraHTTPHeaders: { "cf-ipcountry": "ZZ" },
+    });
+    const seen = await visitor.newPage();
+    pages.push(seen);
+    const reported = seen.waitForResponse((r) => new URL(r.url()).pathname === "/_clax/api/analytics" && r.request().method() === "POST", { timeout: HANG_MS });
+    await seen.goto(`${openHost}/`);
+    check((await reported).status() === 204, "the page's bridge reports the view to its own site through the Worker", (await reported).status());
+    const stats = () => api(origin, `/api/artifacts/${openSite.id}/analytics`);
+    const counted = await until("the view is counted", async () => {
+      const r = await stats();
+      return r.totals?.views === 1 && r;
+    });
+    const country = counted.countries?.[0]?.value;
+    check(
+      counted.totals.visitors === 1 && counted.countries.length === 1 && /^[A-Z][A-Z0-9]$/.test(country) && country !== "ZZ",
+      `the view counts once, its country workerd's request.cf names (${country}), not the one the visitor sent`,
+      counted,
+    );
+    check(counted.devices?.[0]?.value === "desktop" && counted.pages?.[0]?.value === "index.html", "the view's device and page are counted", counted);
+    // No request writes a batch here but a view's (none follows) and a
+    // server's first event (long past): the alarm does.
+    const alarmNow = () => api(origin, `/_worker/alarm?artifact=${openSite.id}`);
+    const after = await until("the alarm writes the batch", async () => {
+      const a = await alarmNow();
+      return a.views_pending === 0 && a;
+    });
+    const midnight = Math.floor(after.now / 86_400_000 + 1) * 86_400_000;
+    check(after.alarm !== null && after.alarm <= Math.max(midnight, after.now + 5_000) + 1_000, "the alarm is then set no later than the UTC day's rollover", { after, midnight });
+    const rebuilt = await fetch(`${origin}/_worker/hibernate`, { method: "POST", headers: bearer });
+    check(rebuilt.status === 200, "the server is rebuilt again, the views in memory dropped", rebuilt.status);
+    const kept = await stats();
+    check(kept.totals?.views === 1 && kept.totals?.visitors === 1 && kept.countries?.[0]?.value === country, "the read route answers the view from the store after the wake: the batch was written", kept);
 
     const health = await fetch(`${origin}/healthz`).then((r) => r.json());
     summary.ok = true;

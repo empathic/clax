@@ -232,10 +232,18 @@ pub fn split(batch: Batch, rows: usize) -> Vec<Batch> {
 }
 
 /// The views not yet written and the day's seen set in memory (see the
-/// module docs).
-#[derive(Default)]
+/// module docs). [`Analytics::default`] writes a batch [`MAX_AGE`] old;
+/// [`Analytics::with_max_age`] at another age.
 pub struct Analytics {
     inner: Mutex<Inner>,
+    /// How old a batch is written ([`MAX_AGE`] but in a test host).
+    max_age: Duration,
+}
+
+impl Default for Analytics {
+    fn default() -> Self {
+        Self::with_max_age(MAX_AGE)
+    }
 }
 
 #[derive(Default)]
@@ -276,16 +284,26 @@ impl Inner {
             || self.batch.seen.iter().any(|r| r.day.as_str() < today)
     }
 
-    /// Whether the batch is to be written at `now`: its age or size.
-    fn batch_due(&self, now: DateTime<Utc>) -> bool {
+    /// Whether the batch is to be written at `now`: its age (`max_age`)
+    /// or size.
+    fn batch_due(&self, now: DateTime<Utc>, max_age: Duration) -> bool {
         self.views >= MAX_VIEWS
             || self
                 .since
-                .is_some_and(|t| (now - t).to_std().unwrap_or(Duration::ZERO) >= MAX_AGE)
+                .is_some_and(|t| (now - t).to_std().unwrap_or(Duration::ZERO) >= max_age)
     }
 }
 
 impl Analytics {
+    /// Views not yet written, kept until the oldest is `max_age` old (a
+    /// test host's shorter age; [`MAX_AGE`] otherwise).
+    pub fn with_max_age(max_age: Duration) -> Self {
+        Self {
+            inner: Mutex::default(),
+            max_age,
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -399,7 +417,8 @@ impl Analytics {
 
     /// How long from `now` until [`Analytics::sweep`] has something to do:
     /// at once while the stored open day was not read since start or a
-    /// rollover is due; else the earliest of the batch's age limit (at once
+    /// rollover is due; else the earliest of the batch's age limit
+    /// ([`Analytics::with_max_age`]; at once
     /// when it is full) and the next midnight while a day is open (a
     /// secret or seen rows stored, or views not yet written). `None` with
     /// nothing to do.
@@ -412,7 +431,7 @@ impl Analytics {
         let until = |t: DateTime<Utc>| (t - now).to_std().unwrap_or(Duration::ZERO);
         let age = g
             .since
-            .map(|t| until(t + chrono::Duration::from_std(MAX_AGE).unwrap_or_default()));
+            .map(|t| until(t + chrono::Duration::from_std(self.max_age).unwrap_or_default()));
         let open = matches!(g.stored_open, Some(Some(_))) || !g.batch.is_empty();
         let midnight = open.then(|| until(next_midnight(now)));
         age.into_iter().chain(midnight).min()
@@ -436,7 +455,7 @@ impl Analytics {
         let (batch, rollover) = {
             let mut g = self.lock();
             let rollover = g.rollover_due(&today);
-            if !rollover && !g.batch_due(now) {
+            if !rollover && !g.batch_due(now, self.max_age) {
                 return Ok(());
             }
             g.turn_to(&today);
@@ -735,6 +754,25 @@ mod tests {
         clock.advance(60);
         an.sweep(&st).unwrap();
         assert_eq!(day(&st, &a, "2026-11-20"), (1, 1));
+    }
+
+    #[test]
+    fn a_shorter_max_age_writes_the_batch_sooner() {
+        let clock = Arc::new(ManualClock::at("2026-11-19T10:00:00Z"));
+        let (_d, st) = store(clock.clone());
+        let a = artifact(&st);
+        let an = Analytics::with_max_age(Duration::from_secs(2));
+        an.sweep(&st).unwrap();
+        an.count(&st, &a, ip("192.0.2.1"), UA, view("index.html"))
+            .unwrap();
+        assert_eq!(an.next_due_in(st.now_utc()), Some(Duration::from_secs(2)));
+        clock.advance(1);
+        an.sweep(&st).unwrap();
+        assert_eq!(day(&st, &a, "2026-11-19"), (0, 0));
+        clock.advance(1);
+        assert_eq!(an.next_due_in(st.now_utc()), Some(Duration::ZERO));
+        an.sweep(&st).unwrap();
+        assert_eq!(day(&st, &a, "2026-11-19"), (1, 1));
     }
 
     #[test]

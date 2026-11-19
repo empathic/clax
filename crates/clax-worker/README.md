@@ -38,7 +38,8 @@ changes), then
 - `node e2e-hosted.mjs`: the instance as a hosted Clax: setup, an invite, a
   sign-in link, an agent token on `/mcp`, a guest, each artifact's site
   on its own host (`SITE_DOMAIN=localhost`), app data in each artifact's
-  object, live pointers, a spectator, and seats across a simulated wake;
+  object, live pointers, a spectator, seats across a simulated wake, and
+  a site visit counted with its country and written by the alarm;
 - `node smoke-remote.mjs --local`: the deployed instance's smoke (below)
   against a fresh hosted `wrangler dev --local` with `REPO_STORE=memory`.
 
@@ -59,6 +60,22 @@ whose client ID, secret and owner are kept in
 `~/.config/clax/local/github.env` for every worktree. `--fresh` starts
 over and `--setup` leaves setup open to try it. `just hosted-demo` is the
 other local instance: seeded people and artifacts, and demo agents.
+
+### Site analytics
+
+A hosted instance counts its sites' page views
+(`docs/superpowers/specs/2026-11-19-site-analytics-design.md`): a counted
+page's bridge reports each load to its own site, `POST
+/_clax/api/analytics`, which the Worker sends to the instance with
+`CF-IPCountry` set from `request.cf.country`, replacing any the client
+sent (the object's request has no `cf` of its own); `request.cf.country`
+needs no zone setting. The instance keeps the views not yet written in
+memory and writes them a minute after the first, from the alarm when no
+request does (an eviction loses at most that minute), rolls the UTC day
+over at the first sweep after midnight, and deletes daily totals past 13
+months in the alarm's prune. With `CLAX_TEST_ROUTES`,
+`CLAX_TEST_ANALYTICS_BATCH_MS` writes a batch that many milliseconds old
+instead, so `e2e-hosted.mjs` sees the alarm write one.
 
 ### ClaxBot's sandbox
 
@@ -364,6 +381,7 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `CLAX_INSTANCE` | empty | The instance object's name (`default`) |
 | `CLAX_LIVE_PEOPLE_SEATS`, `CLAX_LIVE_GUEST_SEATS`, `CLAX_LIVE_AGENT_SEATS`, `CLAX_LIVE_SEAT_IDLE_S` | empty | Live seats per artifact and the idle release; empty takes 100, 20, 20 and 180 s |
 | `CLAX_TEST_ROUTES`, `CLAX_TEST_WEB`, `REPO_DEV_ROUTES` | `0` | Test-only routes, and ClaxBot's scripted web source; never `1` on a deploy |
+| `CLAX_TEST_RESUME_AFTER_MS`, `CLAX_TEST_ANALYTICS_BATCH_MS` | empty | Tests only, with `CLAX_TEST_ROUTES`: how far ahead ClaxBot keeps the alarm, and how old a batch of page views is written |
 | `CLAX_DIAG_ROUTES` | `0`; `1` (`deploy.mjs --diag`) only until the smoke is green | `/_diag/` for the owner token (`src/diag.rs`): what the platform's bindings answer |
 | `GITHUB_CLIENT_ID` | the OAuth App's client ID (`deploy.mjs --github-client-id`) | GitHub sign-in; off without it or without `GITHUB_CLIENT_SECRET` |
 | `OWNER_GITHUB` | the owner's GitHub login (`deploy.mjs --owner-github`) | Whoever signs in as that account (case-insensitive) is the owner |
@@ -546,7 +564,9 @@ its steps. Not yet run against a deployed Worker:
   in-flight requests and the isolate's memory, which the instance rebuilds
   from storage in the same way.
 - The custom domains, certificates and `CF-Connecting-IP` from Cloudflare's
-  edge (under `wrangler dev` every client is one address).
+  edge (under `wrangler dev` every client is one address), and the country
+  in `request.cf` a page view is counted with (workerd's local `cf` stands
+  in for it).
 - The Bazel build on Linux (CI): the bundle has been built on macOS only
   (the NDK's Linux LLVM compiles its C there).
 - ClaxBot's sandbox on real dynamic Workers: the `cpuMs` limit and the

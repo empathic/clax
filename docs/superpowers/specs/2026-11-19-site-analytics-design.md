@@ -427,7 +427,9 @@ pass at the next sweep. The old day's seen rows still in the batch are
 dropped rather than written and deleted. A process does not know at start
 whether an earlier one left a day open, so `next_sweep_in` is due at once
 until the first sweep has read the earliest stored day
-(`Store::analytics_open_day`): on the Worker, one store read per wake.
+(`Store::analytics_open_day`): on the Worker, one store read per wake, made
+at the object's first event (`InstanceDo::revive`), so a wake sets no alarm
+for that read alone.
 
 Retention: rows of `analytics_days`, `analytics_dims` and
 `analytics_timings` whose day is more than 13 calendar months before today
@@ -441,10 +443,14 @@ views for a while still sheds its old rows at its next prune. Nothing else
 schedules work: there is no general job runner (`JOBS_MIGRATION` is the
 Clax app's agent jobs, not a scheduler).
 
-No test fires the Worker's alarm today (qualifier `a75f2d00`); the
+`e2e-hosted.mjs` checks that the Worker's alarm writes a batch: with
+`CLAX_TEST_ROUTES`, `CLAX_TEST_ANALYTICS_BATCH_MS` writes a batch that
+many milliseconds old (`Analytics::with_max_age`), so the alarm after a
+view (5 s on) writes it, seen through `GET /_worker/alarm?artifact=<ID>`'s
+`views_pending` and through the read route after a simulated wake. The
 rollover's Worker path is covered by the store's and the server's tests,
-which call `sweep` with a moved clock, and by `e2e-hosted.mjs`'s check
-that a batch lands.
+which call `sweep` with a moved clock; no test passes midnight under
+`wrangler dev`.
 
 ### The setting
 
@@ -668,8 +674,11 @@ it names). New `#[cfg(test)]` modules carry
   visit adds nothing. On a local daemon a page's tag has no `data-count`
   and the page makes no request to `/_clax/api/analytics`.
 - **Worker, `crates/clax-worker/e2e-hosted.mjs`:** a visit to a site under
-  `wrangler dev --local` is counted with its country (workerd's `cf`), and
-  the read route answers it after the batch is written.
+  `wrangler dev --local` is counted with its country (workerd's `cf`, never
+  the `CF-IPCountry` the visitor sent), the alarm writes the batch, and the
+  read route answers it after a simulated wake. **Unit, `clax-worker`:**
+  the forwarded country, and the alarm's prune deleting daily totals past
+  their keep.
 
 ## Open questions
 
@@ -743,7 +752,10 @@ Depends on Task 1. In parallel with Task 3.
 **Task 5. Worker.** Files: `crates/clax-worker/src/lib.rs` (`CF-IPCountry`
 from `request.cf` on the analytics path, replacing the client's),
 `crates/clax-worker/src/instance.rs` (retention beside `prune_wanted`'s
-pass; module docs), `crates/clax-worker/README.md`,
+pass; the open day read at the first event; `CLAX_TEST_ANALYTICS_BATCH_MS`
+and `/_worker/alarm`'s `views_pending`; module docs),
+`crates/clax-http/src/analytics.rs` (`Analytics::with_max_age`, for that
+test var), `crates/clax-worker/README.md`,
 `crates/clax-worker/e2e-hosted.mjs`. Tests: the crate's unit test of the
 header rewrite, `just worker-test`. Depends on Task 3.
 
