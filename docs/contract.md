@@ -6464,6 +6464,8 @@ router), and a test fails when it differs:
 | `GET /a/{aid}/v/{n}` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/{*rest}` | Denied | yes: 403 `not_for_agents` |
 | `GET /admin` | Denied | no |
+| `GET /api/admin/browser` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/browser` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/people` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/admin/people/{person}/credits` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/admin/people/{person}/flags` | Denied | yes: 403 `not_for_agents` |

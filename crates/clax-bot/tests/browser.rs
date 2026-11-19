@@ -581,3 +581,34 @@ async fn an_eval_value_shaped_like_a_screenshot_stays_a_value() {
     );
     assert_eq!(&v["steps"][1]["value"], &v["shots"][0]);
 }
+
+#[tokio::test]
+async fn screenshots_are_kept_under_the_hosts_content_limits() {
+    let env = Env::new().await;
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Test",
+        "const r = await clax.browser.test(null, {steps: [{screenshot: {}}]});
+         return {passed: r.passed, shots: r.screenshots, step: r.steps[0]};",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_browser("test");
+    // An item may hold fewer bytes than the page's one-pixel PNG.
+    let deps = env
+        .deps()
+        .with_content_limits(clax_store::bot_content::ContentLimits {
+            item_bytes: 16,
+            run_bytes: 1 << 20,
+            total_bytes: 1 << 30,
+        });
+    let out = env.drive(&deps, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    let v = script_result(&env, &run, 0)["value"].clone();
+    assert_eq!(v["shots"], json!([]), "{v}");
+    assert_eq!(v["passed"], false, "{v}");
+    assert_eq!(v["step"]["ok"], false, "{v}");
+    let why = v["step"]["error"].as_str().unwrap_or_default();
+    assert!(why.contains("could not be kept"), "{v}");
+    // Charged all the same: the browser opened.
+    assert_eq!(browser_rows(&env).len(), 1);
+}

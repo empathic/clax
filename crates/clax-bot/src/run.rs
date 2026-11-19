@@ -357,6 +357,17 @@ impl Deps {
         self
     }
 
+    /// These deps, keeping a browser test's screenshots under `limits`,
+    /// the host's content limits (the registry's
+    /// `set_clax_content_limits`); [`ContentLimits::default`] otherwise.
+    ///
+    /// [`ContentLimits::default`]: clax_store::bot_content::ContentLimits
+    #[must_use]
+    pub fn with_content_limits(mut self, limits: clax_store::bot_content::ContentLimits) -> Deps {
+        self.providers.set_clax_content_limits(limits);
+        self
+    }
+
     /// These deps, with no web source: Clax's own surface refuses every
     /// web call `web_disabled` (the registry's `set_clax_web`).
     #[must_use]

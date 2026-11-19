@@ -150,6 +150,8 @@ mod l10 {
         ("admin::web", Bot),
         ("admin::set_web", Bot),
         ("admin::set_web_token", Bot),
+        ("admin::browser", Bot),
+        ("admin::set_browser", Bot),
         ("admin::clear_web_token", Bot),
         ("admin::models", Bot),
         ("admin::failures", Bot),

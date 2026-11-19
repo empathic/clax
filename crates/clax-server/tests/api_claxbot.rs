@@ -3179,3 +3179,218 @@ async fn the_admin_web_view_says_why_web_is_unavailable() {
     );
     assert!(v["unavailable"].is_null(), "{v}");
 }
+
+#[tokio::test]
+async fn admin_browser_round_trips_and_needs_an_admin() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let (s, v) = call(
+        ts,
+        &Who::Person(p.ana.0.clone()),
+        Method::GET,
+        "/api/admin/browser",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "an admin reads it: {v}");
+    assert_eq!(
+        (&v["test"], &v["browse"], &v["max_concurrent"]),
+        (
+            &json!({"enabled": false, "max_per_run": 10, "seconds": 60}),
+            &json!({"enabled": false, "url_rule": "sender", "allowlist": [], "max_per_run": 10}),
+            &json!(2)
+        ),
+        "{v}"
+    );
+    assert_eq!(v["configured"], false);
+    assert_eq!(v["cloudflare"], json!({"account": false, "token": false}));
+    assert!(
+        v["unavailable"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Cloudflare"),
+        "{v}"
+    );
+    assert_eq!(v["sources"]["test.seconds"], "default");
+    let owner = Who::OwnerBrowser;
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/browser",
+        json!({"test": {"enabled": true, "seconds": 90}, "max_concurrent": 3,
+               "browse": {"url_rule": "allowlist", "allowlist": ["*.example.com"]}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["test"]["enabled"], true);
+    assert_eq!(v["test"]["seconds"], 90);
+    assert_eq!(v["max_concurrent"], 3);
+    assert_eq!(v["browse"]["url_rule"], "allowlist");
+    assert_eq!(v["browse"]["allowlist"], json!(["*.example.com"]));
+    assert_eq!(v["sources"]["max_concurrent"], "db");
+    // null puts a field back to its default.
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/browser",
+        json!({"test": {"seconds": null}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["test"]["seconds"], 60);
+    // A value the setting refuses, an unknown field, a group that is not
+    // an object.
+    for body in [
+        json!({"test": {"seconds": 121}}),
+        json!({"browse": {"url_rule": "open"}}),
+        json!({"test": {"nope": true}}),
+        json!({"nope": 1}),
+        json!({"test": true}),
+    ] {
+        let (s, v) = call(ts, &owner, Method::PUT, "/api/admin/browser", body.clone()).await;
+        assert_eq!(s, 400, "{body}: {v}");
+    }
+    // A field the daemon's configuration sets is refused, and shows it.
+    let mut ov = Overrides::default();
+    ov.set(Setting::BrowserMaxTestsPerRun, &json!(4), "file")
+        .unwrap();
+    ts.store.set_bot_overrides(ov);
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/browser",
+        json!({"test": {"max_per_run": 2}}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (409, "setting_overridden"), "{v}");
+    let (_, v) = call(ts, &owner, Method::GET, "/api/admin/browser", Value::Null).await;
+    assert_eq!(
+        (&v["test"]["max_per_run"], &v["sources"]["test.max_per_run"]),
+        (&json!(4), &json!("file"))
+    );
+    // Configured once the Cloudflare account ID and token are set.
+    for (path, body) in [
+        (
+            "/api/admin/web",
+            json!({"cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"}}),
+        ),
+        ("/api/admin/web/token", json!({"token": CF_TOKEN})),
+    ] {
+        let (s, v) = call(ts, &owner, Method::PUT, path, body).await;
+        assert_eq!(s, 200, "{path}: {v}");
+    }
+    let (_, v) = call(ts, &owner, Method::GET, "/api/admin/browser", Value::Null).await;
+    assert_eq!(
+        (&v["configured"], &v["unavailable"], &v["cloudflare"]),
+        (
+            &json!(true),
+            &Value::Null,
+            &json!({"account": true, "token": true})
+        ),
+        "{v}"
+    );
+    assert!(!events(ts, "view.admin").is_empty());
+    // Members, viewers and agents do not reach it.
+    for who in [Who::Person(p.sam.0.clone()), Who::Viewer(p.lan.clone())] {
+        for (m, body) in [(Method::GET, Value::Null), (Method::PUT, json!({}))] {
+            let (s, v) = call(ts, &who, m.clone(), "/api/admin/browser", body).await;
+            assert_eq!((s, code(&v)), (403, "forbidden"), "{who:?} {m}: {v}");
+        }
+    }
+    let (s, v) = call(
+        ts,
+        &Who::Agent,
+        Method::GET,
+        "/api/admin/browser",
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
+}
+
+#[tokio::test]
+async fn me_bot_shows_the_browser_switch() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let sam = Who::Person(p.sam.0.clone());
+    let owner = Who::OwnerBrowser;
+    let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    // A minute of the browser.time line, as a test is charged for it.
+    let rate = ts
+        .store
+        .rate_of(clax_store::credits::LINE_BROWSER_TIME)
+        .unwrap()
+        .unwrap();
+    let want = clax_store::credits::row_credits_milli(
+        60_000,
+        rate.cost_micro_usd,
+        rate.margin_bp,
+        rate.fixed_credits_milli,
+        rate.credit_price_micro_usd,
+        rate.unit.base(),
+    )
+    .unwrap();
+    assert!(want > 0);
+    assert_eq!(
+        v["browser"],
+        json!({"on": true, "offered": false, "why_off": "admin_off",
+               "price_milli_per_minute": want}),
+        "{v}"
+    );
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/browser",
+        json!({"test": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(
+        (&v["browser"]["offered"], &v["browser"]["why_off"]),
+        (&json!(false), &json!("not_configured")),
+        "no Cloudflare account yet: {v}"
+    );
+    for (path, body) in [
+        (
+            "/api/admin/web",
+            json!({"cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"}}),
+        ),
+        ("/api/admin/web/token", json!({"token": CF_TOKEN})),
+    ] {
+        let (s, v) = call(ts, &owner, Method::PUT, path, body).await;
+        assert_eq!(s, 200, "{path}: {v}");
+    }
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(
+        (
+            &v["browser"]["on"],
+            &v["browser"]["offered"],
+            &v["browser"]["why_off"]
+        ),
+        (&json!(true), &json!(true), &Value::Null),
+        "{v}"
+    );
+    let (s, v) = call(
+        ts,
+        &sam,
+        Method::PUT,
+        "/api/me/bot",
+        json!({"browser": false}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        (&v["browser"]["on"], &v["browser"]["why_off"]),
+        (&json!(false), &json!("person_off"))
+    );
+    assert_eq!(events(ts, "me.browser").len(), 1);
+    // The choice is the person's own.
+    let (_, v) = call(ts, &owner, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(v["browser"]["on"], true);
+}

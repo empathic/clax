@@ -123,6 +123,14 @@ pub struct Bot {
     /// daemon's and the Worker's): no run is made with a join, and
     /// nothing is read for one.
     pub joins: Option<Arc<dyn crate::bot_joins::JoinedSurfaces>>,
+    /// The host gave its runs a browser source (the native daemon's run
+    /// driver, `clax_server::bot::driver`, which opens Browser Run
+    /// sessions once the instance holds the Cloudflare account ID and
+    /// token, read at each call: `clax_server::bot::browser_configured`).
+    /// False (the default, the Worker's and every host without one):
+    /// every run's browser use is off, not configured, and no run is made
+    /// with the browser shape (`clax_bot::browser::BrowserAccess::now`).
+    pub browser: bool,
 }
 
 /// The host's check of its web source for the admin's view of the web
@@ -165,6 +173,7 @@ impl Default for Bot {
             web_check: Arc::default(),
             admin_web_check: None,
             joins: None,
+            browser: false,
         }
     }
 }

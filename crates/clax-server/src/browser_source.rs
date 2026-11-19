@@ -77,9 +77,9 @@ const NOT_CONFIGURED: &str = "browser use is not configured on this instance: an
 pub struct DaemonBrowser {
     store: Arc<Store>,
     kek: Option<Kek>,
-    /// Tests only: where sockets go instead of Cloudflare's origin, the
-    /// token still opened for Cloudflare's origin.
-    #[cfg(test)]
+    /// Debug builds only, for tests: where sockets go instead of
+    /// Cloudflare's origin, the token still opened for Cloudflare's origin.
+    #[cfg(debug_assertions)]
     send_to: Option<Url>,
     /// The TLS configuration of every socket (the web source's); the
     /// reason it could not be built otherwise.
@@ -98,7 +98,7 @@ impl DaemonBrowser {
         DaemonBrowser {
             store,
             kek,
-            #[cfg(test)]
+            #[cfg(debug_assertions)]
             send_to: None,
             tls: crate::web_source::fetch_tls().map(Arc::new),
             in_use: Arc::new(Mutex::new(0)),
@@ -123,19 +123,33 @@ impl DaemonBrowser {
         self
     }
 
-    /// Tests only: this source opening its sockets on `base` (a local
-    /// server, `http://127.0.0.1:<port>`) over plain WebSocket, the token
-    /// still opened for Cloudflare's origin alone.
-    #[cfg(test)]
-    #[warn(clippy::disallowed_methods)]
-    fn sending_to(mut self, base: Url) -> DaemonBrowser {
+    /// Debug builds only, for tests: this source opening its sockets on
+    /// `base`, a local fake of Browser Run (`http://127.0.0.1:<port>`),
+    /// over plain WebSocket, the token still opened for Cloudflare's
+    /// origin alone.
+    ///
+    /// # Panics
+    /// When `base` is not `http` on a loopback address.
+    #[cfg(debug_assertions)]
+    #[must_use]
+    pub fn sending_to(mut self, base: Url) -> DaemonBrowser {
+        let loopback = match base.host() {
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            Some(url::Host::Domain(d)) => d == "localhost",
+            None => false,
+        };
+        assert!(
+            base.scheme() == "http" && loopback,
+            "a browser source sends only to a local fake: {base}"
+        );
         self.send_to = Some(base);
         self
     }
 
     /// The origin sockets go to: Cloudflare's (in tests, `send_to`).
     fn base(&self) -> Url {
-        #[cfg(test)]
+        #[cfg(debug_assertions)]
         if let Some(t) = &self.send_to {
             return t.clone();
         }

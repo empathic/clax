@@ -619,6 +619,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             put(admin::set_web_token).delete(admin::clear_web_token),
         )
         .route(
+            "/api/admin/browser",
+            get(admin::browser).put(admin::set_browser),
+        )
+        .route(
             "/api/admin/pricing",
             get(admin::pricing).put(admin::set_pricing),
         )

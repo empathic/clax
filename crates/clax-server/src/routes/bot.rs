@@ -3,7 +3,7 @@
 //! their own ClaxBot state, key and usage, and runs.
 //!
 //! - `GET /api/me/bot` → the caller's state ([`me_view`]); `PUT
-//!   /api/me/bot {use_own}`, `PUT /api/me/bot/key {key}` and `DELETE
+//!   /api/me/bot {use_own?, web?, browser?}`, `PUT /api/me/bot/key {key}` and `DELETE
 //!   /api/me/bot/key` change their own key and answer the same. A key is
 //!   write-only: no answer carries it.
 //! - `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}`:
@@ -184,6 +184,55 @@ fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
     }))
 }
 
+/// `GET /api/me/bot`'s `browser`: `on` is the person's own choice;
+/// `offered` when the admin turned browser testing on and the host can
+/// open browsers ([`crate::bot::browser_configured`]); `why_off` names why
+/// browser use is off for them now (`admin_off`, `person_off`,
+/// `not_configured`) or is null; `price_milli_per_minute` is what a
+/// minute of browser time costs them at their key source, in
+/// milli-credits (null without the `browser.time` line).
+fn browser_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
+    use clax_bot::browser::BrowserAccess;
+    let configured = crate::bot::browser_configured(st, bot)?;
+    let enabled = st.bot_setting(Setting::BrowserEnabled)?.as_bool() == Some(true);
+    let why_off = match BrowserAccess::now(st, person, configured)? {
+        BrowserAccess::Off(why) => json!(why.as_str()),
+        BrowserAccess::On(_) => Value::Null,
+    };
+    let source = key_source(st, bot, person)?.unwrap_or(KeySource::Instance);
+    let price = match minute_milli(st, source)? {
+        Some(milli) => json!(milli),
+        None => Value::Null,
+    };
+    Ok(json!({
+        "on": st.browser_choice(person)?,
+        "offered": enabled && configured,
+        "why_off": why_off,
+        "price_milli_per_minute": price,
+    }))
+}
+
+/// What a minute of browser time costs on a `ks` key, in milli-credits,
+/// as a test is charged for it; `None` without the `browser.time` line.
+fn minute_milli(st: &Store, ks: KeySource) -> clax_core::Result<Option<i64>> {
+    use clax_store::credits::{Applies, row_credits_milli};
+    let Some(rate) = st.rate_of(clax_store::credits::LINE_BROWSER_TIME)? else {
+        return Ok(None);
+    };
+    if ks == KeySource::Own && rate.applies == Applies::InstanceKey {
+        return Ok(Some(0));
+    }
+    row_credits_milli(
+        60_000,
+        rate.cost_micro_usd,
+        rate.margin_bp,
+        rate.fixed_credits_milli,
+        rate.credit_price_micro_usd,
+        rate.unit.base(),
+    )
+    .map(Some)
+}
+
 /// `GET /api/me/bot`'s answer for `person`.
 ///
 /// # Errors
@@ -223,6 +272,7 @@ pub fn me_view(
         },
         "week": st.week_usage_now(person)?,
         "web": web_view(st, bot, person)?,
+        "browser": browser_view(st, bot, person)?,
     });
     if let Some(code) = refused {
         v["unavailable_reason"] = json!(unavailable(code));
@@ -271,11 +321,14 @@ pub struct MeBody {
     use_own: Option<bool>,
     #[serde(default)]
     web: Option<bool>,
+    #[serde(default)]
+    browser: Option<bool>,
 }
 
-/// `PUT /api/me/bot {use_own?, web?}`, at least one (else 400
+/// `PUT /api/me/bot {use_own?, web?, browser?}`, at least one (else 400
 /// `empty_request`): whether the caller's runs use their own key (404 when
-/// they have none) and whether they allow ClaxBot the web tools.
+/// they have none), whether they allow ClaxBot the web tools, and whether
+/// they let it test pages in a browser.
 pub async fn me_put(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -287,10 +340,10 @@ pub async fn me_put(
     d.refuse_agents()?;
     let (caller, person) = me(&s, &d).await?;
     let b = body(req)?;
-    if b.use_own.is_none() && b.web.is_none() {
+    if b.use_own.is_none() && b.web.is_none() && b.browser.is_none() {
         return Err(ApiError::bad_request(
             "empty_request",
-            "give use_own, web or both",
+            "give use_own, web or browser",
         ));
     }
     let bot = s.bot.clone();
@@ -307,6 +360,9 @@ pub async fn me_put(
             }
             if let Some(on) = b.web {
                 st.set_web_choice(&ctx, &person, on)?;
+            }
+            if let Some(on) = b.browser {
+                st.set_browser_choice(&ctx, &person, on)?;
             }
             me_view(st, &bot, &who, &caller, &person)
         })
@@ -954,6 +1010,24 @@ pub fn admit_run(
     Ok((key_source, model_of(st)?))
 }
 
+/// The browser shape a run of `person` made now has
+/// ([`clax_bot::browser::BrowserAccess::now`]), its browse left out: Clax's
+/// surface performs `browser.test` alone (`clax_bot::clax::browser` refuses
+/// `browser.browse` `browser_disabled`), so no run declares an operation
+/// it would refuse.
+fn run_browser_shape(
+    st: &Store,
+    bot: &Bot,
+    person: &str,
+) -> clax_core::Result<clax_bot::browser::BrowserShape> {
+    let configured = crate::bot::browser_configured(st, bot)?;
+    let shape = clax_bot::browser::BrowserAccess::now(st, person, configured)?.shape();
+    Ok(clax_bot::browser::BrowserShape {
+        test: shape.test,
+        browse: false,
+    })
+}
+
 /// Starts a run of `request` on artifact `aid` for `sender`, as `ctx`:
 /// 409 `run_active` (with its ID) while a run that has not ended names
 /// one of `thread_ids`, so one thread has one active run and a second send
@@ -994,7 +1068,7 @@ pub fn start_run(
             .shape()
             .as_str()
             .to_string(),
-        browser: String::new(),
+        browser: run_browser_shape(st, bot, person)?.as_str().to_string(),
     };
     // The surfaces whose hosts joined the artifact and are connected now
     // are bound too (`super::bot_joins`); with none, the run is made as

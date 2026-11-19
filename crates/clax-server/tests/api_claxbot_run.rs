@@ -1899,3 +1899,307 @@ async fn a_run_whose_step_does_not_read_fails_no_usage_page_and_no_listing() {
     assert_eq!(s, 200, "{two}");
     assert_eq!(two["steps"][0]["n"], 1, "{two}");
 }
+
+/// Sets the Cloudflare account ID and token at `/admin` and turns browser
+/// testing on, so the daemon's browser use is configured.
+async fn browser_on(ts: &TestServer) {
+    for (path, body) in [
+        (
+            "/api/admin/web",
+            json!({"cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"}}),
+        ),
+        (
+            "/api/admin/web/token",
+            json!({"token": "cf-token-for-tests-1234"}),
+        ),
+        ("/api/admin/browser", json!({"test": {"enabled": true}})),
+    ] {
+        let res = ts
+            .client
+            .put(format!("{}{path}", ts.base))
+            .header("cookie", ts.owner_cookie())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn a_run_started_with_browser_on_declares_it() {
+    use clax_core::ArtifactId;
+    use clax_server::routes::bot::{Sender, start_run};
+    use clax_store::bot_runs::RequestKind;
+    use clax_store::roles::OWNER;
+    let fake = FakeMessages::start(vec![]).await;
+    let ts = daemon(&fake).await;
+    let id_of = |v: &Value| v["id"].as_str().unwrap().to_string();
+    let aid = id_of(&ts.publish("Page", &[("index.html", "<p>hi</p>")]).await["artifact"]);
+    let threads: Vec<String> = futures::future::join_all(
+        ["One?", "Two?", "Three?", "Four?"].map(|t| ts.thread(&aid, 1, t)),
+    )
+    .await
+    .iter()
+    .map(id_of)
+    .collect();
+    let aid = ArtifactId::parse(&aid).unwrap();
+    let sender = Sender {
+        person: OWNER.into(),
+        agent_grant: None,
+    };
+    let start = |bot: &clax_http::bot::Bot, tid: &str| {
+        let run = start_run(
+            &ts.store,
+            bot,
+            &AuditCtx::DAEMON,
+            &sender,
+            &aid,
+            RequestKind::Thread,
+            vec![tid.to_string()],
+        )
+        .unwrap();
+        ts.store.run(&run.id).unwrap().unwrap()
+    };
+    browser_on(&ts).await;
+    // Browsing on too: Clax's surface performs tests alone, so no run
+    // declares a browse.
+    ts.store
+        .set_bot_settings(
+            &AuditCtx::DAEMON,
+            &[(Setting::BrowserBrowseEnabled, Some(json!(true)))],
+        )
+        .unwrap();
+    // The daemon's own bot, whose driver gave its runs a browser source.
+    let run = start(&ts.state.bot, &threads[0]);
+    assert!(ts.state.bot.browser);
+    assert_eq!(run.browser, "test");
+    let (_, as_made) = ts.store.run_as_made(&run.id).unwrap().unwrap();
+    let granted = as_made.bindings().unwrap().all()[0].granted().to_vec();
+    assert!(granted.iter().any(|o| o == "browser.test"), "{granted:?}");
+    assert!(
+        !granted.iter().any(|o| o == "browser.browse"),
+        "{granted:?}"
+    );
+    // A host with no browser source (the Worker) never gives the shape.
+    let no_source = clax_http::bot::Bot {
+        kek: ts.state.bot.kek.clone(),
+        ..Default::default()
+    };
+    assert!(!no_source.browser);
+    assert_eq!(start(&no_source, &threads[1]).browser, "");
+    // A person who turned the browser off gets a run without it.
+    ts.store
+        .set_browser_choice(&AuditCtx::DAEMON, OWNER, false)
+        .unwrap();
+    assert_eq!(start(&ts.state.bot, &threads[2]).browser, "");
+    ts.store
+        .set_browser_choice(&AuditCtx::DAEMON, OWNER, true)
+        .unwrap();
+    // Without the Cloudflare token, not configured.
+    let res = ts
+        .client
+        .delete(format!("{}/api/admin/web/token", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(start(&ts.state.bot, &threads[3]).browser, "");
+}
+
+/// A fake Browser Run on 127.0.0.1: each WebSocket it accepts is a
+/// browser with one page (`clax_bot::browser::FakeChrome`) that requests
+/// the bridge, its frames carried both ways; the upgrades it saw (path and
+/// query, `Authorization`) and each browser's log kept.
+struct FakeBrowserRun {
+    base: url::Url,
+    upgrades: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    logs: std::sync::Arc<std::sync::Mutex<Vec<clax_bot::browser::ChromeLog>>>,
+    /// The artifact the page's bridge request names.
+    artifact: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl FakeBrowserRun {
+    async fn start() -> FakeBrowserRun {
+        use clax_bot::browser::{CdpTransport, FakeChrome, PageModel};
+        use futures::{FutureExt, SinkExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = url::Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let upgrades = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let artifact = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let (u, l, a) = (upgrades.clone(), logs.clone(), artifact.clone());
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                let (u, l, a) = (u.clone(), l.clone(), a.clone());
+                tokio::spawn(async move {
+                    #[expect(
+                        clippy::result_large_err,
+                        reason = "tungstenite's Callback answers its ErrorResponse by value"
+                    )]
+                    let seen =
+                        move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                              resp| {
+                            u.lock().unwrap().push((
+                                req.uri().to_string(),
+                                req.headers()
+                                    .get("authorization")
+                                    .and_then(|v| v.to_str().ok())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            ));
+                            Ok(resp)
+                        };
+                    let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(sock, seen).await else {
+                        return;
+                    };
+                    let bridge = format!(
+                        "https://{}.clax-test.invalid/_clax/bridge.js",
+                        a.lock().unwrap()
+                    );
+                    let mut chrome =
+                        FakeChrome::page(PageModel::new().requests(&[(&bridge, "Script")]));
+                    l.lock().unwrap().push(chrome.log());
+                    while let Some(Ok(m)) = ws.next().await {
+                        let Message::Text(t) = m else { continue };
+                        if chrome.send(t.as_str().to_string()).await.is_err() {
+                            break;
+                        }
+                        // The page answers each command at once: send what
+                        // it has, and end when it closed.
+                        loop {
+                            match chrome.recv().now_or_never() {
+                                Some(Ok(Some(f))) => {
+                                    let _ = ws.send(Message::text(f)).await;
+                                }
+                                Some(Ok(None) | Err(_)) => {
+                                    let _ = ws.close(None).await;
+                                    return;
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        FakeBrowserRun {
+            base,
+            upgrades,
+            logs,
+            artifact,
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_whole_browser_test_through_the_daemon() {
+    let fake = FakeMessages::start(vec![
+        Turn::script(
+            "tu_1",
+            "Test the page",
+            "const r = await clax.browser.test(null, {steps: [{screenshot: {}}]});
+             return {passed: r.passed, shots: r.screenshots.length, cost: r.cost,
+                     failed: r.requests.failed, blocked: r.requests.blocked};",
+        ),
+        Turn::finish("The page loads."),
+    ])
+    .await;
+    let run = FakeBrowserRun::start().await;
+    let base = run.base.clone();
+    let ts = TestServer::spawn_with(move |s| {
+        let browser =
+            std::sync::Arc::new(clax_server::browser_source::DaemonBrowser::of(s).sending_to(base));
+        let web = std::sync::Arc::new(clax_bot::web::FakeWebSource::new());
+        let d = clax_server::bot::driver_with_sources(s, web, browser);
+        clax_server::bot::start_driver(&d);
+    })
+    .await;
+    ts.store
+        .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
+        .unwrap();
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/provider/key", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"key": KEY}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    browser_on(&ts).await;
+    let aid = ts
+        .publish("Page", &[("index.html", "<p>hi there</p>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    *run.artifact.lock().unwrap() = aid.clone();
+    let tid = ts.thread(&aid, 1, "Does it load?").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .client
+        .post(format!("{}/api/bot/runs", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"thread_ids": [tid], "artifact_id": aid}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let rid = res.json::<Value>().await.unwrap()["run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(ts.store.run(&rid).unwrap().unwrap().browser, "test");
+    let all = events(&ts, &rid, None).await;
+    assert_eq!(all.last().map(|(_, e, _)| e.as_str()), Some("run_end"));
+    // The prompt declared the browser, and the script's answer reached
+    // the model.
+    let requests = fake.requests();
+    let first = serde_json::to_string(&requests[0]).unwrap();
+    assert!(first.contains("browser.test"), "declared");
+    let sent = serde_json::to_string(&requests).unwrap();
+    assert!(sent.contains(r#"\"passed\":true"#), "{sent}");
+    assert!(sent.contains(r#"\"shots\":1"#), "{sent}");
+    // One socket, to Browser Run's path with the instance's token.
+    let upgrades = run.upgrades.lock().unwrap().clone();
+    assert_eq!(
+        upgrades,
+        [(
+            "/client/v4/accounts/0123456789abcdef0123456789abcdef/browser-run/devtools/browser?keep_alive=10000".to_string(),
+            "Bearer cf-token-for-tests-1234".to_string()
+        )]
+    );
+    // The page was served by the daemon: the draft's index wrapped with
+    // the bridge, the bridge itself, each under the site's policy.
+    let log = run.logs.lock().unwrap()[0].clone();
+    let fulfilled = log.sent("Fetch.fulfillRequest");
+    assert_eq!(fulfilled.len(), 2, "{fulfilled:?}");
+    let body = |c: &Value| {
+        use base64::Engine as _;
+        let b = c["params"]["body"].as_str().unwrap_or_default();
+        String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b).unwrap()).unwrap()
+    };
+    let index = body(&fulfilled[0]);
+    assert!(index.contains("<p>hi there</p>"), "{index}");
+    assert!(index.contains("/_clax/bridge.js"), "{index}");
+    assert_eq!(fulfilled[0]["params"]["responseCode"], 200);
+    assert_eq!(fulfilled[1]["params"]["responseCode"], 200, "the bridge");
+    let headers = fulfilled[0]["params"]["responseHeaders"].to_string();
+    assert!(headers.contains("connect-src 'self'"), "{headers}");
+    assert_eq!(log.sent("Browser.close").len(), 1);
+    // Charged its browser time.
+    let rows: Vec<_> = ts
+        .store
+        .usage_of_run(&rid)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.line == clax_store::credits::LINE_BROWSER_TIME)
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].credits_milli > 0, "{rows:?}");
+}

@@ -234,6 +234,19 @@ impl Providers {
         }
     }
 
+    /// Has Clax's own provider keep a browser test's screenshots under
+    /// `limits`.
+    pub(crate) fn set_clax_content_limits(
+        &mut self,
+        limits: clax_store::bot_content::ContentLimits,
+    ) {
+        if let Some(clax) = self.clax.take() {
+            let clax = Arc::new(clax.with_content_limits(limits));
+            self.register(CLAX_SURFACE, clax.clone());
+            self.clax = Some(clax);
+        }
+    }
+
     /// The run whose row is `row` and which was made as `made`, as the
     /// run loop knows it, with the provider of each of its bindings:
     /// see the module documentation. Nothing is read from the store;

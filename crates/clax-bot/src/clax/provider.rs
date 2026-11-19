@@ -19,6 +19,7 @@ use clax_core::CoreError;
 use clax_core::audit::AuditIds;
 use clax_core::working::Clock;
 use clax_store::Store;
+use clax_store::bot_content::ContentLimits;
 use clax_store::bot_runs::Run;
 use clax_surface::Definition;
 use serde_json::Value;
@@ -57,6 +58,9 @@ pub struct ClaxProvider {
     pub(super) browser: Option<Arc<dyn BrowserSource>>,
     /// What a browser test is held to: its screenshots' longest side.
     pub(super) browser_limits: SessionLimits,
+    /// What a browser test's screenshots are kept under, as the host
+    /// holds a run's content ([`clax_store::Store::put_bot_content`]).
+    pub(super) content_limits: ContentLimits,
     /// The clock of credits weeks.
     pub(super) clock: Arc<dyn Clock>,
     /// The row of the run the provider was made for, when it was made
@@ -93,6 +97,7 @@ impl ClaxProvider {
             browser_limits: SessionLimits {
                 image_side: crate::policy::DEFAULT_IMAGE_SIDE,
             },
+            content_limits: ContentLimits::default(),
             clock,
             run: None,
         }
@@ -116,6 +121,17 @@ impl ClaxProvider {
         }
     }
 
+    /// This provider, keeping a browser test's screenshots under
+    /// `limits` (the host's content limits), over the same store, host,
+    /// sources and clock.
+    #[must_use]
+    pub fn with_content_limits(&self, limits: ContentLimits) -> ClaxProvider {
+        ClaxProvider {
+            content_limits: limits,
+            ..self.same()
+        }
+    }
+
     /// A copy of this provider.
     fn same(&self) -> ClaxProvider {
         ClaxProvider {
@@ -124,6 +140,7 @@ impl ClaxProvider {
             web: self.web.clone(),
             browser: self.browser.clone(),
             browser_limits: self.browser_limits,
+            content_limits: self.content_limits,
             clock: self.clock.clone(),
             run: self.run.clone(),
         }

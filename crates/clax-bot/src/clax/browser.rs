@@ -89,7 +89,7 @@ use crate::surface::{Answer, Call, Fields, err_json, recorded};
 use clax_bot_sandbox::{CODE_CANCELLED, HostError};
 use clax_core::ArtifactId;
 use clax_core::audit::{AuditKind, AuditRecord};
-use clax_store::bot_content::{ContentLimits, NewContent};
+use clax_store::bot_content::NewContent;
 use clax_store::bot_runs::CallEntry;
 use clax_store::bot_web::Spend;
 use clax_store::credits::{
@@ -641,7 +641,7 @@ impl ClaxSession<'_> {
             bytes: png,
         };
         let row = store
-            .put_bot_content(&new, ContentLimits::default())
+            .put_bot_content(&new, self.provider.content_limits)
             .map_err(|e| format!("the screenshot could not be kept: {e}"))?;
         store
             .note_bot_content(&row.id, call.op, &call.place.key, call.place.step, None)

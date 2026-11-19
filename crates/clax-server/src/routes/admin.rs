@@ -38,6 +38,16 @@
 //!   token (503 `no_kek` without a key-encryption key); the token is
 //!   write-only, shown as `key_info` (`last4`), and bound to Cloudflare's
 //!   API origin whatever the model base URL is.
+//! - `GET/PUT /api/admin/browser`: browser testing's settings, `{test:
+//!   {enabled, max_per_run, seconds}, browse: {enabled, url_rule,
+//!   allowlist, max_per_run}, max_concurrent}`, with `configured` (the
+//!   host can open browsers now: on a daemon, with the Cloudflare account
+//!   ID and token of `/api/admin/web`), `unavailable` (why browser use is
+//!   off whatever the settings, else null), `cloudflare {account, token}`
+//!   (whether each is set) and `sources` keyed `test.enabled`,
+//!   `max_concurrent` and so on; `PUT` takes the settings' shape, any field
+//!   may be left out and a null puts it back to its default, refused as
+//!   `PUT /api/admin/web` refuses.
 //! - `GET/PUT /api/admin/pricing`: the credit price, the free tier, the
 //!   default token rates, `require_explicit_price` and the cost lines,
 //!   with each priced model's rates and where they come from (`models`)
@@ -690,6 +700,148 @@ pub async fn clear_web_token(
             let ctx = audit.resolve(st)?;
             st.clear_secret(&ctx, &SecretSlot::Cloudflare)?;
             web_view(st, &bot)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+// ---------------------------------------------------------------------------
+// Browser
+// ---------------------------------------------------------------------------
+
+/// The browser settings by their place in the page: (group, field,
+/// setting); the empty group is the top level.
+const BROWSER: &[(&str, &str, Setting)] = &[
+    ("test", "enabled", Setting::BrowserEnabled),
+    ("test", "max_per_run", Setting::BrowserMaxTestsPerRun),
+    ("test", "seconds", Setting::BrowserTestSeconds),
+    ("browse", "enabled", Setting::BrowserBrowseEnabled),
+    ("browse", "url_rule", Setting::BrowserBrowseUrlRule),
+    ("browse", "allowlist", Setting::BrowserBrowseAllowlist),
+    ("browse", "max_per_run", Setting::BrowserMaxBrowsesPerRun),
+    ("", "max_concurrent", Setting::BrowserMaxConcurrent),
+];
+
+/// A browser setting's name in `sources` and in a refusal.
+fn browser_field(group: &str, field: &str) -> String {
+    if group.is_empty() {
+        field.to_string()
+    } else {
+        format!("{group}.{field}")
+    }
+}
+
+/// The browser settings as `GET /api/admin/browser` shows them (see the
+/// module documentation).
+///
+/// # Errors
+/// The store's.
+pub fn browser_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
+    let eff = st.effective_bot_settings()?;
+    let mut v = json!({"test": {}, "browse": {}});
+    let mut sources = serde_json::Map::new();
+    for (group, field, setting) in BROWSER {
+        let entry = eff.get(setting);
+        let value = entry.map(|e| e.value.clone()).unwrap_or(Value::Null);
+        let source = entry
+            .map(|e| e.source.label())
+            .unwrap_or_else(|| "default".into());
+        if group.is_empty() {
+            v[*field] = value;
+        } else {
+            v[*group][*field] = value;
+        }
+        sources.insert(browser_field(group, field), json!(source));
+    }
+    let account = st
+        .bot_setting(Setting::WebCloudflareAccountId)?
+        .as_str()
+        .is_some_and(|a| !a.trim().is_empty());
+    let token = st.secret_meta(&SecretSlot::Cloudflare)?.is_some();
+    let configured = crate::bot::browser_configured(st, bot)?;
+    let unavailable = if configured {
+        Value::Null
+    } else if !bot.browser {
+        json!("this host opens no browser")
+    } else if bot.kek.is_none() {
+        json!("no key-encryption key holds the Cloudflare token")
+    } else {
+        json!("the Cloudflare account ID and API token are not both set (Web access)")
+    };
+    v["configured"] = json!(configured);
+    v["unavailable"] = unavailable;
+    v["cloudflare"] = json!({"account": account, "token": token});
+    v["sources"] = Value::Object(sources);
+    Ok(v)
+}
+
+/// `GET /api/admin/browser` (see the module documentation).
+pub async fn browser(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let (caller, _) = admin(&s, &d).await?;
+    let bot = s.bot.clone();
+    let v = s
+        .store_call(move |st| {
+            let v = browser_view(st, &bot)?;
+            viewed(st, &bot, &who, &caller, "browser", None)?;
+            Ok(v)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `PUT /api/admin/browser {test?, browse?, max_concurrent?}`: each field
+/// given is set (null: back to its default). 400 `unknown_setting` for a
+/// field the page does not show; a value its kind refuses is 400 and one
+/// the daemon's configuration sets 409 `setting_overridden`, as `PUT
+/// /api/admin/web`.
+pub async fn set_browser(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    req: Result<Json<serde_json::Map<String, Value>>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let b = body(req)?;
+    let unknown = |name: String| {
+        ApiError::bad_request("unknown_setting", format!("no setting is named {name}"))
+    };
+    let setting_of = |group: &str, field: &str| {
+        BROWSER
+            .iter()
+            .find(|(g, f, _)| *g == group && *f == field)
+            .map(|(_, _, s)| *s)
+            .ok_or_else(|| unknown(browser_field(group, field)))
+    };
+    let mut changes: Vec<(Setting, Option<Value>)> = Vec::new();
+    for (k, v) in b {
+        match (k.as_str(), v) {
+            (group @ ("test" | "browse"), Value::Object(fields)) => {
+                for (field, v) in fields {
+                    changes.push((setting_of(group, &field)?, (!v.is_null()).then_some(v)));
+                }
+            }
+            ("test" | "browse", _) => {
+                return Err(ApiError::bad_request(
+                    "invalid_body",
+                    format!("{k} must be an object of its fields"),
+                ));
+            }
+            (field, v) => changes.push((setting_of("", field)?, (!v.is_null()).then_some(v))),
+        }
+    }
+    let bot = s.bot.clone();
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.set_bot_settings(&ctx, &changes)?;
+            browser_view(st, &bot)
         })
         .await?;
     Ok(Json(v))

@@ -1168,11 +1168,25 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
     driver_with_web(state, web)
 }
 
-/// [`driver`], with `web` as the runs' web source.
+/// [`driver`], with `web` as the runs' web source, and the daemon's own
+/// browser source ([`crate::browser_source::DaemonBrowser::of`]).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn driver_with_web(
     state: &mut AppState,
     web: Arc<dyn clax_bot::web::WebSource>,
+) -> Arc<clax_bot::Driver> {
+    let browser: Arc<dyn clax_bot::browser::BrowserSource> =
+        Arc::new(crate::browser_source::DaemonBrowser::of(state));
+    driver_with_sources(state, web, browser)
+}
+
+/// [`driver`], with `web` as the runs' web source and `browser` as where
+/// their browsers come from.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn driver_with_sources(
+    state: &mut AppState,
+    web: Arc<dyn clax_bot::web::WebSource>,
+    browser: Arc<dyn clax_bot::browser::BrowserSource>,
 ) -> Arc<clax_bot::Driver> {
     let bot = state.bot.clone();
     let host = ServerHost::new(state.clone());
@@ -1196,7 +1210,9 @@ pub fn driver_with_web(
         bot.keys(),
         Arc::new(StoreClock(state.store.clone())),
     )
-    .with_web(web);
+    .with_web(web)
+    .with_browser(browser)
+    .with_content_limits(state.bot_surfaces.limits().content_limits());
     // A run bound to a surface a host registered calls its host through
     // the daemon's broker, which the host's routes serve
     // (`clax_http::bot_surfaces`).
@@ -1246,6 +1262,7 @@ pub fn driver_with_web(
             let hub: Arc<dyn clax_http::bot_joins::JoinedSurfaces> = state.bot_surfaces.clone();
             hub
         }),
+        browser: true,
     });
     driver
 }
@@ -1286,6 +1303,28 @@ pub fn web_configured(
         shape.search = crate::cloudflare::has_credentials(st, bot.kek.as_ref())?;
     }
     Ok(shape)
+}
+
+/// Whether ClaxBot's browser use is configured on this host now: the
+/// host gave its runs a browser source ([`clax_http::bot::Bot::browser`],
+/// the native daemon's driver alone) and the instance holds a
+/// key-encryption key, a Cloudflare account ID and a sealed token
+/// ([`crate::cloudflare::has_credentials`]), read at each call so an
+/// admin's change takes effect without a restart. Never on the Worker.
+///
+/// # Errors
+/// The store's.
+pub fn browser_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Result<bool> {
+    if !bot.browser {
+        return Ok(false);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    return crate::cloudflare::has_credentials(st, bot.kek.as_ref());
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = st;
+        Ok(false)
+    }
 }
 
 /// Whether an admin turned web search or web fetch on.

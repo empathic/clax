@@ -465,8 +465,9 @@ fn loose_mode(path: &std::path::Path) -> Option<u32> {
 /// otherwise the run driver gives the daemon its own source
 /// ([`crate::bot::driver`]), which fetches, and searches while the
 /// instance holds a Cloudflare account ID and token
-/// ([`crate::bot::web_configured`]). `[bot.web]` is laid over the stored
-/// `web.*` settings as the rest of `[bot]` is ([`web_overrides`]).
+/// ([`crate::bot::web_configured`]). `[bot.web]` and `[bot.browser]` are
+/// laid over the stored `web.*` and `browser.*` settings as the rest of
+/// `[bot]` is ([`bot_overrides`]).
 fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bot::Bot {
     let catalog_url = catalog_url.unwrap_or_else(|| {
         // A hosted core reads it from the file and the environment too,
@@ -515,17 +516,18 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
     bot
 }
 
-/// The settings `cfg`'s `[bot]` sets, `[bot.web]` included, as overrides
-/// of the stored ones, and whether ClaxBot is on
-/// ([`clax_http::bot::configured`]). `[bot.web]` is laid over whenever
-/// `[bot]` checks, as the rest of `[bot]` is, whether or not it turns
-/// ClaxBot on.
+/// The settings `cfg`'s `[bot]` sets, `[bot.web]` and `[bot.browser]`
+/// included, as overrides of the stored ones, and whether ClaxBot is on
+/// ([`clax_http::bot::configured`]). `[bot.web]` and `[bot.browser]` are
+/// laid over whenever `[bot]` checks, as the rest of `[bot]` is, whether
+/// or not it turns ClaxBot on.
 pub fn bot_overrides(
     cfg: &clax_core::config::HomeConfig,
 ) -> (clax_store::bot_settings::Overrides, bool) {
     let (mut ov, enabled) = clax_http::bot::configured(cfg);
     if cfg.bot().is_ok() {
         web_overrides(cfg, &mut ov);
+        browser_overrides(cfg, &mut ov);
     }
     (ov, enabled)
 }
@@ -539,8 +541,31 @@ fn web_overrides(
     ov: &mut clax_store::bot_settings::Overrides,
 ) {
     use clax_store::bot_settings::Setting;
+    table_overrides(cfg, ov, "web.", &[Setting::WebCloudflareAccountId]);
+}
+
+/// The `browser.*` settings `cfg`'s `[bot.browser]` sets, as
+/// [`web_overrides`] adds `[bot.web]`'s: each `bot.browser.<key>`
+/// overrides the stored setting `browser.<key>`.
+fn browser_overrides(
+    cfg: &clax_core::config::HomeConfig,
+    ov: &mut clax_store::bot_settings::Overrides,
+) {
+    table_overrides(cfg, ov, "browser.", &[]);
+}
+
+/// Each stored setting whose key starts with `prefix`, but those of
+/// `except`, that `cfg` sets as `bot.<key>` (from the file or the
+/// environment), added to `ov`.
+fn table_overrides(
+    cfg: &clax_core::config::HomeConfig,
+    ov: &mut clax_store::bot_settings::Overrides,
+    prefix: &str,
+    except: &[clax_store::bot_settings::Setting],
+) {
+    use clax_store::bot_settings::Setting;
     for &setting in Setting::ALL {
-        if !setting.key().starts_with("web.") || setting == Setting::WebCloudflareAccountId {
+        if !setting.key().starts_with(prefix) || except.contains(&setting) {
             continue;
         }
         let full = format!("bot.{}", setting.key());
@@ -553,7 +578,7 @@ fn web_overrides(
             continue;
         };
         if let Err(e) = ov.set(setting, &v, source.label()) {
-            tracing::warn!("[bot.web] {} is not taken: {e}", setting.key());
+            tracing::warn!("[bot] {} is not taken: {e}", setting.key());
         }
     }
 }
@@ -849,6 +874,54 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ov, want);
+    }
+
+    #[test]
+    fn config_browser_overrides_the_setting() {
+        use clax_store::bot_settings::{Overrides, Setting};
+        let cfg = clax_core::config::HomeConfig::from_text(
+            std::path::PathBuf::from("/h/config.toml"),
+            "[bot.browser]\nenabled = true\ntest_seconds = 90\n[bot.browser.browse]\nurl_rule = \"allowlist\"\nallowlist = [\"*.example.com\"]\n",
+            [(
+                "CLAX_BOT__BROWSER__MAX_CONCURRENT".to_string(),
+                "5".to_string(),
+            )],
+        )
+        .unwrap();
+        let (ov, _) = super::bot_overrides(&cfg);
+        let mut want = Overrides::default();
+        for (setting, v, source) in [
+            (Setting::BrowserEnabled, serde_json::json!(true), "file"),
+            (Setting::BrowserTestSeconds, serde_json::json!(90), "file"),
+            (
+                Setting::BrowserMaxConcurrent,
+                serde_json::json!(5),
+                "env:CLAX_BOT__BROWSER__MAX_CONCURRENT",
+            ),
+            (
+                Setting::BrowserBrowseUrlRule,
+                serde_json::json!("allowlist"),
+                "file",
+            ),
+            (
+                Setting::BrowserBrowseAllowlist,
+                serde_json::json!(["*.example.com"]),
+                "file",
+            ),
+        ] {
+            want.set(setting, &v, source).unwrap();
+        }
+        assert_eq!(ov, want);
+        // The overlay is what the store reads, and its source shows.
+        let dir = tempfile::tempdir().unwrap();
+        let st = clax_store::Store::open(&clax_core::Home::at(dir.path().join("ax"))).unwrap();
+        st.set_bot_overrides(ov);
+        assert_eq!(
+            st.bot_setting(Setting::BrowserTestSeconds).unwrap(),
+            serde_json::json!(90)
+        );
+        let eff = st.effective_bot_settings().unwrap();
+        assert_eq!(eff[&Setting::BrowserEnabled].source.label(), "file");
     }
 
     /// The pruner goes on while a pass leaves more, within its bounds,
