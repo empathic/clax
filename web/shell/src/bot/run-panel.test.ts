@@ -155,6 +155,55 @@ describe("the run panel", () => {
     m.unmount();
   });
 
+  it("a_browser_call_shows_its_line_and_thumbnails", async () => {
+    const stream = sse();
+    daemon({
+      "GET /api/bot/runs/r5": json(run({ id: "r5", steps: [{ n: 1, kind: "script", status: "running", started_at: "x", credits_milli: 0, title: "Test the page", calls: [
+        { op: "browser.test", ok: true, ms: 4100, cost_milli: 10, browser: { target: "draft", path: "index.html", viewport: "phone", ms: 4100, passed: true, steps: [3, 0], errors: 0, console: 2, blocked: 1, screenshots: ["c_one", "c_two"] } },
+      ] }] })),
+      "GET /api/bot/runs/r5/events": () => new Response(stream.body, { headers: { "content-type": "text/event-stream" } }),
+    });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r5");
+    flush();
+    await settle();
+    const row = document.querySelector("#bot-run-panel .calls li")!;
+    expect(row.textContent).toContain("browser.test");
+    expect(row.querySelector(".bl")!.textContent).toBe("draft · phone · passed · 0 errors · 2 console · 1 blocked · 4.1 s · 0.01 credits");
+    const shots = [...row.querySelectorAll<HTMLImageElement>(".shots img")];
+    expect(shots.map(i => [i.getAttribute("src"), i.alt])).toEqual([
+      ["/api/bot/runs/r5/content/c_one", "Screenshot 1 of the browser test"],
+      ["/api/bot/runs/r5/content/c_two", "Screenshot 2 of the browser test"],
+    ]);
+    expect(shots[0].closest("a")!.getAttribute("href")).toBe("/api/bot/runs/r5/content/c_one");
+    // A live call event shows the same.
+    stream.send("call", { step: 1, call: { op: "browser.test", ok: true, ms: 9000, cost_milli: 20, browser: { target: "v2", path: "about.html", viewport: "desktop", ms: 9000, passed: true, steps: [1, 0], tests: { passed: 4, failed: 0 }, errors: 0, console: 0, blocked: 0, screenshots: [] } } });
+    await settle();
+    const last = document.querySelector("#bot-run-panel .calls li:last-child")!;
+    expect(last.querySelector(".bl")!.textContent).toBe("v2 about.html · desktop · passed · 4 tests passed · 0 errors · 9 s · 0.02 credits");
+    expect(last.querySelector(".shots")).toBeNull();
+    m.unmount();
+  });
+
+  it("a_failed_test_reads_failed", async () => {
+    daemon({ "GET /api/bot/runs/r6": json(run({ id: "r6", status: "finished", steps: [{ n: 1, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Test", calls: [
+      { op: "browser.test", ok: true, ms: 0, cost_milli: 10, browser: { target: "draft", viewport: "tablet", ms: 1200, passed: false, steps: [1, 2], tests: { passed: 2, failed: 1 }, errors: 1, console: 0, blocked: 0, screenshots: [] } },
+      { op: "browser.test", ok: false, ms: 0, cost_milli: 0, error: "browser_cap", browser: { target: null } },
+    ] }] })) });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r6");
+    flush();
+    await settle();
+    const rows = [...document.querySelectorAll("#bot-run-panel .calls li")];
+    const line = rows[0].querySelector(".bl")!;
+    expect(line.textContent).toBe("draft · tablet · failed · 2 tests passed, 1 failed · 1 error · 1.2 s · 0.01 credits");
+    expect(line.classList.contains("bad")).toBe(true);
+    // A call refused before it ran says only what it was asked, and why it failed.
+    expect(rows[1].querySelector(".bl")!.textContent).toBe("draft");
+    expect(rows[1].textContent).toContain("browser_cap");
+    m.unmount();
+  });
+
   it("finish_lists_sources", async () => {
     daemon({ "GET /api/bot/runs/r4": json(run({ id: "r4", status: "finished", steps: [
       { n: 1, kind: "finish", status: "done", started_at: "x", credits_milli: 0, summary: "Added the release notes.", sources: [{ title: "Svelte blog", url: "https://svelte.dev/blog" }, { title: "javascript:alert(1)", url: "javascript:alert(1)" }, { title: "Again", url: "https://svelte.dev/blog" }] },

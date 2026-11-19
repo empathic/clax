@@ -4,7 +4,8 @@
   // The run panel (spec 2026-10-21-claxbot §11.3), beside the artifact (a
   // sheet at phone width): one ClaxBot run, live. Its narration, each script
   // as a card (its title, its code, every `clax` call it made with how it
-  // went and how long it took, and its output), collapsed except the live
+  // went and how long it took, a browser test's line and its screenshots
+  // as thumbnails, and its output), collapsed except the live
   // one and any that failed; the credits the run has spent and the week's
   // meter; Stop while it runs; a link to its events in the audit log; and,
   // once it stopped with an unpublished draft, Open the draft. A step that
@@ -21,7 +22,7 @@
   import { onDestroy } from "svelte";
   import { refusal } from "../people/refusal";
   import { type BotRun, type BotStep, type RunEvent, type RunSummary, cancelRun } from "./api";
-  import { callCost, credits, ended, meter, openByDefault, runCost, runStatus, stepLine, tail, turnActivity, webSource } from "./model";
+  import { browserLine, callCost, credits, ended, meter, openByDefault, runCost, runStatus, stepLine, tail, turnActivity, webSource } from "./model";
   import { RunFeed } from "./run-feed.svelte";
   import { botView } from "./send.svelte";
   import Meter from "./Meter.svelte";
@@ -90,6 +91,7 @@
   const what = $derived(!run ? "" : run.request === "brief" ? "Building from the brief" : run.thread_ids.length === 1 ? "Answering one thread" : `Answering ${run.thread_ids.length} threads`);
   const answers = $derived(run ? quotes(run.thread_ids) : []);
   const callsLine = (s: BotStep) => { const c = s.calls ?? []; const ms = c.reduce((n, x) => n + x.ms, 0); return s.status === "running" ? `running · ${c.length} call${c.length === 1 ? "" : "s"}` : `${c.length} call${c.length === 1 ? "" : "s"} · ${ms} ms`; };
+  const shot = (id: string) => `/api/bot/runs/${encodeURIComponent(run?.id ?? "")}/content/${encodeURIComponent(id)}`;
   const output = (s: BotStep) => (s.value === undefined ? null : typeof s.value === "string" ? s.value : JSON.stringify(s.value, null, 2));
   async function stop() {
     if (!run || stopping) return;
@@ -139,7 +141,7 @@
               {#if s.code}<pre class="code" aria-label="Code"><code>{s.code}</code></pre>{/if}
               {#if s.calls?.length}
                 <ul class="calls" aria-label="Calls">
-                  {#each s.calls as c, i (i)}<li class:bad={!c.ok}><span aria-label={c.ok ? "ok" : "failed"}>{c.ok ? "✓" : "✗"}</span> <code>{c.op}</code>{#if c.web?.query ?? c.web?.url ?? c.target}{" "}<span class="tg">{c.web?.query ?? c.web?.url ?? c.target}</span>{/if}{#if webSource(c.web?.source)}{" "}<span class="src">{webSource(c.web?.source)}</span>{/if}{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}</li>{/each}
+                  {#each s.calls as c, i (i)}<li class:bad={!c.ok}><span aria-label={c.ok ? "ok" : "failed"}>{c.ok ? "✓" : "✗"}</span> <code>{c.op}</code>{#if browserLine(c)}{" "}<span class="bl" class:bad={c.browser?.passed === false}>{browserLine(c)}</span>{:else}{#if c.web?.query ?? c.web?.url ?? c.target}{" "}<span class="tg">{c.web?.query ?? c.web?.url ?? c.target}</span>{/if}{#if webSource(c.web?.source)}{" "}<span class="src">{webSource(c.web?.source)}</span>{/if}{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}{#if c.browser?.screenshots?.length && run}<span class="shots">{#each c.browser.screenshots as id, k (id)}<a href={shot(id)} target="_blank" rel="noopener noreferrer"><img src={shot(id)} alt={`Screenshot ${k + 1} of the browser test`} loading="lazy" /></a>{/each}</span>{/if}</li>{/each}
                 </ul>
               {/if}
               {#if s.logs?.length}<pre class="out" aria-label="Logs">{s.logs.join("\n")}</pre>{/if}
@@ -222,6 +224,11 @@
     .runp .sources a { color: var(--accent-ink); text-decoration: underline; }
     .runp .calls .ms { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
     .runp .calls .ce { flex-basis: 100%; color: var(--danger); }
+    .runp .calls .bl { color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
+    .runp .calls .bl.bad { color: var(--danger); }
+    .runp .calls .shots { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .runp .calls .shots a { display: block; line-height: 0; border: 1px solid var(--border); border-radius: var(--radius-xs); overflow: hidden; background: var(--hover); }
+    .runp .calls .shots img { display: block; width: auto; height: 72px; max-width: 128px; object-fit: cover; }
     .runp details .err { margin: 0 10px 8px; }
     .runp .err { margin: 0; color: var(--danger); font-size: 12.5px; }
     .runp .merr { font-size: 13px; }

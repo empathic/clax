@@ -97,6 +97,28 @@ export function callCost(milli: number | undefined): string | null {
   return `${credits(milli)} ${milli === 1000 ? "credit" : "credits"}`;
 }
 
+/** A browser call's line in the run panel: "draft · phone · passed · 0 errors · 4.1 s · 0.01 credits" (its target and path, viewport, outcome, saved tests, errors, console messages and blocked requests when there were any, time, cost); a call refused before it ran says only what it was asked. Null for a call that is not the browser's (or one a reader sees without its summary). */
+export function browserLine(c: Pick<BotCall, "browser" | "cost_milli">): string | null {
+  const b = c.browser;
+  if (!b) return null;
+  const t = b.target;
+  const target = typeof t === "string" ? t : typeof t?.version === "number" ? `v${t.version}` : "draft";
+  const parts = [b.path && b.path !== "index.html" ? `${target} ${b.path}` : target];
+  if (b.viewport) parts.push(b.viewport);
+  if (typeof b.passed === "boolean") {
+    parts.push(b.passed ? "passed" : "failed");
+    if (b.tests) parts.push(`${b.tests.passed} test${b.tests.passed === 1 ? "" : "s"} passed${b.tests.failed ? `, ${b.tests.failed} failed` : ""}`);
+    const e = b.errors ?? 0;
+    parts.push(`${e} error${e === 1 ? "" : "s"}`);
+    if (b.console) parts.push(`${b.console} console`);
+    if (b.blocked) parts.push(`${b.blocked} blocked`);
+  }
+  if (typeof b.ms === "number") parts.push(`${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(b.ms / 1000)} s`);
+  const cost = callCost(c.cost_milli);
+  if (cost) parts.push(cost);
+  return parts.join(" · ");
+}
+
 export const UNITS: Record<Unit, string> = {
   mtok_input: "1M input tokens", mtok_cached_input: "1M cached tokens", mtok_cache_write: "1M cache-write tokens", mtok_output: "1M output tokens",
   cpu_gb_s: "CPU·GB-s", mreq: "1M requests", gb_month: "GB-month", run: "run", kreq: "thousand requests", browser_h: "browser hour",

@@ -112,6 +112,14 @@ export type BotCall = {
   cost_milli?: number;
   /** A web call's query (search) or URL (fetch), and for a fetch the source that allowed it: `comment`, `search #<seq>` or `page #<seq>`. */
   web?: { query?: string; url?: string; source?: string };
+  /** A browser call's summary (absent to a reader of the artifact, who does not see the draft it shows). */
+  browser?: BrowserSummary;
+};
+/** What the run shows of a browser call: its target (`draft` or `v<n>`; before its arguments were read, the target as the script gave it), path and viewport, then, once a test ran, its time, whether it passed, its steps as `[ok, failed]`, its saved tests, the counts of uncaught errors, console messages and blocked requests, and its screenshots' content IDs. */
+export type BrowserSummary = {
+  target?: string | { version?: number } | null; path?: string; viewport?: string; url?: string;
+  ms?: number; passed?: boolean; steps?: [number, number]; tests?: { passed: number; failed: number };
+  errors?: number; console?: number; blocked?: number; screenshots?: string[];
 };
 export type StepKind = "turn" | "script" | "finish" | "give_up" | "stopped" | "failed";
 /** One step of a run (§4.2). A `turn` carries the model's narration
