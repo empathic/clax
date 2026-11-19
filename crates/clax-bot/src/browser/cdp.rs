@@ -138,9 +138,58 @@ enum Frame {
     Event(CdpEvent),
 }
 
+/// `frame` with each `\u` escape of a lone UTF-16 surrogate replaced by
+/// U+FFFD, or `None` when it has none. A page's strings may hold lone
+/// surrogates, which Chrome writes as escapes and JSON parsers refuse.
+fn mend_surrogates(frame: &str) -> Option<String> {
+    fn escape_at(b: &[u8], at: usize) -> Option<u16> {
+        if b.get(at) != Some(&b'\\') || b.get(at + 1) != Some(&b'u') {
+            return None;
+        }
+        let hex = std::str::from_utf8(b.get(at + 2..at + 6)?).ok()?;
+        u16::from_str_radix(hex, 16).ok()
+    }
+    let b = frame.as_bytes();
+    let mut out = String::with_capacity(frame.len());
+    let (mut copied, mut i, mut mended) = (0, 0, false);
+    while i < b.len() {
+        if b[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        let Some(unit) = escape_at(b, i) else {
+            // Another escape (`\\` among them): skip it whole, so the `u`
+            // after an escaped backslash is not read as an escape.
+            i += 2;
+            continue;
+        };
+        let high = (0xD800..0xDC00).contains(&unit);
+        let paired = high && escape_at(b, i + 6).is_some_and(|n| (0xDC00..0xE000).contains(&n));
+        if paired {
+            i += 12;
+        } else if (0xD800..0xE000).contains(&unit) {
+            out.push_str(&frame[copied..i]);
+            out.push_str("\\ufffd");
+            i += 6;
+            copied = i;
+            mended = true;
+        } else {
+            i += 6;
+        }
+    }
+    mended.then(|| {
+        out.push_str(&frame[copied..]);
+        out
+    })
+}
+
 fn parse(frame: &str) -> Result<Frame, CdpFail> {
-    let v: Value = serde_json::from_str(frame)
-        .map_err(|e| CdpFail::Protocol(format!("a frame that is not JSON ({e})")))?;
+    let v: Value = match serde_json::from_str(frame) {
+        Ok(v) => v,
+        Err(e) => mend_surrogates(frame)
+            .and_then(|m| serde_json::from_str(&m).ok())
+            .ok_or_else(|| CdpFail::Protocol(format!("a frame that is not JSON ({e})")))?,
+    };
     if let Some(id) = v.get("id").and_then(Value::as_u64) {
         let answer = match v.get("error") {
             Some(err) => Err(CdpFail::Protocol(
@@ -476,6 +525,26 @@ mod tests {
         assert_eq!(cdp.wait(one).await.unwrap(), json!({"n": "first"}));
         assert_eq!(cdp.wait(two).await.unwrap(), json!({"n": "second"}));
         assert_eq!(log.methods(), ["A.one", "A.two"]);
+    }
+
+    #[test]
+    fn a_lone_surrogate_from_the_page_is_read_as_a_replacement() {
+        // A console message and an evaluate answer, each holding a lone
+        // surrogate escape, as Chrome writes a page's broken string.
+        let event = r#"{"method":"Runtime.consoleAPICalled","params":{"args":[{"value":"a\ud83d"}]}}"#;
+        let Ok(Frame::Event(e)) = parse(event) else {
+            panic!("an event")
+        };
+        assert_eq!(e.params["args"][0]["value"], "a\u{fffd}");
+        let answer = r#"{"id":4,"result":{"result":{"value":"\udc00b😀"}}}"#;
+        let Ok(Frame::Answer(4, Ok(v))) = parse(answer) else {
+            panic!("an answer")
+        };
+        assert_eq!(v["result"]["value"], "\u{fffd}b\u{1f600}");
+        // An escaped backslash before `u` is text, and a frame that is
+        // not JSON still fails.
+        assert_eq!(mend_surrogates(r#"{"a":"\\ud83d"}"#), None);
+        assert!(matches!(parse("{nope"), Err(CdpFail::Protocol(_))));
     }
 
     #[tokio::test]
