@@ -2182,8 +2182,8 @@ async fn a_whole_browser_test_through_the_daemon() {
         Turn::script(
             "tu_1",
             "Test the page",
-            "const r = await clax.browser.test(null, {steps: [{screenshot: {}}]});
-             return {passed: r.passed, shots: r.screenshots.length, cost: r.cost,
+            "const r = await clax.browser.test();
+             return {passed: r.passed, tests: r.tests === undefined, cost: r.cost,
                      failed: r.requests.failed, blocked: r.requests.blocked};",
         ),
         Turn::finish("The page loads."),
@@ -2244,10 +2244,10 @@ async fn a_whole_browser_test_through_the_daemon() {
     // the model.
     let requests = fake.requests();
     let first = serde_json::to_string(&requests[0]).unwrap();
-    assert!(first.contains("browser.test"), "declared");
+    assert!(first.contains("test(source?:"), "declared");
     let sent = serde_json::to_string(&requests).unwrap();
     assert!(sent.contains(r#"\"passed\":true"#), "{sent}");
-    assert!(sent.contains(r#"\"shots\":1"#), "{sent}");
+    assert!(sent.contains(r#"\"tests\":true"#), "no saved tests ran: {sent}");
     // One socket, to Browser Run's path with the instance's token.
     let upgrades = run.upgrades.lock().unwrap().clone();
     assert_eq!(
