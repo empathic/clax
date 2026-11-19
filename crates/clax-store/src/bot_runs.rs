@@ -1206,6 +1206,7 @@ pub(crate) fn run_in(c: &Connection, id: &str) -> Result<Option<Run>> {
 /// leave `bot_runs`, before migration 67 adds `bot_runs.browser`: the run
 /// reads with no browser grant, as migration 67's default gives it.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) fn run_before_browser_in(c: &Connection, id: &str) -> Result<Option<Run>> {
     let cols = RUN_COLS.replace(", web, browser", ", web, '' AS browser");
     Ok(
