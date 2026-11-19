@@ -53,6 +53,7 @@ pub mod api;
 pub mod bot_surfaces;
 pub mod broker;
 pub mod browser;
+pub mod capability;
 pub mod check;
 pub mod clax;
 pub mod draft;

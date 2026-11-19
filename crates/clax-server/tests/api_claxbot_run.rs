@@ -2072,19 +2072,19 @@ async fn a_browse_run_with_the_switch_on_declares_browse() {
     let (_, as_made) = ts.store.run_as_made(&run.id).unwrap().unwrap();
     let granted = as_made.bindings().unwrap().all()[0].granted().to_vec();
     assert!(granted.iter().any(|o| o == "browser.browse"), "{granted:?}");
-    // Browsing reaches the web: the person's web choice off leaves it out.
+    // Browsing is its own capability: the person's web choice off leaves
+    // it in, and the run keeps what was live when it was made.
     ts.store
         .set_web_choice(&AuditCtx::DAEMON, OWNER, false)
         .unwrap();
-    assert_eq!(start(&threads[1]).browser, "test");
-    ts.store
-        .set_web_choice(&AuditCtx::DAEMON, OWNER, true)
-        .unwrap();
+    let both = start(&threads[1]);
+    assert_eq!(both.browser, "test,browse");
+    assert_eq!(both.caps, "browser.open.artifact,browser.open.url");
     // Testing off, browsing on: a run that browses alone.
     ts.store
         .set_bot_settings(
             &AuditCtx::DAEMON,
-            &[(Setting::BrowserEnabled, Some(json!(false)))],
+            &[(Setting::BrowserOpenArtifactEnabled, Some(json!(false)))],
         )
         .unwrap();
     assert_eq!(start(&threads[2]).browser, "browse");

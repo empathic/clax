@@ -30,7 +30,6 @@ use crate::host::RequestContext;
 use clax_core::Result;
 use clax_store::Store;
 use clax_store::bot_runs::CallEntry;
-use clax_store::bot_settings::Setting;
 use clax_store::bot_web::WebPageRow;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -92,6 +91,9 @@ pub enum WebOff {
     /// The admin turned both search and fetch off ("off on this
     /// instance").
     AdminOff,
+    /// No live admin grant gives the person either capability ("not
+    /// granted to you").
+    NotGranted,
     /// The person turned web use off for themselves ("off by your
     /// choice").
     PersonOff,
@@ -102,13 +104,27 @@ pub enum WebOff {
 }
 
 impl WebOff {
-    /// `admin_off`, `person_off` or `not_configured`.
+    /// `admin_off`, `not_granted`, `person_off` or `not_configured`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             WebOff::AdminOff => "admin_off",
+            WebOff::NotGranted => "not_granted",
             WebOff::PersonOff => "person_off",
             WebOff::NotConfigured => "not_configured",
+        }
+    }
+
+    /// The reason [`Off`](crate::capability::Off) gives, in this enum's
+    /// words.
+    #[must_use]
+    pub fn of(off: crate::capability::Off) -> WebOff {
+        use crate::capability::Off;
+        match off {
+            Off::NotOffered => WebOff::AdminOff,
+            Off::NotConfigured => WebOff::NotConfigured,
+            Off::NotGranted => WebOff::NotGranted,
+            Off::PersonOff => WebOff::PersonOff,
         }
     }
 }
@@ -116,6 +132,9 @@ impl WebOff {
 /// Which URLs a fetch may ask for (`web.fetch.url_rule`, spec §5.3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UrlRule {
+    /// Only URLs in the sender's own words: a `from_sender` comment of
+    /// the request, or the brief.
+    Sender,
     /// Only URLs a source of the run holds (spec §5.2): the default.
     Sourced,
     /// Any public URL.
@@ -335,88 +354,37 @@ pub fn sources(
 }
 
 impl WebAccess {
-    /// Now, for `person`: off when the admin turned both operations off
-    /// ([`WebOff::AdminOff`]), when the host's source can perform none of
-    /// those the admin turned on (`configured`, [`WebOff::NotConfigured`]),
-    /// or when the person chose off ([`WebOff::PersonOff`]), in that
-    /// order: the instance's reasons come first, since the person's switch
-    /// would not turn web use on. Else the operations the admin turned on
-    /// that the source can perform, with their settings.
+    /// Now, for `person`: a view of [`Capabilities::now`] over the two
+    /// web capabilities, the host able to perform those `configured`
+    /// names. Off when neither is live, for the reason closest to on
+    /// ([`Capabilities::why_off`]): the admin turned both off
+    /// ([`WebOff::AdminOff`]), the source can perform none of those
+    /// offered ([`WebOff::NotConfigured`]), no admin grant gives them
+    /// ([`WebOff::NotGranted`]), or the person's grants are revoked
+    /// ([`WebOff::PersonOff`]). Else the live ones, with their settings.
+    ///
+    /// [`Capabilities::now`]: crate::capability::Capabilities::now
+    /// [`Capabilities::why_off`]: crate::capability::Capabilities::why_off
     ///
     /// # Errors
     /// The store's.
     pub fn now(store: &Store, person: &str, configured: WebShape) -> Result<WebAccess> {
-        let on = |s: Setting| -> Result<bool> { Ok(store.bot_setting(s)?.as_bool() == Some(true)) };
-        let search_on = on(Setting::WebSearchEnabled)?;
-        let fetch_on = on(Setting::WebFetchEnabled)?;
-        if !search_on && !fetch_on {
-            return Ok(WebAccess::Off(WebOff::AdminOff));
+        use crate::capability::{Capabilities, Capability, Terms};
+        let caps = Capabilities::now(store, person, &|c| match c {
+            Capability::WebSearch => configured.search,
+            Capability::WebFetch => configured.fetch,
+            _ => false,
+        })?;
+        if let Some(off) = caps.why_off(&[Capability::WebSearch, Capability::WebFetch]) {
+            return Ok(WebAccess::Off(WebOff::of(off)));
         }
-        let search_on = search_on && configured.search;
-        let fetch_on = fetch_on && configured.fetch;
-        if !search_on && !fetch_on {
-            return Ok(WebAccess::Off(WebOff::NotConfigured));
-        }
-        if !store.web_choice(person)? {
-            return Ok(WebAccess::Off(WebOff::PersonOff));
-        }
-        let text = |s: Setting| -> Result<String> {
-            Ok(store.bot_setting(s)?.as_str().unwrap_or("").to_string())
+        let search = match caps.get(Capability::WebSearch) {
+            Ok(Terms::Search(g)) => Some(g.clone()),
+            _ => None,
         };
-        let count = |s: Setting| -> Result<u32> {
-            let v = store.bot_setting(s)?;
-            Ok(v.as_u64()
-                .and_then(|n| u32::try_from(n).ok())
-                .or_else(|| {
-                    s.default_value()
-                        .as_u64()
-                        .and_then(|n| u32::try_from(n).ok())
-                })
-                .unwrap_or(0))
-        };
-        let search = if search_on {
-            // The setting is checked on write (`Setting::check`), so the
-            // fallback is never reached in practice.
-            let provider = match text(Setting::WebSearchProvider)?.as_str() {
-                "exa" => Provider::Exa,
-                "linkup" => Provider::Linkup,
-                _ => Provider::Ceramic,
-            };
-            let alias = text(Setting::WebSearchByokAlias)?;
-            Some(SearchGrant {
-                provider,
-                gateway: text(Setting::WebSearchGateway)?,
-                byok_alias: (!alias.is_empty()).then_some(alias),
-                limit: u8::try_from(count(Setting::WebSearchLimit)?.clamp(1, 10)).unwrap_or(5),
-                max_per_run: count(Setting::WebMaxSearchesPerRun)?,
-            })
-        } else {
-            None
-        };
-        let fetch = if fetch_on {
-            let rule = match text(Setting::WebFetchUrlRule)?.as_str() {
-                "any_public" => UrlRule::AnyPublic,
-                "allowlist" => UrlRule::Allowlist(
-                    store
-                        .bot_setting(Setting::WebFetchAllowlist)?
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_string)
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                ),
-                _ => UrlRule::Sourced,
-            };
-            Some(FetchGrant {
-                rule,
-                max_per_run: count(Setting::WebMaxFetchesPerRun)?,
-                limits: FetchLimits::default(),
-            })
-        } else {
-            None
+        let fetch = match caps.get(Capability::WebFetch) {
+            Ok(Terms::Fetch(g)) => Some(g.clone()),
+            _ => None,
         };
         Ok(WebAccess::On(WebGrant { search, fetch }))
     }
@@ -440,6 +408,7 @@ mod tests {
     use super::*;
     use clax_core::audit::AuditCtx;
     use clax_store::bot_runs::{NewRun, RequestKind};
+    use clax_store::bot_settings::Setting;
     use clax_store::credits::KeySource;
     use clax_store::roles::OWNER;
     use serde_json::json;

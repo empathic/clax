@@ -862,6 +862,17 @@ impl ClaxSession<'_> {
             ));
         }
         let src = match (rule, found) {
+            (UrlRule::Sender, Some(src @ UrlSource::Request { .. })) => src,
+            (UrlRule::Sender, _) => {
+                return Err(HostError::new(
+                    CODE_URL_NOT_IN_PRIOR_CONTEXT,
+                    format!(
+                        "{} is not in the words of the person you act for; fetch only URLs \
+                         they wrote",
+                        url.normalized()
+                    ),
+                ));
+            }
             (_, Some(src)) => src,
             (UrlRule::AnyPublic, None) => UrlSource::AnyPublic,
             (_, None) => {

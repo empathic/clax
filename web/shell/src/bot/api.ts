@@ -71,7 +71,7 @@ export type MeBot = {
  * the admin turned on a web operation the host's source can perform, and
  * `operations` which, `why_off` why their runs have none now, else `null`. */
 export type MeWeb = {
-  on: boolean; offered: boolean; operations: { search: boolean; fetch: boolean }; why_off: "admin_off" | "person_off" | "not_configured" | null;
+  on: boolean; offered: boolean; operations: { search: boolean; fetch: boolean }; why_off: "admin_off" | "not_granted" | "person_off" | "not_configured" | null;
   /** Milli-credits one request costs them: a search on the active provider's line, a fetch (null for a line that does not exist). */
   prices: { search_milli: number | null; fetch_milli: number | null };
 };
@@ -82,7 +82,7 @@ export type MeWeb = {
  * `why_off` why their runs cannot now, else `null`, and what a minute of
  * browser time costs them, in milli-credits (null without the line). */
 export type MeBrowser = {
-  on: boolean; offered: boolean; why_off: "admin_off" | "person_off" | "not_configured" | null; price_milli_per_minute: number | null;
+  on: boolean; offered: boolean; why_off: "admin_off" | "not_granted" | "person_off" | "not_configured" | null; price_milli_per_minute: number | null;
 };
 
 /** A line of usage: a cost line's ID, its label and unit, and the quantity and credits (§7.3). */

@@ -216,16 +216,27 @@ ClaxBot can test the pages it builds in a real browser (`clax.browser.test`) onc
 
 ```toml
 [bot.browser]
-enabled = false
-max_tests_per_run = 10        # at least 1
-test_seconds = 60             # one test's time cap, 10 to 120
+call_seconds = 60             # one browser call's time cap, 10 to 120
 max_concurrent = 2            # browsers open at once on the instance, 1 to 50
-max_browses_per_run = 10      # at least 1
+max_open_per_run = 1          # a run's sessions open at once, 1 to 4
 
-[bot.browser.browse]
+[bot.browser.session]
+idle_seconds = 300            # a session with no call this long ends, 60 to 1200
+max_seconds = 1800            # a session open this long ends, 60 to 7200
+
+[bot.browser.open.artifact]   # sessions and tests on the run's clax
 enabled = false
-url_rule = "sender"           # sender, allowlist or any_public
+max_per_run = 10              # at least 1
+
+[bot.browser.open.content]    # sessions on content the script supplies
+enabled = false
+max_per_run = 10
+
+[bot.browser.open.url]        # sessions on a public URL
+enabled = false
+url_rule = "sender"           # sender, sourced, allowlist or any_public
 allowlist = []                # hosts for allowlist; "*.example.com" matches subdomains
+max_per_run = 5
 ```
 
 ClaxBot can also browse public pages (`clax.browser.browse(url, opts)`, the same steps and result as a test, each `goto` a URL, no saved tests) once an admin turns Browse public pages on in Settings, Browser; it is off by default, and a run browses only while its person has both their browser switch and their web switch on. The URL and each `goto` must pass the admin's URL rule, which is browsing's own, not the web tools': `sender` (the default) admits only a URL the person wrote in their comments or brief, `allowlist` a host on the list (`*.example.com` its subdomains), `any_public` any public URL. Under every rule a browse never opens a private or loopback address, `localhost`, a URL with credentials or one of a hosted instance's own hosts (its public origin and site domain). Every request the page itself makes (its redirects, scripts, images, `fetch` calls, form posts and navigations) is held to the same: it must be `http` or `https`, on a name the daemon resolves to public addresses alone, not the instance's own, and on a host the rule admits (under `sender`, a host of the person's URLs, `www.` aside; under `allowlist`, a listed host; under `any_public`, any), else it is refused and listed blocked with why (`private`, `own`, `rule`, `scheme`). So under `sender` and `allowlist` a page that loads from other hosts renders without those parts, and data cannot leave for a host the rule does not name. A browse page has no WebSocket, WebTransport or WebRTC, its popups and workers are closed before they run, and it shares no cookies with anything (a fresh incognito browser each time). Browser Run fetches the pages from Cloudflare's network; the daemon's resolver, not Cloudflare's, decides what is public, so a name that resolves differently there is not caught. What remains is computer use's risk, which the Browser page says beside the switch: a page can steer ClaxBot into typing data into a form of a site it may open, and under `any_public` into sending it anywhere. A browse is charged and capped as a test is (`max_browses_per_run`, its own count; the per-test time cap), audited as `bot.browser` with its URL, and shown in the run panel by its URL.

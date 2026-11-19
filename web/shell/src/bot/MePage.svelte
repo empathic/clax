@@ -32,7 +32,7 @@
   // Shown in Settings, the screen waits for the person's ClaxBot and their week's use.
   const bot = holdReveal();
   const used = holdReveal();
-  const WHY: Record<string, string> = { admin_off: "Off on this instance", not_configured: "Not configured" };
+  const WHY: Record<string, string> = { admin_off: "Off on this instance", not_configured: "Not configured", not_granted: "Not granted to you" };
   const web = $derived(me?.web ?? null);
   const instanceWhy = $derived(web?.why_off && web.why_off !== "person_off" ? WHY[web.why_off] ?? null : null);
   const browser = $derived(me?.browser ?? null);

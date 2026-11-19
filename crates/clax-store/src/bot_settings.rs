@@ -96,14 +96,7 @@ settings! {
     WebFetchUrlRule = "web.fetch.url_rule", UrlRule, "sourced";
     WebFetchAllowlist = "web.fetch.allowlist", Hosts, Vec::<String>::new();
     WebCloudflareAccountId = "web.cloudflare.account_id", AccountId, "";
-    BrowserEnabled = "browser.enabled", Bool, false;
-    BrowserMaxTestsPerRun = "browser.max_tests_per_run", Positive, 10;
-    BrowserTestSeconds = "browser.test_seconds", TenTo120, 60;
     BrowserMaxConcurrent = "browser.max_concurrent", OneTo50, 2;
-    BrowserBrowseEnabled = "browser.browse.enabled", Bool, false;
-    BrowserBrowseUrlRule = "browser.browse.url_rule", BrowseRule, "sender";
-    BrowserBrowseAllowlist = "browser.browse.allowlist", Hosts, Vec::<String>::new();
-    BrowserMaxBrowsesPerRun = "browser.max_browses_per_run", Positive, 10;
     BrowserOpenUrlEnabled = "browser.open.url.enabled", Bool, false;
     BrowserOpenUrlUrlRule = "browser.open.url.url_rule", UrlRule, "sender";
     BrowserOpenUrlAllowlist = "browser.open.url.allowlist", Hosts, Vec::<String>::new();
@@ -160,9 +153,6 @@ enum Kind {
     SixtyTo7200,
     /// An integer from 1 to 4 (a run's browser sessions open at once).
     OneTo4,
-    /// Which URLs a browse may start at and go to: `sender`, `allowlist`
-    /// or `any_public`.
-    BrowseRule,
     /// At most 100 lowercase hostnames, each optionally `*.`-prefixed.
     Hosts,
     /// Empty (unset), or a Cloudflare account ID: 32 hex digits.
@@ -318,10 +308,6 @@ impl Setting {
             Kind::OneTo4 => match value.as_i64() {
                 Some(n) if (1..=4).contains(&n) => Ok(Value::from(n)),
                 _ => Err(bad("a whole number from 1 to 4")),
-            },
-            Kind::BrowseRule => match value.as_str().map(str::trim) {
-                Some(r @ ("sender" | "allowlist" | "any_public")) => Ok(Value::from(r)),
-                _ => Err(bad("one of sender, allowlist, any_public")),
             },
             Kind::UrlRule => match value.as_str().map(str::trim) {
                 Some(r @ ("sender" | "sourced" | "any_public" | "allowlist")) => Ok(Value::from(r)),
@@ -1257,110 +1243,6 @@ mod tests {
             .unwrap()
             .body;
         assert!(!body.contains("key_cleared"), "{body}");
-    }
-
-    #[test]
-    fn the_browser_settings_default_off() {
-        let (_d, st) = store();
-        let want = [
-            (Setting::BrowserEnabled, "browser.enabled", json!(false)),
-            (
-                Setting::BrowserMaxTestsPerRun,
-                "browser.max_tests_per_run",
-                json!(10),
-            ),
-            (
-                Setting::BrowserTestSeconds,
-                "browser.test_seconds",
-                json!(60),
-            ),
-            (
-                Setting::BrowserMaxConcurrent,
-                "browser.max_concurrent",
-                json!(2),
-            ),
-            (
-                Setting::BrowserBrowseEnabled,
-                "browser.browse.enabled",
-                json!(false),
-            ),
-            (
-                Setting::BrowserBrowseUrlRule,
-                "browser.browse.url_rule",
-                json!("sender"),
-            ),
-            (
-                Setting::BrowserBrowseAllowlist,
-                "browser.browse.allowlist",
-                json!([]),
-            ),
-            (
-                Setting::BrowserMaxBrowsesPerRun,
-                "browser.max_browses_per_run",
-                json!(10),
-            ),
-        ];
-        for (s, key, v) in want {
-            assert_eq!(s.key(), key);
-            assert_eq!(Setting::parse(key).unwrap(), s);
-            assert_eq!(st.bot_setting(s).unwrap(), v, "{key}");
-            assert!(!s.is_pricing(), "{key}");
-        }
-    }
-
-    #[test]
-    fn a_bad_browse_rule_or_time_is_refused() {
-        let (_d, st) = store();
-        for (s, bad) in [
-            (Setting::BrowserBrowseUrlRule, json!("open")),
-            (Setting::BrowserBrowseUrlRule, json!("sourced")),
-            (Setting::BrowserTestSeconds, json!(9)),
-            (Setting::BrowserTestSeconds, json!(121)),
-            (Setting::BrowserTestSeconds, json!("60")),
-            (Setting::BrowserMaxConcurrent, json!(0)),
-            (Setting::BrowserMaxConcurrent, json!(51)),
-            (Setting::BrowserMaxTestsPerRun, json!(0)),
-            (Setting::BrowserBrowseAllowlist, json!(["Example.com"])),
-        ] {
-            assert!(
-                matches!(
-                    st.set_bot_settings(DAEMON, &[(s, Some(bad.clone()))]),
-                    Err(CoreError::Invalid {
-                        code: "invalid_setting",
-                        ..
-                    })
-                ),
-                "{} = {bad}",
-                s.key()
-            );
-        }
-        assert!(st.stored_bot_settings().unwrap().is_empty());
-        st.set_bot_settings(
-            DAEMON,
-            &[
-                (Setting::BrowserBrowseUrlRule, Some(json!(" any_public "))),
-                (Setting::BrowserTestSeconds, Some(json!(10))),
-                (Setting::BrowserMaxConcurrent, Some(json!(50))),
-                (
-                    Setting::BrowserBrowseAllowlist,
-                    Some(json!(["example.com", "*.docs.example.org"])),
-                ),
-            ],
-        )
-        .unwrap();
-        assert_eq!(
-            st.bot_setting(Setting::BrowserBrowseUrlRule).unwrap(),
-            json!("any_public")
-        );
-        assert_eq!(
-            st.bot_setting(Setting::BrowserTestSeconds).unwrap(),
-            json!(10)
-        );
-        for rule in ["sender", "allowlist", "any_public"] {
-            assert!(Setting::BrowserBrowseUrlRule.check(&json!(rule)).is_ok());
-        }
-        assert!(Setting::BrowserTestSeconds.check(&json!(120)).is_ok());
-        assert!(Setting::BrowserMaxConcurrent.check(&json!(1)).is_ok());
     }
 
     /// Every browser capability's settings and the browser's own (spec

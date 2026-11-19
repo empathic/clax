@@ -302,7 +302,7 @@ async fn a_version_target_loads_that_version() {
 #[tokio::test]
 async fn the_cap_and_credits_refuse_before_opening() {
     let env = Env::new().await;
-    env.admin_sets(&[(Setting::BrowserMaxTestsPerRun, json!(1))]);
+    env.admin_sets(&[(Setting::BrowserOpenArtifactMaxPerRun, json!(1))]);
     let (_, v) = one_script(
         &env,
         "test",
@@ -350,7 +350,7 @@ async fn the_cap_and_credits_refuse_before_opening() {
 #[tokio::test]
 async fn a_failure_before_opening_is_not_charged_but_counts() {
     let env = Env::new().await;
-    env.admin_sets(&[(Setting::BrowserMaxTestsPerRun, json!(1))]);
+    env.admin_sets(&[(Setting::BrowserOpenArtifactMaxPerRun, json!(1))]);
     // The instance's browsers are busy, then Browser Run refuses.
     let tries = Arc::new(AtomicU32::new(0));
     let n = tries.clone();
@@ -453,7 +453,7 @@ async fn returned_screenshots_are_shown_to_the_model() {
 async fn an_undeclared_browser_call_is_refused() {
     let env = Env::new().await;
     // The admin turned testing on, but the run was made without it.
-    env.admin_sets(&[(Setting::BrowserEnabled, json!(true))]);
+    env.admin_sets(&[(Setting::BrowserOpenArtifactEnabled, json!(true))]);
     let (_, v) = one_script(
         &env,
         "",
@@ -702,7 +702,7 @@ async fn screenshots_are_kept_under_the_hosts_content_limits() {
 
 /// Sets the admin's browse URL rule.
 fn browse_rule(env: &Env, rule: &str) {
-    env.admin_sets(&[(Setting::BrowserBrowseUrlRule, json!(rule))]);
+    env.admin_sets(&[(Setting::BrowserOpenUrlUrlRule, json!(rule))]);
 }
 
 /// Adds a comment of the sender's saying `text` to the run's request.
@@ -730,7 +730,8 @@ async fn a_browse_opens_its_url_and_is_charged_as_a_browse() {
     .await;
     assert_eq!(env.browser.opened(), 1);
     assert_eq!(v["passed"], true, "{v}");
-    assert_eq!(v["left"]["browses"], 9, "{v}");
+    // browser.open.url.max_per_run is 5 by default.
+    assert_eq!(v["left"]["browses"], 4, "{v}");
     assert_eq!(v["left"]["tests"], 0, "{v}");
     let log = &env.browser.logs()[0];
     let navigated: Vec<Value> = log
@@ -852,7 +853,7 @@ async fn a_browse_page_reaches_only_what_the_rule_admits() {
     let env = Env::new().await;
     browse_rule(&env, "allowlist");
     env.admin_sets(&[(
-        Setting::BrowserBrowseAllowlist,
+        Setting::BrowserOpenUrlAllowlist,
         json!(["news.example", "*.news.example"]),
     )]);
     env.browser.resolves_private("intranet.news.example");
@@ -923,7 +924,7 @@ async fn a_replayed_browse_opens_no_browser() {
 async fn browse_counts_against_its_own_cap() {
     let env = Env::new().await;
     browse_rule(&env, "any_public");
-    env.admin_sets(&[(Setting::BrowserMaxBrowsesPerRun, json!(1))]);
+    env.admin_sets(&[(Setting::BrowserOpenUrlMaxPerRun, json!(1))]);
     let (_, v) = one_script(
         &env,
         "test,browse",
@@ -939,7 +940,7 @@ async fn browse_counts_against_its_own_cap() {
 }
 
 #[tokio::test]
-async fn browse_needs_its_own_switch_and_the_web_choice() {
+async fn browse_needs_its_own_capability() {
     // A run made without browse cannot call it.
     let env = Env::new().await;
     browse_rule(&env, "any_public");
@@ -953,7 +954,8 @@ async fn browse_needs_its_own_switch_and_the_web_choice() {
     assert_eq!(v, "browser_disabled");
     assert_eq!(env.browser.opened(), 0);
 
-    // The person turns their web choice off mid-run: browsing stops.
+    // The person revokes their grant of browser.open.url to their runs
+    // mid-run: browsing stops, testing goes on.
     let env = Env::new().await;
     browse_rule(&env, "any_public");
     env.api.push(env.script_turn(
@@ -970,9 +972,11 @@ async fn browse_needs_its_own_switch_and_the_web_choice() {
     let deps = env.deps();
     let d = DriverId::mint();
     assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
-    env.store
-        .set_web_choice(&AuditCtx::DAEMON, OWNER, false)
+    let url = env.store.person_caps(OWNER).unwrap()["browser.open.url"]
+        .runs_grant
+        .clone()
         .unwrap();
+    env.store.revoke_cap_grant(&AuditCtx::DAEMON, &url).unwrap();
     env.drive(&deps, &run, &d).await;
     assert_eq!(
         script_result(&env, &run, 0)["value"],

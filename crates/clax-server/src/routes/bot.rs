@@ -42,7 +42,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use clax_bot::web::WebAccess;
+use clax_bot::capability::CapSet;
 use clax_core::ArtifactId;
 use clax_core::CoreError;
 use clax_core::audit::{AuditCtx, AuditKind};
@@ -198,7 +198,10 @@ fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
 fn browser_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
     use clax_bot::browser::BrowserAccess;
     let configured = crate::bot::browser_configured(st, bot)?;
-    let enabled = st.bot_setting(Setting::BrowserEnabled)?.as_bool() == Some(true);
+    let enabled = st
+        .bot_setting(Setting::BrowserOpenArtifactEnabled)?
+        .as_bool()
+        == Some(true);
     let why_off = match BrowserAccess::now(st, person, configured)? {
         BrowserAccess::Off(why) => json!(why.as_str()),
         BrowserAccess::On(_) => Value::Null,
@@ -1014,17 +1017,20 @@ pub fn admit_run(
     Ok((key_source, model_of(st)?))
 }
 
-/// The browser shape a run of `person` made now has
-/// ([`clax_bot::browser::BrowserAccess::now`]): `browser.test` and
-/// `browser.browse` as the admin, the person's choices and the host's
-/// source allow them.
-fn run_browser_shape(
-    st: &Store,
-    bot: &Bot,
-    person: &str,
-) -> clax_core::Result<clax_bot::browser::BrowserShape> {
-    let configured = crate::bot::browser_configured(st, bot)?;
-    Ok(clax_bot::browser::BrowserAccess::now(st, person, configured)?.shape())
+/// The capabilities a run of `person` made now keeps
+/// ([`clax_bot::capability::Capabilities::now`]): those the admin offers
+/// and grants, the person grants to their runs, and the host's sources
+/// can perform now.
+fn run_caps(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<CapSet> {
+    use clax_bot::capability::{Capabilities, Capability, Family};
+    let web = crate::bot::web_configured(st, bot)?;
+    let browser = crate::bot::browser_configured(st, bot)?;
+    Ok(Capabilities::now(st, person, &|c| match c {
+        Capability::WebSearch => web.search,
+        Capability::WebFetch => web.fetch,
+        c => c.family() == Family::Browser && browser,
+    })?
+    .live())
 }
 
 /// Starts a run of `request` on artifact `aid` for `sender`, as `ctx`:
@@ -1063,12 +1069,7 @@ pub fn start_run(
         key_source,
         base_version: art.current_version,
         agent_grant: sender.agent_grant.clone(),
-        caps: clax_store::bot_runs::caps_of_shapes(
-            WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
-                .shape()
-                .as_str(),
-            run_browser_shape(st, bot, person)?.as_str(),
-        ),
+        caps: run_caps(st, bot, person)?.as_str(),
     };
     // The surfaces whose hosts joined the artifact and are connected now
     // are bound too (`super::bot_joins`); with none, the run is made as

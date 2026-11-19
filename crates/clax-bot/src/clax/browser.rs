@@ -390,8 +390,8 @@ impl ClaxSession<'_> {
             let Some(b) = &grant.browse else {
                 return Finish::refused(HostError::new(
                     CODE_BROWSER_DISABLED,
-                    "browsing was turned off (by the admin, or the person's web choice) since \
-                     this run started; do without clax.browser.browse",
+                    "browsing (browser.open.url) was turned off since this run started; do \
+                     without clax.browser.browse",
                 ));
             };
             (OP_BROWSE, b.max_per_run, b.seconds, Mode::Browse)

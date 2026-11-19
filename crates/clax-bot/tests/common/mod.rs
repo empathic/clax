@@ -748,10 +748,10 @@ impl Env {
             on.push((Setting::WebFetchEnabled, json!(true)));
         }
         if browser.test {
-            on.push((Setting::BrowserEnabled, json!(true)));
+            on.push((Setting::BrowserOpenArtifactEnabled, json!(true)));
         }
         if browser.browse {
-            on.push((Setting::BrowserBrowseEnabled, json!(true)));
+            on.push((Setting::BrowserOpenUrlEnabled, json!(true)));
         }
         if !on.is_empty() {
             self.admin_sets(&on);

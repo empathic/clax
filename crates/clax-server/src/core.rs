@@ -881,7 +881,7 @@ mod tests {
         use clax_store::bot_settings::{Overrides, Setting};
         let cfg = clax_core::config::HomeConfig::from_text(
             std::path::PathBuf::from("/h/config.toml"),
-            "[bot.browser]\nenabled = true\ntest_seconds = 90\n[bot.browser.browse]\nurl_rule = \"allowlist\"\nallowlist = [\"*.example.com\"]\n",
+            "[bot.browser]\ncall_seconds = 90\n[bot.browser.open.artifact]\nenabled = true\n[bot.browser.open.url]\nurl_rule = \"allowlist\"\nallowlist = [\"*.example.com\"]\n",
             [(
                 "CLAX_BOT__BROWSER__MAX_CONCURRENT".to_string(),
                 "5".to_string(),
@@ -891,20 +891,24 @@ mod tests {
         let (ov, _) = super::bot_overrides(&cfg);
         let mut want = Overrides::default();
         for (setting, v, source) in [
-            (Setting::BrowserEnabled, serde_json::json!(true), "file"),
-            (Setting::BrowserTestSeconds, serde_json::json!(90), "file"),
+            (
+                Setting::BrowserOpenArtifactEnabled,
+                serde_json::json!(true),
+                "file",
+            ),
+            (Setting::BrowserCallSeconds, serde_json::json!(90), "file"),
             (
                 Setting::BrowserMaxConcurrent,
                 serde_json::json!(5),
                 "env:CLAX_BOT__BROWSER__MAX_CONCURRENT",
             ),
             (
-                Setting::BrowserBrowseUrlRule,
+                Setting::BrowserOpenUrlUrlRule,
                 serde_json::json!("allowlist"),
                 "file",
             ),
             (
-                Setting::BrowserBrowseAllowlist,
+                Setting::BrowserOpenUrlAllowlist,
                 serde_json::json!(["*.example.com"]),
                 "file",
             ),
@@ -917,11 +921,14 @@ mod tests {
         let st = clax_store::Store::open(&clax_core::Home::at(dir.path().join("ax"))).unwrap();
         st.set_bot_overrides(ov);
         assert_eq!(
-            st.bot_setting(Setting::BrowserTestSeconds).unwrap(),
+            st.bot_setting(Setting::BrowserCallSeconds).unwrap(),
             serde_json::json!(90)
         );
         let eff = st.effective_bot_settings().unwrap();
-        assert_eq!(eff[&Setting::BrowserEnabled].source.label(), "file");
+        assert_eq!(
+            eff[&Setting::BrowserOpenArtifactEnabled].source.label(),
+            "file"
+        );
     }
 
     /// The pruner goes on while a pass leaves more, within its bounds,

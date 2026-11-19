@@ -1,7 +1,9 @@
-//! What a run may do in a browser (spec §4.5): [`BrowserAccess`],
-//! computed from the instance's `browser.*` settings, the person's own
-//! choices ([`Store::browser_choice`], and [`Store::web_choice`] for
-//! browsing) and whether the host's source can open browsers.
+//! What a run may do in a browser (spec §4.5): [`BrowserAccess`], a view
+//! of [`Capabilities::now`] over `browser.open.artifact` (testing) and
+//! `browser.open.url` (browsing), each on its own: neither needs the
+//! other, nor a web capability.
+//!
+//! [`Capabilities::now`]: crate::capability::Capabilities::now
 //!
 //! A run's [`BrowserShape`] (which of `clax.browser.test` and
 //! `clax.browser.browse` exist) is fixed when the run is made and kept on
@@ -17,8 +19,6 @@
 use super::browse::BrowseRule;
 use clax_core::Result;
 use clax_store::Store;
-use clax_store::bot_settings::Setting;
-use serde_json::Value;
 
 /// Which browser operations: those a run declares, kept on the run as
 /// `""`, `"test"`, `"browse"` or `"test,browse"` ([`BrowserShape::as_str`]).
@@ -68,8 +68,11 @@ pub enum BrowserOff {
     /// The admin turned both testing and browsing off ("off on this
     /// instance").
     AdminOff,
-    /// The person turned browser use off for themselves, or, with only
-    /// browsing on, turned their web use off ("off by your choice").
+    /// No live admin grant gives the person either ("not granted to
+    /// you").
+    NotGranted,
+    /// The person revoked their grants to their runs ("off by your
+    /// choice").
     PersonOff,
     /// The host's source cannot open browsers: no Cloudflare account ID
     /// and token on a daemon, or a host with no source ("not
@@ -78,13 +81,27 @@ pub enum BrowserOff {
 }
 
 impl BrowserOff {
-    /// `admin_off`, `person_off` or `not_configured`.
+    /// `admin_off`, `not_granted`, `person_off` or `not_configured`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             BrowserOff::AdminOff => "admin_off",
+            BrowserOff::NotGranted => "not_granted",
             BrowserOff::PersonOff => "person_off",
             BrowserOff::NotConfigured => "not_configured",
+        }
+    }
+
+    /// The reason [`Off`](crate::capability::Off) gives, in this enum's
+    /// words.
+    #[must_use]
+    pub fn of(off: crate::capability::Off) -> BrowserOff {
+        use crate::capability::Off;
+        match off {
+            Off::NotOffered => BrowserOff::AdminOff,
+            Off::NotConfigured => BrowserOff::NotConfigured,
+            Off::NotGranted => BrowserOff::NotGranted,
+            Off::PersonOff => BrowserOff::PersonOff,
         }
     }
 }
@@ -92,9 +109,10 @@ impl BrowserOff {
 /// What a run may test, as the admin set it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TestGrant {
+    /// `browser.open.artifact.max_per_run`.
     pub max_per_run: u32,
-    /// The per-test time cap, 10 to 120 seconds: a call's `timeout_s` is
-    /// capped at it.
+    /// One call's time cap, 10 to 120 seconds (`browser.call_seconds`): a
+    /// call's `timeout_s` is capped at it.
     pub seconds: u32,
 }
 
@@ -102,14 +120,14 @@ pub struct TestGrant {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrowseGrant {
     pub rule: BrowseRule,
+    /// `browser.open.url.max_per_run`.
     pub max_per_run: u32,
-    /// The time cap of one browse: the per-test time cap
-    /// (`browser.test_seconds`), which bounds every browser session.
+    /// One call's time cap (`browser.call_seconds`), the one cap of every
+    /// browser call.
     pub seconds: u32,
 }
 
-/// The operations browser use is on for: `None` for one the admin turned
-/// off (or, for browsing, the person's web choice).
+/// The operations browser use is on for: `None` for one that is off.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrowserGrant {
     pub test: Option<TestGrant>,
@@ -125,81 +143,48 @@ pub enum BrowserAccess {
 }
 
 impl BrowserAccess {
-    /// Now, for `person`: off when the admin turned both testing and
-    /// browsing off ([`BrowserOff::AdminOff`]), when the host's source
-    /// cannot open browsers (`configured`, [`BrowserOff::NotConfigured`]),
-    /// or when the person chose off ([`BrowserOff::PersonOff`]), in that
-    /// order: the instance's reasons come first, since the person's switch
-    /// would not turn browser use on. Browsing needs the person's web
-    /// choice too (spec §10.2): with it off, the grant has no browse, and
-    /// with only browsing on, browser use is off by their choice. Else the
-    /// operations the admin turned on, with their settings.
+    /// Now, for `person`: a view of [`Capabilities::now`] over
+    /// `browser.open.artifact` (testing) and `browser.open.url`
+    /// (browsing), the host able to open browsers when `configured`. Off
+    /// when neither is live, for the reason closest to on
+    /// ([`Capabilities::why_off`]); else the live ones, each capped at
+    /// `browser.call_seconds`.
+    ///
+    /// [`Capabilities::now`]: crate::capability::Capabilities::now
+    /// [`Capabilities::why_off`]: crate::capability::Capabilities::why_off
     ///
     /// # Errors
     /// The store's.
     pub fn now(store: &Store, person: &str, configured: bool) -> Result<BrowserAccess> {
-        let on = |s: Setting| -> Result<bool> { Ok(store.bot_setting(s)?.as_bool() == Some(true)) };
-        let test_on = on(Setting::BrowserEnabled)?;
-        let browse_on = on(Setting::BrowserBrowseEnabled)?;
-        if !test_on && !browse_on {
-            return Ok(BrowserAccess::Off(BrowserOff::AdminOff));
+        use crate::capability::{Capabilities, Capability, Family, Terms};
+        use crate::web::UrlRule;
+        let caps = Capabilities::now(store, person, &|c| {
+            c.family() == Family::Browser && configured
+        })?;
+        if let Some(off) = caps.why_off(&[Capability::OpenArtifact, Capability::OpenUrl]) {
+            return Ok(BrowserAccess::Off(BrowserOff::of(off)));
         }
-        if !configured {
-            return Ok(BrowserAccess::Off(BrowserOff::NotConfigured));
-        }
-        if !store.browser_choice(person)? {
-            return Ok(BrowserAccess::Off(BrowserOff::PersonOff));
-        }
-        let browse_on = browse_on && store.web_choice(person)?;
-        if !test_on && !browse_on {
-            return Ok(BrowserAccess::Off(BrowserOff::PersonOff));
-        }
-        let count = |s: Setting| -> Result<u32> {
-            let v = store.bot_setting(s)?;
-            Ok(v.as_u64()
-                .and_then(|n| u32::try_from(n).ok())
-                .or_else(|| {
-                    s.default_value()
-                        .as_u64()
-                        .and_then(|n| u32::try_from(n).ok())
-                })
-                .unwrap_or(0))
-        };
-        let seconds = count(Setting::BrowserTestSeconds)?;
-        let test = test_on
-            .then(|| -> Result<TestGrant> {
-                Ok(TestGrant {
-                    max_per_run: count(Setting::BrowserMaxTestsPerRun)?,
-                    seconds,
-                })
-            })
-            .transpose()?;
-        let browse = if browse_on {
-            // The setting is checked on write (`Setting::check`), so the
-            // fallback is never reached in practice.
-            let rule = match store.bot_setting(Setting::BrowserBrowseUrlRule)?.as_str() {
-                Some("any_public") => BrowseRule::AnyPublic,
-                Some("allowlist") => BrowseRule::Allowlist(
-                    store
-                        .bot_setting(Setting::BrowserBrowseAllowlist)?
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_string)
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                ),
-                _ => BrowseRule::Sender,
-            };
-            Some(BrowseGrant {
-                rule,
-                max_per_run: count(Setting::BrowserMaxBrowsesPerRun)?,
+        let seconds = caps.browser().map_or(0, |b| b.call_seconds);
+        let test = match caps.get(Capability::OpenArtifact) {
+            Ok(Terms::Open(g)) => Some(TestGrant {
+                max_per_run: g.max_per_run,
                 seconds,
-            })
-        } else {
-            None
+            }),
+            _ => None,
+        };
+        let browse = match caps.get(Capability::OpenUrl) {
+            Ok(Terms::Open(g)) => Some(BrowseGrant {
+                // The browse's own rule type, until the URL rule is one:
+                // `sourced` holds a browse to the sender's URLs.
+                rule: match &g.url_rule {
+                    Some(UrlRule::AnyPublic) => BrowseRule::AnyPublic,
+                    Some(UrlRule::Allowlist(h)) => BrowseRule::Allowlist(h.clone()),
+                    _ => BrowseRule::Sender,
+                },
+                max_per_run: g.max_per_run,
+                seconds,
+            }),
+            _ => None,
         };
         Ok(BrowserAccess::On(BrowserGrant { test, browse }))
     }
@@ -222,7 +207,9 @@ impl BrowserAccess {
 mod tests {
     use super::*;
     use clax_core::audit::AuditCtx;
+    use clax_store::bot_settings::Setting;
     use clax_store::roles::OWNER;
+    use serde_json::Value;
     use serde_json::json;
 
     fn store() -> (tempfile::TempDir, Store) {
@@ -287,7 +274,7 @@ mod tests {
             BrowserAccess::Off(BrowserOff::AdminOff),
             "off by default"
         );
-        set(&st, &[(Setting::BrowserEnabled, json!(true))]);
+        set(&st, &[(Setting::BrowserOpenArtifactEnabled, json!(true))]);
         let access = BrowserAccess::now(&st, OWNER, true).unwrap();
         assert_eq!(
             access,
@@ -303,8 +290,8 @@ mod tests {
         set(
             &st,
             &[
-                (Setting::BrowserMaxTestsPerRun, json!(3)),
-                (Setting::BrowserTestSeconds, json!(30)),
+                (Setting::BrowserOpenArtifactMaxPerRun, json!(3)),
+                (Setting::BrowserCallSeconds, json!(30)),
             ],
         );
         let BrowserAccess::On(g) = BrowserAccess::now(&st, OWNER, true).unwrap() else {
@@ -317,7 +304,7 @@ mod tests {
                 seconds: 30
             })
         );
-        // The person opts out; their web choice does not turn it back on.
+        // The person opts out.
         st.set_browser_choice(&AuditCtx::DAEMON, OWNER, false)
             .unwrap();
         assert_eq!(
@@ -336,7 +323,7 @@ mod tests {
             "no grant reaches a key that names no person"
         );
         // The admin's reason comes before the person's.
-        set(&st, &[(Setting::BrowserEnabled, json!(false))]);
+        set(&st, &[(Setting::BrowserOpenArtifactEnabled, json!(false))]);
         assert_eq!(
             BrowserAccess::now(&st, OWNER, true).unwrap(),
             BrowserAccess::Off(BrowserOff::AdminOff)
@@ -344,13 +331,13 @@ mod tests {
     }
 
     #[test]
-    fn browse_needs_the_web_choice_too() {
+    fn browse_is_its_own_capability_and_needs_no_web_choice() {
         let (_d, st) = store();
         set(
             &st,
             &[
-                (Setting::BrowserBrowseEnabled, json!(true)),
-                (Setting::BrowserMaxBrowsesPerRun, json!(4)),
+                (Setting::BrowserOpenUrlEnabled, json!(true)),
+                (Setting::BrowserOpenUrlMaxPerRun, json!(4)),
             ],
         );
         let BrowserAccess::On(g) = BrowserAccess::now(&st, OWNER, true).unwrap() else {
@@ -370,8 +357,8 @@ mod tests {
         set(
             &st,
             &[
-                (Setting::BrowserBrowseUrlRule, json!("allowlist")),
-                (Setting::BrowserBrowseAllowlist, json!(["*.example.com"])),
+                (Setting::BrowserOpenUrlUrlRule, json!("allowlist")),
+                (Setting::BrowserOpenUrlAllowlist, json!(["*.example.com"])),
             ],
         );
         let BrowserAccess::On(g) = BrowserAccess::now(&st, OWNER, true).unwrap() else {
@@ -381,28 +368,25 @@ mod tests {
             g.browse.unwrap().rule,
             BrowseRule::Allowlist(vec!["*.example.com".into()])
         );
-        set(&st, &[(Setting::BrowserBrowseUrlRule, json!("any_public"))]);
-        // The person's web choice off: browsing alone is off by their
-        // choice, though their browser choice is on.
+        set(
+            &st,
+            &[(Setting::BrowserOpenUrlUrlRule, json!("any_public"))],
+        );
+        // The person's web choice off leaves browsing on: none needs
+        // another.
         st.set_web_choice(&AuditCtx::DAEMON, OWNER, false).unwrap();
         assert_eq!(
-            BrowserAccess::now(&st, OWNER, true).unwrap(),
-            BrowserAccess::Off(BrowserOff::PersonOff)
-        );
-        // With testing on too, the run tests and does not browse.
-        set(&st, &[(Setting::BrowserEnabled, json!(true))]);
-        assert_eq!(
             BrowserAccess::now(&st, OWNER, true).unwrap().shape(),
-            shape(true, false)
+            shape(false, true)
         );
-        st.set_web_choice(&AuditCtx::DAEMON, OWNER, true).unwrap();
+        set(&st, &[(Setting::BrowserOpenArtifactEnabled, json!(true))]);
         let access = BrowserAccess::now(&st, OWNER, true).unwrap();
         assert_eq!(access.shape(), shape(true, true));
         let BrowserAccess::On(g) = access else {
             panic!("both are on");
         };
         assert_eq!(g.browse.unwrap().rule, BrowseRule::AnyPublic);
-        // The browser choice off turns browsing off too.
+        // The browser choice off turns both off.
         st.set_browser_choice(&AuditCtx::DAEMON, OWNER, false)
             .unwrap();
         assert_eq!(
@@ -419,7 +403,10 @@ mod tests {
             BrowserAccess::now(&st, OWNER, false).unwrap(),
             BrowserAccess::Off(BrowserOff::AdminOff)
         );
-        for setting in [Setting::BrowserEnabled, Setting::BrowserBrowseEnabled] {
+        for setting in [
+            Setting::BrowserOpenArtifactEnabled,
+            Setting::BrowserOpenUrlEnabled,
+        ] {
             set(&st, &[(setting, json!(true))]);
             assert_eq!(
                 BrowserAccess::now(&st, OWNER, false).unwrap(),

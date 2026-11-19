@@ -712,13 +712,13 @@ pub async fn clear_web_token(
 /// The browser settings by their place in the page: (group, field,
 /// setting); the empty group is the top level.
 const BROWSER: &[(&str, &str, Setting)] = &[
-    ("test", "enabled", Setting::BrowserEnabled),
-    ("test", "max_per_run", Setting::BrowserMaxTestsPerRun),
-    ("test", "seconds", Setting::BrowserTestSeconds),
-    ("browse", "enabled", Setting::BrowserBrowseEnabled),
-    ("browse", "url_rule", Setting::BrowserBrowseUrlRule),
-    ("browse", "allowlist", Setting::BrowserBrowseAllowlist),
-    ("browse", "max_per_run", Setting::BrowserMaxBrowsesPerRun),
+    ("test", "enabled", Setting::BrowserOpenArtifactEnabled),
+    ("test", "max_per_run", Setting::BrowserOpenArtifactMaxPerRun),
+    ("test", "seconds", Setting::BrowserCallSeconds),
+    ("browse", "enabled", Setting::BrowserOpenUrlEnabled),
+    ("browse", "url_rule", Setting::BrowserOpenUrlUrlRule),
+    ("browse", "allowlist", Setting::BrowserOpenUrlAllowlist),
+    ("browse", "max_per_run", Setting::BrowserOpenUrlMaxPerRun),
     ("", "max_concurrent", Setting::BrowserMaxConcurrent),
 ];
 

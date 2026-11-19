@@ -3228,7 +3228,7 @@ async fn admin_browser_round_trips_and_needs_an_admin() {
         (&v["test"], &v["browse"], &v["max_concurrent"]),
         (
             &json!({"enabled": false, "max_per_run": 10, "seconds": 60}),
-            &json!({"enabled": false, "url_rule": "sender", "allowlist": [], "max_per_run": 10}),
+            &json!({"enabled": false, "url_rule": "sender", "allowlist": [], "max_per_run": 5}),
             &json!(2)
         ),
         "{v}"
@@ -3285,7 +3285,7 @@ async fn admin_browser_round_trips_and_needs_an_admin() {
     }
     // A field the daemon's configuration sets is refused, and shows it.
     let mut ov = Overrides::default();
-    ov.set(Setting::BrowserMaxTestsPerRun, &json!(4), "file")
+    ov.set(Setting::BrowserOpenArtifactMaxPerRun, &json!(4), "file")
         .unwrap();
     ts.store.set_bot_overrides(ov);
     let (s, v) = call(
