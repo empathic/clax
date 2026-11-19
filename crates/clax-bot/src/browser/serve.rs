@@ -213,6 +213,13 @@ impl Decision {
     }
 }
 
+/// Whether `path` (as the page sent it, percent-encoded) spells a `/`,
+/// `\` or `.` as an escape.
+fn encodes_a_separator(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    ["%2f", "%5c", "%2e"].iter().any(|e| p.contains(e))
+}
+
 /// A clax's synthetic origin and the files it serves (see the module
 /// docs).
 #[derive(Clone, Debug)]
@@ -249,6 +256,11 @@ impl Site {
             .is_some_and(|v| v.eq_ignore_ascii_case("script"))
         {
             plain(200, "text/javascript", Vec::new())
+        } else if path.starts_with("/_clax/") && encodes_a_separator(&path) {
+            // A host routing the path after decoding it could read `%2F`
+            // as a segment and leave the bridge's files or the artifact's
+            // API: no Clax path holds one.
+            plain(404, TEXT, b"not found".to_vec())
         } else if path == BRIDGE_PATH || path.starts_with(BRIDGE_PARTS) {
             source
                 .clax_file(&path)
@@ -729,6 +741,15 @@ mod tests {
                 "/_clax/api/db/notes?limit=5".to_string()
             )]
         );
+        // A path that spells a separator as an escape is not asked of
+        // the host.
+        for escaped in ["_clax/api/db/x%2F..%2F..%2Fapi", "_clax/bridge/..%2f..%2Fsecret", "_clax/api/db/a%2Eb%5C"] {
+            let d = site
+                .answer(&with("GET", &site.origin.url(escaped), json!({}), "Fetch"), &src, &st, "person-1")
+                .await;
+            assert_eq!(d.failed(), Some(404), "{escaped}");
+        }
+        assert_eq!(src.api_calls().len(), 1);
         for method in ["POST", "PUT", "PATCH", "DELETE"] {
             let d = site
                 .answer(

@@ -167,12 +167,17 @@ pub trait BrowserSource: MaybeSendSync {
     fn deadline(&self, at: DateTime<Utc>) -> Deadline;
     /// One of Clax's own UI files a page needs (`/_clax/bridge.js`,
     /// `/_clax/bridge/<part>`), as the host's site serves it; `None` for
-    /// a path the site does not serve.
+    /// a path the site does not serve. `path` is the URL's path as the
+    /// page sent it, still percent-encoded, never spelling `/`, `\` or
+    /// `.` as an escape ([`serve::Site::answer`] refuses those): a source
+    /// answers only an exact match of the bridge's files.
     fn clax_file(&self, path: &str) -> Option<Served>;
     /// The site's response headers for a page of `artifact` (its content
     /// security policy among them), as the host's site serves them.
     fn site_headers(&self, artifact: &str) -> Vec<(String, String)>;
     /// A `GET` of the page runtime's API (`/_clax/api/…`) as the run's
-    /// person would make it on the artifact's site.
+    /// person would make it on the artifact's site, scoped to `artifact`;
+    /// `path_and_query` is percent-encoded as [`BrowserSource::clax_file`]'s
+    /// path is.
     async fn site_api(&self, person: &str, artifact: &str, path_and_query: &str) -> Served;
 }
