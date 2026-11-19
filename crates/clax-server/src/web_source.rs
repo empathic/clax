@@ -638,7 +638,7 @@ impl RestSource {
 /// The TLS configuration of a fetch's client, as reqwest's `rustls-tls`
 /// builds its own: ring, TLS 1.2 and 1.3, the webpki roots, HTTP/1.1 by
 /// ALPN. Built once per source, so a fetch's client parses no roots.
-fn fetch_tls() -> Result<rustls::ClientConfig, String> {
+pub(crate) fn fetch_tls() -> Result<rustls::ClientConfig, String> {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };

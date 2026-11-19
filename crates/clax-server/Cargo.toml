@@ -64,6 +64,11 @@ reqwest = { workspace = true, features = ["rustls-tls"] }
 # reqwest's `rustls-tls` uses.
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 webpki-roots = "1"
+# Browser Run's CDP WebSocket (src/browser_source.rs), over the web
+# source's rustls configuration above: the rustls connector alone, with no
+# provider or roots of its own (the feature tokio-tungstenite's
+# rustls-tls-* features share).
+tokio-tungstenite = { workspace = true, features = ["__rustls-tls"] }
 rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
 socket2 = "0.6"
 tokio = { workspace = true, features = ["full"] }

@@ -1,0 +1,720 @@
+//! The daemon's browser source (spec
+//! `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §4.3,
+//! §10.3): [`DaemonBrowser`], which opens a Chrome DevTools Protocol
+//! session on Cloudflare Browser Run over one WebSocket,
+//!
+//! ```text
+//! wss://api.cloudflare.com/client/v4/accounts/{account}/browser-run/devtools/browser?keep_alive=10000
+//! Authorization: Bearer <token>
+//! ```
+//!
+//! with the instance's Cloudflare credentials ([`crate::cloudflare`]),
+//! read at each open so an admin's change takes effect at once. Every
+//! policy of a test (the CDP sequence, the request policy, caps, metering)
+//! is `clax_bot::browser`'s; this module provides only the socket.
+//!
+//! # Concurrency
+//!
+//! At most `browser.max_concurrent` browsers are open at once on the
+//! instance, read at each open: a session holds its slot until its
+//! transport is dropped, and an open past the limit is refused
+//! [`CODE_BROWSER_BUSY`] before anything is sent. Lowering the setting
+//! closes nothing: it refuses opens until fewer are open.
+//!
+//! # Refusals
+//!
+//! An upgrade Browser Run refuses is [`CODE_BROWSER_UNAVAILABLE`]: 401 and
+//! 403 are not retryable (the token lacks Browser Rendering – Edit); 429
+//! is, with its `Retry-After` in the message; a 5xx, a socket error and an
+//! upgrade that does not finish within [`OPEN_TIMEOUT`] are; any other
+//! status is not.
+
+use crate::cloudflare::{Credentials, credentials, has_credentials, usable};
+use chrono::{DateTime, Utc};
+use clax_bot::browser::{
+    BrowserError, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_UNAVAILABLE, CdpTransport,
+    Deadline, Served,
+};
+use clax_bot_sandbox::{CODE_CANCELLED, CancelToken};
+use clax_store::Store;
+use clax_store::bot_settings::Setting;
+use clax_store::secrets::{CLOUDFLARE_ORIGIN, Kek};
+use futures::{SinkExt, StreamExt};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::{HeaderValue, header};
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
+use url::Url;
+
+/// The path segment of Browser Run's API. Cloudflare's documentation also
+/// spells it `browser-rendering`; only the opt-in live test can tell
+/// which one Browser Run answers.
+pub const BROWSER_RUN_PATH: &str = "browser-run";
+
+/// How long Browser Run keeps a browser after its socket drops, in
+/// milliseconds: its minimum. A session ends its browser itself
+/// (`Browser.close`), so a longer value only bills an orphan longer.
+pub const KEEP_ALIVE_MS: u32 = 10_000;
+
+/// How long the WebSocket's upgrade may take, from the connection's start.
+pub const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The message of an open without credentials.
+const NOT_CONFIGURED: &str = "browser use is not configured on this instance: an admin sets the Cloudflare account ID and API token";
+
+/// The daemon's [`BrowserSource`]: a WebSocket to Browser Run with the
+/// instance's Cloudflare credentials (see the module docs).
+pub struct DaemonBrowser {
+    store: Arc<Store>,
+    kek: Option<Kek>,
+    /// Tests only: where sockets go instead of Cloudflare's origin, the
+    /// token still opened for Cloudflare's origin.
+    #[cfg(test)]
+    send_to: Option<Url>,
+    /// The TLS configuration of every socket (the web source's); the
+    /// reason it could not be built otherwise.
+    tls: Result<Arc<rustls::ClientConfig>, String>,
+    /// How many sessions are open now.
+    in_use: Arc<Mutex<u32>>,
+}
+
+impl DaemonBrowser {
+    /// The source of the instance on `store`, opening the token with `kek`.
+    #[must_use]
+    pub fn new(store: Arc<Store>, kek: Option<Kek>) -> DaemonBrowser {
+        DaemonBrowser {
+            store,
+            kek,
+            #[cfg(test)]
+            send_to: None,
+            tls: crate::web_source::fetch_tls().map(Arc::new),
+            in_use: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    /// Tests only: this source opening its sockets on `base` (a local
+    /// server, `http://127.0.0.1:<port>`) over plain WebSocket, the token
+    /// still opened for Cloudflare's origin alone.
+    #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
+    fn sending_to(mut self, base: Url) -> DaemonBrowser {
+        self.send_to = Some(base);
+        self
+    }
+
+    /// The origin sockets go to: Cloudflare's (in tests, `send_to`).
+    fn base(&self) -> Url {
+        #[cfg(test)]
+        if let Some(t) = &self.send_to {
+            return t.clone();
+        }
+        Url::parse(CLOUDFLARE_ORIGIN).expect("Cloudflare's origin is a URL")
+    }
+
+    /// The credentials held now and the instance's concurrent browsers,
+    /// read on a blocking thread.
+    async fn settings(&self) -> Result<(Option<Credentials>, u32), BrowserError> {
+        let (store, kek) = (self.store.clone(), self.kek.clone());
+        let read = move || -> clax_core::Result<(Option<Credentials>, u32)> {
+            let creds = usable(credentials(&store, kek.as_ref(), CLOUDFLARE_ORIGIN))?;
+            let max = store
+                .bot_setting(Setting::BrowserMaxConcurrent)?
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(1);
+            Ok((creds, max))
+        };
+        let read_error = |e: String| {
+            BrowserError::new(
+                CODE_BROWSER_UNAVAILABLE,
+                format!("the browser settings could not be read ({e})"),
+                true,
+            )
+        };
+        clax_rt::spawn_blocking(read)
+            .await
+            .map_err(|e| read_error(e.to_string()))?
+            .map_err(|e| read_error(e.to_string()))
+    }
+
+    /// A slot of the instance's `max` concurrent browsers, or `None` when
+    /// they are all in use.
+    fn take_slot(&self, max: u32) -> Option<Slot> {
+        let mut open = self.in_use.lock().unwrap_or_else(|e| e.into_inner());
+        if *open >= max {
+            return None;
+        }
+        *open += 1;
+        Some(Slot(self.in_use.clone()))
+    }
+
+    /// The URL of a new session on `account`.
+    fn session_url(&self, account: &str) -> Result<Url, BrowserError> {
+        let mut url = self.base();
+        let no_url = |url: &Url| unavailable(format!("no WebSocket URL for {url}"), false);
+        let scheme = if url.scheme() == "http" { "ws" } else { "wss" };
+        if url.set_scheme(scheme).is_err() {
+            return Err(no_url(&url));
+        }
+        let shown = url.clone();
+        url.path_segments_mut()
+            .map_err(|()| no_url(&shown))?
+            .pop_if_empty()
+            .extend([
+                "client",
+                "v4",
+                "accounts",
+                account,
+                BROWSER_RUN_PATH,
+                "devtools",
+                "browser",
+            ]);
+        url.set_query(Some(&format!("keep_alive={KEEP_ALIVE_MS}")));
+        Ok(url)
+    }
+
+    /// Connects to `url` with `token`, over this source's TLS.
+    async fn connect(&self, url: &Url, token: &str) -> Result<Socket, BrowserError> {
+        let mut req = url
+            .as_str()
+            .into_client_request()
+            .map_err(|e| unavailable(format!("the session request is invalid ({e})"), false))?;
+        let bearer = HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|_| unavailable("the Cloudflare token is not a valid header", false))?;
+        req.headers_mut().insert(header::AUTHORIZATION, bearer);
+        let connector = match url.scheme() {
+            "wss" => Connector::Rustls(
+                self.tls
+                    .clone()
+                    .map_err(|e| unavailable(format!("TLS could not be set up ({e})"), false))?,
+            ),
+            _ => Connector::Plain,
+        };
+        let connect =
+            tokio_tungstenite::connect_async_tls_with_config(req, None, true, Some(connector));
+        match clax_rt::time::timeout(OPEN_TIMEOUT, connect).await {
+            Err(_) => Err(unavailable(
+                format!(
+                    "Browser Run did not answer within {} s; try again",
+                    OPEN_TIMEOUT.as_secs()
+                ),
+                true,
+            )),
+            Ok(Err(e)) => Err(refusal(&e)),
+            Ok(Ok((ws, _))) => Ok(ws),
+        }
+    }
+}
+
+/// One of the instance's concurrent browsers, given back when dropped.
+struct Slot(Arc<Mutex<u32>>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut open = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *open = open.saturating_sub(1);
+    }
+}
+
+type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// [`CODE_BROWSER_UNAVAILABLE`] with `message`.
+fn unavailable(message: impl Into<String>, retryable: bool) -> BrowserError {
+    BrowserError::new(CODE_BROWSER_UNAVAILABLE, message, retryable)
+}
+
+/// What a failed upgrade means for the model (see the module docs).
+fn refusal(e: &WsError) -> BrowserError {
+    let WsError::Http(resp) = e else {
+        return unavailable(
+            format!("Browser Run could not be reached ({e}); try again"),
+            true,
+        );
+    };
+    let status = resp.status().as_u16();
+    match status {
+        401 | 403 => unavailable(
+            format!(
+                "Browser Run refused the instance's Cloudflare token (HTTP {status}): the token lacks Browser Rendering – Edit, which an admin adds to it"
+            ),
+            false,
+        ),
+        429 => {
+            let after = resp
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|v| !v.is_empty());
+            let wait = match after {
+                Some(s) => format!("; try again after {s} s"),
+                None => "; try again later".to_string(),
+            };
+            unavailable(
+                format!("Browser Run is limiting this instance's browsers (HTTP 429){wait}"),
+                true,
+            )
+        }
+        500..=599 => unavailable(
+            format!("Browser Run failed (HTTP {status}); try again"),
+            true,
+        ),
+        _ => unavailable(
+            format!("Browser Run refused the session (HTTP {status})"),
+            false,
+        ),
+    }
+}
+
+/// One CDP connection over a Browser Run WebSocket, holding its slot.
+struct WsTransport {
+    ws: Socket,
+    closed: bool,
+    _slot: Slot,
+}
+
+impl WsTransport {
+    /// A failure of the open socket: the browser had opened.
+    fn failed(e: &WsError) -> BrowserError {
+        unavailable(format!("the connection to Browser Run failed ({e})"), true).opened(true)
+    }
+}
+
+#[async_trait::async_trait]
+impl CdpTransport for WsTransport {
+    async fn send(&mut self, frame: String) -> Result<(), BrowserError> {
+        if self.closed {
+            return Err(unavailable("the connection to Browser Run is closed", false).opened(true));
+        }
+        self.ws
+            .send(Message::text(frame))
+            .await
+            .map_err(|e| Self::failed(&e))
+    }
+
+    async fn recv(&mut self) -> Result<Option<String>, BrowserError> {
+        if self.closed {
+            return Ok(None);
+        }
+        loop {
+            match self.ws.next().await {
+                None | Some(Ok(Message::Close(_))) => {
+                    self.closed = true;
+                    return Ok(None);
+                }
+                Some(Ok(Message::Text(t))) => return Ok(Some(t.as_str().to_string())),
+                Some(Ok(Message::Binary(b))) => {
+                    return String::from_utf8(b.to_vec()).map(Some).map_err(|_| {
+                        unavailable("Browser Run sent a frame that is not text", false).opened(true)
+                    });
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => {}
+                Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) => {
+                    self.closed = true;
+                    return Ok(None);
+                }
+                Some(Err(e)) => return Err(Self::failed(&e)),
+            }
+        }
+    }
+
+    async fn close(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        let _ = clax_rt::time::timeout(Duration::from_secs(5), self.ws.close(None)).await;
+    }
+}
+
+#[async_trait::async_trait]
+impl BrowserSource for DaemonBrowser {
+    async fn open(&self, cancel: &CancelToken) -> Result<Box<dyn CdpTransport>, BrowserError> {
+        let cancelled = || BrowserError::new(CODE_CANCELLED, "the run was cancelled", false);
+        if cancel.is_cancelled() {
+            return Err(cancelled());
+        }
+        let (creds, max) = self.settings().await?;
+        let Some((account, token)) = creds else {
+            return Err(unavailable(NOT_CONFIGURED, false));
+        };
+        let Some(slot) = self.take_slot(max) else {
+            return Err(BrowserError::new(
+                CODE_BROWSER_BUSY,
+                format!(
+                    "the instance's {max} concurrent browsers are all in use; try again in a moment"
+                ),
+                true,
+            ));
+        };
+        let url = self.session_url(&account)?;
+        let ws = tokio::select! {
+            r = self.connect(&url, token.expose()) => r?,
+            () = cancel.cancelled() => return Err(cancelled()),
+        };
+        Ok(Box::new(WsTransport {
+            ws,
+            closed: false,
+            _slot: slot,
+        }))
+    }
+
+    /// With a key-encryption key, an account ID and a sealed token that
+    /// opens now ([`has_credentials`]), a store error reading as none.
+    fn configured(&self) -> bool {
+        has_credentials(&self.store, self.kek.as_ref()).unwrap_or(false)
+    }
+
+    /// A timer on the runtime's clock, until `at` on the store's.
+    fn deadline(&self, at: DateTime<Utc>) -> Deadline {
+        let wait = (at - self.store.now_utc())
+            .to_std()
+            .unwrap_or(Duration::ZERO);
+        Box::pin(clax_rt::time::sleep(wait))
+    }
+
+    fn clax_file(&self, _path: &str) -> Option<Served> {
+        None
+    }
+
+    fn site_headers(&self, _artifact: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    async fn site_api(&self, _person: &str, _artifact: &str, _path_and_query: &str) -> Served {
+        Served {
+            status: 404,
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body: br#"{"error":{"code":"not_found"}}"#.to_vec(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[warn(clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+    use clax_core::Home;
+    use clax_core::audit::AuditCtx;
+    use clax_store::secrets::SecretSlot;
+    use serde_json::json;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+
+    const ACCOUNT: &str = "0123456789abcdef0123456789abcdef";
+    const TOKEN: &str = "cf-test-token-1234";
+
+    /// `fut`'s output, bounded by the hang guard of `clax_testkit`, which
+    /// this crate's unit tests cannot reach (it depends on this crate).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "within is the HANG guard on a wait"
+    )]
+    async fn within<F: std::future::IntoFuture>(what: &str, fut: F) -> F::Output {
+        tokio::time::timeout(Duration::from_secs(120), fut)
+            .await
+            .unwrap_or_else(|_| panic!("{what}: not after the hang guard"))
+    }
+
+    /// What the fake Browser Run saw of an upgrade.
+    #[derive(Clone, Debug)]
+    struct Seen {
+        path_and_query: String,
+        authorization: String,
+    }
+
+    /// How the fake answers an upgrade: accept it, or refuse it with a
+    /// status and headers.
+    #[derive(Clone)]
+    enum Answer {
+        Accept,
+        Refuse(u16, Vec<(&'static str, &'static str)>),
+    }
+
+    /// A fake Browser Run on 127.0.0.1: it answers each upgrade as told,
+    /// then echoes each text frame back prefixed `echo:` until the client
+    /// closes, and closes the socket itself on the frame `bye`.
+    struct FakeRun {
+        addr: std::net::SocketAddr,
+        seen: Arc<Mutex<Vec<Seen>>>,
+        _task: tokio::task::JoinHandle<()>,
+    }
+
+    impl FakeRun {
+        async fn start(answer: Answer) -> FakeRun {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let s = seen.clone();
+            let task = tokio::spawn(async move {
+                loop {
+                    let Ok((sock, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let (s, answer) = (s.clone(), answer.clone());
+                    tokio::spawn(async move {
+                        #[expect(
+                            clippy::result_large_err,
+                            reason = "tungstenite's Callback answers its ErrorResponse by value"
+                        )]
+                        let cb = move |req: &Request, resp: Response| {
+                            s.lock().unwrap().push(Seen {
+                                path_and_query: req
+                                    .uri()
+                                    .path_and_query()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_default(),
+                                authorization: req
+                                    .headers()
+                                    .get("authorization")
+                                    .and_then(|v| v.to_str().ok())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            });
+                            match &answer {
+                                Answer::Accept => Ok(resp),
+                                Answer::Refuse(status, headers) => {
+                                    let mut r = ErrorResponse::new(Some("refused".into()));
+                                    *r.status_mut() =
+                                        tokio_tungstenite::tungstenite::http::StatusCode::from_u16(
+                                            *status,
+                                        )
+                                        .unwrap();
+                                    for (k, v) in headers {
+                                        r.headers_mut().insert(*k, HeaderValue::from_static(v));
+                                    }
+                                    Err(r)
+                                }
+                            }
+                        };
+                        let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(sock, cb).await else {
+                            return;
+                        };
+                        while let Some(Ok(m)) = ws.next().await {
+                            match m {
+                                Message::Text(t) if t.as_str() == "bye" => {
+                                    let _ = ws.close(None).await;
+                                }
+                                Message::Text(t) => {
+                                    let _ = ws.send(Message::text(format!("echo:{t}"))).await;
+                                }
+                                Message::Close(_) => return,
+                                _ => {}
+                            }
+                        }
+                    });
+                }
+            });
+            FakeRun {
+                addr,
+                seen,
+                _task: task,
+            }
+        }
+
+        fn base(&self) -> Url {
+            Url::parse(&format!("http://{}", self.addr)).unwrap()
+        }
+
+        fn seen(&self) -> Vec<Seen> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    /// A store holding an account ID and a token, and its key.
+    fn configured_store() -> (tempfile::TempDir, Arc<Store>, Kek) {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Arc::new(Store::open(&Home::at(dir.path().join("ax"))).unwrap());
+        let kek = Kek::generate();
+        st.set_bot_settings(
+            &AuditCtx::DAEMON,
+            &[(Setting::WebCloudflareAccountId, Some(json!(ACCOUNT)))],
+        )
+        .unwrap();
+        st.set_secret(&AuditCtx::DAEMON, &kek, &SecretSlot::Cloudflare, TOKEN)
+            .unwrap();
+        (dir, st, kek)
+    }
+
+    async fn browser(run: &FakeRun) -> (tempfile::TempDir, DaemonBrowser) {
+        let (dir, st, kek) = configured_store();
+        (
+            dir,
+            DaemonBrowser::new(st, Some(kek)).sending_to(run.base()),
+        )
+    }
+
+    async fn open(b: &DaemonBrowser) -> Result<Box<dyn CdpTransport>, BrowserError> {
+        within("open", b.open(&CancelToken::new())).await
+    }
+
+    #[tokio::test]
+    async fn open_sends_the_path_keep_alive_and_token() {
+        let run = FakeRun::start(Answer::Accept).await;
+        let (_d, b) = browser(&run).await;
+        assert!(b.configured());
+        let mut t = open(&b).await.unwrap();
+        within("close", t.close()).await;
+        let seen = run.seen();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].path_and_query,
+            format!("/client/v4/accounts/{ACCOUNT}/browser-run/devtools/browser?keep_alive=10000")
+        );
+        assert_eq!(seen[0].authorization, format!("Bearer {TOKEN}"));
+        // Cloudflare's own URL, as the daemon builds it.
+        let real = DaemonBrowser::new(b.store.clone(), None);
+        assert_eq!(
+            real.session_url(ACCOUNT).unwrap().as_str(),
+            format!(
+                "wss://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/browser-run/devtools/browser?keep_alive=10000"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_401_is_not_retryable_and_names_the_permission() {
+        for status in [401, 403] {
+            let run = FakeRun::start(Answer::Refuse(status, vec![])).await;
+            let (_d, b) = browser(&run).await;
+            let e = open(&b).await.err().expect("refused");
+            assert_eq!(e.code, CODE_BROWSER_UNAVAILABLE);
+            assert!(!e.retryable, "{e}");
+            assert!(!e.opened, "{e}");
+            assert!(e.message.contains("Browser Rendering – Edit"), "{e}");
+            assert_eq!(*b.in_use.lock().unwrap(), 0, "the slot is given back");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_429_is_retryable_with_retry_after() {
+        let run = FakeRun::start(Answer::Refuse(429, vec![("retry-after", "17")])).await;
+        let (_d, b) = browser(&run).await;
+        let e = open(&b).await.err().expect("refused");
+        assert_eq!(
+            (e.code, e.retryable, e.opened),
+            (CODE_BROWSER_UNAVAILABLE, true, false)
+        );
+        assert!(e.message.contains("after 17 s"), "{e}");
+        let run = FakeRun::start(Answer::Refuse(503, vec![])).await;
+        let (_d, b) = browser(&run).await;
+        let e = open(&b).await.err().expect("refused");
+        assert!(e.retryable, "a 5xx is retryable: {e}");
+        let run = FakeRun::start(Answer::Refuse(404, vec![])).await;
+        let (_d, b) = browser(&run).await;
+        let e = open(&b).await.err().expect("refused");
+        assert!(!e.retryable, "another 4xx is not: {e}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_is_retryable_and_no_credentials_is_not_configured() {
+        // A port nothing listens on.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        drop(listener);
+        let (_d, st, kek) = configured_store();
+        let b = DaemonBrowser::new(st.clone(), Some(kek)).sending_to(base.clone());
+        let e = open(&b).await.err().expect("refused");
+        assert_eq!(
+            (e.code, e.retryable),
+            (CODE_BROWSER_UNAVAILABLE, true),
+            "{e}"
+        );
+        let none = DaemonBrowser::new(st, None).sending_to(base);
+        assert!(!none.configured());
+        let e = open(&none).await.err().expect("refused");
+        assert_eq!(
+            (e.code, e.retryable),
+            (CODE_BROWSER_UNAVAILABLE, false),
+            "{e}"
+        );
+        assert!(e.message.contains("not configured"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn the_semaphore_refuses_past_max_concurrent() {
+        let run = FakeRun::start(Answer::Accept).await;
+        let (_d, b) = browser(&run).await;
+        let first = open(&b).await.unwrap();
+        let _second = open(&b).await.unwrap();
+        let e = open(&b).await.err().expect("busy");
+        assert_eq!(
+            (e.code, e.retryable, e.opened),
+            (CODE_BROWSER_BUSY, true, false)
+        );
+        assert!(e.message.contains('2'), "{e}");
+        assert_eq!(run.seen().len(), 2, "a busy open sends nothing");
+        drop(first);
+        let _third = open(&b).await.unwrap();
+        // The setting is read at each open.
+        b.store
+            .set_bot_settings(
+                &AuditCtx::DAEMON,
+                &[(Setting::BrowserMaxConcurrent, Some(json!(3)))],
+            )
+            .unwrap();
+        let _fourth = open(&b).await.unwrap();
+        assert_eq!(
+            open(&b).await.err().map(|e| e.code),
+            Some(CODE_BROWSER_BUSY)
+        );
+    }
+
+    #[tokio::test]
+    async fn frames_go_both_ways() {
+        let run = FakeRun::start(Answer::Accept).await;
+        let (_d, b) = browser(&run).await;
+        let mut t = open(&b).await.unwrap();
+        within(
+            "send",
+            t.send(r#"{"id":1,"method":"Browser.getVersion"}"#.into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            within("recv", t.recv()).await.unwrap().as_deref(),
+            Some(r#"echo:{"id":1,"method":"Browser.getVersion"}"#)
+        );
+        // The peer closing is the end of frames, not an error.
+        within("send", t.send("bye".into())).await.unwrap();
+        assert_eq!(within("recv", t.recv()).await.unwrap(), None);
+        assert_eq!(within("recv", t.recv()).await.unwrap(), None);
+        within("close", t.close()).await;
+        within("close", t.close()).await;
+        drop(t);
+        assert_eq!(*b.in_use.lock().unwrap(), 0, "the slot is given back");
+    }
+
+    #[tokio::test]
+    async fn cancel_before_or_during_open_opens_nothing() {
+        let run = FakeRun::start(Answer::Accept).await;
+        let (_d, b) = browser(&run).await;
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let e = within("a cancelled open", b.open(&cancel))
+            .await
+            .err()
+            .expect("cancelled");
+        assert_eq!(e.code, CODE_CANCELLED);
+        assert!(run.seen().is_empty());
+        assert_eq!(*b.in_use.lock().unwrap(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_deadline_fires_at_the_stores_time() {
+        let (_d, st, kek) = configured_store();
+        let b = DaemonBrowser::new(st.clone(), Some(kek));
+        let at = st.now_utc() + chrono::Duration::seconds(60);
+        let mut d = b.deadline(at);
+        assert!(futures::poll!(&mut d).is_pending());
+        tokio::time::advance(Duration::from_secs(59)).await;
+        assert!(futures::poll!(&mut d).is_pending());
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(futures::poll!(&mut d).is_ready());
+        // A deadline already passed fires at once.
+        let mut past = b.deadline(st.now_utc() - chrono::Duration::seconds(1));
+        assert!(futures::poll!(&mut past).is_ready());
+    }
+}

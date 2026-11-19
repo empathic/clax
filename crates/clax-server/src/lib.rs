@@ -143,6 +143,8 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod bot;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod browser_source;
 pub mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cloudflare;
