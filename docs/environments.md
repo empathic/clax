@@ -187,7 +187,16 @@ Cloudflare's docs.
    `PREVIEW_SITE_ZONE`: the sites `<ID>.pr-<N>.PREVIEW_SITE_ZONE` and
    `<ID>.dev.PREVIEW_SITE_ZONE` are two levels below it, past what
    Universal SSL covers.
-4. Make the token above.
+4. Turn off Web Analytics' automatic setup on `PREVIEW_SITE_ZONE`
+   (Analytics & Logs, Web Analytics, the zone, Manage site, Disable); the
+   same holds for prod's `clax.run` and staging's site zone. It is on by default for a proxied zone, and adds
+   Cloudflare's beacon script (`static.cloudflareinsights.com`) to every
+   HTML page the zone serves: a script the clax's maker did not write,
+   which Clax's Content-Security-Policy refuses on each load, so the
+   artifact page tells whoever administers the clax that it tried to
+   reach another site. (`Cache-Control: no-transform` would stop the
+   injection too, and Cloudflare's compression of the page with it.)
+5. Make the token above.
 
 ### Previews
 
