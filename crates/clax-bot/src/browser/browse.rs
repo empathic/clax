@@ -27,7 +27,10 @@
 //! ([`BrowseScope::admits_host`]): under `sender`, a host of the sender's
 //! URLs (a leading `www.` aside); under `allowlist`, a listed one; under
 //! `any_public`, any. Otherwise it fails and is listed blocked, why
-//! [`WHY_SCHEME`], [`WHY_PRIVATE`], [`WHY_OWN`] or [`WHY_RULE`].
+//! [`WHY_SCHEME`], [`WHY_PRIVATE`], [`WHY_OWN`] or [`WHY_RULE`]. A browse
+//! asks the resolver about at most [`MAX_NAMES`] names; a request to a
+//! new name past them is blocked, why [`WHY_NAMES`], so a page cannot
+//! make the instance look up names it picks without end.
 //!
 //! Holding the page's requests to the rule's hosts, not only the start
 //! URL and the `goto`s, is what makes `sender` and `allowlist` bound
@@ -57,6 +60,12 @@ use url::{Host, Url};
 pub const WHY_SCHEME: &str = "scheme";
 /// Why a request was blocked: a private or loopback address or name.
 pub const WHY_PRIVATE: &str = "private";
+/// Why a request was blocked: the browse already asked the host's
+/// resolver about [`MAX_NAMES`] names, and this one is new.
+pub const WHY_NAMES: &str = "names";
+/// The most names one browse asks the host's resolver about: a page
+/// cannot make the instance look up names it chooses without end.
+pub const MAX_NAMES: usize = 64;
 /// Why a request was blocked: one of the instance's own hosts.
 pub const WHY_OWN: &str = "own";
 /// Why a request was blocked: a host the browse rule does not admit.
@@ -284,24 +293,30 @@ impl<'a> BrowsePolicy<'a> {
         }
     }
 
-    /// Whether the name `host` resolves to public addresses alone, asked
-    /// once.
-    async fn public(&self, host: &str) -> bool {
-        let known = self
-            .resolved
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(host)
-            .copied();
-        if let Some(ok) = known {
-            return ok;
-        }
-        let ok = self.source.host_public(host).await.is_ok();
-        self.resolved
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(host.to_string(), ok);
-        ok
+    /// Why the name `host` may not be reached: it does not resolve to
+    /// public addresses alone ([`WHY_PRIVATE`]), asked once, or it is new
+    /// and [`MAX_NAMES`] names were asked already ([`WHY_NAMES`]).
+    async fn refused(&self, host: &str) -> Option<&'static str> {
+        let (known, asked) = {
+            let r = self
+                .resolved
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (r.get(host).copied(), r.len())
+        };
+        let ok = match known {
+            Some(ok) => ok,
+            None if asked >= MAX_NAMES => return Some(WHY_NAMES),
+            None => {
+                let ok = self.source.host_public(host).await.is_ok();
+                self.resolved
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(host.to_string(), ok);
+                ok
+            }
+        };
+        (!ok).then_some(WHY_PRIVATE)
     }
 }
 
@@ -317,9 +332,9 @@ impl RequestPolicy for BrowsePolicy<'_> {
             _ => None,
         });
         if let Some(name) = host
-            && !self.public(&name).await
+            && let Some(why) = self.refused(&name).await
         {
-            return Decision::Fail { why: WHY_PRIVATE };
+            return Decision::Fail { why };
         }
         Decision::Continue
     }
@@ -507,5 +522,40 @@ mod tests {
             source.hosts_asked(),
             ["rebind.example".to_string(), "public.example".to_string()]
         );
+    }
+
+    /// A page cannot make the host's resolver look up names without end:
+    /// past [`MAX_NAMES`] names a browse asks no more, and a request to a
+    /// new name is blocked, why [`WHY_NAMES`].
+    #[tokio::test]
+    async fn a_browse_asks_the_resolver_about_a_bounded_number_of_names() {
+        let s = scope(BrowseRule::AnyPublic, &cx(&[], None));
+        let source = FakeBrowserSource::new();
+        let p = BrowsePolicy::new(&s, &source);
+        let req = |url: String| Paused {
+            request_id: "r".into(),
+            url,
+            method: "GET".into(),
+            headers: vec![],
+            resource_type: "Fetch".into(),
+        };
+        for i in 0..MAX_NAMES {
+            assert_eq!(
+                p.decide(&req(format!("https://n{i}.public.example/")))
+                    .await,
+                Decision::Continue
+            );
+        }
+        assert_eq!(
+            p.decide(&req("https://one-more.public.example/".into()))
+                .await,
+            Decision::Fail { why: WHY_NAMES }
+        );
+        // A name already asked is still answered.
+        assert_eq!(
+            p.decide(&req("https://n0.public.example/x".into())).await,
+            Decision::Continue
+        );
+        assert_eq!(source.hosts_asked().len(), MAX_NAMES);
     }
 }
