@@ -164,6 +164,15 @@ fetches through it, across the restart, and a fetch of a page that
 redirects to itself; `smoke-remote.mjs` makes one real search and one real
 fetch when the deployed instance has web search on.
 
+ClaxBot's browser testing (`clax.browser.test`, spec
+`docs/superpowers/specs/2026-11-19-claxbot-browser-design.md`) is not
+configured on the Worker: it has no browser source, so a run never
+declares `clax.browser`, `GET /api/admin/browser` answers `configured:
+false` with the reason in `unavailable`, and Your ClaxBot shows the
+switch as not configured. Its content store keeps no blobs, so a test's
+screenshots could not be kept, and an outbound WebSocket to Browser Run
+(or the `BROWSER` binding) is a change of its own.
+
 ## Deploy to Cloudflare
 
 clax.dev, Empathic's instance, is deployed from GitHub Actions on every
