@@ -167,8 +167,7 @@ fn fail(error: String, timeout: bool) -> Answered {
 /// What one attempt at an element found.
 enum Attempt {
     /// The one element, actionable: its index in the tree, its backend
-    /// node, its box `(x, y, width, height)` when measured, the point to
-    /// act at.
+    /// node, the point to act at.
     Got(Target),
     /// More than one element: the message.
     Strict(String),
@@ -182,7 +181,6 @@ struct Target {
     resolved: Resolved,
     index: usize,
     backend: i64,
-    rect: Option<(f64, f64, f64, f64)>,
     point: (f64, f64),
 }
 
@@ -393,7 +391,6 @@ async fn attempt(
         resolved: r,
         index,
         backend,
-        rect: rect_now,
         point,
     }))
 }
