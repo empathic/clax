@@ -38,6 +38,9 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebPageRow {
     pub url: String,
+    /// The format it was fetched in: `markdown`, `html` or `raw`. The
+    /// store keeps a page per URL and format.
+    pub format: String,
     pub step_n: i64,
     pub seq: i64,
     pub final_url: String,
@@ -78,7 +81,7 @@ pub struct Spent {
 }
 
 const PAGE_COLS: &str =
-    "url, step_n, seq, final_url, status, content_type, text, total_chars, links_json";
+    "url, step_n, seq, final_url, status, content_type, text, total_chars, links_json, format";
 
 fn row_to_page(r: &Row<'_>) -> rusqlite::Result<WebPageRow> {
     let links: String = r.get(8)?;
@@ -92,14 +95,16 @@ fn row_to_page(r: &Row<'_>) -> rusqlite::Result<WebPageRow> {
         text: r.get(6)?,
         total_chars: r.get(7)?,
         links: serde_json::from_str(&links).unwrap_or_default(),
+        format: r.get(9)?,
     })
 }
 
 /// Keeps `page` for run `run_id` at journal place `(step_n, seq)` on `c`.
 ///
 /// # Errors
-/// `page_exists` when the run already keeps a page of its URL (a fetch of
-/// it is answered from the store, never fetched again); the store's.
+/// `page_exists` when the run already keeps a page of its URL in its
+/// format (a fetch of it is answered from the store, never fetched
+/// again); the store's.
 fn insert_page(
     c: &Connection,
     run_id: &str,
@@ -109,9 +114,9 @@ fn insert_page(
 ) -> Result<()> {
     let inserted = c.execute(
         "INSERT INTO bot_web_pages (run_id, url, step_n, seq, final_url, status, content_type,
-            text, total_chars, links_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-         ON CONFLICT (run_id, url) DO NOTHING",
+            text, total_chars, links_json, format)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT (run_id, url, format) DO NOTHING",
         params![
             run_id,
             page.url,
@@ -123,14 +128,15 @@ fn insert_page(
             page.text,
             page.total_chars,
             serde_json::to_string(&page.links).expect("serialisable links"),
+            page.format,
         ],
     )?;
     if inserted == 0 {
         return Err(CoreError::invalid(
             "page_exists",
             format!(
-                "run {run_id} already keeps a page of {}; answer from the store",
-                page.url
+                "run {run_id} already keeps a page of {} as {}; answer from the store",
+                page.url, page.format
             ),
         ));
     }
@@ -335,16 +341,18 @@ impl Store {
         })
     }
 
-    /// The page run `run_id` keeps of `url` (normalised), or `None`.
+    /// The page run `run_id` keeps of `url` (normalised) in `format`
+    /// (`markdown`, `html`, `raw`), or `None`.
     ///
     /// # Errors
     /// The store's.
-    pub fn web_page(&self, run_id: &str, url: &str) -> Result<Option<WebPageRow>> {
+    pub fn web_page(&self, run_id: &str, url: &str, format: &str) -> Result<Option<WebPageRow>> {
         self.with_read(|c| {
             Ok(c.prepare_cached(&format!(
-                "SELECT {PAGE_COLS} FROM bot_web_pages WHERE run_id = ?1 AND url = ?2"
+                "SELECT {PAGE_COLS} FROM bot_web_pages
+                  WHERE run_id = ?1 AND url = ?2 AND format = ?3"
             ))?
-            .query_row(params![run_id, url], row_to_page)
+            .query_row(params![run_id, url, format], row_to_page)
             .optional()?)
         })
     }
@@ -469,6 +477,7 @@ mod tests {
     fn page(url: &str) -> WebPageRow {
         WebPageRow {
             url: url.into(),
+            format: "markdown".into(),
             step_n: 1,
             seq: 0,
             final_url: format!("{url}/"),
@@ -531,8 +540,8 @@ mod tests {
         let after = st.run(&run.id).unwrap().unwrap();
         assert_eq!(after.credits_milli, run.credits_milli + spent.credits_milli);
 
-        assert_eq!(st.web_page(&run.id, url).unwrap(), Some(page(url)));
-        assert_eq!(st.web_page(&run.id, "https://example.com/b").unwrap(), None);
+        assert_eq!(st.web_page(&run.id, url, "markdown").unwrap(), Some(page(url)));
+        assert_eq!(st.web_page(&run.id, "https://example.com/b", "markdown").unwrap(), None);
         let journal = st.bot_calls(&run.id, 1).unwrap();
         assert_eq!(journal, vec![spent.entry.clone()]);
 
@@ -797,7 +806,7 @@ mod tests {
             .unwrap();
         let again = fetch(&st, &run, &d, 1, url);
         assert_eq!(refused(&st, &run, &d, again), "page_exists");
-        assert_eq!(st.web_page(&run.id, url).unwrap(), Some(page(url)));
+        assert_eq!(st.web_page(&run.id, url, "markdown").unwrap(), Some(page(url)));
     }
 
     #[test]

@@ -896,11 +896,12 @@ mod tests {
         );
         assert!(check_args("web.search", &json!(["q", "5"])).is_err());
         assert!(check_args("web.fetch", &json!(["u", {"offs": 1}])).is_err());
-        let m = check_args("web.fetch", &json!(["u", {"format": "html"}])).unwrap_err();
+        assert!(check_args("web.fetch", &json!(["u", {"format": "html"}])).is_ok());
+        let m = check_args("web.fetch", &json!(["u", {"format": "pdf"}])).unwrap_err();
         assert_eq!(m.code, CODE_BAD_ARGS);
         assert!(
             m.message
-                .contains("argument 2 (opts).format must be one of auto, raw"),
+                .contains("argument 2 (opts).format must be one of markdown, html, raw, auto"),
             "{m}"
         );
         assert!(check_args("web.fetch", &json!(["u", {"format": 1}])).is_err());

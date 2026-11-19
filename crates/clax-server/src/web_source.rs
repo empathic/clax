@@ -31,8 +31,8 @@
 use crate::cloudflare::{Credentials, credentials, has_credentials, usable};
 use clax_bot::web::markdown::html_to_markdown;
 use clax_bot::web::page::{
-    Handling, decode, decode_html, handling, http_error, is_sniffed, links_of_body, links_of_html,
-    links_of_markdown, media_type, media_type_of, pretty_json, user_agent,
+    Handling, clean_html, decode, decode_html, handling, http_error, is_sniffed, links_of_body,
+    links_of_html, links_of_markdown, media_type, media_type_of, pretty_json, user_agent,
 };
 use clax_bot::web::url::{is_local_addr, redirect_allowed};
 use clax_bot::web::{
@@ -522,28 +522,8 @@ impl RestSource {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let unsupported = |media: &str, format: Format| {
-            let what = if media.is_empty() {
-                "of no known type"
-            } else {
-                media
-            };
-            let raw = if format == Format::Raw
-                && handling(media, Format::Auto) != Handling::Unsupported
-            {
-                " with format \"raw\"; fetch it without"
-            } else {
-                ""
-            };
-            gone(WebError::new(
-                CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
-                format!(
-                    "{} is {what}, which cannot be read as text{raw}. Use another source.",
-                    at.normalized()
-                ),
-                false,
-            ))
-        };
+        let unsupported =
+            |media: &str, format: Format| gone(clax_bot::web::page::unsupported(&at, media, format));
         // Before the body is read: an error status whose served type is not
         // text has no readable body, and a type the rules refuse is
         // refused. A type that says too little is sniffed from the body.
@@ -563,7 +543,10 @@ impl RestSource {
             if status >= 400 {
                 return Err(http_error(&at, status));
             }
-            if handling(&served, format) == Handling::Unsupported {
+            if matches!(
+                handling(&served, format),
+                Handling::Unsupported | Handling::NotHtml
+            ) {
                 return Err(unsupported(&served, format));
             }
             if matches!(handling(&served, format), Handling::Document(_)) && self.account.is_none()
@@ -581,7 +564,9 @@ impl RestSource {
             return Err(http_error(&at, status));
         }
         let (text, links) = match handling(&content_type, format) {
-            Handling::Unsupported => return Err(unsupported(&content_type, format)),
+            Handling::Unsupported | Handling::NotHtml => {
+                return Err(unsupported(&content_type, format));
+            }
             Handling::Html => {
                 let (md, links) = convert_html(body, declared.clone(), at.clone())
                     .await
@@ -597,6 +582,11 @@ impl RestSource {
                 let html = decode_html(&body, &declared);
                 let links = links_of_html(&html, &at);
                 (html, links)
+            }
+            Handling::CleanHtml => {
+                let html = decode_html(&body, &declared);
+                let links = links_of_html(&html, &at);
+                (clean_html(&html, &at), links)
             }
             Handling::Document(ext) => {
                 let Some(account) = &self.account else {
@@ -1401,7 +1391,7 @@ mod tests {
             let e = fetch(
                 &s,
                 &server.url(host, "/"),
-                Format::Auto,
+                Format::Markdown,
                 FetchLimits::default(),
             )
             .await
@@ -1415,7 +1405,7 @@ mod tests {
         let e = fetch(
             &strict,
             &server.url("site.test", "/"),
-            Format::Auto,
+            Format::Markdown,
             FetchLimits::default(),
         )
         .await
@@ -1429,7 +1419,7 @@ mod tests {
         let e = fetch(
             &s,
             &server.url("nowhere.test", "/"),
-            Format::Auto,
+            Format::Markdown,
             FetchLimits::default(),
         )
         .await
@@ -1454,7 +1444,7 @@ mod tests {
         let e = fetch(
             &s,
             &server.url("site.test", "/go"),
-            Format::Auto,
+            Format::Markdown,
             FetchLimits::default(),
         )
         .await
@@ -1464,7 +1454,7 @@ mod tests {
         let e = fetch(
             &s,
             &server.url("site.test", "/local"),
-            Format::Auto,
+            Format::Markdown,
             FetchLimits::default(),
         )
         .await
@@ -1473,7 +1463,7 @@ mod tests {
         let e = fetch(
             &s,
             &server.url("site.test", "/nowhere"),
-            Format::Auto,
+            Format::Markdown,
             FetchLimits::default(),
         )
         .await
@@ -1490,7 +1480,7 @@ mod tests {
         let e = s
             .fetch(
                 &server.url("site.test", "/down"),
-                Format::Auto,
+                Format::Markdown,
                 &FetchLimits::default(),
                 &refuse,
                 &CancelToken::new(),
@@ -1560,14 +1550,14 @@ mod tests {
             timeout: Duration::from_secs(30),
             ..FetchLimits::default()
         };
-        let e = fetch(&s, &url, Format::Auto, limits).await.unwrap_err();
+        let e = fetch(&s, &url, Format::Markdown, limits).await.unwrap_err();
         assert_eq!((e.code, e.went_out), (CODE_WEB_TIMEOUT, false), "{e}");
         assert!(!charged(OP_FETCH, &e));
         // Cancelled while the name resolves: not gone out either.
         let cancel = CancelToken::new();
         let c = cancel.clone();
         let limits = FetchLimits::default();
-        let call = s.fetch(&url, Format::Auto, &limits, &any, &cancel);
+        let call = s.fetch(&url, Format::Markdown, &limits, &any, &cancel);
         let (r, ()) = tokio::join!(call, async move {
             tokio::task::yield_now().await;
             c.cancel();
@@ -1590,7 +1580,7 @@ mod tests {
         .await;
         let s = source(&server, true);
         let refused = PublicUrl::parse(&format!("http://site.test:{closed}/")).unwrap();
-        let e = fetch(&s, &refused, Format::Auto, FetchLimits::default())
+        let e = fetch(&s, &refused, Format::Markdown, FetchLimits::default())
             .await
             .unwrap_err();
         assert_eq!((e.code, e.went_out), (CODE_WEB_UNAVAILABLE, false), "{e}");
@@ -1601,7 +1591,7 @@ mod tests {
             let e = fetch(
                 &s,
                 &server.url("site.test", path),
-                Format::Auto,
+                Format::Markdown,
                 FetchLimits::default(),
             )
             .await
@@ -1743,7 +1733,7 @@ mod tests {
             RestSource::without_account(true, stub()),
         ] {
             let url = server.url("site.test", "/page");
-            let p = fetch(&s, &url, Format::Auto, FetchLimits::default())
+            let p = fetch(&s, &url, Format::Markdown, FetchLimits::default())
                 .await
                 .unwrap();
             let next = format!("http://site.test:{}/next", server.port);
@@ -1759,14 +1749,14 @@ mod tests {
             assert!(p.text.contains("<h1>Hi</h1>"), "{}", p.text);
             // A page in another charset is converted from its text.
             let latin = server.url("site.test", "/latin");
-            let p = fetch(&s, &latin, Format::Auto, FetchLimits::default())
+            let p = fetch(&s, &latin, Format::Markdown, FetchLimits::default())
                 .await
                 .unwrap();
             assert_eq!(p.text, "caf\u{e9}");
             // So is a page whose charset only its meta declares, and its
             // raw HTML is decoded by it too.
             let meta = server.url("site.test", "/meta");
-            let p = fetch(&s, &meta, Format::Auto, FetchLimits::default())
+            let p = fetch(&s, &meta, Format::Markdown, FetchLimits::default())
                 .await
                 .unwrap();
             assert_eq!(p.text, "caf\u{e9}");
@@ -1810,7 +1800,7 @@ mod tests {
         let p = fetch(
             &source(&server, true),
             &url,
-            Format::Auto,
+            Format::Markdown,
             FetchLimits::default(),
         )
         .await
@@ -1825,7 +1815,7 @@ mod tests {
             let e = fetch(
                 &local,
                 &server.url("site.test", path),
-                Format::Auto,
+                Format::Markdown,
                 FetchLimits::default(),
             )
             .await
@@ -1886,21 +1876,21 @@ mod tests {
             async move { fetch(s, &url, format, FetchLimits::default()).await }
         };
         assert_eq!(
-            get("/json", Format::Auto).await.unwrap().text,
+            get("/json", Format::Markdown).await.unwrap().text,
             "{\n  \"a\": [\n    1,\n    2\n  ]\n}"
         );
         assert_eq!(
             get("/json", Format::Raw).await.unwrap().text,
             r#"{"a":[1,2]}"#
         );
-        let md = get("/md", Format::Auto).await.unwrap();
+        let md = get("/md", Format::Markdown).await.unwrap();
         assert_eq!(md.links, vec!["https://x.example/".to_string()]);
-        assert_eq!(get("/latin", Format::Auto).await.unwrap().text, "café");
+        assert_eq!(get("/latin", Format::Markdown).await.unwrap().text, "café");
         for (path, format) in [
-            ("/img", Format::Auto),
+            ("/img", Format::Markdown),
             ("/img", Format::Raw),
             ("/pdf", Format::Raw),
-            ("/bin", Format::Auto),
+            ("/bin", Format::Markdown),
         ] {
             let e = get(path, format).await.unwrap_err();
             assert_eq!(
@@ -1909,15 +1899,15 @@ mod tests {
                 "{path}: {e}"
             );
         }
-        let p = get("/missing", Format::Auto).await.unwrap();
+        let p = get("/missing", Format::Markdown).await.unwrap();
         assert_eq!((p.status, p.text.as_str()), (404, "not here"));
-        let e = get("/challenge", Format::Auto).await.unwrap_err();
+        let e = get("/challenge", Format::Markdown).await.unwrap_err();
         assert_eq!((e.code, e.went_out), (CODE_WEB_BLOCKED, true), "{e}");
         let small = FetchLimits {
             max_bytes: 1_000,
             ..FetchLimits::default()
         };
-        let e = fetch(&s, &server.url("site.test", "/big"), Format::Auto, small)
+        let e = fetch(&s, &server.url("site.test", "/big"), Format::Markdown, small)
             .await
             .unwrap_err();
         assert_eq!((e.code, e.went_out), (CODE_WEB_TOO_LARGE, true), "{e}");
@@ -1944,12 +1934,12 @@ mod tests {
             // Empty and sniffed binary bodies after the download, an image
             // and a raw document before it.
             for (body, format) in [
-                ("empty", Format::Auto),
-                ("binary", Format::Auto),
-                ("image", Format::Auto),
+                ("empty", Format::Markdown),
+                ("binary", Format::Markdown),
+                ("image", Format::Markdown),
                 ("pdf", Format::Raw),
                 // An HTML error page whose conversion is empty, after it.
-                ("blank-html", Format::Auto),
+                ("blank-html", Format::Markdown),
             ] {
                 let url = server.url("site.test", &format!("/{status}/{body}"));
                 let e = fetch(&s, &url, format, FetchLimits::default())
@@ -1968,12 +1958,12 @@ mod tests {
             }
             // A readable error page is a page with its status.
             let url = server.url("site.test", &format!("/{status}/text"));
-            let p = fetch(&s, &url, Format::Auto, FetchLimits::default())
+            let p = fetch(&s, &url, Format::Markdown, FetchLimits::default())
                 .await
                 .unwrap();
             assert_eq!((p.status, p.text.as_str()), (status, "gone"));
             let url = server.url("site.test", &format!("/{status}/html"));
-            let p = fetch(&s, &url, Format::Auto, FetchLimits::default())
+            let p = fetch(&s, &url, Format::Markdown, FetchLimits::default())
                 .await
                 .unwrap();
             assert_eq!((p.status, p.text.as_str()), (status, "gone"));
@@ -1982,7 +1972,7 @@ mod tests {
         let e = fetch(
             &s,
             &server.url("site.test", "/200/image"),
-            Format::Auto,
+            Format::Markdown,
             FetchLimits::default(),
         )
         .await
@@ -2013,7 +2003,7 @@ mod tests {
         let e = s
             .fetch(
                 &server.url("site.test", "/a"),
-                Format::Auto,
+                Format::Markdown,
                 &FetchLimits::default(),
                 &record,
                 &CancelToken::new(),
@@ -2045,7 +2035,7 @@ mod tests {
         // The deadline passes on the paused clock once the request has
         // reached the page, so the fetch has gone out by then.
         let url = server.url("site.test", "/");
-        let (r, ()) = tokio::join!(fetch(&s, &url, Format::Auto, limits), async {
+        let (r, ()) = tokio::join!(fetch(&s, &url, Format::Markdown, limits), async {
             arrived.notified().await;
             tokio::time::pause();
             tokio::time::advance(deadline).await;
@@ -2060,7 +2050,7 @@ mod tests {
         let cancel = CancelToken::new();
         let c = cancel.clone();
         let limits = FetchLimits::default();
-        let call = s.fetch(&url, Format::Auto, &limits, &any, &cancel);
+        let call = s.fetch(&url, Format::Markdown, &limits, &any, &cancel);
         let (r, ()) = tokio::join!(call, async move { c.cancel() });
         assert_eq!(r.unwrap_err().code, CODE_CANCELLED);
     }
@@ -2152,7 +2142,7 @@ mod tests {
         let p = web
             .fetch(
                 &url,
-                Format::Auto,
+                Format::Markdown,
                 &FetchLimits::default(),
                 &any,
                 &CancelToken::new(),
@@ -2178,7 +2168,7 @@ mod tests {
             let s = source(&server, true).with_user_agent(user_agent(origin));
             let url = server.url("site.test", "/");
             async move {
-                fetch(&s, &url, Format::Auto, FetchLimits::default())
+                fetch(&s, &url, Format::Markdown, FetchLimits::default())
                     .await
                     .unwrap()
                     .text
@@ -2275,7 +2265,7 @@ mod tests {
         let p = web
             .fetch(
                 &server.url("site.test", "/page"),
-                Format::Auto,
+                Format::Markdown,
                 &FetchLimits::default(),
                 &any,
                 &CancelToken::new(),

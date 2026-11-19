@@ -32,8 +32,8 @@
         "op": "web.fetch"
       },
       {
-        "code": "invalid_args",
-        "ok": false,
+        "code": null,
+        "ok": true,
         "op": "web.fetch"
       },
       {
@@ -62,8 +62,8 @@
         "op": "web.fetch"
       },
       {
-        "code": "invalid_args",
-        "ok": false,
+        "code": null,
+        "ok": true,
         "op": "web.fetch"
       },
       {
@@ -178,10 +178,21 @@
         "threw": "HostError: clax.web.fetch: offset must be at least 0, got -1"
       },
       "web.fetch: a page read as auto, asked for raw": {
-        "code": "invalid_args",
-        "message": "this run already read https://example.com/a as auto; fetch it with that format",
-        "retryable": false,
-        "threw": "HostError: this run already read https://example.com/a as auto; fetch it with that format"
+        "returned": {
+          "contentType": "text/markdown",
+          "finalUrl": "https://example.com/a",
+          "left": {
+            "credits": 1997.719,
+            "fetches": 17,
+            "searches": 8
+          },
+          "nextOffset": null,
+          "offset": 0,
+          "status": 200,
+          "text": "# Doc title\nbody",
+          "totalChars": 16,
+          "url": "https://example.com/a"
+        }
       },
       "web.fetch: a private host": {
         "code": "url_not_allowed",
@@ -200,8 +211,8 @@
           "contentType": "text/markdown",
           "finalUrl": "https://example.org/found",
           "left": {
-            "credits": 1997.819,
-            "fetches": 18,
+            "credits": 1997.619,
+            "fetches": 16,
             "searches": 8
           },
           "nextOffset": null,
@@ -225,10 +236,21 @@
         "threw": "HostError: [::1] is a private or local address; fetch a public http or https URL instead"
       },
       "web.fetch: an unknown format": {
-        "code": "invalid_args",
-        "message": "clax.web.fetch: argument 2 (opts).format must be one of auto, raw",
-        "retryable": false,
-        "threw": "HostError: clax.web.fetch: argument 2 (opts).format must be one of auto, raw"
+        "returned": {
+          "contentType": "text/markdown",
+          "finalUrl": "https://example.com/a",
+          "left": {
+            "credits": 1997.819,
+            "fetches": 18,
+            "searches": 9
+          },
+          "nextOffset": null,
+          "offset": 0,
+          "status": 200,
+          "text": "# Doc title\nbody",
+          "totalChars": 16,
+          "url": "https://example.com/a"
+        }
       },
       "web.fetch: localhost": {
         "code": "url_not_allowed",
@@ -247,8 +269,8 @@
           "contentType": "text/markdown",
           "finalUrl": "https://example.com/a",
           "left": {
-            "credits": 1997.919,
-            "fetches": 19,
+            "credits": 1997.819,
+            "fetches": 18,
             "searches": 8
           },
           "nextOffset": null,
@@ -313,6 +335,6 @@
       }
     }
   },
-  "content_bytes": 7462,
+  "content_bytes": 7498,
   "is_error": null
 }

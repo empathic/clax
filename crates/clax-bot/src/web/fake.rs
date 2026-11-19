@@ -364,7 +364,7 @@ mod tests {
     ) -> Result<FetchedPage, WebError> {
         f.fetch(
             &url(u),
-            Format::Auto,
+            Format::Markdown,
             &FetchLimits::default(),
             hop,
             &CancelToken::new(),
@@ -483,7 +483,7 @@ mod tests {
         let e = f
             .fetch(
                 &url("https://a.com/"),
-                Format::Auto,
+                Format::Markdown,
                 &FetchLimits::default(),
                 &any,
                 &c,

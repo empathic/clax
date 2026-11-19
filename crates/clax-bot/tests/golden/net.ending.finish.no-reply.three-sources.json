@@ -584,7 +584,7 @@
       "result": {
         "cost_milli": 100,
         "counted": true,
-        "format": "auto",
+        "format": "markdown",
         "source": {
           "kind": "search",
           "label": "search #1",
@@ -622,7 +622,7 @@
       "result": {
         "cost_milli": 100,
         "counted": true,
-        "format": "auto",
+        "format": "markdown",
         "source": {
           "comment_id": "<comment>",
           "kind": "comment",
@@ -695,7 +695,7 @@
       "op": "web.fetch",
       "result": {
         "cost_milli": 0,
-        "format": "auto",
+        "format": "markdown",
         "source": {
           "comment_id": "<comment>",
           "kind": "comment",

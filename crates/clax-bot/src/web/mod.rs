@@ -194,13 +194,41 @@ pub struct SearchAnswer {
     pub raw: Value,
 }
 
-/// What a fetch returns: text converted to Markdown where the type allows
-/// (`Auto`), or a textual body as it came (`Raw`, which refuses binary
-/// types).
+/// What a fetch returns (spec 2026-11-19-claxbot-browser §5.2): text
+/// converted to Markdown where the type allows (`Markdown`, the default,
+/// main's `auto`), an HTML page's markup cleaned of code (`Html`, which
+/// refuses every other type), or a textual body as it came (`Raw`, which
+/// refuses binary types).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
-    Auto,
+    Markdown,
+    Html,
     Raw,
+}
+
+impl Format {
+    /// The format a script names (`opts.format`): `markdown`, `html` or
+    /// `raw`; `auto` (main's name for `markdown`) and none are `Markdown`.
+    /// `None` for a name that is no format.
+    #[must_use]
+    pub fn parse(name: Option<&str>) -> Option<Format> {
+        match name {
+            None | Some("markdown" | "auto") => Some(Format::Markdown),
+            Some("html") => Some(Format::Html),
+            Some("raw") => Some(Format::Raw),
+            Some(_) => None,
+        }
+    }
+
+    /// Its name, as a journal entry and the page store keep it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Format::Markdown => "markdown",
+            Format::Html => "html",
+            Format::Raw => "raw",
+        }
+    }
 }
 
 /// The bounds of one fetch.

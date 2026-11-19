@@ -2528,6 +2528,12 @@ pub const MIGRATIONS: &[&str] = &[
     // web switches as explicit grants and fills `caps` from `web` and
     // `browser` (`crate::bot_grants::grants_from_main`).
     // `bot_runs.browser` is the migration's mark (`MARKS_AFTER_APP`).
+    //
+    // The page store keeps a page per URL and format (spec
+    // 2026-11-19-claxbot-browser-design §5.2): `bot_web_pages` is rebuilt
+    // with `format` in its primary key, each row's format read from its
+    // fetch's journal entry (`raw` as `raw`; main's `auto`, and an entry
+    // that names none or is missing, as `markdown`).
     "CREATE TABLE cost_lines_new (
         id TEXT PRIMARY KEY,
         label TEXT NOT NULL,
@@ -2565,7 +2571,32 @@ pub const MIGRATIONS: &[&str] = &[
         revoked_by TEXT
     );
     CREATE INDEX bot_cap_grants_by_grantee ON bot_cap_grants(grantee, capability, status);
-    CREATE INDEX bot_cap_grants_by_parent ON bot_cap_grants(parent) WHERE parent IS NOT NULL;",
+    CREATE INDEX bot_cap_grants_by_parent ON bot_cap_grants(parent) WHERE parent IS NOT NULL;
+    CREATE TABLE bot_web_pages_new (
+        run_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        format TEXT NOT NULL,
+        step_n INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        final_url TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        content_type TEXT NOT NULL,
+        text TEXT NOT NULL,
+        total_chars INTEGER NOT NULL,
+        links_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, url, format)
+    ) WITHOUT ROWID;
+    INSERT INTO bot_web_pages_new
+        SELECT p.run_id, p.url,
+               CASE (SELECT json_extract(c.result_json, '$.format') FROM bot_calls c
+                      WHERE c.run_id = p.run_id AND c.step_n = p.step_n AND c.seq = p.seq
+                        AND json_valid(c.result_json))
+                   WHEN 'raw' THEN 'raw' ELSE 'markdown' END,
+               p.step_n, p.seq, p.final_url, p.status, p.content_type, p.text,
+               p.total_chars, p.links_json
+        FROM bot_web_pages p;
+    DROP TABLE bot_web_pages;
+    ALTER TABLE bot_web_pages_new RENAME TO bot_web_pages;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -9671,5 +9702,76 @@ mod tests {
             crate::bot_runs::caps_of_shapes("search", "test,browse"),
             "browser.open.artifact,browser.open.url,web.search"
         );
+    }
+
+    /// Migration 67 keeps every page of main's page store, each with the
+    /// format its fetch's journal entry names: `raw` as `raw`, main's
+    /// `auto`, none and an entry that is missing as `markdown`.
+    #[test]
+    fn migration_67_keeps_every_page_with_its_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let mut c = at_64_with_runs(&home);
+        let at_66 = super::Numbering {
+            migrations: &MIGRATIONS[..super::KEY_PROBLEM_MIGRATION as usize],
+            main_marks: &MAIN_MARKS_ABOVE_38,
+        };
+        crate::migrate_with(&mut c, &at_66).unwrap();
+        let run: String = c
+            .query_row("SELECT id FROM bot_runs ORDER BY id LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        // Four fetches of step 7, each with a page; the last has no entry.
+        for (seq, result) in [
+            (0, Some(r#"{"value":{},"format":"auto"}"#)),
+            (1, Some(r#"{"value":{},"format":"raw"}"#)),
+            (2, Some(r#"{"value":{}}"#)),
+            (3, None),
+        ] {
+            if let Some(result) = result {
+                c.execute(
+                    "INSERT INTO bot_calls (run_id, step_n, seq, attempt, op, args_hash, ok,
+                        result_json, at)
+                     VALUES (?1, 7, ?2, 1, 'web.fetch', 'h', 1, ?3, '2026-11-09T10:00:00.000Z')",
+                    params![run, seq, result],
+                )
+                .unwrap();
+            }
+            c.execute(
+                "INSERT INTO bot_web_pages (run_id, url, step_n, seq, final_url, status,
+                    content_type, text, total_chars, links_json)
+                 VALUES (?1, ?2, 7, ?3, ?2, 200, 'text/html', 'page', 4, '[]')",
+                params![run, format!("https://example.com/{seq}"), seq],
+            )
+            .unwrap();
+        }
+        let before: i64 = c
+            .query_row("SELECT COUNT(*) FROM bot_web_pages", [], |r| r.get(0))
+            .unwrap();
+        drop(c);
+        let st = opened_after_the_runs(&home);
+        let pages = st.web_pages(&run).unwrap();
+        let formats: Vec<(String, String)> = pages
+            .iter()
+            .filter(|p| p.step_n == 7)
+            .map(|p| (p.url.clone(), p.format.clone()))
+            .collect();
+        assert_eq!(
+            formats,
+            [
+                ("https://example.com/0".to_string(), "markdown".to_string()),
+                ("https://example.com/1".to_string(), "raw".to_string()),
+                ("https://example.com/2".to_string(), "markdown".to_string()),
+                ("https://example.com/3".to_string(), "markdown".to_string()),
+            ]
+        );
+        let after = st
+            .with_read(|c| Ok(c.query_row("SELECT COUNT(*) FROM bot_web_pages", [], |r| r.get::<_, i64>(0))?))
+            .unwrap();
+        assert_eq!(after, before, "every page kept");
+        assert_eq!(
+            st.web_page(&run, "https://example.com/1", "raw").unwrap().map(|p| p.text),
+            Some("page".to_string())
+        );
+        assert_eq!(st.web_page(&run, "https://example.com/1", "markdown").unwrap(), None);
     }
 }

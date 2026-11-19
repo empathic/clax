@@ -904,6 +904,7 @@ mod tests {
         ];
         let pages = vec![WebPageRow {
             url: "https://example.com/a".into(),
+            format: "markdown".into(),
             step_n: 3,
             seq: 4,
             final_url: "https://example.com/a".into(),

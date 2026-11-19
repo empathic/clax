@@ -238,7 +238,7 @@
       "result": {
         "cost_milli": 95,
         "counted": true,
-        "format": "auto",
+        "format": "markdown",
         "source": {
           "comment_id": "<comment>",
           "kind": "comment",

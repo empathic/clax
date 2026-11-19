@@ -11,7 +11,8 @@
 //!   not retryable: the web was not turned off, it cannot run here.
 //! - **Arguments** (step 4): a query of 1 to 1,024 characters and a
 //!   `limit` not below 0 (at most the grant's), or a URL, an `offset`
-//!   not below 0 and a format.
+//!   not below 0 and a format ([`Format::parse`]: `markdown`, `html` or
+//!   `raw`; main's `auto` is `markdown`).
 //! - **Admission** (step 5), a fetch: the URL is a [`PublicUrl`], its
 //!   host is not one of the instance's own
 //!   ([`crate::web::WebSource::own_hosts`]), the admin's [`UrlRule`] lets
@@ -23,9 +24,10 @@
 //!   `web_unavailable`, not retryable: it is refused before the source
 //!   and so not counted, and a flag inviting a retry that nothing counts
 //!   would invite a loop bounded only by the script's own limits.
-//! - **Free answers** (step 6), a fetch of a URL the run's page store
-//!   keeps: its window from the store, free and not counted. It must ask
-//!   for the format the page was fetched in, or `invalid_args`.
+//! - **Free answers** (step 6), a fetch of a URL and format the run's
+//!   page store keeps: its window from the store, free and not counted. A
+//!   page kept in another format is a new request, counted and charged
+//!   (spec 2026-11-19-claxbot-browser §5.2).
 //! - **Cap** (step 7): the run's searches or fetches that reached the
 //!   source, charged or not: a search that failed and a fetch that never
 //!   went out count, though neither is charged.
@@ -75,13 +77,6 @@ use std::sync::Arc;
 
 /// The longest query, in characters.
 const MAX_QUERY_CHARS: usize = 1_024;
-
-fn format_str(f: Format) -> &'static str {
-    match f {
-        Format::Auto => "auto",
-        Format::Raw => "raw",
-    }
-}
 
 /// `text` cut to at most `max` bytes at a character boundary, and its whole
 /// length in characters.
@@ -414,9 +409,11 @@ impl Performer for Fetch {
             Some(o) if o < 0 => return Err(bad(op, format!("offset must be at least 0, got {o}"))),
             Some(o) => usize::try_from(o).unwrap_or(usize::MAX),
         };
-        let format = match opts["format"].as_str() {
-            Some("raw") => Format::Raw,
-            _ => Format::Auto,
+        let Some(format) = Format::parse(opts["format"].as_str()) else {
+            return Err(bad(
+                op,
+                "format must be \"markdown\", \"html\" or \"raw\"".to_string(),
+            ));
         };
         Ok(FetchArgs {
             grant: g.clone(),
@@ -433,7 +430,7 @@ impl Performer for Fetch {
         let entry = match &args.src {
             Some(src) => vec![
                 ("source", src.to_json()),
-                ("format", json!(format_str(args.format))),
+                ("format", json!(args.format.as_str())),
             ],
             None => Vec::new(),
         };
@@ -470,19 +467,11 @@ impl Performer for Fetch {
         seen: &Seen,
     ) -> Option<Finish> {
         let url = args.url.normalized();
-        let p = args.pages.iter().find(|p| p.url == url)?;
-        let kept_as = args
-            .journal
+        let format = args.format.as_str();
+        let p = args
+            .pages
             .iter()
-            .find(|e| e.step_n() == p.step_n && e.seq() == p.seq)
-            .and_then(|e| e.result()["format"].as_str())
-            .unwrap_or("auto");
-        if kept_as != format_str(args.format) {
-            return Some(Finish::refused(HostError::new(
-                CODE_BAD_ARGS,
-                format!("this run already read {url} as {kept_as}; fetch it with that format"),
-            )));
-        }
+            .find(|p| p.url == url && p.format == format)?;
         let credits = match s.week_left() {
             Ok(c) => c,
             Err(e) => return Some(Finish::refused(e)),
@@ -542,6 +531,7 @@ impl Performer for Fetch {
                 let (text, total_chars) = cut(&page.text, STORE_BYTES);
                 let row = WebPageRow {
                     url: args.url.normalized().to_string(),
+                    format: args.format.as_str().to_string(),
                     step_n: s.cx.step,
                     seq: call.place.seq,
                     final_url: page.final_url,

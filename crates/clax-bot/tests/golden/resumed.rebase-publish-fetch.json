@@ -449,7 +449,7 @@
       "result": {
         "cost_milli": 100,
         "counted": true,
-        "format": "auto",
+        "format": "markdown",
         "source": {
           "comment_id": "<comment>",
           "kind": "comment",
