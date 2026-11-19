@@ -532,17 +532,21 @@ pub fn site_response_headers(s: &AppState, host: &str, res: &mut Response) {
         .extensions()
         .get::<crate::content_policy::ContentPolicySet>()
         .is_some();
-    site_headers(
-        SitePolicy {
-            hosted: hosted_origin(s),
-            embed: embed_shell(s),
-            secure: secure(s),
-            policy_set: set,
-        },
-        host,
-        answer,
-        res.headers_mut(),
-    );
+    site_headers(site_policy(s, set), host, answer, res.headers_mut());
+}
+
+/// Who frames the sites of `s` and how they are served, for
+/// [`site_headers`]; `policy_set`, whether the response's route set its
+/// own policy. What [`site_response_headers`] puts on a site's responses,
+/// for a caller that serves a site's page outside the router (a browser
+/// test's synthetic origin, `clax_server::browser_source`).
+pub fn site_policy(s: &AppState, policy_set: bool) -> SitePolicy<'_> {
+    SitePolicy {
+        hosted: hosted_origin(s),
+        embed: embed_shell(s),
+        secure: secure(s),
+        policy_set,
+    }
 }
 
 /// Who frames a site's pages and what its responses carry, for

@@ -46,6 +46,8 @@ mod api_bot_surfaces;
 mod api_bot_surfaces_bounds;
 #[cfg(any(not(clax_split), clax_split = "api_briefs"))]
 mod api_briefs;
+#[cfg(any(not(clax_split), clax_split = "api_browser_source"))]
+mod api_browser_source;
 #[cfg(any(not(clax_split), clax_split = "api_caching"))]
 mod api_caching;
 #[cfg(any(not(clax_split), clax_split = "api_canary"))]

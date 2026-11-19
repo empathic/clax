@@ -11,7 +11,10 @@
 //! with the instance's Cloudflare credentials ([`crate::cloudflare`]),
 //! read at each open so an admin's change takes effect at once. Every
 //! policy of a test (the CDP sequence, the request policy, caps, metering)
-//! is `clax_bot::browser`'s; this module provides only the socket.
+//! is `clax_bot::browser`'s; this module provides only the socket and what
+//! the daemon's own site serves a page (the bridge's files, the site's
+//! response headers, its API as the run's person), through the site's own
+//! code ([`DaemonBrowser::serving`]).
 //!
 //! # Concurrency
 //!
@@ -30,15 +33,20 @@
 //! status is not.
 
 use crate::cloudflare::{Credentials, credentials, has_credentials, usable};
+use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
 use clax_bot::browser::{
     BrowserError, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_UNAVAILABLE, CdpTransport,
     Deadline, Served,
 };
 use clax_bot_sandbox::{CODE_CANCELLED, CancelToken};
+use clax_core::ArtifactId;
+use clax_http::state::AppState;
 use clax_store::Store;
 use clax_store::bot_settings::Setting;
+use clax_store::roles::OWNER;
 use clax_store::secrets::{CLOUDFLARE_ORIGIN, Kek};
+use clax_store::site_sessions::Holder;
 use futures::{SinkExt, StreamExt};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -78,6 +86,9 @@ pub struct DaemonBrowser {
     tls: Result<Arc<rustls::ClientConfig>, String>,
     /// How many sessions are open now.
     in_use: Arc<Mutex<u32>>,
+    /// The daemon whose site a test's page is served as: its bridge
+    /// files, its site headers, its site API. `None`: none of them.
+    site: Option<AppState>,
 }
 
 impl DaemonBrowser {
@@ -91,7 +102,25 @@ impl DaemonBrowser {
             send_to: None,
             tls: crate::web_source::fetch_tls().map(Arc::new),
             in_use: Arc::new(Mutex::new(0)),
+            site: None,
         }
+    }
+
+    /// The source of the daemon on `state`: its store and key-encryption
+    /// key, and its site's files, headers and API.
+    #[must_use]
+    pub fn of(state: &AppState) -> DaemonBrowser {
+        DaemonBrowser::new(state.store.clone(), state.bot.kek.clone()).serving(state.clone())
+    }
+
+    /// This source, serving a test's page as `state`'s site serves its
+    /// pages: the bridge's files ([`crate::shell::bridge_file`]), the
+    /// site's response headers ([`clax_http::site_access::site_policy`]) and
+    /// its API ([`crate::routes::site_api::get_as`]).
+    #[must_use]
+    pub fn serving(mut self, state: AppState) -> DaemonBrowser {
+        self.site = Some(state);
+        self
     }
 
     /// Tests only: this source opening its sockets on `base` (a local
@@ -375,20 +404,85 @@ impl BrowserSource for DaemonBrowser {
         Box::pin(clax_rt::time::sleep(wait))
     }
 
-    fn clax_file(&self, _path: &str) -> Option<Served> {
-        None
+    fn clax_file(&self, path: &str) -> Option<Served> {
+        let (content_type, body) = crate::shell::bridge_file(&*self.site.as_ref()?.web, path)?;
+        Some(Served {
+            status: 200,
+            headers: vec![("Content-Type".into(), content_type)],
+            body,
+        })
     }
 
-    fn site_headers(&self, _artifact: &str) -> Vec<(String, String)> {
-        Vec::new()
+    /// The headers the site layer puts on a response of `artifact`'s own
+    /// site host (its isolation headers and its lockdown policy, framed as
+    /// that host's pages are), none without a site.
+    fn site_headers(&self, artifact: &str) -> Vec<(String, String)> {
+        let (Some(s), Ok(aid)) = (&self.site, ArtifactId::parse(artifact)) else {
+            return Vec::new();
+        };
+        let mut h = HeaderMap::new();
+        clax_http::site_access::site_headers(
+            clax_http::site_access::site_policy(s, false),
+            &site_host(s, &aid),
+            None,
+            &mut h,
+        );
+        pairs(&h)
     }
 
-    async fn site_api(&self, _person: &str, _artifact: &str, _path_and_query: &str) -> Served {
-        Served {
-            status: 404,
-            headers: vec![("Content-Type".into(), "application/json".into())],
-            body: br#"{"error":{"code":"not_found"}}"#.to_vec(),
+    /// The site API's answer as the run's person: the owner for
+    /// [`OWNER`], else the connected person of that public ID.
+    async fn site_api(&self, person: &str, artifact: &str, path_and_query: &str) -> Served {
+        let (Some(s), Ok(aid)) = (&self.site, ArtifactId::parse(artifact)) else {
+            return not_found();
+        };
+        let holder = if person == OWNER {
+            Holder::Owner
+        } else {
+            Holder::Person(person.to_string())
+        };
+        let res = crate::routes::site_api::get_as(s, holder, &aid, path_and_query).await;
+        let (status, headers) = (res.status().as_u16(), pairs(res.headers()));
+        match axum::body::to_bytes(res.into_body(), crate::loopback::RESPONSE_LIMIT).await {
+            Ok(body) => Served {
+                status,
+                headers,
+                body: body.to_vec(),
+            },
+            Err(_) => Served {
+                status: 502,
+                headers: vec![("Content-Type".into(), "application/json".into())],
+                body: br#"{"error":{"code":"too_large"}}"#.to_vec(),
+            },
         }
+    }
+}
+
+/// Artifact `aid`'s site host on `s`, as its pages are served there
+/// (`<aid>.localhost:<port>` on a local daemon).
+fn site_host(s: &AppState, aid: &ArtifactId) -> String {
+    let public = clax_http::site_access::public_origin(s);
+    let host = public.split_once("://").map_or(public.as_str(), |(_, h)| h);
+    let origin = clax_http::site_access::site_origin(s, aid, host);
+    origin
+        .split_once("://")
+        .map_or(origin.as_str(), |(_, h)| h)
+        .to_string()
+}
+
+/// `h` as name and value pairs, a value that is not text left out.
+fn pairs(h: &HeaderMap) -> Vec<(String, String)> {
+    h.iter()
+        .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
+        .collect()
+}
+
+/// 404 `not_found`, as JSON.
+fn not_found() -> Served {
+    Served {
+        status: 404,
+        headers: vec![("Content-Type".into(), "application/json".into())],
+        body: br#"{"error":{"code":"not_found"}}"#.to_vec(),
     }
 }
 

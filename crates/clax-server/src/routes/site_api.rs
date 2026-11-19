@@ -145,6 +145,61 @@ pub fn routes(state: &AppState) -> Router<AppState> {
     )
 }
 
+/// A `GET` of `path_and_query` (`/_clax/api/…`) on artifact `aid`'s site
+/// as `holder`, answered in-process by the site API ([`routes`]) as a
+/// request from the site's own page with `holder`'s site session would be:
+/// the same routes and checks, no cookie, no `Origin` and no credential of
+/// its own. A holder who may not read `aid` now
+/// ([`clax_http::site_access::holder_reads`]) is answered 401
+/// `site_session_required`, as the site answers a request it can place
+/// with no one; a path outside `/_clax/api/` is 404. A browser test reads
+/// its page's API through this (`crate::browser_source`).
+pub async fn get_as(
+    s: &AppState,
+    holder: Holder,
+    aid: &ArtifactId,
+    path_and_query: &str,
+) -> Response {
+    if !path_and_query.starts_with(PREFIX) {
+        return ApiError::not_found().into_response();
+    }
+    let (st_holder, st_aid, hosted) = (holder.clone(), aid.clone(), s.hosted.is_some());
+    let reads = s
+        .store_call(move |st| clax_http::site_access::holder_reads(st, hosted, &st_holder, &st_aid))
+        .await;
+    match reads {
+        Ok(true) => {}
+        Ok(false) => {
+            return ApiError::new(
+                axum::http::StatusCode::UNAUTHORIZED,
+                "site_session_required",
+                "this artifact's site needs a site session: open it from Clax",
+            )
+            .into_response();
+        }
+        Err(e) => return e.into_response(),
+    }
+    let Ok(mut req) = Request::builder()
+        .method(Method::GET)
+        .uri(path_and_query)
+        .body(Body::empty())
+    else {
+        return ApiError::not_found().into_response();
+    };
+    let host = clax_http::site_access::public_origin(s);
+    let host = host.split_once("://").map_or(host.as_str(), |(_, h)| h);
+    req.extensions_mut().insert(SiteRequest {
+        artifact: aid.clone(),
+        origin: clax_http::site_access::site_origin(s, aid, host),
+    });
+    req.extensions_mut().insert(SiteCaller::Holder(holder));
+    use tower::ServiceExt as _;
+    match routes(s).with_state(s.clone()).oneshot(req).await {
+        Ok(res) => res,
+        Err(never) => match never {},
+    }
+}
+
 /// The public host's path of site API path `rest` on artifact `aid`, when
 /// the site API serves it.
 fn inner_path(aid: &ArtifactId, rest: &str) -> Option<String> {
