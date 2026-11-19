@@ -1259,7 +1259,7 @@ pub fn driver_with_web(
 /// daemon's own source), and, for a native host whose source fetches but
 /// does not search on its own (the daemon's), search once the instance
 /// holds a key-encryption key, a Cloudflare account ID and a sealed token
-/// ([`crate::web_source::has_credentials`]), read at each call so an
+/// ([`crate::cloudflare::has_credentials`]), read at each call so an
 /// admin's change takes effect without a restart.
 ///
 /// # Errors
@@ -1283,7 +1283,7 @@ pub fn web_configured(
     }
     #[cfg(not(target_arch = "wasm32"))]
     if shape.fetch && !shape.search {
-        shape.search = crate::web_source::has_credentials(st, bot.kek.as_ref())?;
+        shape.search = crate::cloudflare::has_credentials(st, bot.kek.as_ref())?;
     }
     Ok(shape)
 }

@@ -28,6 +28,7 @@
 //! ([`FakeWebSource::from_fixtures`]'s shape) instead, and web use is
 //! configured ([`fixtures`]).
 
+use crate::cloudflare::{Credentials, credentials, has_credentials, usable};
 use clax_bot::web::markdown::html_to_markdown;
 use clax_bot::web::page::{
     Handling, decode, decode_html, handling, http_error, is_sniffed, links_of_body, links_of_html,
@@ -43,8 +44,7 @@ use clax_bot::web::{
 use clax_bot_sandbox::{CODE_CANCELLED, CancelToken};
 use clax_core::secret::Secret;
 use clax_store::Store;
-use clax_store::bot_settings::Setting;
-use clax_store::secrets::{CLOUDFLARE_ORIGIN, Kek, SecretSlot};
+use clax_store::secrets::{CLOUDFLARE_ORIGIN, Kek};
 use serde_json::{Value, json};
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -855,9 +855,6 @@ impl WebSource for RestSource {
     }
 }
 
-/// A Cloudflare account ID and its opened token.
-type Credentials = (String, Secret);
-
 /// The daemon's [`WebSource`]: at each call, a [`RestSource`] for the
 /// account ID and sealed Cloudflare token the instance holds now, or one
 /// without an account when it holds neither, kept while they stay the
@@ -970,45 +967,6 @@ impl DaemonWeb {
     }
 }
 
-/// The account ID and token `st` holds now, the token opened with `kek`
-/// for `base` (the URL it is sent to); `None` without both (or without
-/// `kek`).
-///
-/// # Errors
-/// `kek_mismatch` or `key_host_mismatch` from opening the token; the
-/// store's.
-fn credentials(
-    st: &Store,
-    kek: Option<&Kek>,
-    base: &str,
-) -> clax_core::Result<Option<(String, Secret)>> {
-    let Some(kek) = kek else {
-        return Ok(None);
-    };
-    let account = st.bot_setting(Setting::WebCloudflareAccountId)?;
-    let account = account.as_str().unwrap_or_default().trim().to_string();
-    if account.is_empty() {
-        return Ok(None);
-    }
-    let token = st.open_for_use(kek, &SecretSlot::Cloudflare, base)?;
-    Ok(token.map(|t| (account, t)))
-}
-
-/// `creds` with a token that cannot be opened (sealed under another
-/// key-encryption key, or bound to another origin) read as none: the admin
-/// sets it again, and until then web use is not configured.
-fn usable(
-    creds: clax_core::Result<Option<(String, Secret)>>,
-) -> clax_core::Result<Option<(String, Secret)>> {
-    match creds {
-        Err(clax_core::CoreError::Invalid {
-            code: "kek_mismatch" | "key_host_mismatch",
-            ..
-        }) => Ok(None),
-        other => other,
-    }
-}
-
 #[async_trait::async_trait]
 impl WebSource for DaemonWeb {
     async fn search(
@@ -1045,17 +1003,6 @@ impl WebSource for DaemonWeb {
             fetch: true,
         }
     }
-}
-
-/// Whether the instance holds what [`DaemonWeb`] needs: a key-encryption
-/// key, a Cloudflare account ID and a sealed token that opens with that key
-/// for [`CLOUDFLARE_ORIGIN`]. A token sealed under another key reads as
-/// none, as [`DaemonWeb`] reads it.
-///
-/// # Errors
-/// The store's.
-pub fn has_credentials(st: &Store, kek: Option<&Kek>) -> clax_core::Result<bool> {
-    Ok(usable(credentials(st, kek, CLOUDFLARE_ORIGIN))?.is_some())
 }
 
 /// The fixtures source loaded from the JSON file at `path`.
@@ -1185,6 +1132,8 @@ mod tests {
     use clax_bot::web::{OP_FETCH, Provider, charged};
     use clax_core::Home;
     use clax_core::audit::AuditCtx;
+    use clax_store::bot_settings::Setting;
+    use clax_store::secrets::SecretSlot;
     use std::collections::HashMap;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
