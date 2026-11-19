@@ -1123,10 +1123,10 @@ impl CallNote {
 
     /// The provider's own fields of the call, which the run view shows
     /// beside the core's: for a web call of `clax`, `web`, its `{query}`
-    /// or `{url, source}`. The field named `web` is the one the core
-    /// puts in a `call` event's `web` (`Event::Call`, which has that
-    /// one field for a provider's today); every field goes into the
-    /// step's `calls` ([`CallNote::add_to`]).
+    /// or `{url, source}`; for a browser call, `browser`, its summary.
+    /// The fields named in [`crate::events::CALL_FIELDS`] are the ones
+    /// the core puts in a `call` event (`Event::Call`'s `fields`); every
+    /// field goes into the step's `calls` ([`CallNote::add_to`]).
     #[must_use]
     pub fn extra(&self) -> &Fields {
         &self.extra
@@ -3340,7 +3340,11 @@ mod tests {
             (None, Some(Value::Null)),
         ] {
             let mut today = base();
-            crate::events::with_web_fields(&mut today, cost, web.as_ref());
+            crate::events::with_call_fields(
+                &mut today,
+                cost,
+                &web.as_ref().map_or(Value::Null, |w| json!({"web": w})),
+            );
             let mut answer = Answer::written(Ok(Value::Null));
             if let Some(cost) = cost {
                 answer = answer.charged(cost);

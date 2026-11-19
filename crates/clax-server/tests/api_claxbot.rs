@@ -3394,3 +3394,150 @@ async fn me_bot_shows_the_browser_switch() {
     let (_, v) = call(ts, &owner, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(v["browser"]["on"], true);
 }
+
+/// A 2x1 PNG: the signature and a whole IHDR chunk with its CRC.
+fn png() -> Vec<u8> {
+    let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    b.extend_from_slice(&[0, 0, 0, 2, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    let mut c = 0xffff_ffffu32;
+    for &x in &b[12..29] {
+        c ^= u32::from(x);
+        for _ in 0..8 {
+            c = if c & 1 == 1 {
+                0xedb8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+    }
+    b.extend_from_slice(&(!c).to_be_bytes());
+    b
+}
+
+/// Keeps `bytes` as item `id` of run `rid`'s content, of `media_type`.
+fn keep(ts: &TestServer, rid: &str, id: &str, media_type: &str, bytes: &[u8]) {
+    ts.store
+        .put_bot_content(
+            &clax_store::bot_content::NewContent {
+                id,
+                run_id: rid,
+                surface: "clax",
+                registration_id: None,
+                name: None,
+                media_type,
+                width: None,
+                height: None,
+                bytes,
+            },
+            clax_store::bot_content::ContentLimits::default(),
+        )
+        .unwrap();
+}
+
+/// GET `path` as `who`: (status, headers, body).
+async fn fetch(
+    ts: &TestServer,
+    who: &Who,
+    path: &str,
+) -> (u16, reqwest::header::HeaderMap, Vec<u8>) {
+    let r = ts.client.get(format!("{}{path}", ts.base));
+    let r = match who {
+        Who::OwnerBrowser => r.header("cookie", ts.owner_cookie()),
+        Who::Person(c) | Who::Viewer(c) => r.header("cookie", format!("clax_viewer={c}")),
+        Who::Owner => ts.authed(r),
+        Who::Agent => ts.authed(r).header("x-clax-channel", "agent"),
+        Who::Anonymous => r,
+    };
+    let res = r.send().await.unwrap();
+    let (s, h) = (res.status().as_u16(), res.headers().clone());
+    (s, h, res.bytes().await.unwrap().to_vec())
+}
+
+/// Starts a queued run of the owner's on a new artifact: its ID.
+async fn queued_run(ts: &TestServer) -> String {
+    let (aid, tid) = artifact_with_thread(ts).await;
+    let (s, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::POST,
+        "/api/bot/runs",
+        json!({"thread_ids": [tid], "artifact_id": aid}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    v["run"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn run_content_is_served_to_the_runs_viewers_only() {
+    let p = people().await;
+    let ts = &p.ts;
+    configured(ts).await;
+    let rid = queued_run(ts).await;
+    let other = queued_run(ts).await;
+    keep(ts, &rid, "shot1", "image/png", &png());
+    keep(ts, &other, "shot2", "image/png", &png());
+    let path = format!("/api/bot/runs/{rid}/content/shot1");
+    // The person it acts for and an admin see the run's screenshot,
+    // under a policy that runs nothing.
+    for who in [Who::OwnerBrowser, Who::Person(p.ana.0.clone())] {
+        let (s, h, body) = fetch(ts, &who, &path).await;
+        assert_eq!(s, 200, "{who:?}");
+        assert_eq!(body, png(), "{who:?}");
+        assert_eq!(h["content-type"], "image/png");
+        assert_eq!(h["content-security-policy"], "sandbox; default-src 'none'");
+        assert_eq!(h["x-content-type-options"], "nosniff");
+    }
+    // A reader of the artifact, who does not read the run's draft, gets
+    // nothing, as for an item that is not there.
+    for who in [Who::Person(p.sam.0.clone()), Who::Viewer(p.lan.clone())] {
+        let (s, _, _) = fetch(ts, &who, &path).await;
+        assert_eq!(s, 404, "{who:?}");
+    }
+    let (s, _, _) = fetch(ts, &Who::Anonymous, &path).await;
+    assert_eq!(s, 401);
+    let (s, _, _) = fetch(ts, &Who::Agent, &path).await;
+    assert_eq!(s, 403);
+    // Another run's item, and one no run holds, are not there.
+    for id in ["shot2", "nope"] {
+        let (s, _, _) = fetch(
+            ts,
+            &Who::OwnerBrowser,
+            &format!("/api/bot/runs/{rid}/content/{id}"),
+        )
+        .await;
+        assert_eq!(s, 404, "{id}");
+    }
+    let (s, _, _) = fetch(ts, &Who::OwnerBrowser, "/api/bot/runs/r_nope/content/shot1").await;
+    assert_eq!(s, 404);
+}
+
+#[tokio::test]
+async fn a_non_image_item_is_not_served() {
+    let p = people().await;
+    let ts = &p.ts;
+    configured(ts).await;
+    let rid = queued_run(ts).await;
+    keep(ts, &rid, "page1", "text/html", b"<script>alert(1)</script>");
+    let (s, _, _) = fetch(
+        ts,
+        &Who::OwnerBrowser,
+        &format!("/api/bot/runs/{rid}/content/page1"),
+    )
+    .await;
+    assert_eq!(s, 404);
+}
+
+/// A reader of a run's artifact sees a browser call's line in the run
+/// without its summary: the screenshots and counts are of the run's
+/// draft, which is the acting person's and admins' alone.
+#[test]
+fn a_reader_sees_no_browser_summary() {
+    let mut step = json!({"calls": [{"op": "browser.test", "ok": true, "cost_milli": 3,
+                                      "browser": {"passed": true, "screenshots": ["c1"]}}]});
+    clax_server::routes::bot::for_reader(&mut step);
+    assert_eq!(
+        step,
+        json!({"calls": [{"op": "browser.test", "ok": true, "cost_milli": 3}]})
+    );
+}

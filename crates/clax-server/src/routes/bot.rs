@@ -19,13 +19,17 @@
 //! - `GET /api/bot/runs?artifact=<id>` → `{runs}` (no steps), `GET
 //!   /api/bot/runs/<id>` → the run with its steps, `POST
 //!   /api/bot/runs/<id>/cancel` → `{run}`, `GET /api/bot/runs/<id>/draft/…`
-//!   → a stopped run's unpublished draft, read-only.
+//!   → a stopped run's unpublished draft, read-only, `GET
+//!   /api/bot/runs/<id>/content/<item>` → an image of the run's content
+//!   (a browser test's screenshot), for the run panel's thumbnails.
 //!
 //! Who may: the `/api/me` routes are the caller's own (the owner or a
 //! connected person; agents 403 `not_for_agents`). A run is seen by the
 //! person it acts for, by admins, and by anyone who may read its artifact
 //! (read-only); stopped by the person it acts for and by admins; its draft
-//! read by the person it acts for and by admins. On a hosted daemon an
+//! and its images read by the person it acts for and by admins (a
+//! screenshot shows the draft, so a reader sees neither it nor a browser
+//! call's summary, [`for_reader`]). On a hosted daemon an
 //! admin whose own reach does not hold a run's artifact oversees it alone
 //! ([`RunAccess::Overseer`]): its status, cost, person and times, and
 //! stopping it. Each view is recorded
@@ -1525,6 +1529,64 @@ async fn serve_draft(
         .into_response())
 }
 
+/// The media types [`run_content`] serves: the raster images Clax reads
+/// from their bytes (`clax_core::media::sniff`), never SVG or anything
+/// else that a browser could run.
+const RUN_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// `GET /api/bot/runs/<id>/content/<item>`: an image item of the run's
+/// content (a browser test's screenshot), for the person it acts for and
+/// admins who read its artifact ([`RunAccess::reads_draft`]: a
+/// screenshot shows the draft). Served under its media type and a policy
+/// that runs nothing (`Content-Security-Policy: sandbox; default-src
+/// 'none'`, `nosniff`). 404 for anyone else, for another run's item, for
+/// an item that is not an image of [`RUN_IMAGE_TYPES`] and for one whose
+/// bytes are gone.
+pub async fn run_content(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    d.refuse_agents()?;
+    let caller = run_caller(&s, &d).await?;
+    let (rid, item) = path(p)?;
+    let (hosted, live_ids) = (s.hosted.is_some(), s.live_ids.clone());
+    let found = s
+        .store_call_async(move |st| async move {
+            let run = st.run(&rid)?.ok_or(CoreError::NotFound)?;
+            let live = live_ids.contains(&run.artifact_id);
+            if !run_access(&st, hosted, live, &caller, &run)?.reads_draft() {
+                return Err(CoreError::NotFound);
+            }
+            let Some(row) = st
+                .bot_content_of(&run.id, &item)?
+                .filter(|row| RUN_IMAGE_TYPES.contains(&row.media_type.as_str()))
+            else {
+                return Ok(None);
+            };
+            Ok(st
+                .content()
+                .read_blob(&row.sha256)
+                .await?
+                .map(|bytes| (row.media_type, bytes)))
+        })
+        .await?;
+    let (media_type, bytes) = found.ok_or_else(ApiError::not_found)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, media_type),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "sandbox; default-src 'none'".to_string(),
+            ),
+            (header::CACHE_CONTROL, "private, no-cache".to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
 /// The ID of the newest event a run's committed steps hold, as its
 /// event stream numbers them (`<step>.<attempt>:<seq>`): the last
 /// committed step's `step_done`, or the run's `run_end` once it ended;
@@ -1620,7 +1682,7 @@ pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
                 .map(|c| {
                     let mut v = json!({"op": c["op"], "target": c["target"], "ok": c["ok"].as_bool().unwrap_or(false),
                            "ms": c["ms"].as_u64().unwrap_or(0), "error": c["code"]});
-                    clax_bot::events::with_web_fields(&mut v, c["cost_milli"].as_i64(), c.get("web"));
+                    clax_bot::events::with_call_fields(&mut v, c["cost_milli"].as_i64(), c);
                     v
                 })
                 .collect();
@@ -1770,6 +1832,7 @@ pub fn for_reader(step: &mut Value) {
                     c.remove("target");
                     c.remove("error");
                     c.remove("web");
+                    c.remove("browser");
                 }
             }
         }
@@ -1787,6 +1850,7 @@ fn event_for_reader(event: &str, mut data: Value) -> Option<Value> {
                 c.remove("target");
                 c.remove("error");
                 c.remove("web");
+                c.remove("browser");
             }
             Some(data)
         }
@@ -1852,7 +1916,7 @@ pub fn panel_event(
         "call" => {
             let mut call = json!({"op": d["op"], "target": d["target"], "ok": d["ok"],
                                   "ms": d["ms"].as_u64().unwrap_or(0), "error": d["code"]});
-            clax_bot::events::with_web_fields(&mut call, d["cost_milli"].as_i64(), d.get("web"));
+            clax_bot::events::with_call_fields(&mut call, d["cost_milli"].as_i64(), d);
             json!({"step": n, "call": call})
         }
         "step_done" => {

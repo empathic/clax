@@ -137,6 +137,7 @@ mod l10 {
         ("bot::cancel", Bot),
         ("bot::draft_index", Bot),
         ("bot::draft_file", Bot),
+        ("bot::run_content", Bot),
         ("bot::events", Bot),
         ("admin::people", Bot),
         ("admin::set_flags", Bot),

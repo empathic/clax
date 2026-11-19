@@ -6543,6 +6543,7 @@ router), and a test fails when it differs:
 | `POST /api/bot/runs` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/bot/runs/{id}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/bot/runs/{id}/cancel` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/bot/runs/{id}/content/{item}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/bot/runs/{id}/draft/` | Denied | no |
 | `GET /api/bot/runs/{id}/draft/{*path}` | Denied | no |
 | `GET /api/bot/runs/{id}/events` | Denied | yes: 403 `not_for_agents` |

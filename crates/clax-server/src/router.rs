@@ -595,6 +595,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/bot/runs/{id}/cancel", post(bot::cancel))
         .route("/api/bot/runs/{id}/draft/", get(bot::draft_index))
         .route("/api/bot/runs/{id}/draft/{*path}", get(bot::draft_file))
+        .route("/api/bot/runs/{id}/content/{item}", get(bot::run_content))
         .route("/api/admin/people", get(admin::people))
         .route("/api/admin/people/{person}/flags", put(admin::set_flags))
         .route("/api/admin/people/{person}/role", put(admin::set_role))

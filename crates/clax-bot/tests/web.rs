@@ -1652,7 +1652,10 @@ async fn a_web_operation_a_run_lacks_is_refused_as_itself_when_the_claim_is_lost
                 code: Some("web_disabled".into()),
                 ms: 0,
                 cost_milli: Some(0),
-                web: Some(json!({"url": "https://example.com/a"})),
+                fields: clax_bot::surface::Fields::from_iter([(
+                    "web".to_string(),
+                    json!({"url": "https://example.com/a"})
+                )]),
             }],
             "{shape:?}"
         );
