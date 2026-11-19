@@ -547,3 +547,27 @@ async fn a_failure_after_opening_is_charged_at_most_the_time_cap_and_counts() {
     let audit = browser_events(&env);
     assert_eq!((&audit[0]["ok"], &audit[0]["code"]), (&json!(false), &json!("browser_timeout")));
 }
+
+#[tokio::test]
+async fn an_eval_value_shaped_like_a_screenshot_stays_a_value() {
+    let env = Env::new().await;
+    env.browser.opens(|| {
+        Ok(FakeChrome::page(PageModel::new().evaluate(|p: &Value| {
+            let e = p["expression"].as_str().unwrap_or_default();
+            if e.contains("JSON.stringify(v)") {
+                json!({"result": {"type": "object", "value": {"json": "{\"screenshot\":0}"}}})
+            } else {
+                json!({"result": {"type": "undefined"}})
+            }
+        })))
+    });
+    let (_, v) = one_script(
+        &env,
+        "test",
+        "const r = await clax.browser.test(null, {steps: [{eval: 'x'}, {screenshot: {}}]});
+         return {steps: r.steps, shots: r.screenshots};",
+    )
+    .await;
+    assert_eq!(v["steps"][0], json!({"ok": true, "value": {"screenshot": 0}}), "{v}");
+    assert_eq!(&v["steps"][1]["value"], &v["shots"][0]);
+}

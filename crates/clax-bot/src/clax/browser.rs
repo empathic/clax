@@ -76,7 +76,7 @@
 //! in [`from_browser`] alone).
 
 use super::session::ClaxSession;
-use crate::browser::opts::{self, BrowserOpts, BrowserTarget, Mode};
+use crate::browser::opts::{self, BrowserOpts, BrowserTarget, Mode, Step};
 use crate::browser::serve::{Pages, Site};
 use crate::browser::session::{Start, TestPolicy, TestRun, run_test};
 use crate::browser::{
@@ -578,7 +578,13 @@ impl ClaxSession<'_> {
                     ids.push(k["id"].clone());
                 }
                 let mut lost = false;
-                for step in v["steps"].as_array_mut().into_iter().flatten() {
+                // Only a screenshot step's value names a screenshot: an
+                // eval step's is whatever the page answered.
+                let steps = v["steps"].as_array_mut().into_iter().flatten();
+                for (step, asked) in steps.zip(&options.steps) {
+                    if !matches!(asked, Step::Screenshot { .. }) {
+                        continue;
+                    }
                     let Some(i) = step["value"]["screenshot"].as_u64() else {
                         continue;
                     };
