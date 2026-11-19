@@ -129,6 +129,7 @@ pub mod feedback;
 pub mod flags;
 pub mod forks;
 pub mod github;
+pub mod grant_raises;
 pub mod grants;
 pub mod hosted;
 pub mod imports;

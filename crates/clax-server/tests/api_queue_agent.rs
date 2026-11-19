@@ -530,9 +530,23 @@ async fn a_persons_agent_triages_as_its_person_and_loses_its_lease_with_its_memb
     let (s, v) = call("POST", q.report("/claim"), Some(json!({}))).await;
     assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
 
-    // A triage member's agent claims and replies.
+    // A triage member's agent, its token granted every queue action by
+    // its person, claims and replies.
     q.ts.store
         .set_member(&AuditCtx::DAEMON, &q.qid, &public_id, Some(Role::Triage))
+        .unwrap();
+    let all = clax_core::rights::Rights::parse(&json!([{"type": "clax-queues",
+        "actions": clax_core::rights::QUEUE_ACTIONS, "locations": ["*"]}]))
+    .unwrap();
+    q.ts.store
+        .raise_grant(
+            &AuditCtx::DAEMON,
+            &sam.grant_id(),
+            Some(&public_id),
+            Some(all),
+            None,
+            None,
+        )
         .unwrap();
     let (s, v) = call("GET", format!("/api/queues/{}/reports", q.qid), None).await;
     assert_eq!(

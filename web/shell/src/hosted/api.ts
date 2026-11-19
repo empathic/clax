@@ -21,7 +21,13 @@ export type HostedLegal = { terms_url: string; privacy_url: string; version: str
 export type HostedMe = { origin: string; setup_open: boolean; signed_in: boolean; person: HostedPerson | null; github?: boolean; legal?: HostedLegal | null };
 /** An agent token, without its token. */
 /** An agent token; `kind` is `device` for the person's own device (the Clax app's sign-in, which may manage the sharing of their artifacts), else `agent`. */
-export type AgentToken = { id: string; label: string; status: string; created_at: string; last_used_at: string | null; ended_at: string | null; kind?: "device" | "agent" };
+export type AgentToken = { id: string; label: string; status: string; created_at: string; last_used_at: string | null; ended_at: string | null; kind?: "device" | "agent"; grants?: TokenGrants };
+/** Who granted something on a token: a person by public ID, or the owner. */
+export type Granter = { public_id: string | null; name: string; owner: boolean };
+/** The grants on a live token (`clax-queues`, none until granted): each granter's, and `queues`, what they give it now. */
+export type TokenGrants = { grant_id: string; raises: { granter: Granter; access: unknown; version: string; created_at: string }[]; queues?: unknown };
+/** A report queue the signed-in person may grant a token access to. */
+export type QueueChoiceRow = { id: string; name: string };
 /** A new agent token: `token` and the commands that carry it are shown this once. */
 export type NewAgentToken = { id: string; label: string; created_at: string; token: string; mcp_url: string; claude_command: string; codex_config: string; grok_command?: string };
 export type LinkAccess = "viewer" | "commenter";
@@ -70,6 +76,13 @@ export const signOut = () => call<unknown>("/api/hosted/signout", "POST");
 export const tokens = () => call<{ tokens: AgentToken[] }>("/api/hosted/agent-tokens");
 export const mintToken = (label: string) => call<NewAgentToken>("/api/hosted/agent-tokens", "POST", { label });
 export const revokeToken = (id: string) => call<{ token: AgentToken | null }>(`/api/hosted/agent-tokens/${e(id)}`, "DELETE");
+/** The report queues the signed-in person is a member of: what they may grant a token. */
+export const myQueues = () => call<{ queues: QueueChoiceRow[] }>("/api/queues");
+/** Sets the signed-in person's grant of queue access on token `gid` (its access array). */
+export const grantQueues = (gid: string, access: unknown) => call<{ grant: TokenGrants }>(`/api/people/grants/${e(gid)}/elevate`, "PUT", { access });
+/** Removes a grant on token `gid`: the signed-in person's own, or `granter`'s (a public ID, or `owner`). */
+export const ungrantQueues = (gid: string, granter?: string) =>
+  call<{ grant: TokenGrants }>(`/api/people/grants/${e(gid)}/elevate${granter ? `?granter=${e(granter)}` : ""}`, "DELETE");
 /** A waiting device sign-in: the machine it names, its kind (`clax-app` for the Clax app), and the loopback page of that machine's Clax to send the person back to once they decide. */
 export type DeviceRequest = { client_name: string; peer_ip: string; client_kind?: string | null; created_at: string; expires_at: string; same_address?: boolean; return_to?: string | null };
 export const peekDevice = (code: string) => call<DeviceRequest>(`/api/hosted/device/${e(code)}`);

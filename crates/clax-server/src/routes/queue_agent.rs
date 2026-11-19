@@ -26,6 +26,17 @@
 //! their agents). Anyone who is not a member of the queue gets 404
 //! `not_a_member`, as for a queue that does not exist.
 //!
+//! An agent of a grant (an agent token, or a connected machine) acts on a
+//! queue only as far as its `clax-queues` rights reach, which are zero by
+//! default and granted on its token ([`clax_store::grant_raises`]): each
+//! route asks one action at the queue ([`queue_right`]): `read` (list,
+//! get, clips, diagnostics, watch), `claim` (claim, renew, release, and
+//! metadata written under the lease), `reply`, `fix` and `resolve`. Without
+//! `read` there the queue answers 404 `not_a_member`, as one that does not
+//! exist; with `read` but not the action, 403 `queue_not_granted` naming
+//! `right: {type: "clax-queues", action}`. The daemon token's agents are
+//! not limited by it.
+//!
 //! An agent claims, renews, releases, replies, proposes fixes, resolves
 //! and writes metadata from its session (`X-Clax-Session`; 400 `no_session` without
 //! one), and writes to a report only under its own live lease: 409
@@ -52,6 +63,7 @@ use clax_core::audit::AuditCtx;
 use clax_core::model::Session;
 use clax_core::queue::{ReportOrder, StateFilter};
 use clax_core::report::{NewFix, ResolveReason};
+use clax_core::rights::RightType;
 use clax_core::working::StopReason;
 use clax_core::{CoreError, Event};
 use clax_http::agent::{
@@ -82,9 +94,51 @@ fn queue_person(c: &Caller) -> Option<Option<String>> {
 }
 
 /// 404 `not_a_member` unless the caller of `a` acts as a member of queue
-/// `qid` (either role reads, claims and writes reports).
-async fn member<N: Need>(s: &AppState, a: &Agent<N>, qid: &str) -> Result<(), ApiError> {
-    member_as(s, &a.caller, qid).await
+/// `qid` (either role reads, claims and writes reports) and, for an agent
+/// of a grant, its rights hold `clax-queues` `action` there
+/// ([`queue_right`]).
+async fn member<N: Need>(
+    s: &AppState,
+    a: &Agent<N>,
+    qid: &str,
+    action: &'static str,
+) -> Result<(), ApiError> {
+    member_as(s, &a.caller, qid).await?;
+    queue_right(&a.caller, qid, action)
+}
+
+/// The one check of a token's queue rights: for an agent of a grant (an
+/// agent token, or a connected machine), 404 `not_a_member` unless its
+/// rights hold `clax-queues` `read` at queue `qid` (a queue it may not read
+/// is one that is not there), and 403 `queue_not_granted`, naming `right:
+/// {type: "clax-queues", action}`, unless they hold `action` there. Every
+/// other caller passes: a person in their browser acts by membership, and
+/// the daemon token's agents are not limited by rights.
+///
+/// # Errors
+/// As above.
+pub(crate) fn queue_right(c: &Caller, qid: &str, action: &'static str) -> Result<(), ApiError> {
+    let Caller::PersonAgent { rights, .. } = c else {
+        return Ok(());
+    };
+    let holds = |a: &str| rights.allows(RightType::Queues, a, Some(qid), &|_| false);
+    if !holds("read") {
+        return Err(CoreError::NotAMember.into());
+    }
+    if !holds(action) {
+        let mut e = ApiError::forbidden(
+            "queue_not_granted",
+            format!(
+                "this agent's token may read queue {qid} but not {action} there: its person, or another member of the queue, grants it in Settings, Agents & machines"
+            ),
+        );
+        e.extra.insert(
+            "right".into(),
+            json!({"type": RightType::Queues.as_str(), "action": action}),
+        );
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// [`member`] for caller `c`.
@@ -203,7 +257,7 @@ pub async fn list(
             )
         })?,
     };
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "read").await?;
     let (reports, next) = s
         .store_call(move |st| {
             st.reports_in_order(&qid, Visibility::All, state, q.cursor.as_deref(), order)
@@ -219,7 +273,7 @@ pub async fn get(
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let (qid, tid) = path(p)?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "read").await?;
     let report = s
         .store_call(move |st| {
             st.report(&qid, &tid, Visibility::All)?
@@ -241,7 +295,7 @@ pub async fn claim(
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let (qid, tid) = path(p)?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "claim").await?;
     let caller = a.caller.clone();
     let lease = s
         .store_call(move |st| {
@@ -267,7 +321,7 @@ pub async fn watch(
     p: Result<Path<String>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
     let qid = path(p)?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "read").await?;
     let caller = a.caller.clone();
     s.store_call(move |st| {
         let sess = agent_session(st, &caller)?;
@@ -309,7 +363,7 @@ pub async fn renew(
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let (qid, tid) = path(p)?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "claim").await?;
     let caller = a.caller.clone();
     let (q, t) = (qid.clone(), tid.clone());
     let lease = s
@@ -354,7 +408,7 @@ pub async fn release(
     raw: Bytes,
 ) -> Result<Json<Value>, ApiError> {
     let (qid, tid) = path(p)?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "claim").await?;
     let caller = a.caller.clone();
     if caller.is_agent() {
         let (q, t) = (qid.clone(), tid.clone());
@@ -455,7 +509,7 @@ pub async fn reply(
 ) -> Result<Response, ApiError> {
     let (qid, tid) = path(p)?;
     let b = body(req)?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "reply").await?;
     let caller = a.caller.clone();
     let fctx = s.feedback_ctx();
     let out = s
@@ -507,7 +561,7 @@ pub async fn resolve(
             .map_err(|e| ApiError::bad_request("invalid_args", e.to_string()))?
     };
     let reason = b.reason.unwrap_or(ResolveReason::Other);
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "resolve").await?;
     let caller = a.caller.clone();
     let an = Announcer::of(&s);
     let report = s
@@ -571,7 +625,7 @@ async fn write_metadata<N: Need>(
 ) -> Result<Json<Value>, ApiError> {
     let (qid, tid) = path(p)?;
     let b = body(req)?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "claim").await?;
     let caller = a.caller.clone();
     let (q, t) = (qid.clone(), tid.clone());
     let out = s
@@ -608,7 +662,7 @@ pub async fn clip(
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (qid, tid) = path(p)?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "read").await?;
     let bytes = s
         .store_call_async(move |st| async move {
             st.report_clip_async(&qid, &tid, Visibility::All)
@@ -744,7 +798,7 @@ pub async fn fix(
 ) -> Result<Json<Value>, ApiError> {
     let (qid, tid) = path(p)?;
     let b = body(req)?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "fix").await?;
     let caller = a.caller.clone();
     let an = Announcer::of(&s);
     let report = s
@@ -911,7 +965,7 @@ pub async fn diagnostics(
 ) -> Result<Json<Value>, ApiError> {
     let (qid, tid) = path(p)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "read").await?;
     let lines = s
         .store_call(move |st| st.report_diagnostics(&qid, &tid, Visibility::All, q.capture))
         .await?;
@@ -927,7 +981,7 @@ pub async fn comment_clip(
     p: Result<Path<(String, String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (qid, tid, cid) = path(p)?;
-    member(&s, &a, &qid).await?;
+    member(&s, &a, &qid, "read").await?;
     let bytes = s
         .store_call_async(move |st| async move {
             st.report_comment_clip_async(&qid, &tid, &cid, Visibility::All)

@@ -10036,12 +10036,27 @@ async fn a_queue_wake_reaches_a_members_agent_whole_only_when_it_reads_reports()
         )
         .await;
     assert_eq!(s, 201, "{v}");
+    let token = v["token"].as_str().unwrap().to_string();
+    let gid = v["id"].as_str().unwrap().to_string();
     let mut agent = TokenAgent {
         site: &site,
-        token: v["token"].as_str().unwrap().to_string(),
+        token,
         session: None,
     };
     assert_eq!(agent.initialize("fixer").await, 200);
+    // A new token has no queue access: the queue is not there for it.
+    let (s, r) = agent.call("queue_watch", json!({"queue": qid})).await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, "not_a_member"), "{r}");
+    // Sam grants it read on the queue, from his browser.
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &format!("/api/people/grants/{gid}/elevate"),
+            json!({"access": [{"type": "clax-queues", "actions": ["read"], "locations": [qid]}]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
     let (s, r) = agent.call("queue_watch", json!({"queue": qid})).await;
     assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
     let tok = clax_store::queues::ReporterToken {

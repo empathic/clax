@@ -4313,6 +4313,47 @@
     "registered_by": "u_4be1q8"
    },
    "backfilled": false
+  },
+  {
+   "seq": 128,
+   "at": "2026-10-06T14:09:43.128Z",
+   "kind": "grant.elevate",
+   "actor": {
+    "type": "viewer",
+    "public_id": "u_5am7q2",
+    "display_name": "Sam",
+    "person": true
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "lan",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+    "access": [
+     {
+      "type": "clax-queues",
+      "actions": [
+       "claim",
+       "read"
+      ],
+      "locations": [
+       "*"
+      ]
+     }
+    ],
+    "granter": "u_5am7q2"
+   },
+   "backfilled": false
   }
  ]
 }

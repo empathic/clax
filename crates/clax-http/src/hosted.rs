@@ -956,7 +956,8 @@ impl MemberRights {
 /// of a rights value (`{type, actions, locations}`: a person's rights, a
 /// machine's or an agent's narrowing, an elevation, an agent's rights),
 /// every location naming an artifact the owner's listings do not name
-/// ([`MemberRights::lists`]) is left out and counted in the object's
+/// ([`MemberRights::lists`]), and in a `clax-queues` object every queue
+/// the owner is not a member of, is left out and counted in the object's
 /// `hidden_locations`; `*` and `own` stay. In each approval of an
 /// `approvals_of_yours` list on such an artifact, `artifact_id`,
 /// `artifact_title` and `thread_id` are `null`.
@@ -971,7 +972,11 @@ pub fn owners_people_view(st: &clax_store::Store, v: &mut Value) -> clax_core::R
             .entry(aid.to_string())
             .or_insert_with(|| owner.lists(st, aid))
     };
-    hide_beyond(v, &mut lists);
+    let queues = st
+        .grant_holds(None)?
+        .locations_allowing(clax_core::rights::RightType::Queues, "read")
+        .unwrap_or_default();
+    hide_beyond(v, &mut lists, &|qid| queues.contains(qid));
     Ok(())
 }
 
@@ -1002,7 +1007,11 @@ pub fn keep_hidden_locations(
     let (Some(stored), Some(new)) = (stored.as_array(), new.as_array_mut()) else {
         return Ok(());
     };
-    for old in stored.iter().filter_map(Value::as_object) {
+    for old in stored
+        .iter()
+        .filter_map(Value::as_object)
+        .filter(|o| o.get("type").and_then(Value::as_str) != Some("clax-queues"))
+    {
         let hidden: Vec<Value> = old
             .get("locations")
             .and_then(Value::as_array)
@@ -1045,10 +1054,11 @@ pub fn keep_hidden_locations(
     Ok(())
 }
 
-fn hide_beyond(v: &mut Value, lists: &mut dyn FnMut(&str) -> bool) {
+fn hide_beyond(v: &mut Value, lists: &mut dyn FnMut(&str) -> bool, queues: &dyn Fn(&str) -> bool) {
     match v {
-        Value::Array(xs) => xs.iter_mut().for_each(|x| hide_beyond(x, lists)),
+        Value::Array(xs) => xs.iter_mut().for_each(|x| hide_beyond(x, lists, queues)),
         Value::Object(o) => {
+            let of_queues = o.get("type").and_then(Value::as_str) == Some("clax-queues");
             if o.contains_key("type")
                 && o.contains_key("actions")
                 && let Some(Value::Array(ls)) = o.get_mut("locations")
@@ -1056,6 +1066,7 @@ fn hide_beyond(v: &mut Value, lists: &mut dyn FnMut(&str) -> bool) {
                 let before = ls.len();
                 ls.retain(|l| match l.as_str() {
                     None | Some("*" | "own") => true,
+                    Some(l) if of_queues => queues(l),
                     Some(l) => lists(l.strip_prefix("own:").unwrap_or(l)),
                 });
                 let hidden = before - ls.len();
@@ -1072,7 +1083,7 @@ fn hide_beyond(v: &mut Value, lists: &mut dyn FnMut(&str) -> bool) {
                     }
                 }
             }
-            o.values_mut().for_each(|x| hide_beyond(x, lists));
+            o.values_mut().for_each(|x| hide_beyond(x, lists, queues));
         }
         _ => {}
     }
