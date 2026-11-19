@@ -393,7 +393,15 @@ impl PageModel {
         match cmd["method"].as_str().unwrap_or_default() {
             "Target.createBrowserContext" => vec![answer(cmd, json!({"browserContextId": "CTX"}))],
             "Target.createTarget" => vec![answer(cmd, json!({"targetId": "T"}))],
-            "Target.attachToTarget" => vec![answer(cmd, json!({"sessionId": "S"}))],
+            // As Chrome does, the attach is announced before its answer.
+            "Target.attachToTarget" => vec![
+                event(
+                    "Target.attachedToTarget",
+                    json!({"sessionId": "S", "targetInfo": {"targetId": "T", "type": "page", "url": "about:blank"}, "waitingForDebugger": false}),
+                    None,
+                ),
+                answer(cmd, json!({"sessionId": "S"})),
+            ],
             "Browser.close" => vec![answer(cmd, json!({})), CLOSE],
             "Page.navigate" => {
                 let url = params["url"].as_str().unwrap_or_default().to_string();

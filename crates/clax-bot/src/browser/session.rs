@@ -91,6 +91,12 @@ pub const MAX_HTML: usize = 100_000;
 pub const MAX_TEXT_CHARS: usize = 20_000;
 /// The longest one saved test may take, in milliseconds.
 pub const TEST_MS: u32 = 5_000;
+/// Why a popup the page opened is listed blocked: it was closed before
+/// it loaded anything.
+pub const WHY_POPUP: &str = "popup";
+/// Why another target of the page (a worker the browser attached) is
+/// listed blocked: it was closed before it ran.
+pub const WHY_TARGET: &str = "target";
 /// The most failures a result's `tests` keeps (as the bridge's harness).
 const MAX_TEST_FAILURES: usize = 50;
 /// The most characters of a saved test failure's name or error, of the
@@ -294,6 +300,7 @@ pub async fn run_test(
         clock,
         opened_at,
         session: None,
+        target: None,
         context: None,
         console: Vec::new(),
         console_errors: 0,
@@ -340,6 +347,8 @@ struct Driver<'a> {
     clock: &'a dyn Clock,
     opened_at: DateTime<Utc>,
     session: Option<String>,
+    /// The test's own page.
+    target: Option<String>,
     context: Option<String>,
     console: Vec<Value>,
     console_errors: usize,
@@ -584,6 +593,18 @@ impl Driver<'_> {
                 self.push_request(false, json!({"url": url, "error": error}));
             }
             "Page.loadEventFired" => self.loaded = true,
+            "Target.attachedToTarget" => {
+                let info = &p["targetInfo"];
+                let id = info["targetId"].as_str().unwrap_or_default().to_string();
+                if self.target.as_deref() != Some(id.as_str()) {
+                    let why = if info["type"] == "page" { WHY_POPUP } else { WHY_TARGET };
+                    let url = info["url"].as_str().unwrap_or_default().to_string();
+                    self.push_request(true, json!({"url": url, "why": why}));
+                    self.cdp
+                        .send_only(None, "Target.closeTarget", json!({"targetId": id}))
+                        .await?;
+                }
+            }
             // A dialog holds the page's main thread until it is answered:
             // it is accepted at once and noted in the console.
             "Page.javascriptDialogOpening" => {
@@ -883,6 +904,7 @@ impl Driver<'_> {
             )
             .await?;
         let target = t["targetId"].as_str().unwrap_or_default().to_string();
+        self.target = Some(target.clone());
         let s = self
             .browser_call(
                 "Target.attachToTarget",
@@ -890,6 +912,16 @@ impl Driver<'_> {
             )
             .await?;
         self.session = s["sessionId"].as_str().map(str::to_string);
+        // Every other target the page opens (a popup: `window.open`, a
+        // link or form with a target) is attached paused, before its
+        // navigation, and closed (`Target.attachedToTarget` in
+        // `handle`): its requests would not be paused by this page's
+        // `Fetch.enable`.
+        self.browser_call(
+            "Target.setAutoAttach",
+            json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true}),
+        )
+        .await?;
         let vp = &opts.viewport;
         let mut setup = vec![
             (
@@ -1366,6 +1398,7 @@ mod tests {
                 "Target.createBrowserContext",
                 "Target.createTarget",
                 "Target.attachToTarget",
+                "Target.setAutoAttach",
                 "Fetch.enable",
                 "Runtime.enable",
                 "Log.enable",
@@ -2123,6 +2156,51 @@ mod tests {
             t["failed"][0]["name"].as_str().unwrap().len(),
             MAX_TEST_TEXT
         );
+    }
+
+    #[tokio::test]
+    async fn a_popup_is_closed_before_it_loads() {
+        // The click opens a popup to another origin: the browser attaches
+        // it, paused, before it navigates.
+        let (run, log) = run(
+            PageModel::new().evaluate(fine).on(|cmd: &Value| {
+                let e = cmd["params"]["expression"].as_str().unwrap_or_default();
+                e.contains("elementFromPoint").then(|| {
+                    vec![
+                        event(
+                            "Target.attachedToTarget",
+                            json!({
+                                "sessionId": "P1",
+                                "targetInfo": {"targetId": "POP", "type": "page", "url": "https://evil.example/?d=1", "openerId": "T"},
+                                "waitingForDebugger": true,
+                            }),
+                            None,
+                        ),
+                        crate::browser::fake::answer(cmd, fine(&cmd["params"])),
+                    ]
+                })
+            }),
+            json!({"steps": [{"click": "#share"}]}),
+        )
+        .await;
+        let r = result(&run);
+        assert_eq!(
+            log.sent("Target.setAutoAttach")[0]["params"],
+            json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true})
+        );
+        let closed = log.sent("Target.closeTarget");
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0]["params"], json!({"targetId": "POP"}));
+        assert_eq!(closed[0].get("sessionId"), None);
+        assert!(
+            r["requests"]["blocked"]
+                .as_array()
+                .unwrap()
+                .contains(&json!({"url": "https://evil.example/?d=1", "why": "popup"})),
+            "{r}"
+        );
+        // The test's own page, attached again, is left alone.
+        assert!(!closed.iter().any(|c| c["params"]["targetId"] == "T"));
     }
 
     #[tokio::test]
