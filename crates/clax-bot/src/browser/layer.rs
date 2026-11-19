@@ -4,7 +4,10 @@
 //! `LocatorAssertions` and `PageAssertions` that reaches the browser,
 //! with its flat operation (`browser.page`, `browser.act`,
 //! `browser.expect`, `browser.close`), its action, its parameter names
-//! and the check of the `args` its call sends ([`check`]).
+//! and the check of the `args` its call sends ([`check`]); and
+//! [`DECLS`], every member the model is declared, with its TypeScript
+//! signature and doc, from which `crate::api::dts` writes the `Page`,
+//! `Locator`, `Keyboard`, `Mouse` and assertion interfaces (spec §6.11).
 //!
 //! The prelude's own table (`clax_bot_sandbox::browser_layer_table`) is
 //! this one's class, method, operation, action and parameter names, row
@@ -479,6 +482,540 @@ pub const ROWS: &[Row] = &[
     ),
 ];
 
+/// One declared member of the layer's classes, as the model reads it
+/// (spec §6.1, §6.10): its class and name, its TypeScript signature (with
+/// `number` where the surface says `Int`, as the declaration prints it),
+/// its one-line doc in Playwright's meaning (empty for none), and the
+/// capability it needs beyond the session's own. Every row of [`ROWS`]
+/// has one; the rest are the prelude's local members (the locator
+/// builders, `url`, `setDefaultTimeout`, `keyboard` and `mouse`, the
+/// answers' objects, `not` and the value matchers).
+#[derive(Clone, Copy, Debug)]
+pub struct Decl {
+    pub class: &'static str,
+    pub method: &'static str,
+    pub sig: &'static str,
+    pub doc: &'static str,
+    pub needs: Option<Capability>,
+}
+
+const fn d(
+    class: &'static str,
+    method: &'static str,
+    sig: &'static str,
+    doc: &'static str,
+) -> Decl {
+    Decl {
+        class,
+        method,
+        sig,
+        doc,
+        needs: None,
+    }
+}
+
+/// The classes declared, in the declaration's order.
+pub const CLASSES: [&str; 9] = [
+    "Page",
+    "Locator",
+    "Keyboard",
+    "Mouse",
+    "Response",
+    "ConsoleMessage",
+    "LocatorAssertions",
+    "PageAssertions",
+    "ValueAssertions",
+];
+
+/// Every declared member, by class in [`CLASSES`]' order.
+pub const DECLS: &[Decl] = &[
+    d(
+        "Page",
+        "goto",
+        "goto(url: string, opts?: { waitUntil?: \"load\" | \"domcontentloaded\" | \"networkidle\"; timeout?: number }): Promise<Response | null>;",
+        "Navigates to `url`, resolved against the page's URL.",
+    ),
+    d(
+        "Page",
+        "reload",
+        "reload(opts?: { waitUntil?: \"load\" | \"domcontentloaded\" | \"networkidle\"; timeout?: number }): Promise<Response | null>;",
+        "",
+    ),
+    d(
+        "Page",
+        "goBack",
+        "goBack(opts?: { timeout?: number }): Promise<Response | null>;",
+        "",
+    ),
+    d(
+        "Page",
+        "goForward",
+        "goForward(opts?: { timeout?: number }): Promise<Response | null>;",
+        "",
+    ),
+    d(
+        "Page",
+        "url",
+        "url(): string;",
+        "The URL the page's last call answered.",
+    ),
+    d("Page", "title", "title(): Promise<string>;", ""),
+    d(
+        "Page",
+        "content",
+        "content(): Promise<string>;",
+        "The page's HTML, cut at 100,000 characters.",
+    ),
+    d(
+        "Page",
+        "setViewportSize",
+        "setViewportSize(size: { width: number; height: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Page",
+        "setDefaultTimeout",
+        "setDefaultTimeout(timeout: number): void;",
+        "Milliseconds, for every later call of this page that takes a timeout.",
+    ),
+    d(
+        "Page",
+        "waitForLoadState",
+        "waitForLoadState(state?: \"load\" | \"domcontentloaded\" | \"networkidle\", opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Page",
+        "waitForURL",
+        "waitForURL(url: string | RegExp, opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Page",
+        "locator",
+        "locator(selector: string): Locator;",
+        "Locators are data, resolved in the page at each call: building one makes no call.",
+    ),
+    d(
+        "Page",
+        "getByRole",
+        "getByRole(role: string, opts?: { name?: string | RegExp; exact?: boolean; checked?: boolean; level?: number; includeHidden?: boolean }): Locator;",
+        "",
+    ),
+    d(
+        "Page",
+        "getByText",
+        "getByText(text: string | RegExp, opts?: { exact?: boolean }): Locator;",
+        "",
+    ),
+    d(
+        "Page",
+        "getByLabel",
+        "getByLabel(text: string | RegExp, opts?: { exact?: boolean }): Locator;",
+        "",
+    ),
+    d(
+        "Page",
+        "getByPlaceholder",
+        "getByPlaceholder(text: string | RegExp, opts?: { exact?: boolean }): Locator;",
+        "",
+    ),
+    d(
+        "Page",
+        "getByTestId",
+        "getByTestId(testId: string | RegExp): Locator;",
+        "",
+    ),
+    d("Page", "keyboard", "readonly keyboard: Keyboard;", ""),
+    d("Page", "mouse", "readonly mouse: Mouse;", ""),
+    d(
+        "Page",
+        "evaluate",
+        "evaluate<R, A>(fn: string | ((arg: A) => R | Promise<R>), arg?: A): Promise<R>;",
+        "Runs `fn` in the page with `arg` as its one argument; it sees no closure, and `arg` and its value are JSON.",
+    ),
+    d(
+        "Page",
+        "screenshot",
+        "screenshot(opts?: { fullPage?: boolean; timeout?: number }): Promise<Image>;",
+        "Return it from the script to see it.",
+    ),
+    d(
+        "Page",
+        "consoleMessages",
+        "consoleMessages(): Promise<ConsoleMessage[]>;",
+        "",
+    ),
+    d("Page", "pageErrors", "pageErrors(): Promise<Error[]>;", ""),
+    d(
+        "Page",
+        "failedRequests",
+        "failedRequests(): Promise<{ failed: { url: string; status?: number; error?: string }[]; blocked: { url: string; why: string }[] }>;",
+        "Clax's own: the requests that failed, and those the session blocked.",
+    ),
+    Decl {
+        needs: Some(Capability::OpenArtifact),
+        ..d(
+            "Page",
+            "runTests",
+            "runTests(paths?: string[]): Promise<{ passed: number; failed: { name: string; error: string }[]; skipped: number }>;",
+            "Clax's own: runs the clax's saved tests (all, or these paths under `tests/`) in this page.",
+        )
+    },
+    d(
+        "Page",
+        "close",
+        "close(): Promise<{ ms: number; cost: number }>;",
+        "Ends the session, which costs by the second while open.",
+    ),
+    d(
+        "Locator",
+        "locator",
+        "locator(selector: string): Locator;",
+        "",
+    ),
+    d(
+        "Locator",
+        "getByRole",
+        "getByRole(role: string, opts?: { name?: string | RegExp; exact?: boolean; checked?: boolean; level?: number; includeHidden?: boolean }): Locator;",
+        "",
+    ),
+    d(
+        "Locator",
+        "getByText",
+        "getByText(text: string | RegExp, opts?: { exact?: boolean }): Locator;",
+        "",
+    ),
+    d(
+        "Locator",
+        "getByLabel",
+        "getByLabel(text: string | RegExp, opts?: { exact?: boolean }): Locator;",
+        "",
+    ),
+    d(
+        "Locator",
+        "getByPlaceholder",
+        "getByPlaceholder(text: string | RegExp, opts?: { exact?: boolean }): Locator;",
+        "",
+    ),
+    d(
+        "Locator",
+        "getByTestId",
+        "getByTestId(testId: string | RegExp): Locator;",
+        "",
+    ),
+    d("Locator", "first", "first(): Locator;", ""),
+    d("Locator", "last", "last(): Locator;", ""),
+    d("Locator", "nth", "nth(index: number): Locator;", ""),
+    d(
+        "Locator",
+        "filter",
+        "filter(opts: { hasText?: string | RegExp; hasNotText?: string | RegExp }): Locator;",
+        "",
+    ),
+    d(
+        "Locator",
+        "click",
+        "click(opts?: { button?: \"left\" | \"right\" | \"middle\"; clickCount?: number; position?: { x: number; y: number }; timeout?: number }): Promise<void>;",
+        "Waits until exactly one element matches and is actionable.",
+    ),
+    d(
+        "Locator",
+        "dblclick",
+        "dblclick(opts?: { button?: \"left\" | \"right\" | \"middle\"; position?: { x: number; y: number }; timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "fill",
+        "fill(value: string, opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "press",
+        "press(key: string, opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "pressSequentially",
+        "pressSequentially(text: string, opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "hover",
+        "hover(opts?: { position?: { x: number; y: number }; timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "focus",
+        "focus(opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "check",
+        "check(opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "uncheck",
+        "uncheck(opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "selectOption",
+        "selectOption(values: string | { value?: string; label?: string; index?: number } | (string | { value?: string; label?: string; index?: number })[], opts?: { timeout?: number }): Promise<string[]>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "textContent",
+        "textContent(opts?: { timeout?: number }): Promise<string | null>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "innerText",
+        "innerText(opts?: { timeout?: number }): Promise<string>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "inputValue",
+        "inputValue(opts?: { timeout?: number }): Promise<string>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "getAttribute",
+        "getAttribute(name: string, opts?: { timeout?: number }): Promise<string | null>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "allTextContents",
+        "allTextContents(): Promise<string[]>;",
+        "",
+    ),
+    d("Locator", "isVisible", "isVisible(): Promise<boolean>;", ""),
+    d("Locator", "isHidden", "isHidden(): Promise<boolean>;", ""),
+    d(
+        "Locator",
+        "isEnabled",
+        "isEnabled(opts?: { timeout?: number }): Promise<boolean>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "isChecked",
+        "isChecked(opts?: { timeout?: number }): Promise<boolean>;",
+        "",
+    ),
+    d("Locator", "count", "count(): Promise<number>;", ""),
+    d(
+        "Locator",
+        "waitFor",
+        "waitFor(opts?: { state?: \"attached\" | \"detached\" | \"visible\" | \"hidden\"; timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "scrollIntoViewIfNeeded",
+        "scrollIntoViewIfNeeded(opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Locator",
+        "screenshot",
+        "screenshot(opts?: { timeout?: number }): Promise<Image>;",
+        "",
+    ),
+    d("Keyboard", "down", "down(key: string): Promise<void>;", ""),
+    d("Keyboard", "up", "up(key: string): Promise<void>;", ""),
+    d(
+        "Keyboard",
+        "press",
+        "press(key: string): Promise<void>;",
+        "",
+    ),
+    d("Keyboard", "type", "type(text: string): Promise<void>;", ""),
+    d(
+        "Keyboard",
+        "insertText",
+        "insertText(text: string): Promise<void>;",
+        "",
+    ),
+    d(
+        "Mouse",
+        "move",
+        "move(x: number, y: number, opts?: { steps?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Mouse",
+        "down",
+        "down(opts?: { button?: \"left\" | \"right\" | \"middle\" }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Mouse",
+        "up",
+        "up(opts?: { button?: \"left\" | \"right\" | \"middle\" }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Mouse",
+        "click",
+        "click(x: number, y: number, opts?: { button?: \"left\" | \"right\" | \"middle\"; clickCount?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Mouse",
+        "dblclick",
+        "dblclick(x: number, y: number, opts?: { button?: \"left\" | \"right\" | \"middle\" }): Promise<void>;",
+        "",
+    ),
+    d(
+        "Mouse",
+        "wheel",
+        "wheel(deltaX: number, deltaY: number): Promise<void>;",
+        "",
+    ),
+    d("Response", "url", "url(): string;", ""),
+    d("Response", "status", "status(): number;", ""),
+    d("Response", "ok", "ok(): boolean;", ""),
+    d("ConsoleMessage", "type", "type(): string;", ""),
+    d("ConsoleMessage", "text", "text(): string;", ""),
+    d(
+        "ConsoleMessage",
+        "location",
+        "location(): { url: string; lineNumber: number; columnNumber: number };",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "not",
+        "readonly not: LocatorAssertions;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toBeVisible",
+        "toBeVisible(opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toBeHidden",
+        "toBeHidden(opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toBeEnabled",
+        "toBeEnabled(opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toBeDisabled",
+        "toBeDisabled(opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toBeChecked",
+        "toBeChecked(opts?: { checked?: boolean; timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toBeFocused",
+        "toBeFocused(opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toHaveText",
+        "toHaveText(expected: string | RegExp | (string | RegExp)[], opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toContainText",
+        "toContainText(expected: string | RegExp | (string | RegExp)[], opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toHaveValue",
+        "toHaveValue(value: string | RegExp, opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toHaveAttribute",
+        "toHaveAttribute(name: string, value?: string | RegExp, opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "LocatorAssertions",
+        "toHaveCount",
+        "toHaveCount(count: number, opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d("PageAssertions", "not", "readonly not: PageAssertions;", ""),
+    d(
+        "PageAssertions",
+        "toHaveURL",
+        "toHaveURL(url: string | RegExp, opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "PageAssertions",
+        "toHaveTitle",
+        "toHaveTitle(title: string | RegExp, opts?: { timeout?: number }): Promise<void>;",
+        "",
+    ),
+    d(
+        "ValueAssertions",
+        "not",
+        "readonly not: ValueAssertions;",
+        "",
+    ),
+    d(
+        "ValueAssertions",
+        "toBe",
+        "toBe(expected: unknown): void;",
+        "",
+    ),
+    d(
+        "ValueAssertions",
+        "toEqual",
+        "toEqual(expected: unknown): void;",
+        "",
+    ),
+    d("ValueAssertions", "toBeTruthy", "toBeTruthy(): void;", ""),
+    d(
+        "ValueAssertions",
+        "toContain",
+        "toContain(expected: unknown): void;",
+        "",
+    ),
+    d(
+        "ValueAssertions",
+        "toBeGreaterThan",
+        "toBeGreaterThan(expected: number): void;",
+        "",
+    ),
+];
+
 /// The row of `action` of the flat operation `op`, when it has one. An
 /// `expect` matcher on the page (an empty locator) is `PageAssertions`'.
 #[must_use]
@@ -643,5 +1180,65 @@ mod tests {
             check(row(Op::Act, "count", false).unwrap(), &Value::Null),
             Ok(())
         );
+    }
+
+    #[test]
+    fn every_row_is_declared_once_and_every_declared_member_is_a_row_or_local() {
+        for r in ROWS {
+            let n = DECLS
+                .iter()
+                .filter(|d| d.class == r.class && d.method == r.method)
+                .count();
+            assert_eq!(n, 1, "{}.{}", r.class, r.method);
+            let d = DECLS
+                .iter()
+                .find(|d| d.class == r.class && d.method == r.method)
+                .unwrap();
+            assert_eq!(d.needs, r.needs, "{}.{}", r.class, r.method);
+        }
+        for d in DECLS {
+            assert!(CLASSES.contains(&d.class), "{}", d.class);
+            let sig = d.sig.trim_start_matches("readonly ");
+            assert!(
+                sig.starts_with(d.method),
+                "{}.{}: {}",
+                d.class,
+                d.method,
+                d.sig
+            );
+            assert!(d.sig.ends_with(';'), "{}", d.sig);
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for d in DECLS {
+            if seen.last() != Some(&d.class) {
+                assert!(!seen.contains(&d.class), "{} is split", d.class);
+                seen.push(d.class);
+            }
+        }
+        assert_eq!(seen, CLASSES);
+    }
+
+    /// Every row's action is in its flat operation's action union in
+    /// `src/clax.d.ts`, and every action of those unions has a row.
+    #[test]
+    fn every_row_has_its_action_in_the_flat_union_and_back() {
+        use clax_surface::Ty;
+        let union = |op: &str, at: usize| -> Vec<String> {
+            let o = crate::api::definition().operation(op).unwrap();
+            match &o.op.params[at].ty {
+                Ty::Union(alts) => alts
+                    .iter()
+                    .map(|t| match t {
+                        Ty::StrLit(s) => s.clone(),
+                        other => panic!("{op}: {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("{op}: {other:?}"),
+            }
+        };
+        for (op, at) in [(Op::Page, 1), (Op::Act, 2), (Op::Expect, 2)] {
+            let declared = union(op.op(), at);
+            assert_eq!(declared, actions(op), "{}", op.op());
+        }
     }
 }

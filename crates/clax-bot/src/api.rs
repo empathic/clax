@@ -276,7 +276,7 @@ pub(crate) fn dts_with(
     let clax = definition();
     let has = |name: &str| {
         if clax.operation(name).is_some() {
-            declared(name, caps)
+            declared(name, caps) && !HIDDEN.contains(&name)
         } else {
             has_other(name)
         }
@@ -309,9 +309,115 @@ pub(crate) fn dts_with(
         out.push_str(&charged_note(&charged.join(" and ")));
     }
     out.push('\n');
-    out.push_str(&clax_surface::declaration(&surfaces, &has)?);
+    let decl = clax_surface::declaration(&surfaces, &has)?;
+    if declared(crate::browser::OP_OPEN, caps) {
+        out.push_str(&with_page(&decl, caps));
+        out.push_str(EXPECT_DECLARATION);
+    } else {
+        out.push_str(&decl);
+    }
     out.push_str(crate::prompt::standard::CONSOLE);
     Ok(out)
+}
+
+/// The flat session operations a `Page` calls, which no model is
+/// declared (spec 2026-11-19-claxbot-browser §6.9, §6.11): the prelude
+/// keeps them off `clax`.
+const HIDDEN: [&str; 4] = [
+    crate::browser::OP_PAGE,
+    crate::browser::OP_ACT,
+    crate::browser::OP_EXPECT,
+    crate::browser::OP_CLOSE,
+];
+
+/// The global `expect` of a run with a browser session (spec §6.10).
+const EXPECT_DECLARATION: &str = "\
+declare function expect(actual: Locator): LocatorAssertions;
+declare function expect(actual: Page): PageAssertions;
+declare function expect<T>(actual: T): ValueAssertions;
+";
+
+/// What `clax.browser.open` and `session` are declared as, in place of
+/// the surface's `open` (spec §6.1).
+const OPEN_DECLARATION: &str = "    open(source: BrowserSource, opts?: BrowserOpenOpts): Promise<Page>;
+    /** The `Page` of session `id`, opened by an earlier script (a returned page shows its `session`); it makes no call. */
+    session(id: string): Page;
+";
+
+/// What the doc comment before each class says, when it says anything.
+fn class_doc(class: &str) -> Option<&'static str> {
+    match class {
+        "Page" => Some(
+            "Playwright's `Page`, as far as declared here. Every method that reaches the browser is one charged call; a failure on the page throws (a `TimeoutError` when its time ran out), a session that ended throws a `HostError`.",
+        ),
+        "Locator" => Some(
+            "Playwright's `Locator`: data, resolved in the page at each call; actions wait until exactly one element matches and is actionable.",
+        ),
+        "ValueAssertions" => Some("`expect` of any other value: checked in the script, no call."),
+        _ => None,
+    }
+}
+
+/// `decl`, the surfaces' declaration of a run holding `caps` with
+/// `browser.open`, with the layer's `Page`, `Locator`, `Keyboard`,
+/// `Mouse`, `Response`, `ConsoleMessage` and assertion interfaces
+/// ([`crate::browser::layer::DECLS`]: only the members `caps` allows) and
+/// the run's `BrowserSource` before `clax`, and `open` and `session`
+/// returning a `Page` in place of the surface's `open`.
+fn with_page(decl: &str, caps: &CapSet) -> String {
+    use crate::browser::layer::{CLASSES, DECLS};
+    let mut out = decl.to_string();
+    if let Some(at) = out.find("interface BrowserOpened {")
+        && let Some(len) = out[at..].find("\n}\n")
+    {
+        out.replace_range(at..at + len + 3, "");
+    }
+    if let Some(at) = out.find("    open(source: ")
+        && let Some(len) = out[at..].find('\n')
+    {
+        out.replace_range(at..=at + len, OPEN_DECLARATION);
+    }
+    let mut types = String::new();
+    let mut kinds = Vec::new();
+    if caps.has(Capability::OpenUrl) {
+        kinds.push("{ url: string }");
+    }
+    if caps.has(Capability::OpenArtifact) {
+        kinds.push("{ artifact: \"draft\" | number; path?: string }");
+    }
+    if caps.has(Capability::OpenContent) {
+        kinds.push("{ html: string; files?: Record<string, string | { base64: string } | Image> }");
+    }
+    types.push_str("type BrowserSource =\n");
+    for k in &kinds {
+        types.push_str(&format!("  | {k}\n"));
+    }
+    types.pop();
+    types.push_str(";\n");
+    for class in CLASSES {
+        if let Some(doc) = class_doc(class) {
+            types.push_str(&format!("/** {doc} */\n"));
+        }
+        types.push_str(&format!("interface {class} {{\n"));
+        for d in DECLS.iter().filter(|d| d.class == class) {
+            if d.needs.is_some_and(|c| !caps.has(c)) {
+                continue;
+            }
+            if !d.doc.is_empty() {
+                types.push_str(&format!("  /** {} */\n", d.doc));
+            }
+            types.push_str(&format!("  {}\n", d.sig));
+        }
+        types.push_str("}\n");
+    }
+    if !out.contains("type Image = Content;") {
+        types.push_str(clax_surface::CONTENT_DECLARATION);
+    }
+    match out.find("declare const clax: {") {
+        Some(at) => out.insert_str(at, &format!("{types}\n")),
+        None => out.push_str(&types),
+    }
+    out
 }
 
 #[cfg(test)]
@@ -572,6 +678,81 @@ mod tests {
             .is_ok()
         );
         assert!(check_args("browser.close", &json!([])).is_err());
+    }
+
+    /// The browser's declaration of each shape, generated from the
+    /// layer's table (spec 2026-11-19-claxbot-browser §6.11): the goldens
+    /// a TypeScript test compiles with `src/browser.examples.ts`
+    /// (`web/scripts/claxbot-browser-dts.test.ts`).
+    #[test]
+    fn the_browser_declarations_are_pinned() {
+        for (file, caps) in [
+            ("artifact", vec![C::OpenArtifact]),
+            ("content", vec![C::OpenContent]),
+            (
+                "url-artifact-content",
+                vec![C::OpenUrl, C::OpenArtifact, C::OpenContent],
+            ),
+        ] {
+            golden(
+                &format!("the clax API declaration with the browser ({file})"),
+                &format!("src/api.browser-{file}.d.ts.golden"),
+                &dts(&caps.into_iter().collect()),
+            );
+        }
+    }
+
+    /// A run is declared only the members and source kinds it holds:
+    /// content alone has no `runTests` and `BrowserSource` is `{html,
+    /// files?}` alone.
+    #[test]
+    fn the_declaration_holds_only_the_runs_methods_and_kinds() {
+        let content = dts(&[C::OpenContent].into_iter().collect());
+        assert!(content.contains("interface Page {"), "{content}");
+        assert!(!content.contains("runTests("), "{content}");
+        assert!(
+            content.contains("type BrowserSource =\n  | { html: string;"),
+            "{content}"
+        );
+        assert!(!content.contains("{ url: string }"), "{content}");
+        assert!(!content.contains("  | { artifact: \"draft\""), "{content}");
+        assert!(!content.contains("test(source"), "{content}");
+        assert!(content.contains("type Image = Content;"), "{content}");
+        let artifact = dts(&[C::OpenArtifact].into_iter().collect());
+        assert!(artifact.contains("runTests("), "{artifact}");
+        assert!(artifact.contains("test(source"), "{artifact}");
+        assert!(
+            artifact
+                .contains("open(source: BrowserSource, opts?: BrowserOpenOpts): Promise<Page>;"),
+            "{artifact}"
+        );
+        assert!(
+            artifact.contains("session(id: string): Page;"),
+            "{artifact}"
+        );
+        assert!(
+            artifact.contains("declare function expect(actual: Locator): LocatorAssertions;"),
+            "{artifact}"
+        );
+        let none = dts(&CapSet::default());
+        assert!(!none.contains("expect("), "{none}");
+    }
+
+    /// The flat session operations are the `Page`'s, never declared to a
+    /// model; nor is the surface's `BrowserOpened`.
+    #[test]
+    fn no_flat_browser_operation_is_declared_to_the_model() {
+        let all = dts(&C::ALL.into_iter().collect());
+        for flat in [
+            "    page(session",
+            "    act(session",
+            "    expect(session",
+            "    close(session",
+            "BrowserAnswer",
+            "BrowserOpened",
+        ] {
+            assert!(!all.contains(flat), "{flat}: {all}");
+        }
     }
 
     /// A set of web capabilities alone declares what the web shape it

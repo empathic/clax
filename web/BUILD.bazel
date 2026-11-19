@@ -291,6 +291,7 @@ UNIT_DATA = [
     "//apps/clax_app:home_unit",
     "//apps/clax_app:kit",
     "//apps/clax_app:relay_fixture",
+    "//crates/clax-bot:browser_declarations_bin",
     "//crates/clax-core:toolpath_vectors_bin",
     "//demo:files",
 ]

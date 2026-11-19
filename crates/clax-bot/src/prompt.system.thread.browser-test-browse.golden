@@ -215,30 +215,143 @@ interface BrowserResult {
   cost: number;
   left: BrowserLeft;
 }
-interface BrowserOpened {
-  session: string;
-  kind: "url" | "artifact" | "content";
-  url: string;
-  title: string;
-  status: number;
-  viewport: string;
-  /** Why the page did not load, when it did not: the session is open all the same. */
-  error?: string;
-  cost: number;
-  left: BrowserLeft;
+
+type BrowserSource =
+  | { url: string }
+  | { artifact: "draft" | number; path?: string };
+/** Playwright's `Page`, as far as declared here. Every method that reaches the browser is one charged call; a failure on the page throws (a `TimeoutError` when its time ran out), a session that ended throws a `HostError`. */
+interface Page {
+  /** Navigates to `url`, resolved against the page's URL. */
+  goto(url: string, opts?: { waitUntil?: "load" | "domcontentloaded" | "networkidle"; timeout?: number }): Promise<Response | null>;
+  reload(opts?: { waitUntil?: "load" | "domcontentloaded" | "networkidle"; timeout?: number }): Promise<Response | null>;
+  goBack(opts?: { timeout?: number }): Promise<Response | null>;
+  goForward(opts?: { timeout?: number }): Promise<Response | null>;
+  /** The URL the page's last call answered. */
+  url(): string;
+  title(): Promise<string>;
+  /** The page's HTML, cut at 100,000 characters. */
+  content(): Promise<string>;
+  setViewportSize(size: { width: number; height: number }): Promise<void>;
+  /** Milliseconds, for every later call of this page that takes a timeout. */
+  setDefaultTimeout(timeout: number): void;
+  waitForLoadState(state?: "load" | "domcontentloaded" | "networkidle", opts?: { timeout?: number }): Promise<void>;
+  waitForURL(url: string | RegExp, opts?: { timeout?: number }): Promise<void>;
+  /** Locators are data, resolved in the page at each call: building one makes no call. */
+  locator(selector: string): Locator;
+  getByRole(role: string, opts?: { name?: string | RegExp; exact?: boolean; checked?: boolean; level?: number; includeHidden?: boolean }): Locator;
+  getByText(text: string | RegExp, opts?: { exact?: boolean }): Locator;
+  getByLabel(text: string | RegExp, opts?: { exact?: boolean }): Locator;
+  getByPlaceholder(text: string | RegExp, opts?: { exact?: boolean }): Locator;
+  getByTestId(testId: string | RegExp): Locator;
+  readonly keyboard: Keyboard;
+  readonly mouse: Mouse;
+  /** Runs `fn` in the page with `arg` as its one argument; it sees no closure, and `arg` and its value are JSON. */
+  evaluate<R, A>(fn: string | ((arg: A) => R | Promise<R>), arg?: A): Promise<R>;
+  /** Return it from the script to see it. */
+  screenshot(opts?: { fullPage?: boolean; timeout?: number }): Promise<Image>;
+  consoleMessages(): Promise<ConsoleMessage[]>;
+  pageErrors(): Promise<Error[]>;
+  /** Clax's own: the requests that failed, and those the session blocked. */
+  failedRequests(): Promise<{ failed: { url: string; status?: number; error?: string }[]; blocked: { url: string; why: string }[] }>;
+  /** Clax's own: runs the clax's saved tests (all, or these paths under `tests/`) in this page. */
+  runTests(paths?: string[]): Promise<{ passed: number; failed: { name: string; error: string }[]; skipped: number }>;
+  /** Ends the session, which costs by the second while open. */
+  close(): Promise<{ ms: number; cost: number }>;
 }
-interface BrowserAnswer {
-  ok: boolean;
-  value?: unknown;
-  /** `ok` false: Playwright's message. */
-  error?: string;
-  /** `ok` false: the call's time ran out. */
-  timeout?: boolean;
-  /** The page's URL after the call. */
-  url: string;
-  ms: number;
-  cost: number;
+/** Playwright's `Locator`: data, resolved in the page at each call; actions wait until exactly one element matches and is actionable. */
+interface Locator {
+  locator(selector: string): Locator;
+  getByRole(role: string, opts?: { name?: string | RegExp; exact?: boolean; checked?: boolean; level?: number; includeHidden?: boolean }): Locator;
+  getByText(text: string | RegExp, opts?: { exact?: boolean }): Locator;
+  getByLabel(text: string | RegExp, opts?: { exact?: boolean }): Locator;
+  getByPlaceholder(text: string | RegExp, opts?: { exact?: boolean }): Locator;
+  getByTestId(testId: string | RegExp): Locator;
+  first(): Locator;
+  last(): Locator;
+  nth(index: number): Locator;
+  filter(opts: { hasText?: string | RegExp; hasNotText?: string | RegExp }): Locator;
+  /** Waits until exactly one element matches and is actionable. */
+  click(opts?: { button?: "left" | "right" | "middle"; clickCount?: number; position?: { x: number; y: number }; timeout?: number }): Promise<void>;
+  dblclick(opts?: { button?: "left" | "right" | "middle"; position?: { x: number; y: number }; timeout?: number }): Promise<void>;
+  fill(value: string, opts?: { timeout?: number }): Promise<void>;
+  press(key: string, opts?: { timeout?: number }): Promise<void>;
+  pressSequentially(text: string, opts?: { timeout?: number }): Promise<void>;
+  hover(opts?: { position?: { x: number; y: number }; timeout?: number }): Promise<void>;
+  focus(opts?: { timeout?: number }): Promise<void>;
+  check(opts?: { timeout?: number }): Promise<void>;
+  uncheck(opts?: { timeout?: number }): Promise<void>;
+  selectOption(values: string | { value?: string; label?: string; index?: number } | (string | { value?: string; label?: string; index?: number })[], opts?: { timeout?: number }): Promise<string[]>;
+  textContent(opts?: { timeout?: number }): Promise<string | null>;
+  innerText(opts?: { timeout?: number }): Promise<string>;
+  inputValue(opts?: { timeout?: number }): Promise<string>;
+  getAttribute(name: string, opts?: { timeout?: number }): Promise<string | null>;
+  allTextContents(): Promise<string[]>;
+  isVisible(): Promise<boolean>;
+  isHidden(): Promise<boolean>;
+  isEnabled(opts?: { timeout?: number }): Promise<boolean>;
+  isChecked(opts?: { timeout?: number }): Promise<boolean>;
+  count(): Promise<number>;
+  waitFor(opts?: { state?: "attached" | "detached" | "visible" | "hidden"; timeout?: number }): Promise<void>;
+  scrollIntoViewIfNeeded(opts?: { timeout?: number }): Promise<void>;
+  screenshot(opts?: { timeout?: number }): Promise<Image>;
 }
+interface Keyboard {
+  down(key: string): Promise<void>;
+  up(key: string): Promise<void>;
+  press(key: string): Promise<void>;
+  type(text: string): Promise<void>;
+  insertText(text: string): Promise<void>;
+}
+interface Mouse {
+  move(x: number, y: number, opts?: { steps?: number }): Promise<void>;
+  down(opts?: { button?: "left" | "right" | "middle" }): Promise<void>;
+  up(opts?: { button?: "left" | "right" | "middle" }): Promise<void>;
+  click(x: number, y: number, opts?: { button?: "left" | "right" | "middle"; clickCount?: number }): Promise<void>;
+  dblclick(x: number, y: number, opts?: { button?: "left" | "right" | "middle" }): Promise<void>;
+  wheel(deltaX: number, deltaY: number): Promise<void>;
+}
+interface Response {
+  url(): string;
+  status(): number;
+  ok(): boolean;
+}
+interface ConsoleMessage {
+  type(): string;
+  text(): string;
+  location(): { url: string; lineNumber: number; columnNumber: number };
+}
+interface LocatorAssertions {
+  readonly not: LocatorAssertions;
+  toBeVisible(opts?: { timeout?: number }): Promise<void>;
+  toBeHidden(opts?: { timeout?: number }): Promise<void>;
+  toBeEnabled(opts?: { timeout?: number }): Promise<void>;
+  toBeDisabled(opts?: { timeout?: number }): Promise<void>;
+  toBeChecked(opts?: { checked?: boolean; timeout?: number }): Promise<void>;
+  toBeFocused(opts?: { timeout?: number }): Promise<void>;
+  toHaveText(expected: string | RegExp | (string | RegExp)[], opts?: { timeout?: number }): Promise<void>;
+  toContainText(expected: string | RegExp | (string | RegExp)[], opts?: { timeout?: number }): Promise<void>;
+  toHaveValue(value: string | RegExp, opts?: { timeout?: number }): Promise<void>;
+  toHaveAttribute(name: string, value?: string | RegExp, opts?: { timeout?: number }): Promise<void>;
+  toHaveCount(count: number, opts?: { timeout?: number }): Promise<void>;
+}
+interface PageAssertions {
+  readonly not: PageAssertions;
+  toHaveURL(url: string | RegExp, opts?: { timeout?: number }): Promise<void>;
+  toHaveTitle(title: string | RegExp, opts?: { timeout?: number }): Promise<void>;
+}
+/** `expect` of any other value: checked in the script, no call. */
+interface ValueAssertions {
+  readonly not: ValueAssertions;
+  toBe(expected: unknown): void;
+  toEqual(expected: unknown): void;
+  toBeTruthy(): void;
+  toContain(expected: unknown): void;
+  toBeGreaterThan(expected: number): void;
+}
+/** What Clax keeps of some bytes, named by a handle: an operation answers or takes one where its type says `Content`. Pass a handle on as it was given. Return an `Image` from a script, anywhere in its value, to see it. */
+interface Content { id: string; media_type: string; bytes: number; sha256: string; name?: string; width?: number; height?: number; meta?: Record<string, unknown> }
+/** A `Content` of an image: its `media_type` is image/png, image/jpeg, image/webp or image/gif, and its `width` and `height` are the size it is displayed at. */
+type Image = Content;
 
 declare const clax: {
   artifact: {
@@ -299,19 +412,16 @@ declare const clax: {
   };
   browser: {
     /** Opens a browser session on a public URL the instance's rule admits (`{url}`), the run's clax (`{artifact: "draft" | version, path?}`, at an origin of its own) or HTML and files you supply (`{html, files?}`, at an origin of their own, reaching nothing else). It lasts across your scripts until closed, idle or its lifetime ends, and costs by the second while open. (charged) Errors: browser_disabled, browser_cap, credits_exhausted, url_not_allowed, url_not_in_prior_context, browser_target_not_found, browser_busy, browser_unavailable, browser_timeout. */
-    open(source: { url?: string; artifact?: "draft" | number; path?: string; html?: string; files?: Record<string, unknown> }, opts?: BrowserOpenOpts): Promise<BrowserOpened>;
-    /** One page action of an open session. A failure on the page is an answer (`ok: false`), charged as any. (charged) Errors: browser_disabled, credits_exhausted, browser_session_lost, browser_session_closed, url_not_allowed, url_not_in_prior_context. */
-    page(session: string, action: "goto" | "reload" | "goBack" | "goForward" | "title" | "content" | "setViewportSize" | "waitForLoadState" | "waitForURL" | "evaluate" | "screenshot" | "consoleMessages" | "pageErrors" | "failedRequests" | "runTests" | "keyboard.down" | "keyboard.up" | "keyboard.press" | "keyboard.type" | "keyboard.insertText" | "mouse.move" | "mouse.down" | "mouse.up" | "mouse.click" | "mouse.dblclick" | "mouse.wheel", args?: Record<string, unknown>): Promise<BrowserAnswer>;
-    /** One action of a locator, its steps resolved in the page at this call; it waits until exactly one element matches and is actionable. (charged) Errors: browser_disabled, credits_exhausted, browser_session_lost, browser_session_closed. */
-    act(session: string, locator: Record<string, unknown>[], action: "click" | "dblclick" | "fill" | "press" | "pressSequentially" | "hover" | "focus" | "check" | "uncheck" | "selectOption" | "textContent" | "innerText" | "inputValue" | "getAttribute" | "allTextContents" | "isVisible" | "isHidden" | "isEnabled" | "isChecked" | "count" | "waitFor" | "scrollIntoViewIfNeeded" | "screenshot", args?: Record<string, unknown>): Promise<BrowserAnswer>;
-    /** One matcher on a locator, or on the page (`locator` empty), retried in the browser until it holds or its time passes. (charged) Errors: browser_disabled, credits_exhausted, browser_session_lost, browser_session_closed. */
-    expect(session: string, locator: Record<string, unknown>[], matcher: "toBeVisible" | "toBeHidden" | "toBeEnabled" | "toBeDisabled" | "toBeChecked" | "toBeFocused" | "toHaveText" | "toContainText" | "toHaveValue" | "toHaveAttribute" | "toHaveCount" | "toHaveURL" | "toHaveTitle", args?: Record<string, unknown>): Promise<BrowserAnswer>;
-    /** Closes a session: `ms` it was open, `cost` of its last segment. (charged) Errors: browser_disabled, credits_exhausted, browser_session_lost, browser_session_closed. */
-    close(session: string): Promise<{ ms: number; cost: number }>;
+    open(source: BrowserSource, opts?: BrowserOpenOpts): Promise<Page>;
+    /** The `Page` of session `id`, opened by an earlier script (a returned page shows its `session`); it makes no call. */
+    session(id: string): Page;
     /** Runs the run's clax's saved tests (`tests/<name>.test.js`, all of them or `opts.tests`) in a fresh browser on the draft (its edits not yet published too) or a version, and answers what failed, the console, errors and requests, in one call: no session to close. A test that fails is an answer (`passed: false`), not an error. Charged by browser time. (charged) Errors: browser_disabled, browser_cap, credits_exhausted, browser_target_not_found, browser_busy, browser_unavailable, browser_timeout. */
     test(source?: { artifact: "draft" | number; path?: string }, opts?: BrowserTestOpts): Promise<BrowserResult>;
   };
 };
+declare function expect(actual: Locator): LocatorAssertions;
+declare function expect(actual: Page): PageAssertions;
+declare function expect<T>(actual: T): ValueAssertions;
 
 /** One log line: the arguments joined by spaces, non-strings as JSON. */
 declare const console: { log(...args: unknown[]): void };
