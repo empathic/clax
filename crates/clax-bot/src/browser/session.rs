@@ -601,7 +601,11 @@ impl Driver<'_> {
                 let info = &p["targetInfo"];
                 let id = info["targetId"].as_str().unwrap_or_default().to_string();
                 if self.target.as_deref() != Some(id.as_str()) {
-                    let why = if info["type"] == "page" { WHY_POPUP } else { WHY_TARGET };
+                    let why = if info["type"] == "page" {
+                        WHY_POPUP
+                    } else {
+                        WHY_TARGET
+                    };
                     let url = info["url"].as_str().unwrap_or_default().to_string();
                     self.push_request(true, json!({"url": url, "why": why}));
                     self.cdp
@@ -2161,7 +2165,9 @@ mod tests {
 
     #[test]
     fn a_saved_test_failure_is_cut() {
-        let t = tests_of(&json!({"passed": 0, "skipped": 0, "failed": [{"name": "n".repeat(5_000), "error": "e"}]}));
+        let t = tests_of(
+            &json!({"passed": 0, "skipped": 0, "failed": [{"name": "n".repeat(5_000), "error": "e"}]}),
+        );
         assert_eq!(
             t["failed"][0]["name"].as_str().unwrap().len(),
             MAX_TEST_TEXT
@@ -2264,9 +2270,8 @@ mod tests {
         let (run, _log) = run(
             PageModel::new().evaluate(fine).on(|cmd: &Value| {
                 let url = cmd["params"]["url"].as_str().unwrap_or_default();
-                (cmd["method"] == "Page.navigate" && url.contains('#')).then(|| {
-                    vec![crate::browser::fake::answer(cmd, json!({"frameId": "F"}))]
-                })
+                (cmd["method"] == "Page.navigate" && url.contains('#'))
+                    .then(|| vec![crate::browser::fake::answer(cmd, json!({"frameId": "F"}))])
             }),
             json!({"steps": [{"goto": "index.html#settings"}, {"eval": "document.title"}]}),
         )

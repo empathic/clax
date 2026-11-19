@@ -543,9 +543,15 @@ async fn a_failure_after_opening_is_charged_at_most_the_time_cap_and_counts() {
     assert_eq!(counted.get("browser.test"), Some(&1), "{counted:?}");
     let rows = env.store.usage_of_run(&run).unwrap();
     let row = rows.iter().find(|r| r.line == LINE_BROWSER_TIME).unwrap();
-    assert_eq!(script_calls(&env, &run, 0)[0]["cost_milli"], row.credits_milli);
+    assert_eq!(
+        script_calls(&env, &run, 0)[0]["cost_milli"],
+        row.credits_milli
+    );
     let audit = browser_events(&env);
-    assert_eq!((&audit[0]["ok"], &audit[0]["code"]), (&json!(false), &json!("browser_timeout")));
+    assert_eq!(
+        (&audit[0]["ok"], &audit[0]["code"]),
+        (&json!(false), &json!("browser_timeout"))
+    );
 }
 
 #[tokio::test]
@@ -568,6 +574,10 @@ async fn an_eval_value_shaped_like_a_screenshot_stays_a_value() {
          return {steps: r.steps, shots: r.screenshots};",
     )
     .await;
-    assert_eq!(v["steps"][0], json!({"ok": true, "value": {"screenshot": 0}}), "{v}");
+    assert_eq!(
+        v["steps"][0],
+        json!({"ok": true, "value": {"screenshot": 0}}),
+        "{v}"
+    );
     assert_eq!(&v["steps"][1]["value"], &v["shots"][0]);
 }

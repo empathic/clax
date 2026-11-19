@@ -743,9 +743,18 @@ mod tests {
         );
         // A path that spells a separator as an escape is not asked of
         // the host.
-        for escaped in ["_clax/api/db/x%2F..%2F..%2Fapi", "_clax/bridge/..%2f..%2Fsecret", "_clax/api/db/a%2Eb%5C"] {
+        for escaped in [
+            "_clax/api/db/x%2F..%2F..%2Fapi",
+            "_clax/bridge/..%2f..%2Fsecret",
+            "_clax/api/db/a%2Eb%5C",
+        ] {
             let d = site
-                .answer(&with("GET", &site.origin.url(escaped), json!({}), "Fetch"), &src, &st, "person-1")
+                .answer(
+                    &with("GET", &site.origin.url(escaped), json!({}), "Fetch"),
+                    &src,
+                    &st,
+                    "person-1",
+                )
                 .await;
             assert_eq!(d.failed(), Some(404), "{escaped}");
         }

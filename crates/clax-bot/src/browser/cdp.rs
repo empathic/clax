@@ -531,7 +531,8 @@ mod tests {
     fn a_lone_surrogate_from_the_page_is_read_as_a_replacement() {
         // A console message and an evaluate answer, each holding a lone
         // surrogate escape, as Chrome writes a page's broken string.
-        let event = r#"{"method":"Runtime.consoleAPICalled","params":{"args":[{"value":"a\ud83d"}]}}"#;
+        let event =
+            r#"{"method":"Runtime.consoleAPICalled","params":{"args":[{"value":"a\ud83d"}]}}"#;
         let Ok(Frame::Event(e)) = parse(event) else {
             panic!("an event")
         };
