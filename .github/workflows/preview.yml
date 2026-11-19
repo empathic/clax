@@ -114,6 +114,24 @@ jobs:
             exit 1
           fi
 
+      # A preview whose database this branch's earlier builds migrated under
+      # other migration numbers (the branch renumbered after main took its
+      # number) cannot be upgraded: it is reset, as a dev home is. The label
+      # `preview-reset` asks for that once: the preview is torn down here,
+      # the label removed, and the deploy below makes it fresh.
+      - name: Reset the preview first if the pull request is labelled preview-reset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          labels="repos/$GITHUB_REPOSITORY/issues/${{ github.event.number }}/labels"
+          names="$(gh api "$labels" --jq '.[].name')"
+          if grep -qx preview-reset <<< "$names"; then
+            (cd crates/clax-worker && node teardown.mjs "$NAME" --site-zone "$PREVIEW_SITE_ZONE")
+            gh api -X DELETE "$labels/preview-reset" > /dev/null
+          fi
+
       # Deploys what the build step built. A preview's first deploy makes
       # no SETUP_SECRET or CLAX_TOKEN (deploy.mjs --env): its owner signs in
       # with GitHub. The health wait and the site host check fail the run;

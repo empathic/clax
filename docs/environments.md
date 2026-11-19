@@ -84,6 +84,10 @@ never be the same site, to a browser, as Clax).
   signs in with GitHub is a new person, as on clax.dev.
 - **Later pushes:** the same Worker, redeployed: its artifacts and people
   stay (they live in its Durable Objects).
+- **Reset:** label the pull request `preview-reset` and push (or rerun the
+  deploy job). The deploy tears the preview down first, removes the label,
+  and deploys it fresh. A branch that renumbered its migrations needs
+  this: a preview its earlier builds migrated cannot be upgraded.
 - **Close or merge:** `preview.yml`'s teardown job runs
   `teardown.mjs pr-<N>`, which deletes the route, the DNS record, the
   custom domain, the Worker with its Durable Objects, then its queue and

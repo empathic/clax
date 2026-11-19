@@ -36,12 +36,16 @@ export type Share = { id: string; access: ShareAccess; github_login: string | nu
 export type ShareCandidate = { person: string; name: string | null; github_login: string | null };
 /** Whether an artifact's site is open to anyone, without signing in, or only to those it is shared with. */
 export type SiteAccess = "private" | "world";
+/** The Content-Security-Policy Clax sends on an artifact's own content: one that holds its pages to their own
+ * site (`self`, every artifact's at first), or no source restrictions (`unrestricted`): its pages then load code
+ * from, and send what they read to, any site. */
+export type ContentSecurityPolicy = "self" | "unrestricted";
 /** `GET /api/hosted/artifacts/<id>/sharing`: everything for whoever may share it, else `can_share: false` alone;
- * `site_access` and its site's address, `site_url`, where the daemon says them. `comments` is its Comments
- * switch: off, nobody comments there, whatever their access. */
+ * `site_access`, `content_security_policy` and its site's address, `site_url`, where the daemon says them. `comments`
+ * is its Comments switch: off, nobody comments there, whatever their access. */
 export type Sharing =
   | { artifact_id: string; can_share: false }
-  | { artifact_id: string; can_share: true; comments: boolean; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[]; site_access?: SiteAccess; site_url?: string };
+  | { artifact_id: string; can_share: true; comments: boolean; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[]; site_access?: SiteAccess; content_security_policy?: ContentSecurityPolicy; site_url?: string };
 /** An artifact in the public gallery. */
 export type PublicArtifact = { artifact_id: string; title: string; url: string };
 
@@ -81,6 +85,9 @@ export const sharing = (aid: string) => call<Sharing>(`/api/hosted/artifacts/${e
 /** Opens `aid`'s site to the world, or makes it private again. */
 export const setSiteAccess = (aid: string, access: SiteAccess) =>
   call<unknown>(`/api/artifacts/${e(aid)}`, "PATCH", { site_access: access });
+/** Serves `aid`'s site without Clax's Content Security Policy (`unrestricted`), or holds it to its own site again (`self`). */
+export const setContentSecurityPolicy = (aid: string, policy: ContentSecurityPolicy) =>
+  call<unknown>(`/api/artifacts/${e(aid)}`, "PATCH", { content_security_policy: policy });
 /** Shares `aid` with a GitHub login or a person (by public ID), or changes their access. */
 export const share = (aid: string, to: { github_login: string } | { person: string }, access: ShareAccess) =>
   call<{ share: Share }>(`/api/hosted/artifacts/${e(aid)}/shares`, "PUT", { ...to, access });

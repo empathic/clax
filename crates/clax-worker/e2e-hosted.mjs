@@ -29,7 +29,13 @@
 // - `/site-signin` is served; a private site is refused signed out (302
 //   to `/site-signin` for a page, 401 for a subresource) and served to the
 //   owner's browser through the handshake; a site opened to the world with
-//   `PATCH site_access` is served signed out until it is closed again; an
+//   `PATCH site_access` is served signed out until it is closed again; a
+//   world-open clax served without Clax's Content Security Policy (`PATCH
+//   content_security_policy: unrestricted`) serves its page and files with
+//   their framing alone, revalidated under a tag naming the policy, and its
+//   own service worker script, where at `self` it has the lockdown and
+//   Clax's kill switch, and at `self` again a copy kept from while
+//   `unrestricted` is answered whole with the lockdown; an
 //   old keyed asset URL serves no bytes, at most a redirect to its
 //   artifact's site;
 // - a guest with the link of a page shared for comments names themselves
@@ -597,6 +603,62 @@ async function main() {
     check(world.status === 200 && world.text.includes("Harbour log"), "a site opened to the world is served signed out", world.status);
     await api(origin, `/api/artifacts/${harbour.id}`, { method: "PATCH", body: JSON.stringify({ site_access: "private" }) });
     check(!(await raw(`${site}/`, { accept: "text/html" })).text.includes("Harbour log"), "closed again, it refuses the next anonymous request");
+
+    // A clax served unrestricted, on a site open to the world: its page and files keep only their framing
+    // and revalidate, tagged by the policy; its service worker's script is its own; at `self` again, a copy
+    // kept from then is answered whole with the lockdown and the worker gets Clax's script.
+    const PAGE_SW = "self.addEventListener('fetch', () => {});";
+    const openSite = (await api(origin, "/api/artifacts", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Unrestricted site",
+        files: {
+          "index.html": { content: "<title>Unrestricted site</title><h1>Unrestricted site</h1>", encoding: "utf8" },
+          "app.js": { content: "export const unrestricted = 1;", encoding: "utf8" },
+          "sw.js": { content: PAGE_SW, encoding: "utf8" },
+        },
+      }),
+    })).artifact;
+    const openHost = siteOf(openSite.id);
+    const policyOf = (r) => r.headers.get("content-security-policy") ?? "";
+    const lockdown = (p) => p.startsWith("frame-ancestors 'self' ") && p.includes("connect-src 'self';") && p.includes("form-action 'none'");
+    const framingAlone = (p) => p.startsWith("frame-ancestors 'self' ") && !p.includes(";");
+    const KILL = "self.addEventListener(\"install\",()=>self.skipWaiting());self.addEventListener(\"activate\",e=>e.waitUntil(self.registration.unregister()));";
+    await api(origin, `/api/artifacts/${openSite.id}`, { method: "PATCH", body: JSON.stringify({ site_access: "world" }) });
+    const ownPaths = ["/", "/app.js", "/_clax/v/1/", "/_clax/v/1/app.js"];
+    const atSelf = {};
+    for (const path of ownPaths) {
+      const r = await raw(`${openHost}${path}`);
+      check(r.status === 200 && lockdown(policyOf(r)), `self, ${path} of a world-open site carries the lockdown`, { status: r.status, csp: policyOf(r) });
+      atSelf[path] = { cc: r.headers.get("cache-control"), etag: r.headers.get("etag") };
+    }
+    const selfSw = await raw(`${openHost}/sw.js`, { "service-worker": "script" });
+    check(selfSw.status === 200 && selfSw.text === KILL, "self, a service worker's script request is answered Clax's kill switch", { status: selfSw.status, text: selfSw.text.slice(0, 120) });
+    const toUnrestricted = await api(origin, `/api/artifacts/${openSite.id}`, { method: "PATCH", body: JSON.stringify({ content_security_policy: "unrestricted" }) });
+    check(toUnrestricted.artifact?.content_security_policy === "unrestricted", "PATCH content_security_policy serves the clax unrestricted", toUnrestricted.artifact);
+    const unrestrictedTags = {};
+    for (const path of ownPaths) {
+      const r = await raw(`${openHost}${path}`);
+      const cc = r.headers.get("cache-control") ?? "";
+      const etag = r.headers.get("etag");
+      check(r.status === 200 && framingAlone(policyOf(r)), `unrestricted, ${path} carries its framing alone`, { status: r.status, csp: policyOf(r) });
+      check(cc.includes("no-cache") && !cc.includes("immutable") && !cc.includes("max-age") && etag && etag !== atSelf[path].etag, `unrestricted, ${path} revalidates under a tag of its own`, { cc, etag, was: atSelf[path] });
+      const again = await raw(`${openHost}${path}`, { "if-none-match": etag });
+      check(again.status === 304, `unrestricted, ${path} with its tag is not modified`, again.status);
+      unrestrictedTags[path] = etag;
+    }
+    const unrestrictedSw = await raw(`${openHost}/sw.js`, { "service-worker": "script" });
+    check(unrestrictedSw.status === 200 && unrestrictedSw.text === PAGE_SW && framingAlone(policyOf(unrestrictedSw)), "unrestricted, a service worker's script request is answered the clax's own script", { status: unrestrictedSw.status, text: unrestrictedSw.text.slice(0, 120), csp: policyOf(unrestrictedSw) });
+    const unrestrictedMissing = await raw(`${openHost}/nope.js`, { "service-worker": "script" });
+    check(unrestrictedMissing.status === 404 && lockdown(policyOf(unrestrictedMissing)), "unrestricted, a worker script it has none of is Clax's 404 with the lockdown", { status: unrestrictedMissing.status, csp: policyOf(unrestrictedMissing) });
+    await api(origin, `/api/artifacts/${openSite.id}`, { method: "PATCH", body: JSON.stringify({ content_security_policy: "self" }) });
+    for (const path of ownPaths) {
+      const r = await raw(`${openHost}${path}`, { "if-none-match": unrestrictedTags[path] });
+      check(r.status === 200 && lockdown(policyOf(r)), `self again, ${path} kept from while unrestricted is answered whole with the lockdown`, { status: r.status, csp: policyOf(r) });
+      check(r.headers.get("cache-control") === atSelf[path].cc && r.headers.get("etag") === atSelf[path].etag, `self again, ${path} caches as before`, { cc: r.headers.get("cache-control"), etag: r.headers.get("etag"), was: atSelf[path] });
+    }
+    const reselfSw = await raw(`${openHost}/sw.js`, { "service-worker": "script" });
+    check(reselfSw.status === 200 && reselfSw.text === KILL, "self again, the worker's update check is answered the kill switch", { status: reselfSw.status, text: reselfSw.text.slice(0, 120) });
 
     // Deleting the artifact erases its object.
     await api(origin, `/api/artifacts/${notes.id}`, { method: "DELETE" });

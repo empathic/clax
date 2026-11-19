@@ -194,8 +194,9 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
         }
         Route::Site => {
             // A service worker's script, of any path, is the instance's
-            // answer: Clax's own, which unregisters itself
-            // (`clax_http::host::site_layer`).
+            // answer: Clax's own, which unregisters itself, or on a site
+            // whose `content_security_policy` is `unrestricted` its own file
+            // (`clax_http::host::site_layer`, which reads the setting).
             let worker_script = req
                 .headers()
                 .get("service-worker")?

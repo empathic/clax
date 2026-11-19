@@ -282,6 +282,20 @@ user-activation tests timed out. In CI,
 `bazelisk run //web:playwright -- install-deps chromium` installs the
 system libraries Chromium needs.
 
+Cases written for every engine (`web/e2e/lockdown.spec.ts`,
+`web/e2e/content-security-policy.spec.ts`) skip WebKit and Firefox there, having no
+build of them. To run them, install the locked Playwright's builds into a
+directory outside the tree and name it with `CLAX_E2E_BROWSERS`, which
+takes the place of the pinned Chromium (`web/e2e/bazel-env.ts`):
+
+```
+PLAYWRIGHT_BROWSERS_PATH=<dir> bazelisk run //web:playwright -- install chromium webkit firefox
+bazelisk test //web:e2e_rest --test_env=CLAX_E2E_BROWSERS=<dir> --test_arg=--retries=0 --test_arg=content-security-policy
+```
+
+(An option between `--project rest` and the file filter ends the
+project's list.)
+
 ## The Clax app
 
 `apps/clax_app` (Flutter, for Android, macOS, iPhone and iPad) builds and tests under

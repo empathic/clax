@@ -18,6 +18,8 @@ mod comments;
 mod confirmations;
 #[cfg(any(not(clax_split), clax_split = "connect_instance"))]
 mod connect_instance;
+#[cfg(any(not(clax_split), clax_split = "content_security_policy"))]
+mod content_security_policy;
 #[cfg(any(not(clax_split), clax_split = "db"))]
 mod db;
 #[cfg(any(not(clax_split), clax_split = "live"))]
