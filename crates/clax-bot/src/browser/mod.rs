@@ -40,6 +40,7 @@ pub mod act;
 pub mod browse;
 pub mod cdp;
 pub mod fake;
+pub mod layer;
 pub mod live;
 pub mod locate;
 pub mod opts;
@@ -56,15 +57,14 @@ use std::fmt;
 
 /// The operation name of a test of a clax.
 pub const OP_TEST: &str = "browser.test";
-/// The operation name of a browse of a public URL.
-pub const OP_BROWSE: &str = "browser.browse";
+pub use layer::{OP_ACT, OP_CLOSE, OP_EXPECT, OP_OPEN, OP_PAGE};
 
 /// The run did not declare the operation, or the admin, the person or the
 /// host's credentials turned browser use off mid-run.
 pub const CODE_BROWSER_DISABLED: &str = "browser_disabled";
 /// The run's tests (or browses) are used up.
 pub const CODE_BROWSER_CAP: &str = "browser_cap";
-pub use crate::capability::{CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED};
+pub use crate::capability::{CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED, CODE_URL_NOT_IN_PRIOR_CONTEXT};
 /// No such version of the artifact, or no such page in the target.
 pub const CODE_BROWSER_TARGET_NOT_FOUND: &str = "browser_target_not_found";
 /// The instance's concurrent browsers are all in use; retryable.

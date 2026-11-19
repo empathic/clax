@@ -756,6 +756,83 @@ pub fn parse_opts(v: &Value, mode: Mode, grant_seconds: u32) -> Result<BrowserOp
     })
 }
 
+/// The options of `clax.browser.open` (spec §6.1): `v` is its `opts`
+/// argument (`null` or absent for none), `{viewport?}`.
+///
+/// # Errors
+/// [`CODE_BAD_ARGS`], naming the field.
+pub fn parse_open_opts(v: &Value) -> Result<Viewport, BrowserError> {
+    let empty = Map::new();
+    let o = object(v, "opts")?.unwrap_or(&empty);
+    only(o, "opts", &["viewport"])?;
+    viewport(o.get("viewport").unwrap_or(&Value::Null))
+}
+
+/// The source and options of `clax.browser.test` (spec §6.8): `source`
+/// is `{artifact: "draft" | version, path?}` (`null` or absent for the
+/// draft's `index.html`), `opts` `{viewport?, tests?, timeout?}`: the
+/// saved tests to run (all by default) and the call's time in
+/// milliseconds, at most `grant_seconds`, which it is by default. The
+/// options carry no steps.
+///
+/// # Errors
+/// [`CODE_BAD_ARGS`], naming the field.
+pub fn parse_test(
+    source: &Value,
+    opts: &Value,
+    grant_seconds: u32,
+) -> Result<(BrowserTarget, BrowserOpts), BrowserError> {
+    let target = if source.is_null() {
+        BrowserTarget {
+            version: None,
+            path: clax_core::publish::INDEX.into(),
+        }
+    } else {
+        match parse_source(source)? {
+            SourceSpec::Artifact { version, path } => BrowserTarget { version, path },
+            _ => {
+                return Err(bad(
+                    "source",
+                    "must be {artifact: \"draft\" | version, path?}",
+                ));
+            }
+        }
+    };
+    let empty = Map::new();
+    let o = object(opts, "opts")?.unwrap_or(&empty);
+    only(o, "opts", &["viewport", "tests", "timeout"])?;
+    let tests = match o.get("tests") {
+        None | Some(Value::Null) => Tests::All,
+        Some(Value::Array(_)) => tests(o.get("tests"), Mode::Test)?,
+        Some(_) => {
+            return Err(bad(
+                "opts.tests",
+                "must be a list of tests/<name>.test.js paths",
+            ));
+        }
+    };
+    let timeout_s = match o.get("timeout") {
+        None | Some(Value::Null) => grant_seconds,
+        Some(v) => {
+            let ms = int(v, "opts.timeout", 1, i64::from(u32::MAX))?;
+            u32::try_from((ms + 999) / 1_000)
+                .unwrap_or(u32::MAX)
+                .min(grant_seconds)
+        }
+    };
+    Ok((
+        target,
+        BrowserOpts {
+            viewport: viewport(o.get("viewport").unwrap_or(&Value::Null))?,
+            steps: Vec::new(),
+            tests,
+            html: false,
+            text: false,
+            timeout_s,
+        },
+    ))
+}
+
 /// A string as a JavaScript string literal.
 fn lit(s: &str) -> String {
     Value::String(s.to_string()).to_string()
@@ -951,7 +1028,9 @@ fn content_path(p: &str, field: &str) -> Result<String, BrowserError> {
     let ok = !path.is_empty()
         && path.chars().count() <= MAX_TEXT
         && !path.contains(['\\', '?', '#'])
-        && !path.split('/').any(|s| s.is_empty() || s == "." || s == "..")
+        && !path
+            .split('/')
+            .any(|s| s.is_empty() || s == "." || s == "..")
         && !path.starts_with("_clax/")
         && !path.contains(':');
     if ok {
@@ -971,14 +1050,20 @@ fn content_path(p: &str, field: &str) -> Result<String, BrowserError> {
 /// `artifact` and `html`, or one over its caps.
 pub fn parse_source(v: &Value) -> Result<SourceSpec, BrowserError> {
     let Some(o) = object(v, "source")? else {
-        return Err(bad("source", "must be {url}, {artifact, path?} or {html, files?}"));
+        return Err(bad(
+            "source",
+            "must be {url}, {artifact, path?} or {html, files?}",
+        ));
     };
     let kinds = ["url", "artifact", "html"]
         .iter()
         .filter(|k| o.contains_key(**k))
         .count();
     if kinds != 1 {
-        return Err(bad("source", "must hold exactly one of url, artifact and html"));
+        return Err(bad(
+            "source",
+            "must hold exactly one of url, artifact and html",
+        ));
     }
     if let Some(u) = o.get("url") {
         only(o, "source", &["url"])?;
@@ -998,10 +1083,17 @@ pub fn parse_source(v: &Value) -> Result<SourceSpec, BrowserError> {
             Some(p) => {
                 let p = artifact_path(p, "source.path")?;
                 if p.contains(['?', '#']) {
-                    return Err(bad("source.path", "must be a file of the artifact, without `?` or `#`"));
+                    return Err(bad(
+                        "source.path",
+                        "must be a file of the artifact, without `?` or `#`",
+                    ));
                 }
                 let p = p.trim_start_matches('/').to_string();
-                if p.is_empty() { clax_core::publish::INDEX.to_string() } else { p }
+                if p.is_empty() {
+                    clax_core::publish::INDEX.to_string()
+                } else {
+                    p
+                }
             }
         };
         return Ok(SourceSpec::Artifact { version, path });
@@ -1010,7 +1102,10 @@ pub fn parse_source(v: &Value) -> Result<SourceSpec, BrowserError> {
     let html = match o.get("html") {
         Some(Value::String(h)) if h.len() <= MAX_CONTENT_HTML => h.clone(),
         Some(Value::String(_)) => {
-            return Err(bad("source.html", format!("must be at most {} MiB", MAX_CONTENT_HTML / (1024 * 1024))));
+            return Err(bad(
+                "source.html",
+                format!("must be at most {} MiB", MAX_CONTENT_HTML / (1024 * 1024)),
+            ));
         }
         _ => return Err(bad("source.html", "must be a string")),
     };
@@ -1018,7 +1113,10 @@ pub fn parse_source(v: &Value) -> Result<SourceSpec, BrowserError> {
     let mut bytes = 0usize;
     if let Some(fs) = object(o.get("files").unwrap_or(&Value::Null), "source.files")? {
         if fs.len() > MAX_CONTENT_FILES {
-            return Err(bad("source.files", format!("must hold at most {MAX_CONTENT_FILES} files")));
+            return Err(bad(
+                "source.files",
+                format!("must hold at most {MAX_CONTENT_FILES} files"),
+            ));
         }
         for (p, f) in fs {
             let field = format!("source.files[{}]", Value::String(p.clone()));
@@ -1044,7 +1142,10 @@ pub fn parse_source(v: &Value) -> Result<SourceSpec, BrowserError> {
             if bytes > MAX_CONTENT_BYTES {
                 return Err(bad(
                     "source.files",
-                    format!("must hold at most {} MiB together", MAX_CONTENT_BYTES / (1024 * 1024)),
+                    format!(
+                        "must hold at most {} MiB together",
+                        MAX_CONTENT_BYTES / (1024 * 1024)
+                    ),
                 ));
             }
             if files.insert(path.clone(), file).is_some() {
@@ -1425,9 +1526,15 @@ mod tests {
         assert_eq!(
             files.into_iter().collect::<Vec<_>>(),
             [
-                ("img/dot.bin".to_string(), SuppliedFile::Bytes(vec![1, 2, 3])),
+                (
+                    "img/dot.bin".to_string(),
+                    SuppliedFile::Bytes(vec![1, 2, 3])
+                ),
                 ("shot.png".to_string(), SuppliedFile::Image("c-1".into())),
-                ("style.css".to_string(), SuppliedFile::Text("h1 { color: red }".into())),
+                (
+                    "style.css".to_string(),
+                    SuppliedFile::Text("h1 { color: red }".into())
+                ),
             ]
         );
         assert_eq!(
@@ -1436,13 +1543,22 @@ mod tests {
         );
         assert_eq!(
             source(json!({"artifact": "draft"})).unwrap(),
-            SourceSpec::Artifact { version: None, path: "index.html".into() }
+            SourceSpec::Artifact {
+                version: None,
+                path: "index.html".into()
+            }
         );
         assert_eq!(
             source(json!({"artifact": 3, "path": "/about.html"})).unwrap(),
-            SourceSpec::Artifact { version: Some(3), path: "about.html".into() }
+            SourceSpec::Artifact {
+                version: Some(3),
+                path: "about.html".into()
+            }
         );
-        assert_eq!(source(json!({"html": ""})).unwrap().kind(), clax_store::bot_web::SessionKind::Content);
+        assert_eq!(
+            source(json!({"html": ""})).unwrap().kind(),
+            clax_store::bot_web::SessionKind::Content
+        );
     }
 
     #[test]
@@ -1453,8 +1569,13 @@ mod tests {
             e.message
         };
         let big = "x".repeat(MAX_CONTENT_HTML + 1);
-        assert_eq!(refused(json!({"html": big})), "source.html: must be at most 2 MiB");
-        let many: Map<String, Value> = (0..=MAX_CONTENT_FILES).map(|i| (format!("f{i}.txt"), json!("x"))).collect();
+        assert_eq!(
+            refused(json!({"html": big})),
+            "source.html: must be at most 2 MiB"
+        );
+        let many: Map<String, Value> = (0..=MAX_CONTENT_FILES)
+            .map(|i| (format!("f{i}.txt"), json!("x")))
+            .collect();
         assert_eq!(
             refused(json!({"html": "", "files": many})),
             "source.files: must hold at most 100 files"
@@ -1466,9 +1587,13 @@ mod tests {
         );
         // An image handle is not counted.
         let just = "x".repeat(MAX_CONTENT_BYTES);
-        assert!(source(json!({"html": "", "files": {"a.txt": just, "i.png": {"id": "c-1"}}})).is_ok());
+        assert!(
+            source(json!({"html": "", "files": {"a.txt": just, "i.png": {"id": "c-1"}}})).is_ok()
+        );
         assert!(refused(json!({"html": "", "files": {"../x": "a"}})).contains("relative path"));
-        assert!(refused(json!({"html": "", "files": {"_clax/api": "a"}})).contains("relative path"));
+        assert!(
+            refused(json!({"html": "", "files": {"_clax/api": "a"}})).contains("relative path")
+        );
         assert!(refused(json!({"html": "", "files": {"a": {"base64": "!!"}}})).contains("Base64"));
         assert!(refused(json!({"html": "", "files": {"a": 3}})).contains("an Image"));
         assert_eq!(
@@ -1479,5 +1604,4 @@ mod tests {
         assert!(refused(json!({"artifact": "draft", "path": "../x"})).contains("must not leave"));
         assert!(refused(json!(null)).starts_with("source:"));
     }
-
 }

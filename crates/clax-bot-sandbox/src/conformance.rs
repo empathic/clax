@@ -1439,7 +1439,7 @@ pub fn layer_calls() -> Vec<LayerCall> {
             method,
             statement,
             "browser.expect",
-            json!(["s1", null, method, args]),
+            json!(["s1", [], method, args]),
         )
     };
     vec![
@@ -1808,7 +1808,7 @@ return out;",
                 ),
                 call_err(
                     "browser.expect",
-                    json!(["s1", null, "toHaveTitle", {"title": "T"}]),
+                    json!(["s1", [], "toHaveTitle", {"title": "T"}]),
                     "browser_session_closed",
                     "the session closed: idle",
                 ),
@@ -1951,8 +1951,34 @@ return 'done';",
         layered(case(
             "the_flat_ops_are_not_on_clax",
             "return [typeof expect, Object.keys(clax.browser).sort(), typeof clax.browser.page, typeof clax.browser.act];",
-            ok(json!(["function", ["open", "test"], "undefined", "undefined"])),
+            ok(json!([
+                "function",
+                ["open", "session", "test"],
+                "undefined",
+                "undefined"
+            ])),
         )),
+        layered(Case {
+            calls: vec![
+                open(),
+                call("browser.page", json!(["s7", "title", {}]), answered(json!("T"))),
+            ],
+            ..case(
+                "a_returned_page_shows_its_session_and_a_later_script_reaches_it",
+                "const page = await clax.browser.open({ url: 'https://x.test/' });
+const later = clax.browser.session('s7');
+const before = later.url();
+const title = await later.title();
+return [page, before, title, later.url(), JSON.stringify(later)];",
+                ok(json!([
+                    {"session": "s1", "url": "https://x.test/"},
+                    "",
+                    "T",
+                    PAGE_URL,
+                    format!("{{\"session\":\"s7\",\"url\":\"{PAGE_URL}\"}}")
+                ])),
+            )
+        }),
         layered(Case {
             calls: vec![
                 open(),

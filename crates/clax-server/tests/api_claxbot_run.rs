@@ -2071,7 +2071,7 @@ async fn a_browse_run_with_the_switch_on_declares_browse() {
     assert_eq!(run.browser, "test,browse");
     let (_, as_made) = ts.store.run_as_made(&run.id).unwrap().unwrap();
     let granted = as_made.bindings().unwrap().all()[0].granted().to_vec();
-    assert!(granted.iter().any(|o| o == "browser.browse"), "{granted:?}");
+    assert!(granted.iter().any(|o| o == "browser.open"), "{granted:?}");
     // Browsing is its own capability: the person's web choice off leaves
     // it in, and the run keeps what was live when it was made.
     ts.store

@@ -149,9 +149,7 @@
   };
   defineProperty(globalThis, "console", { value: consoleObject, writable: true, configurable: true });
 
-  // The browser layer (spec §6.9): Page, Locator, Keyboard, Mouse and expect
-  // over the five flat session operations, installed when ops holds them.
-  // A row per method reaching the browser, as browser/layer.rs in clax-bot.
+  // The browser layer (spec §6.9): rows as clax-bot's browser/layer.rs.
   const table =
   // browser-layer-table:begin
   [
@@ -247,7 +245,7 @@
   const P = create(null);
   for (const c of ["Page", "Locator", "Keyboard", "Mouse", "LocatorAssertions", "PageAssertions"]) P[c] = create(null);
   const put = (a, v) => defineProperty(a, a.length, { value: v, writable: true, enumerable: true, configurable: true });
-  // RegExps as {regex, flags}, in arrays and plain objects too.
+  // RegExp as {regex, flags}, nested too.
   const conv = (x) => {
     if (x instanceof RegExpCtor) {
       const o = create(null);
@@ -285,7 +283,6 @@
     if (r.ok !== true) throw named(failName || (r.timeout === true ? "TimeoutError" : "Error"), toText(r.error));
     return r.value;
   };
-  // A Response or ConsoleMessage.
   const data = (d, names) => {
     const o = create(null);
     for (let i = 0; i < names.length; i++) o[names[i]] = () => d[names[i]];
@@ -332,7 +329,7 @@
       if (withTimeout && args.timeout === undefined && p.timeout !== undefined) args.timeout = p.timeout;
       if (op === "page") return shape(action, answer(p, await flat.page(p.session, action, args)));
       if (op === "act") return answer(p, await flat.act(p.session, s.steps, action, args));
-      return answer(p, await flat.expect(p.session, s.steps === undefined ? null : s.steps, action, args), "Expected");
+      return answer(p, await flat.expect(p.session, s.steps || [], action, args), "Expected");
     };
   }
   P.Page.evaluate = async function (fn, arg) {
@@ -378,19 +375,29 @@
     if (o && o.hasNotText !== undefined) l = chain(l, "hasNotText", o.hasNotText);
     return l;
   };
-  const open = async (source, opts) => {
-    const r = await (opts === undefined ? flat.open(source) : flat.open(source, opts));
+  // A session's Page; clax.browser.session(id) in a later script.
+  const pageOf = (session, url) => {
     const p = create(null);
-    p.session = r.session;
-    p.url = r.url;
+    p.session = session;
+    p.url = url;
     p.p = p;
     const page = make(P.Page, p);
-    for (const [k, c] of [["keyboard", "Keyboard"], ["mouse", "Mouse"]]) {
+    const sub = (c) => {
       const s = create(null);
       s.p = p;
-      defineProperty(page, k, { value: make(P[c], s), enumerable: true });
-    }
+      return { value: make(P[c], s) };
+    };
+    defineProperty(page, "keyboard", sub("Keyboard"));
+    defineProperty(page, "mouse", sub("Mouse"));
     return page;
+  };
+  P.Page.toJSON = function () {
+    const p = S(this).p;
+    return { session: p.session, url: p.url };
+  };
+  const open = async (source, opts) => {
+    const r = await (opts === undefined ? flat.open(source) : flat.open(source, opts));
+    return pageOf(r.session, r.url);
   };
   for (const c of ["LocatorAssertions", "PageAssertions"]) {
     defineProperty(P[c], "not", {
@@ -473,6 +480,7 @@
       delete B[n];
     }
     B.open = open;
+    B.session = (id) => pageOf(toText(id), "");
     defineProperty(globalThis, "expect", { value: expect, writable: true, configurable: true });
   }
 

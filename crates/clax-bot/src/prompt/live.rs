@@ -6,8 +6,8 @@
 
 use super::tests::host_surface;
 use super::*;
-use crate::golden::golden;
 use crate::capability::{CapSet, Capability};
+use crate::golden::golden;
 use clax_surface::RunScope;
 
 /// ClaxShell's surface file as the surfaces design writes it.
@@ -458,7 +458,9 @@ fn a_run_of_claxs_own_kind_is_sent_claxs_prompt() {
     let ops: Vec<&str> = clax.operations().map(|o| o.name).collect();
     let run = run_of("clax.brief", vec![binding(clax, &ops)], json!({}));
     let bound = [(&run.bindings[0], &shell)];
-    let every: CapSet = Capability::ALL.into_iter().collect();
+    // A binding with no `caps` in its scope declares the capabilities
+    // its operations show: the source kinds share theirs.
+    let every = crate::api::caps_of(&|op| ops.contains(&op));
     assert_eq!(
         system_of(&run, &shell, &bound, Some("not a prompt file")).unwrap(),
         system_prompt(RequestKind::Brief, &every)

@@ -163,43 +163,58 @@ pub fn target(name: &str, args: &[Value], artifact: &str) -> Option<String> {
     }
 }
 
-/// The operations of Clax's own surface a capability allows, each with
-/// the capability (spec 2026-11-19-claxbot-browser §4.2), in the order a
-/// binding lists them: what [`clax_store::bot_runs::CLAX_GRANTED`] grants,
-/// as [`Capability`]s. `browser.open.content` allows none of them.
-pub(crate) const GRANTED: [(&str, Capability); 4] = [
-    ("web.search", Capability::WebSearch),
-    ("web.fetch", Capability::WebFetch),
-    ("browser.test", Capability::OpenArtifact),
-    ("browser.browse", Capability::OpenUrl),
+/// The browser's source capabilities: any one allows the session
+/// operations.
+const OPEN: &[Capability] = &[
+    Capability::OpenUrl,
+    Capability::OpenArtifact,
+    Capability::OpenContent,
 ];
 
-/// The capability the operation `name` needs, when one does: the
-/// operations of [`GRANTED`]. Every other operation a run of Clax's own
-/// kind has whatever its capabilities.
+/// The operations of Clax's own surface the capabilities allow, each with
+/// the capabilities any one of which allows it (spec
+/// 2026-11-19-claxbot-browser §4.2, §6.9), in the order a binding lists
+/// them: what [`clax_store::bot_runs::CLAX_GRANTED`] grants, as
+/// [`Capability`]s.
+pub(crate) const GRANTED: [(&str, &[Capability]); 8] = [
+    ("web.search", &[Capability::WebSearch]),
+    ("web.fetch", &[Capability::WebFetch]),
+    ("browser.open", OPEN),
+    ("browser.page", OPEN),
+    ("browser.act", OPEN),
+    ("browser.expect", OPEN),
+    ("browser.close", OPEN),
+    ("browser.test", &[Capability::OpenArtifact]),
+];
+
+/// The capabilities any one of which the operation `name` needs, when it
+/// needs one: the operations of [`GRANTED`]. Every other operation a run
+/// of Clax's own kind has whatever its capabilities.
 #[must_use]
-pub(crate) fn needs(name: &str) -> Option<Capability> {
+pub(crate) fn needs(name: &str) -> Option<&'static [Capability]> {
     GRANTED.iter().find(|(op, _)| *op == name).map(|(_, c)| *c)
 }
 
 /// Whether a run holding `caps` (its capabilities when it was made,
 /// [`clax_store::bot_runs::Run::caps`]) declares the operation named
 /// `name`: every operation but `web.*` and `browser.*`, and each of those
-/// whose capability `caps` holds ([`needs`]).
+/// one of whose capabilities `caps` holds ([`needs`]).
 pub(crate) fn declared(name: &str, caps: &CapSet) -> bool {
-    needs(name).is_none_or(|c| caps.has(c))
+    needs(name).is_none_or(|cs| cs.iter().any(|c| caps.has(*c)))
 }
 
-/// The capabilities a run whose binding has the operations `has` names
-/// shows in its declaration: those of [`GRANTED`] whose operation it has.
-/// A capability that allows no operation of the surface
-/// (`browser.open.content`) cannot be told from a binding.
+/// The capabilities a binding whose operations `has` names shows by
+/// them: each of [`GRANTED`] that is an operation's only one. The
+/// browser's source kinds share the session operations, so a binding
+/// names them in its scope instead (`clax_store::bot_runs::Bindings::clax`,
+/// [`crate::prompt`]'s reading of it); here they show only as
+/// `browser.test`'s `browser.open.artifact`.
 #[must_use]
 pub(crate) fn caps_of(has: &dyn Fn(&str) -> bool) -> CapSet {
     GRANTED
         .iter()
-        .filter(|(op, _)| has(op))
-        .map(|(_, c)| *c)
+        .filter(|(op, cs)| cs.len() == 1 && has(op))
+        .map(|(_, cs)| cs[0])
         .collect()
 }
 
@@ -240,8 +255,7 @@ const CLAX_HEAD_NOTE: &str = " files.* and draft.* change only the run's draft,\
 /// declared before the browser, byte for byte.
 #[must_use]
 pub fn dts(caps: &CapSet) -> String {
-    dts_with(caps, &[], &|_| false)
-        .expect("one surface puts each of its names on `clax` once")
+    dts_with(caps, &[], &|_| false).expect("one surface puts each of its names on `clax` once")
 }
 
 /// [`dts`] of a run of Clax's own kind that a join bound other surfaces
@@ -336,7 +350,7 @@ mod tests {
     #[test]
     fn every_operation_of_the_file_is_an_op() {
         let names: Vec<&str> = definition().operations().map(|o| o.name).collect();
-        assert_eq!(names.len(), 26);
+        assert_eq!(names.len(), 30);
         for name in names {
             let spec = op(name).unwrap();
             assert_eq!(spec.name(), name);
@@ -403,67 +417,91 @@ mod tests {
             ]
         );
         assert_eq!(
-            op(b::OP_BROWSE).unwrap().errors(),
+            op(b::OP_OPEN).unwrap().errors(),
             [
                 b::CODE_BROWSER_DISABLED,
                 b::CODE_BROWSER_CAP,
                 b::CODE_CREDITS_EXHAUSTED,
                 b::CODE_URL_NOT_ALLOWED,
+                b::CODE_URL_NOT_IN_PRIOR_CONTEXT,
+                b::CODE_BROWSER_TARGET_NOT_FOUND,
                 b::CODE_BROWSER_BUSY,
                 b::CODE_BROWSER_UNAVAILABLE,
                 b::CODE_BROWSER_TIMEOUT,
             ]
         );
+        for flat in [b::OP_PAGE, b::OP_ACT, b::OP_EXPECT, b::OP_CLOSE] {
+            let codes = op(flat).unwrap().errors();
+            assert!(
+                codes.iter().any(|c| c == b::CODE_BROWSER_SESSION_LOST),
+                "{flat}"
+            );
+            assert!(
+                codes.iter().any(|c| c == b::CODE_BROWSER_SESSION_CLOSED),
+                "{flat}"
+            );
+        }
     }
 
     /// The `browser` namespace is declared only in a run holding a
-    /// capability that allows one of its operations, with what the head
-    /// says of charged calls naming it. `browser.open.content` allows no
-    /// operation of this version, so it alone declares no namespace.
+    /// capability that allows one of its operations: any source kind
+    /// declares the session operations, `browser.open.artifact` also
+    /// `test`; what the head says of charged calls names it.
     #[test]
     fn browser_namespace_needs_an_open_capability() {
         let with = |caps: &[C]| dts(&caps.iter().copied().collect());
         let none = with(&[]);
         assert!(!none.contains("browser"), "{none}");
         assert!(!none.contains("BrowserResult"), "{none}");
-        assert_eq!(with(&[C::OpenContent]), none);
-
-        let url = with(&[C::OpenUrl]);
-        assert!(url.contains("  browser: {\n"), "{url}");
-        assert!(url.contains("browse(url: string"), "{url}");
-        assert!(!url.contains("test(target"), "{url}");
-        assert!(url.contains("// browser.* calls are charged"), "{url}");
-        assert!(!url.contains("web.*"), "{url}");
-
+        for kind in [C::OpenUrl, C::OpenContent] {
+            let one = with(&[kind]);
+            assert!(one.contains("  browser: {\n"), "{one}");
+            assert!(one.contains("open(source:"), "{one}");
+            assert!(!one.contains("test(source"), "{one}");
+            assert!(one.contains("// browser.* calls are charged"), "{one}");
+            assert!(!one.contains("web.*"), "{one}");
+        }
         let all = with(&C::ALL);
         assert!(
             all.contains("// web.* and browser.* calls are charged"),
             "{all}"
         );
         assert!(
-            all.contains("test(target") && all.contains("browse(url"),
+            all.contains("test(source") && all.contains("open(source"),
             "{all}"
         );
         assert!(
             all.contains("fetch(url") && all.contains("search(query"),
             "{all}"
         );
-        // The capability each charged operation needs is the one the
+        // The capabilities each charged operation needs are those the
         // store's binding grants it for, operation for operation.
-        assert_eq!(
-            GRANTED.map(|(op, c)| (op, c.id())),
-            clax_store::bot_runs::CLAX_GRANTED.map(|(c, op)| (op, c))
-        );
-        assert_eq!(
-            [web::OP_SEARCH, web::OP_FETCH, browser::OP_TEST, browser::OP_BROWSE],
-            GRANTED.map(|(op, _)| op)
-        );
+        let ids = |cs: &[C]| cs.iter().map(|c| c.id()).collect::<Vec<_>>();
+        let store: Vec<(&str, Vec<&str>)> = clax_store::bot_runs::CLAX_GRANTED
+            .iter()
+            .map(|(op, cs)| (*op, cs.to_vec()))
+            .collect();
+        let mine: Vec<(&str, Vec<&str>)> = GRANTED.iter().map(|(op, cs)| (*op, ids(cs))).collect();
+        assert_eq!(mine, store);
         let charged: Vec<&str> = definition()
             .operations()
             .filter(|o| o.op.access == Access::Spend)
             .map(|o| o.name)
             .collect();
-        assert_eq!(charged, GRANTED.map(|(op, _)| op));
+        let granted: Vec<&str> = GRANTED.iter().map(|(op, _)| *op).collect();
+        assert_eq!(charged, granted);
+        assert_eq!(
+            granted[2..],
+            [
+                browser::OP_OPEN,
+                browser::OP_PAGE,
+                browser::OP_ACT,
+                browser::OP_EXPECT,
+                browser::OP_CLOSE,
+                browser::OP_TEST
+            ]
+        );
+        assert_eq!(granted[..2], [web::OP_SEARCH, web::OP_FETCH]);
     }
 
     /// `browser.test` is declared only with `browser.open.artifact`, and
@@ -473,14 +511,8 @@ mod tests {
         let artifact: CapSet = [C::OpenArtifact].into_iter().collect();
         let test = dts(&artifact);
         assert!(test.contains("  browser: {\n"), "{test}");
-        assert!(
-            test.contains(
-                "test(target?: BrowserTarget, opts?: BrowserOpts): Promise<BrowserResult>;"
-            ),
-            "{test}"
-        );
+        assert!(test.contains("test(source?:"), "{test}");
         assert!(test.contains("interface BrowserResult"), "{test}");
-        assert!(!test.contains("browse("), "{test}");
         for others in [
             vec![C::OpenUrl],
             vec![C::OpenContent],
@@ -488,51 +520,58 @@ mod tests {
         ] {
             let caps: CapSet = others.iter().copied().collect();
             assert!(!declared("browser.test", &caps), "{others:?}");
-            assert!(!dts(&caps).contains("test(target"), "{others:?}");
+            assert!(declared("browser.open", &caps), "{others:?}");
+            assert!(!dts(&caps).contains("test(source"), "{others:?}");
         }
         assert!(declared("browser.test", &artifact));
-        assert!(!declared("browser.browse", &artifact));
+        assert!(declared("browser.page", &artifact));
         assert!(!declared("web.fetch", &artifact));
         assert!(declared("files.read", &artifact));
         assert!(declared("files.read", &CapSet::default()));
         assert!(!declared("browser.test", &CapSet::default()));
-        // A binding's operations give back the capabilities that declare
-        // them, all but content's.
+        assert!(!declared("browser.open", &CapSet::default()));
+        // A binding's operations give back the capabilities that are
+        // their operation's only one; the source kinds share theirs.
         let all: CapSet = C::ALL.into_iter().collect();
         let back = caps_of(&|op| declared(op, &all));
         assert_eq!(
             back,
-            [C::WebSearch, C::WebFetch, C::OpenUrl, C::OpenArtifact]
+            [C::WebSearch, C::WebFetch, C::OpenArtifact]
                 .into_iter()
                 .collect()
         );
     }
 
     /// A browser call's arguments are checked against the declaration
-    /// before anything performs it: a step of no known shape is refused
-    /// there, naming the step; what the declaration cannot say (the caps,
-    /// a viewport's bounds) is the browser's own check
-    /// ([`crate::browser::opts`]).
+    /// before anything performs it: an action of no known name is refused
+    /// there, naming the parameter; what the declaration cannot say (a
+    /// source's caps, an action's `args`) is the browser's own check
+    /// ([`crate::browser::opts`], [`crate::browser::layer`]).
     #[test]
     fn browser_arguments_are_checked_against_the_declaration() {
-        let ok = json!([{"version": 2}, {"viewport": "phone", "steps": [
-            {"goto": "about.html"}, {"click": "#go"}, {"wait": 500},
-            {"wait": {"selector": ".done", "visible": true}},
-            {"expect": {"selector": "h1", "text": "Hi"}}, {"expectNoErrors": true},
-            {"screenshot": {"fullPage": true}}
-        ], "tests": true, "timeout_s": 30}]);
+        let ok = json!([{"artifact": 2}, {"viewport": "phone", "tests": ["tests/a.test.js"], "timeout": 30000}]);
         assert_eq!(check_args("browser.test", &ok).unwrap().len(), 2);
         assert!(check_args("browser.test", &json!([])).is_ok());
-        let e =
-            check_args("browser.test", &json!([null, {"steps": [{"clik": "#go"}]}])).unwrap_err();
-        assert_eq!(e.code, CODE_BAD_ARGS);
-        assert!(e.message.contains("argument 2 (opts).steps[0]"), "{e}");
         let e = check_args("browser.test", &json!([null, {"viewport": "watch"}])).unwrap_err();
+        assert_eq!(e.code, CODE_BAD_ARGS);
         assert!(e.message.contains("(opts).viewport"), "{e}");
         // 9,000 wide is the browser's to refuse, not the declaration's.
-        let wide = json!([null, {"viewport": {"width": 9000, "height": 800}}]);
-        assert!(check_args("browser.test", &wide).is_ok());
-        assert!(check_args("browser.browse", &json!([])).is_err());
+        let wide =
+            json!([{"url": "https://a.example/"}, {"viewport": {"width": 9000, "height": 800}}]);
+        assert!(check_args("browser.open", &wide).is_ok());
+        assert!(check_args("browser.page", &json!(["s1", "title"])).is_ok());
+        let e = check_args("browser.page", &json!(["s1", "waitForTimeout", {}])).unwrap_err();
+        assert!(e.message.contains("(action)"), "{e}");
+        let e = check_args("browser.act", &json!(["s1", [{"css": "a"}], "hoverAll"])).unwrap_err();
+        assert!(e.message.contains("(action)"), "{e}");
+        assert!(
+            check_args(
+                "browser.expect",
+                &json!(["s1", [], "toHaveURL", {"url": "x"}])
+            )
+            .is_ok()
+        );
+        assert!(check_args("browser.close", &json!([])).is_err());
     }
 
     /// A set of web capabilities alone declares what the web shape it
@@ -560,8 +599,8 @@ mod tests {
         let clax = definition();
         assert_eq!(clax.name(), "clax");
         assert_eq!(clax.rules(), None);
-        assert_eq!(clax.operations().len(), 26);
-        assert_eq!(clax.interfaces().len(), 30);
+        assert_eq!(clax.operations().len(), 30);
+        assert_eq!(clax.interfaces().len(), 31);
         let tagged = |tag: Tag| -> Vec<&str> {
             clax.operations()
                 .filter(|o| o.op.access == tag)
@@ -602,7 +641,16 @@ mod tests {
         );
         assert_eq!(
             tagged(Tag::Spend),
-            ["web.search", "web.fetch", "browser.test", "browser.browse"]
+            [
+                "web.search",
+                "web.fetch",
+                "browser.open",
+                "browser.page",
+                "browser.act",
+                "browser.expect",
+                "browser.close",
+                "browser.test"
+            ]
         );
         assert_eq!(tagged(Tag::Effect), [""; 0]);
         assert!(clax.operations().all(|o| !o.op.waits && !o.op.once));
@@ -655,6 +703,9 @@ mod tests {
                 "db.list(opts).limit",
                 "web.search(limit)",
                 "web.fetch(opts).offset",
+                "browser.open(source).artifact",
+                "browser.close().ms",
+                "browser.test(source).artifact",
                 "ArtifactInfo.version",
                 "FileInfo.bytes",
                 "Problem.line",
@@ -671,32 +722,33 @@ mod tests {
                 "WebPage.offset",
                 "WebPage.nextOffset",
                 "WebPage.totalChars",
-                "BrowserTarget.version",
                 "BrowserViewport.width",
                 "BrowserViewport.height",
-                "BrowserOpts.steps.scroll.y",
-                "BrowserOpts.steps.wait",
-                "BrowserOpts.steps.wait.ms",
-                "BrowserOpts.steps.expect.count",
-                "BrowserOpts.timeout_s",
-                "BrowserLeft.tests",
-                "BrowserLeft.browses",
+                "BrowserTestOpts.timeout",
+                "BrowserLeft.url",
+                "BrowserLeft.artifact",
+                "BrowserLeft.content",
                 "BrowserResult.status",
                 "BrowserResult.tests.passed",
                 "BrowserResult.tests.skipped",
                 "BrowserResult.console.at_ms",
                 "BrowserResult.requests.failed.status",
                 "BrowserResult.ms",
+                "BrowserOpened.status",
+                "BrowserAnswer.ms",
                 "RequestArtifact.version",
             ]
         );
         assert_eq!(
             other,
             [
+                "browser.close().cost",
                 "WebLeft.credits",
                 "BrowserViewport.scale",
                 "BrowserLeft.credits",
-                "BrowserResult.cost"
+                "BrowserResult.cost",
+                "BrowserOpened.cost",
+                "BrowserAnswer.cost"
             ]
         );
 

@@ -1,75 +1,79 @@
-//! `browser.test` and `browser.browse` in a session of Clax's own
-//! surface: the browser's [`Performer`]s on the one Spend sequence
-//! ([`super::spend`]; spec 2026-11-19-claxbot-browser §4.6, §6.8). What
-//! each answers to the sequence's steps:
+//! The browser's operations in a session of Clax's own surface: its
+//! [`Performer`]s on the one Spend sequence ([`super::spend`]; spec
+//! 2026-11-19-claxbot-browser §4.6, §6.2 to §6.4, §6.8, §6.9): [`Open`]
+//! for `browser.open`, [`SessionOp`] for `browser.page`, `browser.act`,
+//! `browser.expect` and `browser.close`, [`Test`] for `browser.test`.
+//! What each answers to the sequence's steps:
 //!
-//! - **Live** (step 3): `browser.open.artifact` for a test,
-//!   `browser.open.url` for a browse.
-//! - **Arguments** (step 4, [`crate::browser::opts`]): the target or the
-//!   URL, the options, every cap, the call's time at most
-//!   `browser.call_seconds`.
-//! - **Admission** (step 5). A test: the target exists, the version the
-//!   call names and the page in the draft or that version, or
-//!   `browser_target_not_found`. A browse: the URL and every `goto`
-//!   step's URL pass the admin's URL rule
-//!   ([`crate::browser::browse::BrowseScope::allowed`], the run's sources
-//!   read now), or `url_not_allowed` or `url_not_in_prior_context`.
-//! - **Cap** (step 7): the run's tests or browses counted: those whose
-//!   browser opened, and those Browser Run refused, so a script cannot
-//!   retry a failing Browser Run without end; not those the host refused
-//!   before asking it (`browser_busy`, a cancelled run).
-//! - **Price** (step 8): the call's time cap at the browser line.
-//! - **Perform** (step 9): the source opens a browser
-//!   ([`crate::browser::BrowserSource::open`]) and the test runs
-//!   ([`run_test`]) on the run's draft as the session holds it, edits not
-//!   yet committed included, or on the version, with the source's
-//!   deadline at the call's time cap from before the open, which it
-//!   bounds too. A browse runs on the URL, its page's every request held
-//!   to the rule's hosts ([`crate::browser::browse::BrowsePolicy`]).
+//! - **Live** (step 3): an open needs the capability of its source's
+//!   kind (`browser.open.url`, `.artifact`, `.content`); a call on a
+//!   session needs its session's kind's, as the registry holds it (a
+//!   `goto` out of its origin made it a URL session), else as the store
+//!   does; a test needs `browser.open.artifact`.
+//! - **Arguments** (step 4): an open's source and viewport
+//!   ([`crate::browser::opts::parse_source`], with spec §6.2's caps); a
+//!   session call's action, locator and `args`, by its row of the layer's
+//!   table ([`crate::browser::layer`]): an action the table does not have
+//!   is `invalid_args`, as is an option its row does not take.
+//! - **Admission** (step 5). An open: the run has fewer sessions open
+//!   than `browser.max_open_per_run`, else `browser_cap`; a URL passes the
+//!   admin's URL rule; a clax target exists; each `Image` of supplied
+//!   files is an item of the run's content. A session call: its session
+//!   is open in this process (else `browser_session_closed` or
+//!   `browser_session_lost`, uncharged); `runTests` only on a session of
+//!   the run's clax.
+//! - **Cap** (step 7): an open, and a test, are counted against their
+//!   kind's `max_per_run`, under the capability's ID (the entry's
+//!   `count_as`); calls on a session are not counted.
+//! - **Price** (step 8): one call's time cap, `browser.call_seconds`.
+//! - **Perform** (step 9): the host's session registry
+//!   ([`crate::browser::live::BrowserSessions`]) opens the session or
+//!   performs the call; a `goto` out of an artifact or content session is
+//!   given the URL session's policy when `browser.open.url` is live and
+//!   its rule admits the URL, and is refused `browser_disabled` by the
+//!   session otherwise.
 //!
-//! Calls of one step are performed one after the other (the session's
-//! `browsing` lock, [`Performer::serial`]), so two tests a script starts
-//! together never hold two browsers of the instance's at once, and each
-//! is counted and charged before the next is checked.
+//! # What is charged
 //!
-//! # What is charged and shown
+//! A session's time is charged in segments, each millisecond once (spec
+//! §10.3): an open from the WebSocket's upgrade to the open's end, each
+//! call from the session's charged point (the store's row) to its own
+//! end, written with the call's entry ([`Finish::session`]). A failure
+//! on the page is an answer (`ok: false`), journaled and charged as any;
+//! a session that ended answers `browser_session_closed` (or
+//! `browser_session_lost`) uncharged, its tail charged by the store when
+//! the host ended it ([`ClaxSession::charge_ended`], at each call and at
+//! the run's end). A refusal `credits_exhausted` closes the session,
+//! `credits`. A test is charged its measured time, rounded up to the
+//! second, as one segment of no session.
 //!
-//! A call whose browser opened is charged its measured time (from the
-//! open to the close, by the provider's clock, rounded up to the whole
-//! second) at the rate step 8 read, whatever it answered: a result, a
-//! timeout, a cancellation, or none, its future dropped by the sandbox on
-//! a cancel (`Opened`). A page that throws or an assertion that fails is
-//! an answer (`passed: false`), journaled and charged as any. Each
-//! screenshot is kept just before as an item of the run's content
-//! (surface `clax`, then noted with the call's operation and key); one
-//! that cannot be kept fails its step. A failed transaction leaves them
-//! to the run's prune.
+//! Each screenshot is kept just before as an item of the run's content
+//! (surface `clax`, then noted with the call's operation and key) and
+//! answered as its `Image` handle; one that cannot be kept fails the
+//! call's answer (`ok: false`), or a test's (`passed: false`).
 //!
-//! Each entry keeps under `browser` what the run panel shows (`target`,
-//! `path` and `viewport` once the arguments hold, or a browse's `url` and
-//! `viewport`; then `ms`, `passed`, `steps` as `[ok, failed]`, `tests`
-//! when saved tests ran, the counts of `errors`, `console` and `blocked`,
-//! and the screenshots' IDs). Each `bot.spend` record of a browser call
-//! names the version (none for the draft) and the path, or a browse's
-//! URL, the viewport, `ms` and `passed`.
-//!
-//! The script's value is the test's result (spec §5.1) with each
-//! screenshot step's value and `screenshots` the items' `Image` handles,
-//! `cost` in credits, and `left`: the run's tests and browses left under
-//! the caps after the call, and the person's credits left this week. A
-//! script's error carries the browser error's `retryable` flag, and a
-//! retryable error's message also says to try again (both from the flag,
-//! in [`from_browser`] alone).
+//! Each entry keeps under `browser` what the run panel shows of the call
+//! (an open's `kind`, `viewport`, `session` and `ms`; a session call's
+//! `session`, `action` and `locator`, then `ok` and `ms`; a test's
+//! `target`, `path`, `viewport`, then `ms`, `passed`, `tests` and the
+//! counts of `errors`, `console` and `blocked`). A script's error carries
+//! the browser error's `retryable` flag, and a retryable error's message
+//! also says to try again (both from the flag, in [`from_browser`]
+//! alone).
 
 use super::session::ClaxSession;
 use super::spend::{self, Finish, Performer, PriceCap, Priced, Seen};
 use crate::browser::browse::{BrowsePolicy, BrowseScope};
-use crate::browser::opts::{self, BrowserOpts, BrowserTarget, Mode, Step};
-use crate::browser::serve::{Pages, Site};
-use crate::browser::session::{RequestPolicy, Start, TestPolicy, TestRun, run_test};
+use crate::browser::layer::{self, Op};
+use crate::browser::live::{BrowserSessions, CallCtx, SessionCall, SessionTimes, new_session_id};
+use crate::browser::opts::{self, BrowserOpts, BrowserTarget, SourceSpec, Viewport};
+use crate::browser::serve::{ContentFile, ContentSite, Pages, Site};
+use crate::browser::session::{
+    ArtifactPolicy, ContentPolicy, RequestPolicy, Start, TestPolicy, TestRun, run_test,
+};
 use crate::browser::{
-    BrowserError, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_TARGET_NOT_FOUND,
-    CODE_BROWSER_TIMEOUT, CODE_BROWSER_UNAVAILABLE, Cdp, OP_BROWSE, OP_TEST,
+    BrowserError, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_CAP, CODE_BROWSER_DISABLED,
+    CODE_BROWSER_TARGET_NOT_FOUND, CODE_BROWSER_TIMEOUT, CODE_BROWSER_UNAVAILABLE, Cdp,
 };
 use crate::capability::{BrowserTerms, Capability, OpenGrant, Terms, UrlRule};
 use crate::host::host_error;
@@ -78,8 +82,10 @@ use crate::web::PublicUrl;
 use clax_bot_sandbox::{CODE_CANCELLED, HostError};
 use clax_core::ArtifactId;
 use clax_store::bot_content::NewContent;
+use clax_store::bot_web::{SessionEnd, SessionKind, SessionSpend};
 use clax_store::credits::LINE_BROWSER_TIME;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// `e` as the script sees it: a retryable error is
@@ -94,40 +100,55 @@ fn from_browser(e: &BrowserError) -> HostError {
     }
 }
 
+/// `invalid_args` saying `what`.
+fn bad(what: impl Into<String>) -> HostError {
+    HostError::new(crate::api::CODE_BAD_ARGS, what)
+}
+
 /// `ms` rounded up to the whole second, in milliseconds.
 fn whole_seconds(ms: i64) -> i64 {
     (ms.max(0) + 999) / 1000 * 1000
 }
 
-/// What a performed call's answer is made with: its operation, what the
-/// Spend sequence read before it ([`Seen`]) and the price it checked
-/// ([`Priced`]).
+/// The capability that opens a session of `kind`.
+fn cap_of(kind: SessionKind) -> Capability {
+    match kind {
+        SessionKind::Url => Capability::OpenUrl,
+        SessionKind::Artifact => Capability::OpenArtifact,
+        SessionKind::Content => Capability::OpenContent,
+    }
+}
+
+/// What a refusal at the cap calls a kind's sessions.
+fn sessions_of(kind: SessionKind) -> &'static str {
+    match kind {
+        SessionKind::Url => "browser sessions on a URL",
+        SessionKind::Artifact => "browser sessions on the clax",
+        SessionKind::Content => "browser sessions on supplied content",
+    }
+}
+
+/// `left` once the run made one more counted open of `this`'s kind
+/// (none for a call that is not counted), with `credits_milli` left this
+/// week: each source kind's sessions left under its cap.
+fn left(seen: &Seen, this: Option<Capability>, credits_milli: i64) -> Value {
+    let n = |c: Capability| seen.count(c.id()) + u32::from(this == Some(c));
+    json!({
+        "url": seen.left_of(Capability::OpenUrl, n(Capability::OpenUrl)),
+        "artifact": seen.left_of(Capability::OpenArtifact, n(Capability::OpenArtifact)),
+        "content": seen.left_of(Capability::OpenContent, n(Capability::OpenContent)),
+        "credits": credits_milli.max(0) as f64 / 1000.0,
+    })
+}
+
+/// What a performed test's answer is made with: what the Spend sequence
+/// read before it ([`Seen`]) and the price it checked ([`Priced`]).
 struct Ctx<'a> {
-    /// The call's operation, `browser.test` or `browser.browse`.
-    op: &'static str,
     seen: &'a Seen,
     priced: &'a Priced,
 }
 
-impl Ctx<'_> {
-    /// `left` once the run made one more counted call of [`Ctx::op`],
-    /// with `credits_milli` left this week.
-    fn left(&self, credits_milli: i64) -> Value {
-        let (mut tests, mut browses) = (self.seen.count(OP_TEST), self.seen.count(OP_BROWSE));
-        if self.op == OP_BROWSE {
-            browses += 1;
-        } else {
-            tests += 1;
-        }
-        json!({
-            "tests": self.seen.left_of(Capability::OpenArtifact, tests),
-            "browses": self.seen.left_of(Capability::OpenUrl, browses),
-            "credits": credits_milli.max(0) as f64 / 1000.0,
-        })
-    }
-}
-
-/// A call whose browser opened and has not ended. The sandbox drops a
+/// A test whose browser opened and has not ended. The sandbox drops a
 /// host call's future when the run is cancelled or its claim is lost
 /// (`clax_bot_js`), so the call's own cancellation path, which closes the
 /// browser and charges it, may never run: dropped while armed, this
@@ -168,8 +189,17 @@ type Kept = Result<Value, String>;
 /// `clax.browser.test`.
 pub(super) struct Test;
 
-/// `clax.browser.browse`.
-pub(super) struct Browse;
+/// `clax.browser.open`.
+pub(super) struct Open;
+
+/// `browser.page`, `browser.act`, `browser.expect` and `browser.close`:
+/// a call on an open session, of the kind it has (see the module docs).
+pub(super) struct SessionOp {
+    op: Op,
+    /// The capability the call needs: its session's kind's.
+    cap: Capability,
+    kind: Option<SessionKind>,
+}
 
 /// A test's arguments, and what its admission found.
 pub(super) struct TestArgs {
@@ -182,15 +212,30 @@ pub(super) struct TestArgs {
     found: Option<(ArtifactId, Pages)>,
 }
 
-/// A browse's arguments, and what its admission found.
-pub(super) struct BrowseArgs {
+/// What an open's admission found.
+pub(super) enum Found {
+    Url(BrowseScope, PublicUrl),
+    Artifact(ArtifactId, Pages, String),
+    Content(Vec<u8>, BTreeMap<String, ContentFile>),
+}
+
+/// An open's arguments, and what its admission found.
+pub(super) struct OpenArgs {
+    spec: SourceSpec,
+    viewport: Viewport,
     max_per_run: u32,
     rule: UrlRule,
-    options: BrowserOpts,
-    url: String,
+    terms: BrowserTerms,
     audit: Vec<(&'static str, Value)>,
-    /// What the browse may open, and its URL, found at admission.
-    found: Option<(BrowseScope, PublicUrl)>,
+    found: Option<Found>,
+}
+
+/// A session call's arguments.
+pub(super) struct CallArgs {
+    session: String,
+    call: Option<SessionCall>,
+    row: Option<&'static layer::Row>,
+    terms: BrowserTerms,
 }
 
 /// The browser source; [`super::spend`]'s step 2 has made sure there is
@@ -210,12 +255,22 @@ fn open_grant(terms: &Terms) -> &OpenGrant {
     g
 }
 
-/// What a browser call may cost at most: its time cap.
-fn time_cap(options: &BrowserOpts) -> PriceCap {
+/// The browser family's settings, live whenever a browser capability is.
+fn terms_of(browser: Option<BrowserTerms>) -> Result<BrowserTerms, HostError> {
+    browser.ok_or_else(|| {
+        HostError::new(
+            CODE_BROWSER_DISABLED,
+            "the browser is not available to this run",
+        )
+    })
+}
+
+/// What a call of `seconds` may cost at most: its time cap.
+fn time_cap(seconds: u32) -> PriceCap {
     PriceCap {
         line: LINE_BROWSER_TIME.to_string(),
-        qty: i64::from(options.timeout_s) * 1000,
-        costs: format!("a browser call of {} s can cost", options.timeout_s),
+        qty: i64::from(seconds) * 1000,
+        costs: format!("a browser call of {seconds} s can cost"),
     }
 }
 
@@ -245,9 +300,8 @@ impl Performer for Test {
         shown: &mut Value,
     ) -> Result<TestArgs, HostError> {
         let seconds = browser.map_or(0, |b| b.call_seconds);
-        let options =
-            opts::parse_opts(&call.args[1], Mode::Test, seconds).map_err(|e| from_browser(&e))?;
-        let target = opts::parse_target(&call.args[0]).map_err(|e| from_browser(&e))?;
+        let (target, options) = opts::parse_test(&call.args[0], &call.args[1], seconds)
+            .map_err(|e| from_browser(&e))?;
         *shown = json!({
             "target": target.version.map_or_else(|| "draft".to_string(), |n| format!("v{n}")),
             "path": target.path,
@@ -282,16 +336,29 @@ impl Performer for Test {
     ) -> Result<(), HostError> {
         let artifact = ArtifactId::parse(&s.run.artifact_id).map_err(|e| host_error(&e))?;
         let pages = s.pages(&artifact, &args.target).await?;
+        // All the saved tests, when the target has none, is none to run.
+        if args.options.tests == opts::Tests::All
+            && pages
+                .test_files(s.store())
+                .await
+                .is_ok_and(|files| files.is_empty())
+        {
+            args.options.tests = opts::Tests::None;
+        }
         args.found = Some((artifact, pages));
         Ok(())
     }
 
     fn count_key(&self, _call: &Call<'_>, args: &TestArgs) -> (&'static str, u32, &'static str) {
-        (OP_TEST, args.max_per_run, "browser tests")
+        (
+            Capability::OpenArtifact.id(),
+            args.max_per_run,
+            sessions_of(SessionKind::Artifact),
+        )
     }
 
     fn price_cap(&self, _call: &Call<'_>, args: &TestArgs) -> PriceCap {
-        time_cap(&args.options)
+        time_cap(args.options.timeout_s)
     }
 
     async fn perform(
@@ -318,23 +385,56 @@ impl Performer for Test {
             origin: site.origin.clone(),
             path: args.target.path.clone(),
         };
-        let cx = Ctx { op: OP_TEST, seen, priced };
-        s.open_and_run(&source, call, &cx, &args.options, &start, &policy, &args.audit, shown)
-            .await
+        let cx = Ctx { seen, priced };
+        let f = s
+            .open_and_run(
+                &source,
+                call,
+                &cx,
+                &args.options,
+                &start,
+                &policy,
+                &args.audit,
+                shown,
+            )
+            .await;
+        counted_as(f, Capability::OpenArtifact)
+    }
+}
+
+/// `f` with the entry field that counts it under `c`, when it counts.
+fn counted_as(f: Finish, c: Capability) -> Finish {
+    if f.counted {
+        f.with(&[], &[("count_as", json!(c.id()))])
+    } else {
+        f
+    }
+}
+
+/// The kind a source the script wrote opens, read loosely for step 3:
+/// the field it holds of `url`, `artifact` and `html` (a URL when it
+/// holds none of them, which step 4 then refuses).
+fn kind_of_source(v: &Value) -> SessionKind {
+    if v.get("artifact").is_some() {
+        SessionKind::Artifact
+    } else if v.get("html").is_some() {
+        SessionKind::Content
+    } else {
+        SessionKind::Url
     }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl Performer for Browse {
-    type Args = BrowseArgs;
+impl Performer for Open {
+    type Args = OpenArgs;
 
-    fn capability(&self, _args: &[Value]) -> Capability {
-        Capability::OpenUrl
+    fn capability(&self, args: &[Value]) -> Capability {
+        cap_of(kind_of_source(args.first().unwrap_or(&Value::Null)))
     }
 
     fn shown(&self, args: &[Value]) -> Value {
-        json!({"url": args.first().cloned().unwrap_or(Value::Null)})
+        json!({"kind": kind_of_source(args.first().unwrap_or(&Value::Null)).as_str()})
     }
 
     fn serial(&self) -> bool {
@@ -348,33 +448,47 @@ impl Performer for Browse {
         terms: &Terms,
         browser: Option<BrowserTerms>,
         shown: &mut Value,
-    ) -> Result<BrowseArgs, HostError> {
+    ) -> Result<OpenArgs, HostError> {
+        let terms_b = terms_of(browser)?;
+        let spec = opts::parse_source(&call.args[0]).map_err(|e| from_browser(&e))?;
+        let viewport = opts::parse_open_opts(&call.args[1]).map_err(|e| from_browser(&e))?;
         let g = open_grant(terms);
-        let seconds = browser.map_or(0, |b| b.call_seconds);
-        let options =
-            opts::parse_opts(&call.args[1], Mode::Browse, seconds).map_err(|e| from_browser(&e))?;
-        let Some(url) = call.args[0].as_str() else {
-            return Err(HostError::new(
-                crate::api::CODE_BAD_ARGS,
-                "url: must be a string, the public URL to open",
-            ));
-        };
-        *shown = json!({"url": url, "viewport": options.viewport.label()});
-        let audit = vec![
-            ("url", json!(url)),
-            ("viewport", json!(options.viewport.label())),
+        let kind = spec.kind();
+        *shown = json!({"kind": kind.as_str(), "viewport": viewport.label()});
+        let mut audit = vec![
+            ("kind", json!(kind.as_str())),
+            ("viewport", json!(viewport.label())),
         ];
-        Ok(BrowseArgs {
+        match &spec {
+            SourceSpec::Url(u) => {
+                shown["url"] = json!(u);
+                audit.push(("url", json!(u)));
+            }
+            SourceSpec::Artifact { version, path } => {
+                let target = version.map_or_else(|| "draft".to_string(), |n| format!("v{n}"));
+                shown["target"] = json!(target);
+                shown["path"] = json!(path);
+                if let Some(n) = version {
+                    audit.push(("version", json!(n)));
+                }
+                audit.push(("path", json!(path)));
+            }
+            SourceSpec::Content { files, .. } => {
+                audit.push(("files", json!(files.len())));
+            }
+        }
+        Ok(OpenArgs {
+            spec,
+            viewport,
             max_per_run: g.max_per_run,
             rule: g.url_rule.clone().unwrap_or(UrlRule::Sender),
-            options,
-            url: url.to_string(),
+            terms: terms_b,
             audit,
             found: None,
         })
     }
 
-    fn noted(&self, args: &BrowseArgs) -> (Vec<(&'static str, Value)>, Vec<(&'static str, Value)>) {
+    fn noted(&self, args: &OpenArgs) -> (Vec<(&'static str, Value)>, Vec<(&'static str, Value)>) {
         (args.audit.clone(), Vec::new())
     }
 
@@ -382,57 +496,637 @@ impl Performer for Browse {
         &self,
         s: &ClaxSession<'_>,
         _call: &Call<'_>,
-        args: &mut BrowseArgs,
+        args: &mut OpenArgs,
         _shown: &mut Value,
     ) -> Result<(), HostError> {
-        let scope = s
-            .browse_scope(browser_source(s).as_ref(), &args.rule)
-            .await?;
-        let url = scope.allowed(&args.url).map_err(|e| from_browser(&e))?;
-        for (i, step) in args.options.steps.iter().enumerate() {
-            if let Step::Goto(to) = step
-                && let Err(e) = scope.allowed(to)
-            {
-                let e = BrowserError::new(
-                    e.code,
-                    format!("opts.steps[{i}].goto: {}", e.message),
-                    false,
-                );
-                return Err(from_browser(&e));
-            }
+        let sessions = s.sessions()?;
+        s.charge_ended();
+        let open = sessions.open_sessions(&s.run.id).len();
+        let most = args.terms.max_open_per_run as usize;
+        if open >= most {
+            return Err(HostError::new(
+                CODE_BROWSER_CAP,
+                format!(
+                    "this run has {open} browser session(s) open, the most it may hold at once; \
+                     close one with page.close() first"
+                ),
+            ));
         }
-        args.found = Some((scope, url));
+        args.found = Some(match &args.spec {
+            SourceSpec::Url(u) => {
+                let scope = s
+                    .browse_scope(browser_source(s).as_ref(), &args.rule)
+                    .await?;
+                let url = scope.allowed(u).map_err(|e| from_browser(&e))?;
+                Found::Url(scope, url)
+            }
+            SourceSpec::Artifact { version, path } => {
+                let artifact = ArtifactId::parse(&s.run.artifact_id).map_err(|e| host_error(&e))?;
+                let target = BrowserTarget {
+                    version: *version,
+                    path: path.clone(),
+                };
+                let pages = s.pages(&artifact, &target).await?;
+                Found::Artifact(artifact, pages, path.clone())
+            }
+            SourceSpec::Content { html, files } => {
+                let store = s.store();
+                let run = &s.run.id;
+                let files = crate::browser::serve::content_files(files.clone(), |id| {
+                    let row = store.bot_content_of(run, id).ok().flatten()?;
+                    store.bot_content_bytes(&row).ok().flatten()
+                })
+                .map_err(|why| bad(format!("source.{why}")))?;
+                Found::Content(html.as_bytes().to_vec(), files)
+            }
+        });
         Ok(())
     }
 
-    fn count_key(&self, _call: &Call<'_>, args: &BrowseArgs) -> (&'static str, u32, &'static str) {
-        (OP_BROWSE, args.max_per_run, "browses")
+    fn count_key(&self, _call: &Call<'_>, args: &OpenArgs) -> (&'static str, u32, &'static str) {
+        let kind = args.spec.kind();
+        (cap_of(kind).id(), args.max_per_run, sessions_of(kind))
     }
 
-    fn price_cap(&self, _call: &Call<'_>, args: &BrowseArgs) -> PriceCap {
-        time_cap(&args.options)
+    fn price_cap(&self, _call: &Call<'_>, args: &OpenArgs) -> PriceCap {
+        time_cap(args.terms.call_seconds)
+    }
+
+    async fn perform(
+        &self,
+        s: &ClaxSession<'_>,
+        _call: &Call<'_>,
+        args: &OpenArgs,
+        seen: &Seen,
+        priced: &Priced,
+        shown: &mut Value,
+    ) -> Finish {
+        let Some(found) = &args.found else {
+            unreachable!("an open is performed only once admitted")
+        };
+        let Ok(sessions) = s.sessions() else {
+            unreachable!("an open is admitted only on a host with a session registry")
+        };
+        let source = browser_source(s);
+        let id = new_session_id();
+        let kind = args.spec.kind();
+        let (start, policy): (Start, Arc<dyn RequestPolicy>) = match found {
+            Found::Url(scope, url) => (
+                Start::Browse {
+                    url: url.as_str().to_string(),
+                },
+                Arc::new(BrowsePolicy::new(scope.clone(), source.clone())),
+            ),
+            Found::Artifact(artifact, pages, path) => {
+                let site = Site::new(artifact, pages.clone());
+                let start = Start::Test {
+                    origin: site.origin.clone(),
+                    path: path.clone(),
+                };
+                let policy = ArtifactPolicy::new(
+                    site,
+                    source.clone(),
+                    s.provider.store.clone(),
+                    &s.run.person,
+                );
+                (start, Arc::new(policy))
+            }
+            Found::Content(html, files) => {
+                let site = ContentSite::new(&id, html.clone(), files.clone());
+                (
+                    Start::Content {
+                        host: site.host.clone(),
+                    },
+                    Arc::new(ContentPolicy(site)),
+                )
+            }
+        };
+        let began = s.provider.clock.now();
+        let deadline = began + chrono::Duration::seconds(i64::from(args.terms.call_seconds));
+        let opened = sessions
+            .open(
+                &s.run.id,
+                id,
+                kind,
+                start,
+                policy,
+                args.viewport.clone(),
+                SessionTimes::from(args.terms),
+                deadline,
+                s.cx.cancel,
+            )
+            .await;
+        let c = cap_of(kind);
+        let f = match opened {
+            Ok(o) => {
+                let ms = o.at_ms.max(0);
+                let (usage, cost) = match priced.usage(ms) {
+                    Ok(x) => x,
+                    Err(e) => return Finish::refused(host_error(&e)),
+                };
+                shown["session"] = json!(o.session);
+                shown["ms"] = json!(ms);
+                let mut v = json!({
+                    "session": o.session,
+                    "kind": kind.as_str(),
+                    "url": o.url,
+                    "title": o.title,
+                    "status": o.status,
+                    "viewport": args.viewport.label(),
+                    "cost": cost as f64 / 1000.0,
+                    "left": left(seen, Some(c), priced.credits - cost),
+                });
+                if let Some(e) = &o.error {
+                    v["error"] = json!(e);
+                }
+                Finish {
+                    usage: Some((usage, cost)),
+                    session: Some(SessionSpend::Open {
+                        session: o.session.clone(),
+                        kind,
+                        opened_at: o.opened_at,
+                        through_ms: ms,
+                    }),
+                    counted: true,
+                    audit: vec![("session", json!(o.session)), ("ms", json!(ms))],
+                    ..Finish::new(Ok(v))
+                }
+            }
+            Err(e) => {
+                // Refused before Browser Run was asked: not counted. A
+                // browser that opened and failed before its page loaded
+                // is charged its time, as no session's.
+                let counted = e.code != CODE_BROWSER_BUSY && e.code != CODE_CANCELLED;
+                let usage = if e.opened {
+                    let ms = (s.provider.clock.now() - began).num_milliseconds();
+                    let cap = i64::from(args.terms.call_seconds) * 1000;
+                    priced.usage(whole_seconds(ms).min(cap)).ok()
+                } else {
+                    None
+                };
+                Finish {
+                    usage,
+                    counted,
+                    ..Finish::refused(from_browser(&e))
+                }
+            }
+        };
+        s.charge_ended();
+        counted_as(f, c)
+    }
+}
+
+impl SessionOp {
+    /// The performer of `call`, a call on the session its first argument
+    /// names, of that session's kind (see the module docs).
+    pub(super) fn of(s: &ClaxSession<'_>, call: &Call<'_>) -> SessionOp {
+        let mut p = SessionOp::unbound(call.op);
+        let kind = call
+            .args
+            .first()
+            .and_then(Value::as_str)
+            .and_then(|id| s.session_kind(id));
+        match kind {
+            Some(k) => {
+                p.kind = Some(k);
+                p.cap = cap_of(k);
+            }
+            None => {
+                // A session the run never had: the first source
+                // capability the run holds names the refusal.
+                let held = crate::capability::CapSet::parse(&s.run.caps);
+                if let Some(c) = [
+                    Capability::OpenUrl,
+                    Capability::OpenArtifact,
+                    Capability::OpenContent,
+                ]
+                .into_iter()
+                .find(|c| held.has(*c))
+                {
+                    p.cap = c;
+                }
+            }
+        }
+        p
+    }
+
+    /// The performer of a call of `op` whose session is not known.
+    pub(super) fn unbound(op: &str) -> SessionOp {
+        let op = match op {
+            crate::browser::OP_PAGE => Op::Page,
+            crate::browser::OP_ACT => Op::Act,
+            crate::browser::OP_EXPECT => Op::Expect,
+            _ => Op::Close,
+        };
+        SessionOp {
+            op,
+            cap: Capability::OpenUrl,
+            kind: None,
+        }
+    }
+}
+
+/// The action argument at `i`, or `invalid_args` naming `field`.
+fn action_at<'a>(args: &'a [Value], i: usize, field: &str) -> Result<&'a str, HostError> {
+    args.get(i)
+        .and_then(Value::as_str)
+        .ok_or_else(|| bad(format!("{field}: must be a string")))
+}
+
+/// `v`, an action's `args`, as sent on: an object (`{}` for none).
+fn args_of(v: Option<&Value>) -> Value {
+    match v {
+        Some(Value::Object(_)) => v.cloned().unwrap_or_default(),
+        _ => json!({}),
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl Performer for SessionOp {
+    type Args = CallArgs;
+
+    fn capability(&self, _args: &[Value]) -> Capability {
+        self.cap
+    }
+
+    fn shown(&self, args: &[Value]) -> Value {
+        let mut v =
+            json!({"session": args.first().cloned().unwrap_or(Value::Null), "op": self.op.name()});
+        match self.op {
+            Op::Page => v["action"] = args.get(1).cloned().unwrap_or(Value::Null),
+            Op::Act | Op::Expect => {
+                v["locator"] = args.get(1).cloned().unwrap_or(Value::Null);
+                v["action"] = args.get(2).cloned().unwrap_or(Value::Null);
+            }
+            Op::Close => {}
+        }
+        v
+    }
+
+    fn serial(&self) -> bool {
+        true
+    }
+
+    fn check_args(
+        &self,
+        _s: &ClaxSession<'_>,
+        call: &Call<'_>,
+        _terms: &Terms,
+        browser: Option<BrowserTerms>,
+        _shown: &mut Value,
+    ) -> Result<CallArgs, HostError> {
+        let terms = terms_of(browser)?;
+        let a = call.args;
+        let session = a
+            .first()
+            .and_then(Value::as_str)
+            .ok_or_else(|| bad("session: must be a string"))?
+            .to_string();
+        let checked = |row: &'static layer::Row, v: Option<&Value>| -> Result<Value, HostError> {
+            let args = args_of(v);
+            if v.is_some_and(|v| !v.is_null() && !v.is_object()) {
+                return Err(bad("args: must be an object"));
+            }
+            layer::check(row, &args).map_err(bad)?;
+            Ok(args)
+        };
+        let locator = |v: Option<&Value>| -> Result<Value, HostError> {
+            let v = v.cloned().unwrap_or(Value::Null);
+            crate::browser::locate::parse_locator(&v).map_err(|e| bad(format!("locator: {e}")))?;
+            Ok(v)
+        };
+        let (call, row) = match self.op {
+            Op::Page => {
+                let action = action_at(a, 1, "action")?;
+                let row = layer::row(Op::Page, action, false)
+                    .ok_or_else(|| bad(format!("action: `{action}` is not a page action")))?;
+                let args = checked(row, a.get(2))?;
+                (
+                    Some(SessionCall::Page {
+                        action: action.to_string(),
+                        args,
+                    }),
+                    Some(row),
+                )
+            }
+            Op::Act => {
+                let locator = locator(a.get(1))?;
+                let action = action_at(a, 2, "action")?;
+                let row = layer::row(Op::Act, action, false)
+                    .ok_or_else(|| bad(format!("action: `{action}` is not a locator action")))?;
+                let args = checked(row, a.get(3))?;
+                (
+                    Some(SessionCall::Act {
+                        locator,
+                        action: action.to_string(),
+                        args,
+                    }),
+                    Some(row),
+                )
+            }
+            Op::Expect => {
+                let on_page = a
+                    .get(1)
+                    .is_none_or(|l| l.is_null() || l.as_array().is_some_and(Vec::is_empty));
+                let locator = if on_page {
+                    None
+                } else {
+                    Some(locator(a.get(1))?)
+                };
+                let matcher = action_at(a, 2, "matcher")?;
+                let row = layer::row(Op::Expect, matcher, on_page).ok_or_else(|| {
+                    bad(format!(
+                        "matcher: `{matcher}` is not a matcher of {}",
+                        if on_page { "the page" } else { "a locator" }
+                    ))
+                })?;
+                let args = checked(row, a.get(3))?;
+                (
+                    Some(SessionCall::Expect {
+                        locator,
+                        matcher: matcher.to_string(),
+                        args,
+                    }),
+                    Some(row),
+                )
+            }
+            Op::Close => (None, None),
+        };
+        Ok(CallArgs {
+            session,
+            call,
+            row,
+            terms,
+        })
+    }
+
+    fn noted(&self, args: &CallArgs) -> (Vec<(&'static str, Value)>, Vec<(&'static str, Value)>) {
+        let mut audit = vec![("session", json!(args.session))];
+        if let Some(row) = args.row
+            && let Some(action) = row.action
+        {
+            audit.push(("action", json!(action)));
+        }
+        (audit, Vec::new())
+    }
+
+    async fn admit(
+        &self,
+        s: &ClaxSession<'_>,
+        _call: &Call<'_>,
+        args: &mut CallArgs,
+        _shown: &mut Value,
+    ) -> Result<(), HostError> {
+        // A session that ended, or that this process does not hold, is
+        // refused here, before its price is checked; the ends the host
+        // made are charged first.
+        s.charge_ended();
+        s.sessions()?
+            .check(&s.run.id, &args.session)
+            .map_err(|e| from_browser(&e))?;
+        if let Some(c) = args.row.and_then(|r| r.needs)
+            && self.kind.is_some_and(|k| cap_of(k) != c)
+        {
+            return Err(HostError::new(
+                CODE_BROWSER_DISABLED,
+                "page.runTests runs the clax's saved tests: only in a session opened on the run's clax",
+            ));
+        }
+        Ok(())
+    }
+
+    fn count_key(&self, _call: &Call<'_>, _args: &CallArgs) -> (&'static str, u32, &'static str) {
+        ("browser.session.call", u32::MAX, "browser session calls")
+    }
+
+    fn price_cap(&self, _call: &Call<'_>, args: &CallArgs) -> PriceCap {
+        time_cap(args.terms.call_seconds)
     }
 
     async fn perform(
         &self,
         s: &ClaxSession<'_>,
         call: &Call<'_>,
-        args: &BrowseArgs,
+        args: &CallArgs,
         seen: &Seen,
         priced: &Priced,
         shown: &mut Value,
     ) -> Finish {
-        let Some((scope, url)) = &args.found else {
-            unreachable!("a browse is performed only once admitted")
+        let Ok(sessions) = s.sessions() else {
+            unreachable!("a session call is admitted only on a host with a session registry")
         };
-        let source = browser_source(s);
-        let policy = BrowsePolicy::new(scope.clone(), source.clone());
-        let start = Start::Browse {
-            url: url.as_str().to_string(),
+        s.charge_ended();
+        let run = s.run.id.as_str();
+        let session = args.session.as_str();
+        let answered = match &args.call {
+            None => sessions
+                .close(run, session, SessionEnd::Closed)
+                .await
+                .map(|at| (at, None)),
+            Some(c) => {
+                let deadline = s.provider.clock.now()
+                    + chrono::Duration::seconds(i64::from(args.terms.call_seconds));
+                let mut ctx = CallCtx::new(deadline, s.cx.cancel.clone());
+                if self.kind == Some(SessionKind::Artifact) {
+                    ctx.pages = Some(s.draft_pages());
+                }
+                if let SessionCall::Page { action, args: a } = c
+                    && action == "goto"
+                {
+                    match s
+                        .leave_policy(
+                            &sessions,
+                            session,
+                            a["url"].as_str().unwrap_or_default(),
+                            seen,
+                        )
+                        .await
+                    {
+                        Ok(leave) => ctx.leave = leave,
+                        Err(e) => return Finish::refused(e),
+                    }
+                }
+                sessions
+                    .call(run, session, c.clone(), ctx)
+                    .await
+                    .map(|a| (a.at_ms, Some(a)))
+            }
         };
-        let cx = Ctx { op: OP_BROWSE, seen, priced };
-        s.open_and_run(&source, call, &cx, &args.options, &start, &policy, &args.audit, shown)
-            .await
+        s.charge_ended();
+        let (at_ms, answered) = match answered {
+            Ok(x) => x,
+            Err(e) => return Finish::refused(from_browser(&e)),
+        };
+        let charged = s
+            .store()
+            .bot_browser_session(run, session)
+            .ok()
+            .flatten()
+            .map_or(0, |r| r.charged_ms);
+        let through = at_ms.max(charged);
+        let ms = through - charged;
+        let (usage, cost) = match priced.usage(ms) {
+            Ok(x) => x,
+            Err(e) => return Finish::refused(host_error(&e)),
+        };
+        shown["ms"] = json!(ms);
+        let Some(a) = answered else {
+            shown["ok"] = json!(true);
+            return Finish {
+                usage: Some((usage, cost)),
+                session: Some(SessionSpend::Close {
+                    session: session.to_string(),
+                    through_ms: through,
+                    reason: SessionEnd::Closed,
+                }),
+                audit: vec![("ms", json!(through))],
+                ..Finish::new(Ok(json!({"ms": through, "cost": cost as f64 / 1000.0})))
+            };
+        };
+        let mut ok = a.ok;
+        let mut error = a.error.clone();
+        let mut value = a.value.clone();
+        if !a.shots.is_empty() {
+            let kept: Vec<Kept> = a
+                .shots
+                .iter()
+                .map(|png| s.keep_screenshot(call, png))
+                .collect();
+            if let Some(i) = value["screenshot"].as_u64() {
+                match kept.get(usize::try_from(i).unwrap_or(usize::MAX)) {
+                    Some(Ok(handle)) => value = handle.clone(),
+                    Some(Err(why)) => {
+                        ok = false;
+                        error = Some(why.clone());
+                        value = Value::Null;
+                    }
+                    None => {}
+                }
+            }
+        }
+        shown["ok"] = json!(ok);
+        let mut v = json!({"ok": ok, "url": a.url, "ms": ms, "cost": cost as f64 / 1000.0});
+        if ok {
+            v["value"] = value;
+        } else {
+            v["error"] = json!(error.unwrap_or_default());
+            if a.timeout {
+                v["timeout"] = json!(true);
+            }
+        }
+        Finish {
+            usage: Some((usage, cost)),
+            session: Some(SessionSpend::Call {
+                session: session.to_string(),
+                through_ms: through,
+                kind: a.kind,
+            }),
+            audit: vec![("ok", json!(ok)), ("ms", json!(ms))],
+            ..Finish::new(Ok(v))
+        }
+    }
+
+    async fn out_of_credits(&self, s: &ClaxSession<'_>, call: &Call<'_>) {
+        let (Ok(sessions), Some(session)) =
+            (s.sessions(), call.args.first().and_then(Value::as_str))
+        else {
+            return;
+        };
+        let _ = sessions
+            .close(&s.run.id, session, SessionEnd::Credits)
+            .await;
+        s.charge_ended();
+    }
+}
+
+impl ClaxSession<'_> {
+    /// The host's session registry, or `browser_unavailable` on a host
+    /// that holds none.
+    fn sessions(&self) -> Result<Arc<BrowserSessions>, HostError> {
+        self.provider.sessions.clone().ok_or_else(|| {
+            HostError::new(
+                CODE_BROWSER_UNAVAILABLE,
+                "this host holds no browser sessions; use clax.browser.test",
+            )
+        })
+    }
+
+    /// Charges the sessions the host ended since the last look (idle,
+    /// lifetime, a revoke, credits, a run's end, a lost browser): each
+    /// one's tail, once ([`clax_store::Store::end_bot_browser_session`]).
+    pub(super) fn charge_ended(&self) {
+        if let Some(sessions) = &self.provider.sessions {
+            charge_ended(&self.provider.store, sessions);
+        }
+    }
+
+    /// The kind of the run's session `id`: the registry's while it holds
+    /// it, else the store's row's.
+    fn session_kind(&self, id: &str) -> Option<SessionKind> {
+        if let Some(sessions) = &self.provider.sessions
+            && let Some((_, k)) = sessions
+                .open_sessions(&self.run.id)
+                .into_iter()
+                .find(|(s, _)| s == id)
+        {
+            return Some(k);
+        }
+        self.store()
+            .bot_browser_session(&self.run.id, id)
+            .ok()
+            .flatten()
+            .map(|r| r.kind)
+    }
+
+    /// The run's draft as this step holds it now.
+    fn draft_pages(&self) -> Pages {
+        let st = self.lock();
+        Pages::Draft(st.draft.files().clone(), st.draft.base_version)
+    }
+
+    /// The URL session's policy a `goto` of `url` out of session
+    /// `session`'s origin is given: none when it stays in the origin, or
+    /// when `browser.open.url` is not live (the session then refuses it
+    /// `browser_disabled`); the refusal of the URL rule otherwise.
+    async fn leave_policy(
+        &self,
+        sessions: &BrowserSessions,
+        session: &str,
+        url: &str,
+        seen: &Seen,
+    ) -> Result<Option<Arc<dyn RequestPolicy>>, HostError> {
+        if !sessions
+            .leaves(&self.run.id, session, url)
+            .map_err(|e| from_browser(&e))?
+        {
+            return Ok(None);
+        }
+        let Ok(terms) = seen.caps.get(Capability::OpenUrl) else {
+            return Ok(None);
+        };
+        let rule = open_grant(terms)
+            .url_rule
+            .clone()
+            .unwrap_or(UrlRule::Sender);
+        let source = browser_source(self);
+        let scope = self.browse_scope(source.as_ref(), &rule).await?;
+        scope.allowed(url).map_err(|e| from_browser(&e))?;
+        Ok(Some(Arc::new(BrowsePolicy::new(scope, source))))
+    }
+}
+
+/// Charges, in `store`, the ends `sessions` made since the last look.
+pub(crate) fn charge_ended(store: &clax_store::Store, sessions: &BrowserSessions) {
+    for e in sessions.ended() {
+        if let Err(err) = store.end_bot_browser_session(&e.run, &e.session, e.at_ms, e.reason) {
+            tracing::warn!(
+                "clax-bot: run {}: browser session {} ended ({}) and could not be charged: {err}",
+                e.run,
+                e.session,
+                e.reason.as_str()
+            );
+        }
     }
 }
 
@@ -589,12 +1283,8 @@ impl ClaxSession<'_> {
                 "the run stopped while the browser was open",
             ))
         };
-        let c = if cx.op == OP_BROWSE {
-            Capability::OpenUrl
-        } else {
-            Capability::OpenArtifact
-        };
-        let _ = spend::write(self, call, c, false, shown, f);
+        let f = counted_as(f, Capability::OpenArtifact);
+        let _ = spend::write(self, call, Capability::OpenArtifact, false, shown, f);
     }
 
     /// Step 5: the files of `target`, or `browser_target_not_found`.
@@ -641,11 +1331,12 @@ impl ClaxSession<'_> {
 
     /// How a test whose browser opened ends: charged its time, rounded
     /// up to the second and at most the call's time cap (what the credits
-    /// check priced), and counted; its screenshots kept, its result
-    /// completed; and the `bot.spend` record's `ms` and `passed`.
+    /// check priced), and counted; its result completed (spec §6.8: no
+    /// steps, screenshots, `html` or `text`; `cost` and `left` added); and
+    /// the `bot.spend` record's `ms` and `passed`.
     fn tested(
         &self,
-        call: &Call<'_>,
+        _call: &Call<'_>,
         cx: &Ctx<'_>,
         options: &BrowserOpts,
         tested: TestRun,
@@ -663,44 +1354,18 @@ impl ClaxSession<'_> {
         let mut more = vec![("ms", json!(ms))];
         let res = match tested.outcome {
             Ok(mut v) => {
-                let kept: Vec<Kept> = tested
-                    .shots
-                    .iter()
-                    .map(|png| self.keep_screenshot(call, png))
-                    .collect();
-                let mut handles = Vec::new();
-                let mut ids = Vec::new();
-                for k in kept.iter().flatten() {
-                    handles.push(k.clone());
-                    ids.push(k["id"].clone());
-                }
-                let mut lost = false;
-                // Only a screenshot step's value names a screenshot: an
-                // eval step's is whatever the page answered.
-                let steps = v["steps"].as_array_mut().into_iter().flatten();
-                for (step, asked) in steps.zip(&options.steps) {
-                    if !matches!(asked, Step::Screenshot { .. }) {
-                        continue;
-                    }
-                    let Some(i) = step["value"]["screenshot"].as_u64() else {
-                        continue;
-                    };
-                    match kept.get(usize::try_from(i).unwrap_or(usize::MAX)) {
-                        Some(Ok(handle)) => step["value"] = handle.clone(),
-                        Some(Err(why)) => {
-                            *step = json!({"ok": false, "error": why});
-                            lost = true;
-                        }
-                        None => {}
+                if let Some(o) = v.as_object_mut() {
+                    for k in ["steps", "screenshots", "html", "text"] {
+                        o.remove(k);
                     }
                 }
-                if lost {
-                    v["passed"] = json!(false);
-                }
-                v["screenshots"] = Value::Array(handles);
                 v["cost"] = json!(cost as f64 / 1000.0);
-                v["left"] = cx.left(cx.priced.credits - cost);
-                summarize(shown, &v, ids);
+                v["left"] = left(
+                    cx.seen,
+                    Some(Capability::OpenArtifact),
+                    cx.priced.credits - cost,
+                );
+                summarize(shown, &v);
                 more.push(("passed", v["passed"].clone()));
                 Ok(v)
             }
@@ -745,20 +1410,16 @@ impl ClaxSession<'_> {
 }
 
 /// What the run shows of a test's result `v`, into `shown` (see the
-/// module docs), with its screenshots' IDs `ids`.
-fn summarize(shown: &mut Value, v: &Value, ids: Vec<Value>) {
-    let steps = v["steps"].as_array().map_or(&[][..], Vec::as_slice);
-    let ok = steps.iter().filter(|s| s["ok"] == true).count();
+/// module docs).
+fn summarize(shown: &mut Value, v: &Value) {
     let len = |x: &Value| x.as_array().map_or(0, Vec::len);
     shown["passed"] = v["passed"].clone();
-    shown["steps"] = json!([ok, steps.len() - ok]);
     if let Some(t) = v.get("tests").filter(|t| !t.is_null()) {
         shown["tests"] = json!({"passed": t["passed"], "failed": len(&t["failed"])});
     }
     shown["errors"] = json!(len(&v["errors"]));
     shown["console"] = json!(len(&v["console"]));
     shown["blocked"] = json!(len(&v["requests"]["blocked"]));
-    shown["screenshots"] = Value::Array(ids);
 }
 
 #[cfg(test)]
@@ -780,18 +1441,17 @@ mod tests {
         let mut shown = json!({"target": "draft"});
         let v = json!({
             "passed": false,
-            "steps": [{"ok": true}, {"ok": false, "error": "x"}, {"ok": false, "skipped": true}],
             "tests": {"passed": 2, "failed": [{"name": "a", "error": "b"}], "skipped": 0},
             "errors": [{"message": "m"}],
             "console": [],
             "requests": {"failed": [], "blocked": [{"url": "u", "why": "origin"}]},
         });
-        summarize(&mut shown, &v, vec![json!("c1")]);
+        summarize(&mut shown, &v);
         assert_eq!(
             shown,
-            json!({"target": "draft", "passed": false, "steps": [1, 2],
+            json!({"target": "draft", "passed": false,
                    "tests": {"passed": 2, "failed": 1}, "errors": 1, "console": 0,
-                   "blocked": 1, "screenshots": ["c1"]})
+                   "blocked": 1})
         );
     }
 }

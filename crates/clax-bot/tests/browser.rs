@@ -1,9 +1,11 @@
-//! `clax.browser.test` and `clax.browser.browse` in a script (spec
-//! docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §5, §8,
-//! §9): what is loaded, the grant, URL rule, cap and credits checked
-//! before a browser opens, what is charged and counted, the journal's
-//! answer to a step run again, and the screenshots a script shows the
-//! model.
+//! `clax.browser` in a script (spec
+//! docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §6, §8,
+//! §10): `browser.test`'s one-shot run of the saved tests, and sessions
+//! opened through the prelude's `Page` that live across steps: what is
+//! loaded, the capability, URL rule, caps and credits checked before a
+//! browser opens, what is charged (each millisecond once) and counted,
+//! the journal's answer to a step run again, and what a session's end
+//! answers.
 
 use crate::common::*;
 use crate::resume::crash_once;
@@ -57,6 +59,19 @@ fn script_calls(env: &Env, run: &str, i: usize) -> Vec<Value> {
         .as_array()
         .unwrap()
         .clone()
+}
+
+/// Runs `code` as the one script of a run holding the capabilities
+/// `caps`, then finishes; the run and the script's value.
+async fn one_script_with(env: &Env, caps: &str, code: &str) -> (String, Value) {
+    env.api.push(env.script_turn("tu_1", "Test", code));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_caps(caps);
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    let r = script_result(env, &run, 0);
+    assert!(r.get("error").is_none(), "{r}");
+    (run, r["value"].clone())
 }
 
 /// Runs `code` as the one script of a run of `shape` (`""` for none),
@@ -114,12 +129,14 @@ async fn a_test_answers_and_is_charged_its_measured_time() {
     assert_eq!(env.browser.opened(), 1);
     assert_eq!(v["passed"], true, "{v}");
     assert_eq!(v["url"], format!("https://{}.clax-test.invalid/", env.aid));
-    assert_eq!(v["steps"], json!([]));
-    assert_eq!(v["screenshots"], json!([]));
+    assert!(
+        v.get("steps").is_none() && v.get("screenshots").is_none(),
+        "{v}"
+    );
     // Two evaluations (the settle, the collect) of 4.2 s each.
     assert_eq!(v["ms"], 8_400);
-    assert_eq!(v["left"]["tests"], 9);
-    assert_eq!(v["left"]["browses"], 0);
+    assert_eq!(v["left"]["artifact"], 9);
+    assert_eq!(v["left"]["url"], 0);
     assert!(v["cost"].as_f64().unwrap() > 0.0, "{v}");
     // Charged 9 s: the measured time rounded up to the second.
     assert_eq!(browser_rows(&env), [9_000]);
@@ -219,7 +236,7 @@ async fn two_tests_in_one_script_run_one_after_the_other() {
         &env,
         "test",
         "const [a, b] = await Promise.all([clax.browser.test(), clax.browser.test(null, {viewport: 'phone'})]);
-         return [a.passed, b.passed, a.left.tests, b.left.tests];",
+         return [a.passed, b.passed, a.left.artifact, b.left.artifact];",
     )
     .await;
     assert!(!overlapped.load(Ordering::SeqCst), "two browsers at once");
@@ -267,11 +284,11 @@ async fn a_version_target_loads_that_version() {
         &env,
         "test",
         "await clax.files.write('index.html', '<h1>Draft only</h1>');
-         const a = await clax.browser.test({version: 1});
+         const a = await clax.browser.test({artifact: 1});
          let missing, nopage;
-         try { await clax.browser.test({version: 9}); } catch (e) { missing = e.code; }
-         try { await clax.browser.test({path: 'nope.html'}); } catch (e) { nopage = e.code; }
-         return [a.passed, missing, nopage, a.left.tests];",
+         try { await clax.browser.test({artifact: 9}); } catch (e) { missing = e.code; }
+         try { await clax.browser.test({artifact: 'draft', path: 'nope.html'}); } catch (e) { nopage = e.code; }
+         return [a.passed, missing, nopage, a.left.artifact];",
     )
     .await;
     assert_eq!(
@@ -296,7 +313,11 @@ async fn a_version_target_loads_that_version() {
     assert_eq!(audit[1]["code"], "browser_target_not_found");
     assert_eq!(audit[1]["credits_milli"], 0);
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
-    assert_eq!(counted.get("browser.test"), Some(&1), "{counted:?}");
+    assert_eq!(
+        counted.get("browser.open.artifact"),
+        Some(&1),
+        "{counted:?}"
+    );
 }
 
 #[tokio::test]
@@ -308,7 +329,7 @@ async fn the_cap_and_credits_refuse_before_opening() {
         "test",
         "const a = await clax.browser.test();
          try { await clax.browser.test(); return 'tested'; }
-         catch (e) { return [a.left.tests, e.code]; }",
+         catch (e) { return [a.left.artifact, e.code]; }",
     )
     .await;
     assert_eq!(v, json!([0, "browser_cap"]));
@@ -390,7 +411,11 @@ async fn a_failure_before_opening_is_not_charged_but_counts() {
     );
     // Busy is not counted; Browser Run's refusal is.
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
-    assert_eq!(counted.get("browser.test"), Some(&1), "{counted:?}");
+    assert_eq!(
+        counted.get("browser.open.artifact"),
+        Some(&1),
+        "{counted:?}"
+    );
     let calls = script_calls(&env, &run, 0);
     assert!(calls.iter().all(|c| c["cost_milli"] == 0), "{calls:?}");
 }
@@ -418,38 +443,6 @@ async fn a_mid_run_opt_out_answers_browser_disabled() {
 }
 
 #[tokio::test]
-async fn returned_screenshots_are_shown_to_the_model() {
-    let env = Env::new().await;
-    env.settings.0.lock().unwrap().model_takes_images = true;
-    let (run, v) = one_script(
-        &env,
-        "test",
-        "const r = await clax.browser.test(null, {steps: [{screenshot: {}}]});
-         return {shots: r.screenshots, step: r.steps[0]};",
-    )
-    .await;
-    let shot = &v["shots"][0];
-    assert_eq!(v["shots"].as_array().unwrap().len(), 1, "{v}");
-    assert_eq!(v["step"]["ok"], true);
-    assert_eq!(&v["step"]["value"], shot);
-    assert_eq!(shot["media_type"], "image/png");
-    assert_eq!((&shot["width"], &shot["height"]), (&json!(1), &json!(1)));
-    let id = shot["id"].as_str().unwrap();
-    let row = env.store.bot_content_of(&run, id).unwrap().unwrap();
-    assert_eq!(row.surface, "clax");
-    assert_eq!(row.op.as_deref(), Some("browser.test"));
-    assert_eq!(row.step_n, Some(2));
-    // The tool result says it was shown, and the next turn shows it.
-    let r = script_result(&env, &run, 0);
-    assert_eq!(r["images"], json!([{"id": id, "shown": true}]));
-    let reqs = env.api.requests();
-    assert!(reqs[1].body.to_string().contains("\"type\":\"image\""));
-    // The step's call keeps the handle's ID, not its bytes.
-    let calls = script_calls(&env, &run, 0);
-    assert_eq!(calls[0]["browser"]["screenshots"], json!([id]));
-}
-
-#[tokio::test]
 async fn an_undeclared_browser_call_is_refused() {
     let env = Env::new().await;
     // The admin turned testing on, but the run was made without it.
@@ -472,7 +465,7 @@ async fn an_undeclared_browser_call_is_refused() {
 }
 
 #[tokio::test]
-async fn saved_tests_results_come_through() {
+async fn test_runs_the_saved_tests_in_one_call() {
     let env = Env::new().await;
     let asked: Arc<Mutex<Vec<String>>> = Arc::default();
     let seen = asked.clone();
@@ -493,7 +486,7 @@ async fn saved_tests_results_come_through() {
         &env,
         "test",
         "await clax.files.write('tests/form.test.js', \"test('submits', () => expect(false).toBe(true));\");
-         return await clax.browser.test(null, {tests: true});",
+         return await clax.browser.test();",
     )
     .await;
     assert_eq!(
@@ -543,7 +536,11 @@ async fn a_failure_after_opening_is_charged_at_most_the_time_cap_and_counts() {
     assert_eq!(env.browser.opened(), 1);
     assert_eq!(browser_rows(&env), [60_000]);
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
-    assert_eq!(counted.get("browser.test"), Some(&1), "{counted:?}");
+    assert_eq!(
+        counted.get("browser.open.artifact"),
+        Some(&1),
+        "{counted:?}"
+    );
     let rows = env.store.usage_of_run(&run).unwrap();
     let row = rows.iter().find(|r| r.line == LINE_BROWSER_TIME).unwrap();
     assert_eq!(
@@ -575,7 +572,11 @@ async fn an_open_that_stalls_ends_at_the_calls_deadline() {
     assert_eq!(env.browser.opened(), 1);
     assert_eq!(browser_rows(&env), Vec::<i64>::new());
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
-    assert_eq!(counted.get("browser.test"), Some(&1), "{counted:?}");
+    assert_eq!(
+        counted.get("browser.open.artifact"),
+        Some(&1),
+        "{counted:?}"
+    );
 }
 
 /// The run is cancelled while its browser is open: the sandbox drops the
@@ -632,72 +633,17 @@ async fn a_run_cancelled_while_the_browser_is_open_is_charged_its_time() {
     assert_eq!(env.browser.opened(), 1);
     assert_eq!(browser_rows(&env), [3_000]);
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
-    assert_eq!(counted.get("browser.test"), Some(&1), "{counted:?}");
+    assert_eq!(
+        counted.get("browser.open.artifact"),
+        Some(&1),
+        "{counted:?}"
+    );
     let audit = browser_events(&env);
     assert_eq!(audit.len(), 1, "{audit:?}");
     assert_eq!(
         (&audit[0]["ok"], &audit[0]["code"], &audit[0]["ms"]),
         (&json!(false), &json!("cancelled"), &json!(2_500))
     );
-}
-
-#[tokio::test]
-async fn an_eval_value_shaped_like_a_screenshot_stays_a_value() {
-    let env = Env::new().await;
-    env.browser.opens(|| {
-        Ok(FakeChrome::page(PageModel::new().evaluate(|p: &Value| {
-            let e = p["expression"].as_str().unwrap_or_default();
-            if e.contains("JSON.stringify(v)") {
-                json!({"result": {"type": "object", "value": {"json": "{\"screenshot\":0}"}}})
-            } else {
-                json!({"result": {"type": "undefined"}})
-            }
-        })))
-    });
-    let (_, v) = one_script(
-        &env,
-        "test",
-        "const r = await clax.browser.test(null, {steps: [{eval: 'x'}, {screenshot: {}}]});
-         return {steps: r.steps, shots: r.screenshots};",
-    )
-    .await;
-    assert_eq!(
-        v["steps"][0],
-        json!({"ok": true, "value": {"screenshot": 0}}),
-        "{v}"
-    );
-    assert_eq!(&v["steps"][1]["value"], &v["shots"][0]);
-}
-
-#[tokio::test]
-async fn screenshots_are_kept_under_the_hosts_content_limits() {
-    let env = Env::new().await;
-    env.api.push(env.script_turn(
-        "tu_1",
-        "Test",
-        "const r = await clax.browser.test(null, {steps: [{screenshot: {}}]});
-         return {passed: r.passed, shots: r.screenshots, step: r.steps[0]};",
-    ));
-    env.api.push(finish_turn("done"));
-    let run = env.run_with_browser("test");
-    // An item may hold fewer bytes than the page's one-pixel PNG.
-    let deps = env
-        .deps()
-        .with_content_limits(clax_store::bot_content::ContentLimits {
-            item_bytes: 16,
-            run_bytes: 1 << 20,
-            total_bytes: 1 << 30,
-        });
-    let out = env.drive(&deps, &run, &DriverId::mint()).await;
-    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
-    let v = script_result(&env, &run, 0)["value"].clone();
-    assert_eq!(v["shots"], json!([]), "{v}");
-    assert_eq!(v["passed"], false, "{v}");
-    assert_eq!(v["step"]["ok"], false, "{v}");
-    let why = v["step"]["error"].as_str().unwrap_or_default();
-    assert!(why.contains("could not be kept"), "{v}");
-    // Charged all the same: the browser opened.
-    assert_eq!(browser_rows(&env).len(), 1);
 }
 
 /// Sets the admin's browse URL rule.
@@ -716,294 +662,6 @@ fn sender_says(env: &Env, text: &str) {
             at: "2026-10-21T09:30:00Z".into(),
             text: text.into(),
         });
-}
-
-#[tokio::test]
-async fn a_browse_opens_its_url_and_is_charged_as_a_browse() {
-    let env = Env::new().await;
-    browse_rule(&env, "any_public");
-    let (run, v) = one_script(
-        &env,
-        "browse",
-        "return await clax.browser.browse('https://public.example/', {viewport: 'phone', steps: [{goto: 'https://public.example/next'}]});",
-    )
-    .await;
-    assert_eq!(env.browser.opened(), 1);
-    assert_eq!(v["passed"], true, "{v}");
-    // browser.open.url.max_per_run is 5 by default.
-    assert_eq!(v["left"]["browses"], 4, "{v}");
-    assert_eq!(v["left"]["tests"], 0, "{v}");
-    let log = &env.browser.logs()[0];
-    let navigated: Vec<Value> = log
-        .sent("Page.navigate")
-        .iter()
-        .map(|c| c["params"]["url"].clone())
-        .collect();
-    assert_eq!(
-        navigated,
-        [
-            json!("https://public.example/"),
-            json!("https://public.example/next")
-        ]
-    );
-    // Its requests go to the network; nothing of Clax's is served.
-    assert_eq!(log.sent("Fetch.continueRequest").len(), 2);
-    assert!(log.sent("Fetch.fulfillRequest").is_empty());
-    assert_eq!(log.sent("Browser.close").len(), 1);
-    assert_eq!(browser_rows(&env).len(), 1);
-    let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
-    assert_eq!(counted.get("browser.browse"), Some(&1), "{counted:?}");
-    assert_eq!(counted.get("browser.test"), None, "{counted:?}");
-    let calls = script_calls(&env, &run, 0);
-    let b = &calls[0]["browser"];
-    assert_eq!(
-        (&b["url"], &b["viewport"], &b["passed"]),
-        (
-            &json!("https://public.example/"),
-            &json!("phone"),
-            &json!(true)
-        )
-    );
-    let audit = browser_events(&env);
-    assert_eq!(
-        (&audit[0]["op"], &audit[0]["url"], &audit[0]["ok"]),
-        (
-            &json!("browser.browse"),
-            &json!("https://public.example/"),
-            &json!(true)
-        )
-    );
-}
-
-#[tokio::test]
-async fn sender_rule_admits_only_the_senders_urls() {
-    let env = Env::new().await;
-    sender_says(&env, "Compare with https://news.example/story please.");
-    let (run, v) = one_script(
-        &env,
-        "browse",
-        "const codes = [];
-         for (const [url, opts] of [
-           ['https://evil.example/'],
-           ['https://news.example/story', {steps: [{goto: 'https://evil.example/?d=1'}]}],
-           ['https://news.example/story'],
-         ]) {
-           try { codes.push((await clax.browser.browse(url, opts)).passed); }
-           catch (e) { codes.push(e.code); }
-         }
-         return codes;",
-    )
-    .await;
-    // A URL the sender did not write is in no source the rule takes.
-    assert_eq!(
-        v,
-        json!(["url_not_in_prior_context", "url_not_in_prior_context", true])
-    );
-    assert_eq!(env.browser.opened(), 1);
-    assert_eq!(browser_rows(&env).len(), 1);
-    // Refusals are audited, uncharged and not counted.
-    let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
-    assert_eq!(counted.get("browser.browse"), Some(&1), "{counted:?}");
-    let audit = browser_events(&env);
-    assert_eq!(audit.len(), 3);
-    assert_eq!(audit[1]["code"], "url_not_in_prior_context");
-    assert_eq!(audit[1]["credits_milli"], 0);
-}
-
-#[tokio::test]
-async fn own_hosts_and_private_addresses_are_never_opened() {
-    let env = Env::new().await;
-    browse_rule(&env, "any_public");
-    env.browser.set_own_hosts(Ok(OwnHosts::new(
-        Some("https://clax.example"),
-        Some("sites.example"),
-    )
-    .unwrap()));
-    let (_, v) = one_script(
-        &env,
-        "browse",
-        "const codes = [];
-         for (const url of ['https://clax.example/a/x', 'https://x.sites.example/',
-                            'http://127.0.0.1:9222/json', 'http://localhost/',
-                            'http://169.254.169.254/latest/meta-data/', 'file:///etc/passwd']) {
-           try { await clax.browser.browse(url); codes.push('opened'); }
-           catch (e) { codes.push(e.code); }
-         }
-         return codes;",
-    )
-    .await;
-    assert_eq!(v, json!(vec!["url_not_allowed"; 6]));
-    assert_eq!(env.browser.opened(), 0);
-    assert!(browser_rows(&env).is_empty());
-
-    // An instance that cannot name its own hosts browses nothing.
-    let env = Env::new().await;
-    browse_rule(&env, "any_public");
-    env.browser
-        .set_own_hosts(Err("the public origin is not a URL".into()));
-    let (_, v) = one_script(
-        &env,
-        "browse",
-        "try { await clax.browser.browse('https://public.example/'); return 'opened'; }
-         catch (e) { return e.code; }",
-    )
-    .await;
-    assert_eq!(v, "browser_unavailable");
-    assert_eq!(env.browser.opened(), 0);
-}
-
-#[tokio::test]
-async fn a_browse_page_reaches_only_what_the_rule_admits() {
-    let env = Env::new().await;
-    browse_rule(&env, "allowlist");
-    env.admin_sets(&[(
-        Setting::BrowserOpenUrlAllowlist,
-        json!(["news.example", "*.news.example"]),
-    )]);
-    // Under allowlist a source must hold the URL too.
-    sender_says(&env, "Start from https://news.example/");
-    env.browser.resolves_private("intranet.news.example");
-    env.browser.opens(|| {
-        Ok(FakeChrome::page(PageModel::new().requests(&[
-            ("https://cdn.news.example/app.js", "Script"),
-            ("https://intranet.news.example/", "Fetch"),
-            ("http://10.1.2.3/", "Image"),
-            ("https://evil.example/?d=x", "Image"),
-        ])))
-    });
-    let (_, v) = one_script(
-        &env,
-        "browse",
-        "return (await clax.browser.browse('https://news.example/')).requests.blocked;",
-    )
-    .await;
-    assert_eq!(
-        v,
-        json!([
-            {"url": "https://intranet.news.example/", "why": "private"},
-            {"url": "http://10.1.2.3/", "why": "private"},
-            {"url": "https://evil.example/?d=x", "why": "rule"},
-        ])
-    );
-    let log = &env.browser.logs()[0];
-    assert_eq!(log.sent("Fetch.continueRequest").len(), 2);
-}
-
-#[tokio::test]
-async fn a_replayed_browse_opens_no_browser() {
-    let env = Env::new().await;
-    browse_rule(&env, "any_public");
-    env.api.push(env.script_turn(
-        "tu_1",
-        "Browse",
-        "return (await clax.browser.browse('https://public.example/')).passed;",
-    ));
-    env.api.push(finish_turn("done"));
-    let run = env.run_with_browser("browse");
-    let mut a = env.deps();
-    crash_once(
-        &mut a,
-        CrashPoint::BeforeCommit {
-            step: 2,
-            kind: StepKind::Script,
-        },
-    );
-    let out = env.drive(&a, &run, &DriverId::mint()).await;
-    assert_eq!(
-        out.last().unwrap().next,
-        Next::Waiting(clax_bot::Wait::Crashed)
-    );
-    assert_eq!(browser_rows(&env).len(), 1, "charged when it returned");
-    // The admin narrows the rule meanwhile: the replay answers from the
-    // journal, not from the rule.
-    browse_rule(&env, "sender");
-    env.clock.advance(61);
-    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
-    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
-    assert_eq!(script_result(&env, &run, 0)["value"], true);
-    assert_eq!(env.browser.opened(), 1);
-    assert_eq!(browser_rows(&env).len(), 1);
-    assert_eq!(browser_events(&env).len(), 1);
-}
-
-#[tokio::test]
-async fn browse_counts_against_its_own_cap() {
-    let env = Env::new().await;
-    browse_rule(&env, "any_public");
-    env.admin_sets(&[(Setting::BrowserOpenUrlMaxPerRun, json!(1))]);
-    let (_, v) = one_script(
-        &env,
-        "test,browse",
-        "const a = await clax.browser.browse('https://public.example/');
-         let code;
-         try { await clax.browser.browse('https://public.example/'); } catch (e) { code = e.code; }
-         const t = await clax.browser.test();
-         return [a.left.browses, code, t.left.tests, t.left.browses];",
-    )
-    .await;
-    assert_eq!(v, json!([0, "browser_cap", 9, 0]));
-    assert_eq!(env.browser.opened(), 2);
-}
-
-#[tokio::test]
-async fn browse_needs_its_own_capability() {
-    // A run made without browse cannot call it.
-    let env = Env::new().await;
-    browse_rule(&env, "any_public");
-    let (_, v) = one_script(
-        &env,
-        "test",
-        "try { await clax.browser.browse('https://public.example/'); return 'opened'; }
-         catch (e) { return e.code; }",
-    )
-    .await;
-    assert_eq!(v, "browser_disabled");
-    assert_eq!(env.browser.opened(), 0);
-
-    // The person revokes their grant of browser.open.url to their runs
-    // mid-run: browsing stops, testing goes on.
-    let env = Env::new().await;
-    browse_rule(&env, "any_public");
-    env.api.push(env.script_turn(
-        "tu_1",
-        "Browse",
-        "const codes = [];
-         try { await clax.browser.browse('https://public.example/'); codes.push('opened'); }
-         catch (e) { codes.push(e.code); }
-         codes.push((await clax.browser.test()).passed);
-         return codes;",
-    ));
-    env.api.push(finish_turn("done"));
-    let run = env.run_with_browser("test,browse");
-    let deps = env.deps();
-    let d = DriverId::mint();
-    assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
-    let url = env.store.person_caps(OWNER).unwrap()["browser.open.url"]
-        .runs_grant
-        .clone()
-        .unwrap();
-    env.store.revoke_cap_grant(&AuditCtx::DAEMON, &url).unwrap();
-    env.drive(&deps, &run, &d).await;
-    assert_eq!(
-        script_result(&env, &run, 0)["value"],
-        json!(["browser_disabled", true])
-    );
-    assert_eq!(env.browser.opened(), 1);
-}
-
-#[tokio::test]
-async fn tests_are_refused_under_browse() {
-    let env = Env::new().await;
-    browse_rule(&env, "any_public");
-    let (_, v) = one_script(
-        &env,
-        "browse",
-        "try { await clax.browser.browse('https://public.example/', {tests: true}); return 'opened'; }
-         catch (e) { return e.code; }",
-    )
-    .await;
-    assert_eq!(v, "invalid_args");
-    assert_eq!(env.browser.opened(), 0);
 }
 
 /// One performer of the Spend sequence, for
@@ -1092,11 +750,11 @@ async fn the_check_order_is_one_for_every_performer() {
             line: LINE_BROWSER_TIME,
             fixed: 1_000,
             budget: 10_000,
-            good: "clax.browser.test(null, {timeout_s: 10})",
+            good: "clax.browser.test(null, {timeout: 10000})",
             subject: [
-                "clax.browser.test(null, {timeout_s: 10, viewport: {width: 9000, height: 800}})",
-                "clax.browser.test({path: 'nope.html'}, {timeout_s: 10})",
-                "clax.browser.test(null, {timeout_s: 10})",
+                "clax.browser.test(null, {timeout: 10000, viewport: {width: 9000, height: 800}})",
+                "clax.browser.test({artifact: 'draft', path: 'nope.html'}, {timeout: 10000})",
+                "clax.browser.test(null, {timeout: 10000})",
             ],
             expect: [
                 "browser_disabled",
@@ -1115,11 +773,11 @@ async fn the_check_order_is_one_for_every_performer() {
             line: LINE_BROWSER_TIME,
             fixed: 1_000,
             budget: 10_000,
-            good: "clax.browser.browse('https://public.example/', {timeout_s: 10})",
+            good: "clax.browser.open({url: 'https://public.example/'}).then((p) => p.close())",
             subject: [
-                "clax.browser.browse('https://public.example/', {timeout_s: 10, viewport: {width: 9000, height: 800}})",
-                "clax.browser.browse('http://localhost/', {timeout_s: 10})",
-                "clax.browser.browse('https://public.example/', {timeout_s: 10})",
+                "clax.browser.open({url: 'https://public.example/'}, {viewport: {width: 9000, height: 800}})",
+                "clax.browser.open({url: 'http://localhost/'})",
+                "clax.browser.open({url: 'https://public.example/'})",
             ],
             expect: [
                 "browser_disabled",
@@ -1147,6 +805,7 @@ async fn the_check_order_is_one_for_every_performer() {
                 .unwrap();
             if p.browser == "browse" {
                 browse_rule(&env, "any_public");
+                env.admin_sets(&[(Setting::BrowserCallSeconds, json!(10))]);
             }
             sender_says(&env, "Read https://a.example/one and https://a.example/two");
             env.web().page(
@@ -1244,8 +903,8 @@ async fn every_call_writes_one_bot_spend() {
         "test",
         "const codes = [];
          try { await clax.browser.test(); codes.push('ok'); } catch (e) { codes.push(e.code); }
-         try { await clax.browser.test({path: 'nope.html'}); } catch (e) { codes.push(e.code); }
-         try { await clax.browser.browse('https://public.example/'); } catch (e) { codes.push(e.code); }
+         try { await clax.browser.test({artifact: 'draft', path: 'nope.html'}); } catch (e) { codes.push(e.code); }
+         try { await clax.browser.open({url: 'https://public.example/'}); } catch (e) { codes.push(e.code + ' ' + e.capability); }
          try { await clax.web.fetch('https://a.example/'); } catch (e) { codes.push(e.code + ' ' + e.capability); }
          return codes;",
     )
@@ -1255,18 +914,30 @@ async fn every_call_writes_one_bot_spend() {
         json!([
             "ok",
             "browser_target_not_found",
-            "browser_disabled",
+            "browser_disabled browser.open.url",
             "web_disabled web.fetch"
         ])
     );
     let records = browser_events(&env);
-    assert_eq!(records.len(), 2, "{records:?}");
-    for r in &records {
+    assert_eq!(records.len(), 3, "{records:?}");
+    for r in &records[..2] {
         assert_eq!(r["capability"], "browser.open.artifact", "{r}");
         assert_eq!(r["op"], "browser.test", "{r}");
     }
     assert_eq!(records[0]["ok"], true);
     assert_eq!(records[1]["code"], "browser_target_not_found");
+    assert_eq!(
+        (
+            &records[2]["capability"],
+            &records[2]["op"],
+            &records[2]["code"]
+        ),
+        (
+            &json!("browser.open.url"),
+            &json!("browser.open"),
+            &json!("browser_disabled")
+        )
+    );
     assert!(
         !env.bot_events()
             .iter()
@@ -1282,7 +953,11 @@ async fn an_ok_false_answer_is_journaled_and_charged() {
     let env = Env::new().await;
     env.browser.opens(|| {
         Ok(FakeChrome::page(PageModel::new().evaluate(|p| {
-            if p["expression"].as_str().unwrap_or_default().contains("claxTest") {
+            if p["expression"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("claxTest")
+            {
                 json!({"result": {"type": "object", "value": {"passed": 0, "skipped": 0,
                     "failed": [{"name": "a", "error": "b"}]}}})
             } else {
@@ -1294,7 +969,7 @@ async fn an_ok_false_answer_is_journaled_and_charged() {
         &env,
         "test",
         "await clax.files.write('tests/a.test.js', \"test('a', () => {});\");
-         return await clax.browser.test(null, {tests: true});",
+         return await clax.browser.test();",
     )
     .await;
     assert_eq!(v["passed"], false, "{v}");
@@ -1307,4 +982,552 @@ async fn an_ok_false_answer_is_journaled_and_charged() {
     assert_eq!(records[0]["ok"], true);
     assert_eq!(records[0]["passed"], false);
     assert!(records[0]["credits_milli"].as_i64().is_some());
+}
+
+// ------------------------------------------------------------ sessions
+
+/// A page whose title is "Hello", whose document is `dom`.
+fn page_of(dom: clax_bot::browser::fake::Dom) -> PageModel {
+    PageModel::new().dom(dom).evaluate(|p| {
+        if p["expression"] == "document.title" {
+            clax_bot::browser::fake::value(json!("Hello"))
+        } else {
+            clax_bot::browser::fake::value(json!(true))
+        }
+    })
+}
+
+fn button(name: &str, x: f64) -> clax_bot::browser::fake::El {
+    clax_bot::browser::fake::el("button")
+        .text(name)
+        .rect(x, 0.0, 100.0, 40.0)
+        .role("button", name)
+}
+
+/// A page with one button, Book, and two named Save.
+fn buttons() -> clax_bot::browser::fake::Dom {
+    clax_bot::browser::fake::Dom::new(vec![
+        button("Book", 0.0),
+        button("Save", 200.0),
+        button("Save", 400.0),
+    ])
+}
+
+/// Every browser the source opens shows `model()`.
+fn opens(env: &Env, model: impl Fn() -> PageModel + Send + 'static) {
+    env.browser.opens(move || Ok(FakeChrome::page(model())));
+}
+
+/// The next script of `run`, `code`, as the model's turn `id`: its turn
+/// and its script ticked; the script's result.
+async fn next_script(
+    env: &Env,
+    deps: &clax_bot::run::Deps,
+    run: &str,
+    d: &DriverId,
+    id: &'static str,
+    code: &str,
+) -> Value {
+    env.api.push(env.script_turn(id, "Step", code));
+    assert_eq!(env.tick(deps, run, d).await.kind, Some(StepKind::Turn));
+    assert_eq!(env.tick(deps, run, d).await.kind, Some(StepKind::Script));
+    let (_, steps) = env.store.run_with_steps(run).unwrap().unwrap();
+    let n = steps.iter().filter(|s| s.kind == StepKind::Script).count();
+    script_result(env, run, n - 1)
+}
+
+/// The run's session row of `id`.
+fn session_row(env: &Env, run: &str, id: &str) -> clax_store::bot_web::SessionRow {
+    env.store.bot_browser_session(run, id).unwrap().unwrap()
+}
+
+/// A session opened in one step and clicked in a later one, a model turn
+/// longer than Browser Run's keep-alive between them: the heartbeat kept
+/// the browser, and each millisecond of the session is charged once, the
+/// click's segment from the open's end to its own.
+#[tokio::test]
+async fn a_session_lives_across_steps_and_its_time_is_charged_once() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let run = env.run_with_caps("browser.open.artifact");
+    let deps = env.deps();
+    let d = DriverId::mint();
+    let r = next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_1",
+        "const page = await clax.browser.open({ artifact: 'draft' }); return page;",
+    )
+    .await;
+    let session = r["value"]["session"].as_str().unwrap().to_string();
+    assert_eq!(
+        r["value"]["url"],
+        format!("https://{}.clax-test.invalid/", env.aid)
+    );
+    let opened = session_row(&env, &run, &session);
+    assert!(opened.is_open());
+    // The model thinks for 90 s: the heartbeat goes out.
+    env.clock.advance(90);
+    env.browser.fire_until(env.clock_now());
+    let log = env.browser.logs()[0].clone();
+    within("the heartbeat", log.wait_sent("Browser.getVersion", 1)).await;
+    let r = next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_2",
+        &format!(
+            "const page = clax.browser.session('{session}');
+             await page.getByRole('button', {{ name: 'Book' }}).click();
+             return await page.close();"
+        ),
+    )
+    .await;
+    assert!(r.get("error").is_none(), "{r}");
+    let closed = session_row(&env, &run, &session);
+    assert!(!closed.is_open());
+    assert_eq!(closed.reason, Some(clax_store::bot_web::SessionEnd::Closed));
+    let rows = browser_rows(&env);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(rows[0], opened.charged_ms);
+    assert!(
+        rows[1] >= 90_000,
+        "the click's segment holds the turn: {rows:?}"
+    );
+    assert_eq!(rows.iter().sum::<i64>(), closed.charged_ms);
+    assert_eq!(r["value"]["ms"], closed.charged_ms);
+    assert_eq!(log.sent("Input.dispatchMouseEvent").len(), 3);
+    assert_eq!(env.browser.opened(), 1);
+}
+
+/// A step cut while a call of its session was in flight, run again by a
+/// new process (a new registry): the calls its journal holds answer from
+/// it, and the first it does not hold answers `browser_session_lost`.
+#[tokio::test]
+async fn a_replay_after_a_restart_answers_lost() {
+    let env = Arc::new(Env::new().await);
+    // The click waits for an element that never comes.
+    opens(&env, || page_of(buttons()).frame_limit(2));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Step",
+        "const page = await clax.browser.open({ artifact: 'draft' });
+         const t = await page.title();
+         try { await page.getByText('Never').click(); return 'clicked'; }
+         catch (e) { return [t, e.code]; }",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_caps("browser.open.artifact");
+    let first = {
+        let (env, run) = (env.clone(), run.clone());
+        tokio::spawn(async move {
+            let deps = env.deps();
+            let d = DriverId::mint();
+            env.drive(&deps, &run, &d).await
+        })
+    };
+    let log = loop {
+        if let Some(l) = env.browser.logs().first() {
+            break l.clone();
+        }
+        tokio::task::yield_now().await;
+    };
+    within("the click waits", log.wait_sent("DOM.getDocument", 3)).await;
+    first.abort();
+    let _ = first.await;
+    assert_eq!(browser_rows(&env).len(), 2, "the open and the title");
+    env.clock.advance(61);
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(
+        script_result(&env, &run, 0)["value"],
+        json!(["Hello", "browser_session_lost"])
+    );
+    assert_eq!(env.browser.opened(), 1, "the replay opened no browser");
+    assert_eq!(browser_rows(&env).len(), 2);
+}
+
+/// An `expect` that waited 3 s live answers, in a step run again, from
+/// the journal at once with the same pass, and charges nothing more.
+#[tokio::test]
+async fn a_replayed_expect_answers_at_once() {
+    let env = Env::new().await;
+    let clock = env.clock.clone();
+    opens(&env, move || {
+        let clock = clock.clone();
+        let later = clax_bot::browser::fake::Dom::states(vec![
+            vec![button("Book", 0.0)],
+            vec![button("Book", 0.0)],
+            vec![button("Book", 0.0)],
+            vec![
+                button("Book", 0.0),
+                clax_bot::browser::fake::el("p")
+                    .text("Booked")
+                    .rect(0.0, 100.0, 100.0, 20.0),
+            ],
+        ]);
+        // Each wait in the page takes a second.
+        PageModel::new().dom(later).on(move |cmd: &Value| {
+            let e = cmd["params"]["expression"].as_str().unwrap_or_default();
+            if cmd["method"] == "Runtime.evaluate" && e.contains("clax:frame") {
+                clock.advance_millis(1_000);
+            }
+            None
+        })
+    });
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Step",
+        "const page = await clax.browser.open({ artifact: 'draft' });
+         await expect(page.getByText('Booked')).toBeVisible();
+         return 'seen';",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_caps("browser.open.artifact");
+    let mut a = env.deps();
+    crash_once(
+        &mut a,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    env.drive(&a, &run, &DriverId::mint()).await;
+    let rows = browser_rows(&env);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows[1] >= 3_000, "the expect waited 3 s: {rows:?}");
+    let sent = env.browser.logs()[0].commands().len();
+    env.clock.advance(61);
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(script_result(&env, &run, 0)["value"], "seen");
+    assert_eq!(browser_rows(&env), rows, "nothing more charged");
+    assert_eq!(
+        env.browser.logs()[0].commands().len(),
+        sent,
+        "nothing more sent"
+    );
+    assert_eq!(env.browser.opened(), 1);
+}
+
+/// A session no call reached for its idle time ends `idle`, its tail
+/// charged once; a later call answers `browser_session_closed`.
+#[tokio::test]
+async fn an_idle_session_answers_closed_idle() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let run = env.run_with_caps("browser.open.artifact");
+    let deps = env.deps();
+    let d = DriverId::mint();
+    let r = next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_1",
+        "return await clax.browser.open({ artifact: 'draft' });",
+    )
+    .await;
+    let session = r["value"]["session"].as_str().unwrap().to_string();
+    env.clock.advance(301);
+    env.browser.fire_until(env.clock_now());
+    let log = env.browser.logs()[0].clone();
+    within("the idle end", log.wait_sent("Browser.close", 1)).await;
+    let r = next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_2",
+        &format!(
+            "try {{ await clax.browser.session('{session}').title(); return 'answered'; }}
+             catch (e) {{ return [e.name, e.code, e.message]; }}"
+        ),
+    )
+    .await;
+    assert_eq!(r["value"][0], "HostError");
+    assert_eq!(r["value"][1], "browser_session_closed");
+    assert!(r["value"][2].as_str().unwrap().contains("idle"), "{r}");
+    let row = session_row(&env, &run, &session);
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Idle));
+    assert_eq!(browser_rows(&env).iter().sum::<i64>(), row.charged_ms);
+    assert_eq!(browser_rows(&env).len(), 2, "the open, then the tail");
+}
+
+/// A locator matching two buttons fails `click` at once with Playwright's
+/// strict-mode message, as an answer journaled and charged, thrown by
+/// the prelude as an `Error`; the session stays open.
+#[tokio::test]
+async fn two_matches_are_a_strict_mode_violation() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let (run, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "const page = await clax.browser.open({ artifact: 'draft' });
+         let caught;
+         try { await page.getByRole('button', { name: 'Save' }).click(); }
+         catch (e) { caught = [e.name, e.message]; }
+         return [caught, await page.title()];",
+    )
+    .await;
+    assert_eq!(v[0][0], "Error");
+    let msg = v[0][1].as_str().unwrap();
+    assert!(msg.contains("strict mode violation"), "{msg}");
+    assert!(msg.contains("resolved to 2 elements"), "{msg}");
+    assert_eq!(v[1], "Hello");
+    let calls = script_calls(&env, &run, 0);
+    let click = calls.iter().find(|c| c["op"] == "browser.act").unwrap();
+    assert_eq!(click["ok"], true, "an answer: {click}");
+    assert_eq!(
+        browser_rows(&env).len(),
+        4,
+        "the open, the click, the title, the tail the run's end charged"
+    );
+}
+
+/// A failure on the page that ran its time is journaled and thrown as a
+/// `TimeoutError`, charged its time.
+#[tokio::test]
+async fn a_failed_click_is_journaled_and_thrown() {
+    let env = Arc::new(Env::new().await);
+    opens(&env, || page_of(buttons()).frame_limit(2));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Step",
+        "const page = await clax.browser.open({ artifact: 'draft' });
+         try { await page.getByText('Never').click({ timeout: 2000 }); return 'clicked'; }
+         catch (e) { return [e.name, e.message.split('\\n')[0]]; }",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_caps("browser.open.artifact");
+    let task = {
+        let (env, run) = (env.clone(), run.clone());
+        tokio::spawn(async move { env.drive(&env.deps(), &run, &DriverId::mint()).await })
+    };
+    let log = loop {
+        if let Some(l) = env.browser.logs().first() {
+            break l.clone();
+        }
+        tokio::task::yield_now().await;
+    };
+    within("the click waits", log.wait_sent("DOM.getDocument", 3)).await;
+    env.clock.advance(2);
+    env.browser.fire_until(env.clock_now());
+    within("the run ends", task).await.unwrap();
+    assert_eq!(
+        script_result(&env, &run, 0)["value"],
+        json!(["TimeoutError", "locator.click: Timeout 2000ms exceeded."])
+    );
+    let calls = script_calls(&env, &run, 0);
+    let click = calls.iter().find(|c| c["op"] == "browser.act").unwrap();
+    assert_eq!(click["ok"], true, "{click}");
+    // The open, the click, and the tail the run's end charged.
+    let rows = browser_rows(&env);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert!(rows[1] >= 2_000, "{rows:?}");
+}
+
+/// Supplied content opens with neither web capability nor
+/// `browser.open.url`, and its page reaches nothing else.
+#[tokio::test]
+async fn content_opens_without_any_web_capability() {
+    let env = Env::new().await;
+    opens(&env, || {
+        page_of(buttons()).requests(&[("https://evil.example/x.js", "Script")])
+    });
+    let (_, v) = one_script_with(
+        &env,
+        "browser.open.content",
+        "const page = await clax.browser.open({ html: '<p>hi</p><script src=\"https://evil.example/x.js\"></script>' });
+         const r = await page.failedRequests();
+         await page.close();
+         return [page.url(), r.blocked];",
+    )
+    .await;
+    let url = v[0].as_str().unwrap();
+    assert!(url.ends_with(".clax-content.invalid/"), "{v}");
+    assert_eq!(
+        v[1],
+        json!([{"url": "https://evil.example/x.js", "why": "origin"}])
+    );
+    let served = served(&env.browser.logs()[0]);
+    assert!(served[0].contains("<p>hi</p>"), "{served:?}");
+}
+
+/// An open of a kind the run does not hold is `browser_disabled`.
+#[tokio::test]
+async fn an_open_of_a_kind_the_run_lacks_is_disabled() {
+    let env = Env::new().await;
+    let (_, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "const codes = [];
+         for (const s of [{ url: 'https://public.example/' }, { html: '<p>x</p>' }]) {
+           try { await clax.browser.open(s); codes.push('opened'); }
+           catch (e) { codes.push([e.code, e.capability]); }
+         }
+         return codes;",
+    )
+    .await;
+    assert_eq!(
+        v,
+        json!([
+            ["browser_disabled", "browser.open.url"],
+            ["browser_disabled", "browser.open.content"]
+        ])
+    );
+    assert_eq!(env.browser.opened(), 0);
+}
+
+/// A run holds at most `browser.max_open_per_run` sessions at once (1 by
+/// default): another open answers `browser_cap` until one is closed.
+#[tokio::test]
+async fn a_second_open_past_the_runs_limit_is_capped() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let (_, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "const a = await clax.browser.open({ artifact: 'draft' });
+         let capped;
+         try { await clax.browser.open({ artifact: 'draft' }); } catch (e) { capped = e.code; }
+         await a.close();
+         const b = await clax.browser.open({ artifact: 'draft' });
+         await b.close();
+         return capped;",
+    )
+    .await;
+    assert_eq!(v, "browser_cap");
+    assert_eq!(env.browser.opened(), 2);
+}
+
+/// A call refused `credits_exhausted` closes its session, `credits`.
+#[tokio::test]
+async fn credits_running_out_close_the_session() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let run = env.run_with_caps("browser.open.artifact");
+    let deps = env.deps();
+    let d = DriverId::mint();
+    let r = next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_1",
+        "return await clax.browser.open({ artifact: 'draft' });",
+    )
+    .await;
+    let session = r["value"]["session"].as_str().unwrap().to_string();
+    // A browser call now costs more than the person has left.
+    env.store
+        .put_cost_line(
+            &AuditCtx::DAEMON,
+            LINE_BROWSER_TIME,
+            CostLinePatch {
+                fixed_credits_milli: Some(Some(1_000_000_000)),
+                ..CostLinePatch::default()
+            },
+        )
+        .unwrap();
+    let r = next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_2",
+        &format!(
+            "const page = clax.browser.session('{session}');
+             const codes = [];
+             for (let i = 0; i < 2; i++) {{
+               try {{ await page.title(); codes.push('ok'); }} catch (e) {{ codes.push(e.code); }}
+             }}
+             return codes;"
+        ),
+    )
+    .await;
+    assert_eq!(
+        r["value"],
+        json!(["credits_exhausted", "browser_session_closed"])
+    );
+    let row = session_row(&env, &run, &session);
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Credits));
+}
+
+/// A run's end closes the sessions it left open, `run_ended`, and
+/// charges their tails.
+#[tokio::test]
+async fn the_run_end_closes_its_sessions() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let (run, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "return await clax.browser.open({ artifact: 'draft' });",
+    )
+    .await;
+    let session = v["session"].as_str().unwrap();
+    let row = session_row(&env, &run, session);
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::RunEnded));
+    assert_eq!(env.browser.logs()[0].sent("Browser.close").len(), 1);
+    assert_eq!(browser_rows(&env).iter().sum::<i64>(), row.charged_ms);
+}
+
+/// An option a method does not take is `invalid_args`, naming it, before
+/// any browser is asked.
+#[tokio::test]
+async fn an_unknown_action_is_invalid_args() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let (_, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "const page = await clax.browser.open({ artifact: 'draft' });
+         const codes = [];
+         try { await page.getByRole('button', { name: 'Book' }).click({ force: true }); }
+         catch (e) { codes.push([e.code, e.message]); }
+         try { await page.goto(); } catch (e) { codes.push([e.code, e.message]); }
+         await page.close();
+         return codes;",
+    )
+    .await;
+    assert_eq!(v[0][0], "invalid_args");
+    assert!(v[0][1].as_str().unwrap().contains("args.force"), "{v}");
+    assert_eq!(v[1][0], "invalid_args");
+    assert!(v[1][1].as_str().unwrap().contains("args.url"), "{v}");
+}
+
+/// Two calls a script starts together are performed one after the other,
+/// in the order it made them, each charged its own segment.
+#[tokio::test]
+async fn two_calls_in_one_promise_all_run_in_order() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let (run, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "const page = await clax.browser.open({ artifact: 'draft' });
+         const [t, n] = await Promise.all([page.title(), page.getByRole('button').count()]);
+         await page.close();
+         return [t, n];",
+    )
+    .await;
+    assert_eq!(v, json!(["Hello", 3]));
+    let calls = script_calls(&env, &run, 0);
+    let ops: Vec<&str> = calls.iter().map(|c| c["op"].as_str().unwrap()).collect();
+    assert_eq!(
+        ops,
+        [
+            "browser.open",
+            "browser.page",
+            "browser.act",
+            "browser.close"
+        ]
+    );
+    let rows = browser_rows(&env);
+    assert_eq!(rows.len(), 4, "{rows:?}");
 }

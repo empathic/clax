@@ -713,6 +713,44 @@ impl Env {
         )
     }
 
+    /// A thread run holding the browser capabilities `caps` (IDs,
+    /// comma-separated: `browser.open.url`, `.artifact`, `.content`),
+    /// each turned on by the admin.
+    pub fn run_with_caps(&self, caps: &str) -> String {
+        let on: Vec<(Setting, Value)> = caps
+            .split(',')
+            .filter_map(|c| match c {
+                "browser.open.url" => Some(Setting::BrowserOpenUrlEnabled),
+                "browser.open.artifact" => Some(Setting::BrowserOpenArtifactEnabled),
+                "browser.open.content" => Some(Setting::BrowserOpenContentEnabled),
+                "web.search" => Some(Setting::WebSearchEnabled),
+                "web.fetch" => Some(Setting::WebFetchEnabled),
+                _ => None,
+            })
+            .map(|s| (s, json!(true)))
+            .collect();
+        if !on.is_empty() {
+            self.admin_sets(&on);
+        }
+        self.store
+            .create_run(
+                &clax_bot::run::bot_ctx(OWNER),
+                NewRun {
+                    artifact_id: self.aid.clone(),
+                    person: OWNER.into(),
+                    request: RequestKind::Thread,
+                    thread_ids: vec![self.t1.clone()],
+                    model: "claude-sonnet-5-5".into(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                    caps: clax_store::bot_runs::caps_text(caps.split(',')),
+                },
+            )
+            .unwrap()
+            .id
+    }
+
     /// [`Env::run_with_web`] (`""` for no web operation) on both of the
     /// artifact's threads, so that what the run tells its threads is
     /// posted twice.

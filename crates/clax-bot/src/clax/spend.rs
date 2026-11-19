@@ -73,7 +73,7 @@ use crate::surface::{Answer, Call, Fields, err_json, recorded};
 use clax_bot_sandbox::HostError;
 use clax_core::audit::{AuditKind, AuditRecord};
 use clax_store::bot_runs::CallEntry;
-use clax_store::bot_web::{Spend, WebPageRow};
+use clax_store::bot_web::{SessionSpend, Spend, WebPageRow};
 use clax_store::credits::{Applies, KeySource, Metered, Rate, row_credits_milli};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -99,6 +99,9 @@ pub(super) struct Finish {
     pub usage: Option<(Metered, i64)>,
     /// The page a fetch received.
     pub page: Option<WebPageRow>,
+    /// What a browser session's call does to its session's row: the
+    /// segment it charges (spec §10.3).
+    pub session: Option<SessionSpend>,
     /// Whether the call reached its source, and so counts against the
     /// run's cap (step 7).
     pub counted: bool,
@@ -115,6 +118,7 @@ impl Finish {
             res,
             usage: None,
             page: None,
+            session: None,
             counted: false,
             audit: Vec::new(),
             entry: Vec::new(),
@@ -302,6 +306,10 @@ pub(super) trait Performer: Sync {
         priced: &Priced,
         shown: &mut Value,
     ) -> Finish;
+
+    /// What follows a refusal `credits_exhausted` of `call`, before it is
+    /// written: a browser session's call closes its session (spec §6.3).
+    async fn out_of_credits(&self, _s: &ClaxSession<'_>, _call: &Call<'_>) {}
 }
 
 /// What the run shows of a call of `family` beside its answer: its
@@ -380,6 +388,9 @@ pub(super) async fn run<P: Performer>(s: &ClaxSession<'_>, call: &Call<'_>, p: &
         None
     };
     let f = fresh(s, call, p, c, &mut shown).await;
+    if f.res.as_ref().is_err_and(|e| e.code == CODE_CREDITS_EXHAUSTED) {
+        p.out_of_credits(s, call).await;
+    }
     write(s, call, c, p.audit_shown(), shown, f)
 }
 
@@ -554,7 +565,7 @@ pub(super) fn write(
         entry,
         usage: f.usage.map(|(m, _)| m),
         page: f.page,
-        session: None,
+        session: f.session,
         audit,
     };
     match store.spend_journaled(&s.run, s.cx.claim.driver(), spend) {
@@ -575,7 +586,10 @@ pub(super) async fn perform(s: &ClaxSession<'_>, call: &Call<'_>) -> Option<Answ
         web::OP_SEARCH => run(s, call, &super::web::Search).await,
         web::OP_FETCH => run(s, call, &super::web::Fetch).await,
         browser::OP_TEST => run(s, call, &super::browser::Test).await,
-        browser::OP_BROWSE => run(s, call, &super::browser::Browse).await,
+        browser::OP_OPEN => run(s, call, &super::browser::Open).await,
+        browser::OP_PAGE | browser::OP_ACT | browser::OP_EXPECT | browser::OP_CLOSE => {
+            run(s, call, &super::browser::SessionOp::of(s, call)).await
+        }
         _ => return None,
     })
 }
@@ -592,10 +606,14 @@ pub(super) fn undeclared(op: &str, args: &[Value]) -> Option<Answer> {
             super::browser::Test.capability(args),
             super::browser::Test.shown(args),
         ),
-        browser::OP_BROWSE => (
-            super::browser::Browse.capability(args),
-            super::browser::Browse.shown(args),
+        browser::OP_OPEN => (
+            super::browser::Open.capability(args),
+            super::browser::Open.shown(args),
         ),
+        browser::OP_PAGE | browser::OP_ACT | browser::OP_EXPECT | browser::OP_CLOSE => {
+            let p = super::browser::SessionOp::unbound(op);
+            (p.capability(args), p.shown(args))
+        }
         _ => return None,
     };
     Some(disabled(op, c, shown))

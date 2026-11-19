@@ -5,6 +5,7 @@ use super::session::{ClaxSession, State};
 use super::tally::Tally;
 use crate::api;
 use crate::browser::BrowserSource;
+use crate::browser::live::BrowserSessions;
 use crate::browser::session::SessionLimits;
 use crate::draft::Draft;
 use crate::host::BotHost;
@@ -55,6 +56,10 @@ pub struct ClaxProvider {
     /// Where browsers come from; `None` on a host without a source,
     /// where every browser call is refused `browser_disabled`.
     pub(super) browser: Option<Arc<dyn BrowserSource>>,
+    /// The host's browser sessions, which outlive a step (spec
+    /// 2026-11-19-claxbot-browser §7.4): one registry over `browser`,
+    /// shared by every copy of this provider; `None` without a source.
+    pub(super) sessions: Option<Arc<BrowserSessions>>,
     /// What a browser test is held to: its screenshots' longest side.
     pub(super) browser_limits: SessionLimits,
     /// What a browser test's screenshots are kept under, as the host
@@ -93,6 +98,7 @@ impl ClaxProvider {
             host,
             web,
             browser: None,
+            sessions: None,
             browser_limits: SessionLimits {
                 image_side: crate::policy::DEFAULT_IMAGE_SIDE,
             },
@@ -110,12 +116,33 @@ impl ClaxProvider {
     }
 
     /// This provider, opening browsers from `browser` (none: each
-    /// browser call is refused `browser_disabled`), over the same store,
-    /// host, web source and clock.
+    /// browser call is refused `browser_disabled`), its sessions held by
+    /// a new registry over it ([`ClaxProvider::with_browser_sessions`] to
+    /// share one), over the same store, host, web source and clock.
     #[must_use]
     pub fn with_browser(&self, browser: Option<Arc<dyn BrowserSource>>) -> ClaxProvider {
+        let sessions = browser.as_ref().map(|b| {
+            Arc::new(BrowserSessions::new(
+                b.clone(),
+                self.clock.clone(),
+                self.browser_limits,
+            ))
+        });
         ClaxProvider {
             browser,
+            sessions,
+            ..self.same()
+        }
+    }
+
+    /// This provider, holding its browser sessions in `sessions`: the
+    /// host's one registry, which every provider of the host shares so a
+    /// session outlives the step, the tick and the provider that opened
+    /// it.
+    #[must_use]
+    pub fn with_browser_sessions(&self, sessions: Arc<BrowserSessions>) -> ClaxProvider {
+        ClaxProvider {
+            sessions: Some(sessions),
             ..self.same()
         }
     }
@@ -138,6 +165,7 @@ impl ClaxProvider {
             host: self.host.clone(),
             web: self.web.clone(),
             browser: self.browser.clone(),
+            sessions: self.sessions.clone(),
             browser_limits: self.browser_limits,
             content_limits: self.content_limits,
             clock: self.clock.clone(),
@@ -244,12 +272,18 @@ impl SurfaceProvider for ClaxProvider {
         self.run_ending(cx, end, result).await
     }
 
+    /// Closes the run's browser sessions (`run_ended`) and charges each
+    /// one's tail, then does what the run's end leaves to the surface.
     async fn ended(
         &self,
         run: &RunInfo,
         _end: &End,
         _result: Option<&Value>,
     ) -> Result<(), HostError> {
+        if let Some(sessions) = &self.sessions {
+            sessions.end_run(&run.id).await;
+            super::browser::charge_ended(&self.store, sessions);
+        }
         self.run_ended(run).await
     }
 

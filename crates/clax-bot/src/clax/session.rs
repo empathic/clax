@@ -64,8 +64,12 @@ const PARTS: &[(&str, Part)] = &[
     ("threads.resolve", Part::Host),
     (crate::web::OP_SEARCH, Part::Spend),
     (crate::web::OP_FETCH, Part::Spend),
+    (crate::browser::OP_OPEN, Part::Spend),
+    (crate::browser::OP_PAGE, Part::Spend),
+    (crate::browser::OP_ACT, Part::Spend),
+    (crate::browser::OP_EXPECT, Part::Spend),
+    (crate::browser::OP_CLOSE, Part::Spend),
     (crate::browser::OP_TEST, Part::Spend),
-    (crate::browser::OP_BROWSE, Part::Spend),
 ];
 
 /// The part that performs operation `op`.

@@ -822,8 +822,11 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 /// `browser.page`, `browser.act` or `browser.expect` each, and
 /// `page.close()` one of `browser.close`. Those four leave
 /// `clax.browser`, so a script reaches them only through a `Page`;
-/// `browser.test` and any other listed browser operation stay. Without
-/// all five, neither the layer nor `expect` exists.
+/// `browser.test` and any other listed browser operation stay. A session
+/// outlives the script: a `Page` returned shows `{session, url}`, and
+/// `clax.browser.session(id)` makes, with no call, the `Page` of session
+/// `id` in a later script (its `url()` empty until its first call).
+/// Without all five, neither the layer nor `expect` exists.
 ///
 /// The methods are built from one table, a JSON array between the lines
 /// `// browser-layer-table:begin` and `// browser-layer-table:end`

@@ -457,6 +457,14 @@ impl BrowserSessions {
         })
     }
 
+    /// Whether session `session` of run `run` is open in this process.
+    ///
+    /// # Errors
+    /// As [`BrowserSessions::call`], for a session not open.
+    pub fn check(&self, run: &str, session: &str) -> Result<(), BrowserError> {
+        self.sender(run, session).map(|_| ())
+    }
+
     /// The sessions of run `run` open now, with their kinds.
     #[must_use]
     pub fn open_sessions(&self, run: &str) -> Vec<(String, SessionKind)> {

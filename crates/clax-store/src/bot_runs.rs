@@ -260,15 +260,23 @@ pub struct Run {
     pub browser: String,
 }
 
-/// The operations of Clax's own surface a capability allows, as
-/// [`Bindings::clax`] grants them: each capability ID with one operation,
-/// in the order a binding lists them (spec 2026-11-19-claxbot-browser
-/// §4.2). `browser.open.content` allows no operation of this table.
-pub const CLAX_GRANTED: [(&str, &str); 4] = [
-    ("web.search", "web.search"),
-    ("web.fetch", "web.fetch"),
-    ("browser.open.artifact", "browser.test"),
-    ("browser.open.url", "browser.browse"),
+/// The browser's source capabilities: each opens a session of its kind.
+const OPEN_CAPS: &[&str] = &["browser.open.url", "browser.open.artifact", "browser.open.content"];
+
+/// The operations of Clax's own surface the capabilities allow, as
+/// [`Bindings::clax`] grants them: each operation with the capabilities
+/// any one of which allows it, in the order a binding lists them (spec
+/// 2026-11-19-claxbot-browser §4.2, §6.9): the session operations with
+/// any `browser.open.*`, `browser.test` with `browser.open.artifact`.
+pub const CLAX_GRANTED: [(&str, &[&str]); 8] = [
+    ("web.search", &["web.search"]),
+    ("web.fetch", &["web.fetch"]),
+    ("browser.open", OPEN_CAPS),
+    ("browser.page", OPEN_CAPS),
+    ("browser.act", OPEN_CAPS),
+    ("browser.expect", OPEN_CAPS),
+    ("browser.close", OPEN_CAPS),
+    ("browser.test", &["browser.open.artifact"]),
 ];
 
 /// The capabilities text (`bot_runs.caps`) of a run whose web shape is
@@ -741,16 +749,22 @@ impl Bindings {
     /// capabilities are `caps` ([`Run::caps`]: capability IDs,
     /// comma-separated): version 1, granting each operation a capability
     /// of `caps` allows ([`CLAX_GRANTED`]), in that table's order. A part
-    /// that names no capability, or one no operation of this version
-    /// needs (`browser.open.content`), grants nothing.
+    /// that names no capability grants nothing. The scope is
+    /// `{"artifact": <ID>}`, with `"caps"`, the capabilities text, when
+    /// one of them is the browser's: the session operations are the same
+    /// whichever source kinds a run holds, so the binding says which.
     #[must_use]
     pub fn clax(artifact_id: &str, caps: &str) -> Bindings {
         let has = |c: &str| caps.split(',').any(|p| p == c);
         let granted = CLAX_GRANTED
             .iter()
-            .filter(|(cap, _)| has(cap))
-            .map(|(_, op)| (*op).to_string())
+            .filter(|(_, by)| by.iter().any(|c| has(c)))
+            .map(|(op, _)| (*op).to_string())
             .collect();
+        let mut scope = serde_json::json!({ "artifact": artifact_id });
+        if OPEN_CAPS.iter().any(|c| has(c)) {
+            scope["caps"] = serde_json::json!(caps_text(caps.split(',')));
+        }
         Bindings {
             v: BINDINGS_VERSION,
             bindings: vec![StoredBinding {
@@ -759,7 +773,7 @@ impl Bindings {
                 registration: None,
                 prompt: None,
                 settings: None,
-                scope: serde_json::json!({ "artifact": artifact_id }),
+                scope,
                 granted,
                 operations: None,
             }],
@@ -3922,7 +3936,10 @@ mod tests {
             "test,browse"
         );
         let bindings = as_made.bindings().unwrap();
-        assert_eq!(bindings.bindings[0].granted(), ["browser.test"]);
+        assert_eq!(
+            bindings.bindings[0].granted(),
+            ["browser.open", "browser.page", "browser.act", "browser.expect", "browser.close", "browser.test"]
+        );
         assert_eq!(kept(&st, &run.id).1, bindings, "kept as made");
         // The browser's operations follow the web's, in a fixed order,
         // whatever order the capabilities are named in.
@@ -3933,18 +3950,31 @@ mod tests {
             )
             .bindings[0]
                 .granted(),
-            ["web.search", "web.fetch", "browser.test", "browser.browse"]
+            [
+                "web.search",
+                "web.fetch",
+                "browser.open",
+                "browser.page",
+                "browser.act",
+                "browser.expect",
+                "browser.close",
+                "browser.test"
+            ]
         );
+        let url = Bindings::clax(&aid, "browser.open.url");
         assert_eq!(
-            Bindings::clax(&aid, "browser.open.url").bindings[0].granted(),
-            ["browser.browse"]
+            url.bindings[0].granted(),
+            ["browser.open", "browser.page", "browser.act", "browser.expect", "browser.close"]
         );
-        // Content allows no operation yet; an unknown part grants nothing.
-        assert!(
-            Bindings::clax(&aid, "browser.open.content,Test,web,search")
-                .bindings[0]
-                .granted()
-                .is_empty()
+        assert_eq!(url.bindings[0].scope["caps"], "browser.open.url");
+        // Content allows the session operations, and the scope names it.
+        let content = Bindings::clax(&aid, "browser.open.content,Test,web,search");
+        assert_eq!(content.bindings[0].granted().len(), 5);
+        assert_eq!(content.bindings[0].scope["caps"], "browser.open.content");
+        // A web run's scope is the artifact alone.
+        assert_eq!(
+            Bindings::clax(&aid, "web.search").bindings[0].scope,
+            serde_json::json!({"artifact": aid})
         );
     }
 

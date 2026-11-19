@@ -781,10 +781,13 @@ impl Store {
     /// How many of run `id`'s journaled calls of the operation family
     /// `namespace` (`web`, `browser`: the ops `<namespace>.<name>`) each
     /// op made that its entry marks `counted` (a result whose `counted` is
-    /// true: the call reached its source), by op; an op with none is
-    /// absent. Counted in the database, without reading the entries'
-    /// results out. `namespace` is one of the crate's callers' names,
-    /// never a script's: it holds no `%` or `_`.
+    /// true: the call reached its source), by op, or by the entry's
+    /// `count_as` when it has one (a browser session's open and a test
+    /// are counted under the capability of their source kind,
+    /// `browser.open.url`); a key with none is absent. Counted in the
+    /// database, without reading the entries' results out. `namespace` is
+    /// one of the crate's callers' names, never a script's: it holds no
+    /// `%` or `_`.
     ///
     /// # Errors
     /// The store's.
@@ -792,10 +795,11 @@ impl Store {
         debug_assert!(!namespace.contains(['%', '_']), "{namespace}");
         self.with_read(|c| {
             let mut q = c.prepare_cached(
-                "SELECT op, COUNT(*) FROM bot_calls
+                "SELECT COALESCE(json_extract(result_json, '$.count_as'), op), COUNT(*)
+                   FROM bot_calls
                   WHERE run_id = ?1 AND op LIKE ?2 || '.%'
                     AND json_extract(result_json, '$.counted') = 1
-                  GROUP BY op",
+                  GROUP BY 1",
             )?;
             let rows = q.query_map(params![id, namespace], |r| {
                 let n: i64 = r.get(1)?;
@@ -1065,12 +1069,27 @@ mod tests {
             "browser.test",
             json!({"code": "browser_unavailable", "counted": true}),
         );
-        journal(3, "browser.browse", json!({"code": "browser_cap"}));
+        journal(3, "browser.open", json!({"code": "browser_cap"}));
         journal(4, "browserx.test", json!({"value": {}, "counted": true}));
+        // An entry with `count_as` is counted under it, not its op.
+        journal(
+            5,
+            "browser.open",
+            json!({"value": {}, "counted": true, "count_as": "browser.open.url"}),
+        );
+        journal(
+            6,
+            "browser.test",
+            json!({"value": {}, "counted": true, "count_as": "browser.open.artifact"}),
+        );
         let pairs = |m: BTreeMap<String, u32>| m.into_iter().collect::<Vec<_>>();
         assert_eq!(
             pairs(st.bot_spend_counts(&run.id, "browser").unwrap()),
-            vec![("browser.test".to_string(), 2)]
+            vec![
+                ("browser.open.artifact".to_string(), 1),
+                ("browser.open.url".to_string(), 1),
+                ("browser.test".to_string(), 2)
+            ]
         );
         assert_eq!(
             pairs(st.bot_spend_counts(&run.id, "web").unwrap()),

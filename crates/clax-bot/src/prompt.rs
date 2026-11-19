@@ -644,27 +644,38 @@ pub(crate) fn declaration_of(
     ))
 }
 
-/// The capabilities a run of Clax's own kind declares: those whose
-/// operations its `clax` binding has ([`crate::api::caps_of`]).
+/// The capabilities a run of Clax's own kind declares: those its `clax`
+/// binding's scope names (`caps`, which a run holding a browser
+/// capability's binding has: the browser's source kinds share their
+/// operations), and those whose operations the binding has
+/// ([`crate::api::caps_of`]).
 fn shape_of(run: &RunInfo) -> CapSet {
-    let has = |op: &str| run.binding(CLAX_SURFACE).is_some_and(|b| b.has(op));
-    crate::api::caps_of(&has)
+    let binding = run.binding(CLAX_SURFACE);
+    let has = |op: &str| binding.is_some_and(|b| b.has(op));
+    let mut caps = crate::api::caps_of(&has);
+    if let Some(named) = binding.and_then(|b| b.scope["caps"].as_str()) {
+        for c in CapSet::parse(named).iter() {
+            caps.insert(c);
+        }
+    }
+    caps
 }
 
 /// What a run of Clax's own kind holding `caps` is told after the
 /// `browser` namespace's rules: the source kinds it can open a browser
-/// on, each a capability of `caps` that allows an operation the run is
-/// declared (spec 2026-11-19-claxbot-browser §6.1, §6.2). Nothing after
-/// another namespace's rules.
+/// on, each a browser source capability of `caps` (spec
+/// 2026-11-19-claxbot-browser §6.1, §6.2). Nothing after another
+/// namespace's rules.
 fn browser_kinds_note(namespace: &str, caps: &CapSet) -> Option<String> {
     if namespace != "browser" {
         return None;
     }
-    let declared = crate::api::caps_of(&|op| crate::api::declared(op, caps));
-    let kinds: Vec<&str> = declared
+    let kinds: Vec<&str> = caps
         .iter()
         .filter_map(|c| match c {
-            Capability::OpenArtifact => Some("the run's clax (its draft, or a version of its artifact)"),
+            Capability::OpenArtifact => {
+                Some("the run's clax (its draft, or a version of its artifact)")
+            }
             Capability::OpenUrl => Some("a public URL the instance's rule admits"),
             Capability::OpenContent => Some("HTML and files you supply"),
             Capability::WebSearch | Capability::WebFetch => None,
@@ -1102,29 +1113,19 @@ interface Done {
     fn the_browser_rule_appears_only_with_the_namespace() {
         let rules = namespace_rules("browser").unwrap();
         assert!(
-            rules.starts_with("When you have `clax.browser.test`: test pages you build or change"),
+            rules.starts_with("A browser session costs by the second while it is open"),
             "{rules}"
         );
-        // A run with `browse` alone is told the rules too: each mention of
-        // `test` in them is under the condition that the run has it.
-        assert_eq!(
-            rules.matches("clax.browser.test").count(),
-            rules.matches("When you have `clax.browser.test`").count(),
-            "{rules}"
-        );
+        // Every source kind is told the rules, which name no operation
+        // only one of them has.
+        assert!(!rules.contains("clax.browser.test"), "{rules}");
         let off = system_prompt(RequestKind::Thread, &both());
         assert!(!off.contains(rules), "{off}");
         assert!(!off.contains("clax.browser"), "{off}");
-        // Content alone allows no operation of this version: no namespace,
-        // no rules.
-        let content = caps(&[C::OpenContent]);
-        assert_eq!(
-            system_prompt(RequestKind::Thread, &content),
-            system_prompt(RequestKind::Thread, &none())
-        );
         for browser in [
             vec![C::OpenArtifact],
             vec![C::OpenUrl],
+            vec![C::OpenContent],
             vec![C::OpenArtifact, C::OpenUrl, C::OpenContent],
         ] {
             for web in [none(), both()] {
@@ -1149,8 +1150,7 @@ interface Done {
     }
 
     /// After the `browser` namespace's rules a run is told the source
-    /// kinds it can open a browser on: each it holds that allows an
-    /// operation it is declared, and no other.
+    /// kinds it can open a browser on: each it holds, and no other.
     #[test]
     fn the_browser_rules_name_the_runs_source_kinds() {
         let clax = "the run's clax (its draft, or a version of its artifact)";
@@ -1164,16 +1164,24 @@ interface Done {
             note(&[C::OpenUrl, C::WebFetch]),
             Some(format!("In this run the browser opens: {url}."))
         );
+        let content = "HTML and files you supply";
         assert_eq!(
             note(&C::ALL),
-            Some(format!("In this run the browser opens: {url}; {clax}."))
+            Some(format!(
+                "In this run the browser opens: {url}; {clax}; {content}."
+            ))
         );
-        // Content allows no operation of this version, so it is not named.
-        assert_eq!(note(&[C::OpenContent]), None);
+        assert_eq!(
+            note(&[C::OpenContent]),
+            Some(format!("In this run the browser opens: {content}."))
+        );
         assert_eq!(note(&[C::WebSearch, C::WebFetch]), None);
         assert_eq!(browser_kinds_note("web", &caps(&C::ALL)), None);
         let p = system_prompt(RequestKind::Thread, &caps(&[C::OpenUrl]));
-        assert!(p.contains(&format!("In this run the browser opens: {url}.\n")), "{p}");
+        assert!(
+            p.contains(&format!("In this run the browser opens: {url}.\n")),
+            "{p}"
+        );
         assert!(!p.contains(clax), "{p}");
     }
 
@@ -1388,12 +1396,7 @@ interface Done {
 
     /// Every set of web capabilities.
     fn shapes() -> [CapSet; 4] {
-        [
-            none(),
-            caps(&[C::WebSearch]),
-            caps(&[C::WebFetch]),
-            both(),
-        ]
+        [none(), caps(&[C::WebSearch]), caps(&[C::WebFetch]), both()]
     }
     /// Every kind of request a run may be of.
     const KINDS: &[RequestKind] = RequestKind::ALL;
@@ -1959,7 +1962,11 @@ interface Kinds {
         keep(namespace_rules("web").unwrap());
         clax.kinds().iter().for_each(|k| keep(&k.doc));
         standard::CorePiece::ALL.iter().for_each(|p| keep(p.text()));
-        let browsers = [vec![], vec![C::OpenArtifact], vec![C::OpenArtifact, C::OpenUrl]];
+        let browsers = [
+            vec![],
+            vec![C::OpenArtifact],
+            vec![C::OpenArtifact, C::OpenUrl],
+        ];
         let shapes: Vec<CapSet> = shapes()
             .iter()
             .flat_map(|web| {
