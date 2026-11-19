@@ -106,8 +106,8 @@
       <section class="bcard" aria-labelledby="me-browser">
         <h3 id="me-browser">Browser</h3>
         <div class="mek mew-browser">
-          <Switch checked={browser.why_off === null} label="Let ClaxBot test pages in a browser" disabled={!!browserWhy} busy={busy} describedby="me-browser-why" onchange={on => change(() => setBrowserChoice(on))} />
-          <small id="me-browser-why" class="note">{browserWhy ? `${browserWhy}.` : "ClaxBot may load the pages it builds for you in a browser to test them; a test reaches nothing but its page."}{#if browser.price_milli_per_minute != null}{` Browser time costs ${credits(browser.price_milli_per_minute)} credits a minute.`}{/if}</small>
+          <Switch checked={browser.on && !browserWhy} label="Let ClaxBot test pages in a browser" disabled={!!browserWhy} busy={busy} describedby="me-browser-why" onchange={on => change(() => setBrowserChoice(on))} />
+          <small id="me-browser-why" class="note">{browserWhy ? `${browserWhy}.` : browser.on && browser.why_off === "person_off" ? "Browsing public pages also needs your web switch on." : "ClaxBot may load the pages it builds for you in a browser to test them; a test reaches nothing but its page."}{#if browser.price_milli_per_minute != null}{` Browser time costs ${credits(browser.price_milli_per_minute)} credits a minute.`}{/if}</small>
         </div>
       </section>
     {/if}

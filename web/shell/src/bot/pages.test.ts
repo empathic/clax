@@ -172,6 +172,19 @@ describe("You", () => {
     const off = m.root.querySelector<HTMLElement>(label)!;
     expect([off.getAttribute("aria-checked"), off.getAttribute("aria-disabled")]).toEqual(["false", null]);
     m.unmount();
+    // On by their choice but off because browsing is all the instance
+    // offers and their web switch is off: the switch shows their choice,
+    // and the note says what else browsing needs.
+    stubFetch({
+      "GET /api/me/bot": meBot({ browser: { on: true, offered: true, why_off: "person_off", price_milli_per_minute: 150 } }),
+      "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
+    });
+    const w = mount(MePage, {});
+    await settle();
+    const ws = w.root.querySelector<HTMLElement>(label)!;
+    expect([ws.getAttribute("aria-checked"), ws.getAttribute("aria-disabled")]).toEqual(["true", null]);
+    expect(w.root.querySelector(".mew-browser")!.textContent).toContain("Browsing public pages also needs your web switch on.");
+    w.unmount();
     // Off on the instance, the switch says why and cannot be pressed.
     for (const [why, text] of [["admin_off", "Off on this instance"], ["not_configured", "Not configured"]] as const) {
       stubFetch({
