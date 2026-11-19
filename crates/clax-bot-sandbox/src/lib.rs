@@ -144,6 +144,18 @@ pub trait MaybeSendSync {}
 #[cfg(target_arch = "wasm32")]
 impl<T: ?Sized> MaybeSendSync for T {}
 
+/// `Send` natively, for a value one task owns and moves between threads
+/// (a browser's socket); nothing on wasm32 (see [`MaybeSendSync`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + ?Sized> MaybeSend for T {}
+/// `Send` natively; nothing on wasm32 (see the native definition).
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSend for T {}
+
 /// One script: a title (used as its file name in stack traces), the
 /// body of the async function it runs as, and, when given, what makes its
 /// run repeatable and the operations its `clax` has.

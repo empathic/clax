@@ -52,6 +52,7 @@ extern crate self as clax_bot;
 pub mod api;
 pub mod bot_surfaces;
 pub mod broker;
+pub mod browser;
 pub mod check;
 pub mod clax;
 pub mod draft;
