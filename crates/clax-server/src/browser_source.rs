@@ -167,6 +167,7 @@ impl DaemonBrowser {
 
     /// This source, checking a browse's names with `lookup`.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     fn with_lookup(mut self, lookup: Arc<dyn Lookup>) -> DaemonBrowser {
         self.lookup = lookup;
         self
