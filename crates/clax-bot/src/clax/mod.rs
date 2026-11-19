@@ -27,6 +27,7 @@ mod publish;
 mod replies;
 mod rules;
 mod session;
+mod spend;
 mod tally;
 mod web;
 

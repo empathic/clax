@@ -92,7 +92,7 @@ fn served(log: &ChromeLog) -> Vec<String> {
 fn browser_events(env: &Env) -> Vec<Value> {
     env.bot_events()
         .into_iter()
-        .filter(|(k, _)| k == "bot.browser")
+        .filter(|(k, _)| k == "bot.spend")
         .map(|(_, b)| b)
         .collect()
 }
@@ -1004,4 +1004,307 @@ async fn tests_are_refused_under_browse() {
     .await;
     assert_eq!(v, "invalid_args");
     assert_eq!(env.browser.opened(), 0);
+}
+
+/// One performer of the Spend sequence, for
+/// [`the_check_order_is_one_for_every_performer`].
+struct Steps {
+    /// The run's web and browser shapes.
+    web: &'static str,
+    browser: &'static str,
+    /// The admin's switch of the call's capability, and its per-run cap.
+    switch: Setting,
+    max: Setting,
+    /// The call's line, and its fixed price per base unit.
+    line: &'static str,
+    fixed: i64,
+    /// What the person can spend so that one good call leaves too little
+    /// for another.
+    budget: i64,
+    /// A call that passes, made first.
+    good: &'static str,
+    /// The call checked: with arguments that fail, then a target that is
+    /// not admitted, then one that passes.
+    subject: [&'static str; 3],
+    /// The subject's code at each stage, from 0, or `ok`.
+    expect: [&'static str; 6],
+}
+
+/// Each performer meets the steps in one order (spec
+/// 2026-11-19-claxbot-browser §4.6): at stage `k` every check from the
+/// `k`th on would refuse the call (the capability turned off, the
+/// arguments, the admission, the cap after one good call, the credits
+/// one good call left), and the call is refused by the first.
+#[tokio::test]
+async fn the_check_order_is_one_for_every_performer() {
+    let performers = [
+        Steps {
+            web: "search",
+            browser: "",
+            switch: Setting::WebSearchEnabled,
+            max: Setting::WebMaxSearchesPerRun,
+            line: "web.search.ceramic",
+            fixed: 5_000_000,
+            budget: 5_000,
+            good: "clax.web.search('a')",
+            subject: [
+                "clax.web.search('')",
+                "clax.web.search('b')",
+                "clax.web.search('b')",
+            ],
+            expect: [
+                "web_disabled",
+                "invalid_args",
+                "web_cap",
+                "web_cap",
+                "credits_exhausted",
+                "ok",
+            ],
+        },
+        Steps {
+            web: "fetch",
+            browser: "",
+            switch: Setting::WebFetchEnabled,
+            max: Setting::WebMaxFetchesPerRun,
+            line: clax_store::credits::LINE_WEB_FETCH,
+            fixed: 5_000_000,
+            budget: 5_000,
+            good: "clax.web.fetch('https://a.example/one')",
+            subject: [
+                "clax.web.fetch('https://a.example/two', {offset: -1})",
+                "clax.web.fetch('https://b.example/')",
+                "clax.web.fetch('https://a.example/two')",
+            ],
+            expect: [
+                "web_disabled",
+                "invalid_args",
+                "url_not_in_prior_context",
+                "web_cap",
+                "credits_exhausted",
+                "ok",
+            ],
+        },
+        Steps {
+            web: "",
+            browser: "test",
+            switch: Setting::BrowserOpenArtifactEnabled,
+            max: Setting::BrowserOpenArtifactMaxPerRun,
+            line: LINE_BROWSER_TIME,
+            fixed: 1_000,
+            budget: 10_000,
+            good: "clax.browser.test(null, {timeout_s: 10})",
+            subject: [
+                "clax.browser.test(null, {timeout_s: 10, viewport: {width: 9000, height: 800}})",
+                "clax.browser.test({path: 'nope.html'}, {timeout_s: 10})",
+                "clax.browser.test(null, {timeout_s: 10})",
+            ],
+            expect: [
+                "browser_disabled",
+                "invalid_args",
+                "browser_target_not_found",
+                "browser_cap",
+                "credits_exhausted",
+                "ok",
+            ],
+        },
+        Steps {
+            web: "",
+            browser: "browse",
+            switch: Setting::BrowserOpenUrlEnabled,
+            max: Setting::BrowserOpenUrlMaxPerRun,
+            line: LINE_BROWSER_TIME,
+            fixed: 1_000,
+            budget: 10_000,
+            good: "clax.browser.browse('https://public.example/', {timeout_s: 10})",
+            subject: [
+                "clax.browser.browse('https://public.example/', {timeout_s: 10, viewport: {width: 9000, height: 800}})",
+                "clax.browser.browse('http://localhost/', {timeout_s: 10})",
+                "clax.browser.browse('https://public.example/', {timeout_s: 10})",
+            ],
+            expect: [
+                "browser_disabled",
+                "invalid_args",
+                "url_not_allowed",
+                "browser_cap",
+                "credits_exhausted",
+                "ok",
+            ],
+        },
+    ];
+    for p in &performers {
+        let mut seen = Vec::new();
+        for k in 0..6 {
+            let env = Env::new().await;
+            env.store
+                .put_cost_line(
+                    &AuditCtx::DAEMON,
+                    p.line,
+                    CostLinePatch {
+                        fixed_credits_milli: Some(Some(p.fixed)),
+                        ..CostLinePatch::default()
+                    },
+                )
+                .unwrap();
+            if p.browser == "browse" {
+                browse_rule(&env, "any_public");
+            }
+            sender_says(&env, "Read https://a.example/one and https://a.example/two");
+            env.web().page(
+                "https://a.example/one",
+                Ok(clax_bot::web::FetchedPage {
+                    final_url: String::new(),
+                    status: 200,
+                    content_type: "text/markdown".into(),
+                    text: "one".into(),
+                    links: Vec::new(),
+                    request_id: None,
+                }),
+            );
+            env.web().page(
+                "https://a.example/two",
+                Ok(clax_bot::web::FetchedPage {
+                    final_url: String::new(),
+                    status: 200,
+                    content_type: "text/markdown".into(),
+                    text: "two".into(),
+                    links: Vec::new(),
+                    request_id: None,
+                }),
+            );
+            env.web().search_answers(
+                "a",
+                Ok(clax_bot::web::SearchAnswer {
+                    hits: Vec::new(),
+                    request_id: None,
+                    raw: json!({}),
+                }),
+            );
+            env.web().search_answers(
+                "b",
+                Ok(clax_bot::web::SearchAnswer {
+                    hits: Vec::new(),
+                    request_id: None,
+                    raw: json!({}),
+                }),
+            );
+            // A browser call takes 9 s: two evaluations of 4.5 s each.
+            let clock = env.clock.clone();
+            env.browser.opens(move || {
+                let clock = clock.clone();
+                Ok(FakeChrome::page(PageModel::new().evaluate(move |_| {
+                    clock.advance_millis(4_500);
+                    json!({"result": {"type": "undefined"}})
+                })))
+            });
+            let subject = p.subject[match k {
+                0 | 1 => 0,
+                2 => 1,
+                _ => 2,
+            }];
+            let code = format!(
+                "const codes = [];
+                 try {{ await {}; }} catch (e) {{ codes.push('good: ' + e.code); }}
+                 try {{ await {subject}; codes.push('ok'); }} catch (e) {{ codes.push(e.code); }}
+                 return codes;",
+                p.good
+            );
+            env.api.push(env.script_turn("tu_1", "Order", &code));
+            env.api.push(finish_turn("done"));
+            let run = if p.web.is_empty() {
+                env.run_with_browser(p.browser)
+            } else {
+                env.run_with_web(p.web)
+            };
+            env.admin_sets(&[(p.max, json!(if k <= 3 { 1 } else { 10 }))]);
+            if k == 0 {
+                env.admin_sets(&[(p.switch, json!(false))]);
+            }
+            let deps = env.deps();
+            let d = DriverId::mint();
+            assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
+            let spent = env.store.week_usage_now(OWNER).unwrap().spent_milli;
+            let budget = if k <= 4 { p.budget } else { 1_000_000_000 };
+            env.admin_sets(&[(Setting::FreeWeeklyMilli, json!(spent + budget))]);
+            env.drive(&deps, &run, &d).await;
+            let codes = script_result(&env, &run, 0)["value"].clone();
+            seen.push(codes.as_array().unwrap().last().unwrap().clone());
+        }
+        assert_eq!(seen, p.expect.map(|c| json!(c)), "{} {}", p.web, p.browser);
+    }
+}
+
+/// Every call of any capability past its declaration check writes one
+/// `bot.spend` record naming its capability, refusals included; a call
+/// the run did not declare writes none.
+#[tokio::test]
+async fn every_call_writes_one_bot_spend() {
+    let env = Env::new().await;
+    let (_, v) = one_script(
+        &env,
+        "test",
+        "const codes = [];
+         try { await clax.browser.test(); codes.push('ok'); } catch (e) { codes.push(e.code); }
+         try { await clax.browser.test({path: 'nope.html'}); } catch (e) { codes.push(e.code); }
+         try { await clax.browser.browse('https://public.example/'); } catch (e) { codes.push(e.code); }
+         try { await clax.web.fetch('https://a.example/'); } catch (e) { codes.push(e.code + ' ' + e.capability); }
+         return codes;",
+    )
+    .await;
+    assert_eq!(
+        v,
+        json!([
+            "ok",
+            "browser_target_not_found",
+            "browser_disabled",
+            "web_disabled web.fetch"
+        ])
+    );
+    let records = browser_events(&env);
+    assert_eq!(records.len(), 2, "{records:?}");
+    for r in &records {
+        assert_eq!(r["capability"], "browser.open.artifact", "{r}");
+        assert_eq!(r["op"], "browser.test", "{r}");
+    }
+    assert_eq!(records[0]["ok"], true);
+    assert_eq!(records[1]["code"], "browser_target_not_found");
+    assert!(
+        !env.bot_events()
+            .iter()
+            .any(|(k, _)| k == "bot.web" || k == "bot.browser")
+    );
+}
+
+/// A failure on the page is an answer: a test whose saved test fails is
+/// journaled as a value (`passed: false`) and charged its time, and a
+/// step run again answers it from the journal (spec §4.7).
+#[tokio::test]
+async fn an_ok_false_answer_is_journaled_and_charged() {
+    let env = Env::new().await;
+    env.browser.opens(|| {
+        Ok(FakeChrome::page(PageModel::new().evaluate(|p| {
+            if p["expression"].as_str().unwrap_or_default().contains("claxTest") {
+                json!({"result": {"type": "object", "value": {"passed": 0, "skipped": 0,
+                    "failed": [{"name": "a", "error": "b"}]}}})
+            } else {
+                json!({"result": {"type": "undefined"}})
+            }
+        })))
+    });
+    let (run, v) = one_script(
+        &env,
+        "test",
+        "await clax.files.write('tests/a.test.js', \"test('a', () => {});\");
+         return await clax.browser.test(null, {tests: true});",
+    )
+    .await;
+    assert_eq!(v["passed"], false, "{v}");
+    assert_eq!(browser_rows(&env).len(), 1, "charged");
+    let calls = script_calls(&env, &run, 0);
+    let test = calls.iter().find(|c| c["op"] == "browser.test").unwrap();
+    assert_eq!(test["ok"], true, "{test}");
+    let records = browser_events(&env);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["ok"], true);
+    assert_eq!(records[0]["passed"], false);
+    assert!(records[0]["credits_milli"].as_i64().is_some());
 }

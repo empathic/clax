@@ -23,6 +23,16 @@ use clax_store::bot_settings::Setting;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// The code shared by every family (spec §4.7): the person cannot pay
+/// the call's price cap.
+pub const CODE_CREDITS_EXHAUSTED: &str = "credits_exhausted";
+/// The code shared by every family: no source of the run holds the URL
+/// (`sender`, `sourced`, `allowlist`, §4.5).
+pub const CODE_URL_NOT_IN_PRIOR_CONTEXT: &str = "url_not_in_prior_context";
+/// The code shared by every family: the host check or the allowlist
+/// refuses the URL, or a redirect target.
+pub const CODE_URL_NOT_ALLOWED: &str = "url_not_allowed";
+
 /// One capability (spec §4.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Capability {

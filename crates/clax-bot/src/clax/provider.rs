@@ -3,7 +3,6 @@
 
 use super::session::{ClaxSession, State};
 use super::tally::Tally;
-use super::{browser, web};
 use crate::api;
 use crate::browser::BrowserSource;
 use crate::browser::session::SessionLimits;
@@ -179,7 +178,7 @@ impl SurfaceProvider for ClaxProvider {
     /// A web or browser operation the run did not declare is refused in
     /// the words a host with no such source refuses it in.
     fn undeclared(&self, op: &str, args: &[Value]) -> Option<Answer> {
-        web::disabled(op, args).or_else(|| browser::disabled(op, args))
+        super::spend::undeclared(op, args)
     }
 
     fn for_run(&self, row: &Run, _binding: &BindingAsStored) -> Option<Arc<dyn SurfaceProvider>> {

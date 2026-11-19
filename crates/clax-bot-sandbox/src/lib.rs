@@ -455,15 +455,19 @@ fn shown(op: &str) -> String {
 
 /// A host call that failed, as the script sees it: a stable machine code
 /// (`not_found`, `forbidden`, …), a message for the model, and whether the
-/// same call may succeed if made again (`retryable`). The script's thrown
-/// error carries all three (`e.code`, `e.message`, `e.retryable`, false
-/// unless the host said otherwise).
+/// same call may succeed if made again (`retryable`), and, for a call a
+/// capability allows, that capability (`capability`, such as
+/// `web.fetch`). The script's thrown error carries them (`e.code`,
+/// `e.message`, `e.retryable`, false unless the host said otherwise, and
+/// `e.capability` when the host named one).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostError {
     pub code: String,
     pub message: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
 }
 
 impl HostError {
@@ -473,6 +477,7 @@ impl HostError {
             code: code.into(),
             message: message.into(),
             retryable: false,
+            capability: None,
         }
     }
 
@@ -486,16 +491,28 @@ impl HostError {
         }
     }
 
+    /// This failure, naming the capability the call needed.
+    #[must_use]
+    pub fn with_capability(self, capability: impl Into<String>) -> Self {
+        HostError {
+            capability: Some(capability.into()),
+            ..self
+        }
+    }
+
     /// The JSON the prelude's `settle` takes for a failed call:
-    /// `{code, message, retryable}`.
+    /// `{code, message, retryable}`, and `capability` when it names one.
     #[must_use]
     pub fn reply_json(&self) -> String {
-        serde_json::json!({
+        let mut v = serde_json::json!({
             "code": self.code,
             "message": self.message,
             "retryable": self.retryable,
-        })
-        .to_string()
+        });
+        if let Some(c) = &self.capability {
+            v["capability"] = serde_json::json!(c);
+        }
+        v.to_string()
     }
 }
 

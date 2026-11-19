@@ -73,12 +73,9 @@ use std::time::Duration;
 pub const CODE_WEB_DISABLED: &str = "web_disabled";
 /// The run's search or fetch cap is reached.
 pub const CODE_WEB_CAP: &str = "web_cap";
-/// The person cannot pay for the call.
-pub const CODE_CREDITS_EXHAUSTED: &str = "credits_exhausted";
-/// No source of the run holds the URL (spec §5.2).
-pub const CODE_URL_NOT_IN_PRIOR_CONTEXT: &str = "url_not_in_prior_context";
-/// The URL rule or the host check refuses the URL or a redirect target.
-pub const CODE_URL_NOT_ALLOWED: &str = "url_not_allowed";
+pub use crate::capability::{
+    CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED, CODE_URL_NOT_IN_PRIOR_CONTEXT,
+};
 /// The deadline passed, conversion included.
 pub const CODE_WEB_TIMEOUT: &str = "web_timeout";
 /// The body passed the byte limit.

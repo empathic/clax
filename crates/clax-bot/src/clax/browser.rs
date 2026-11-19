@@ -1,80 +1,57 @@
 //! `browser.test` and `browser.browse` in a session of Clax's own
-//! surface (the session's browser part, spec 2026-11-19-claxbot-browser
-//! §5, §8). A browser call made by a script goes through these checks
-//! in order, those of the web part ([`super::web`]) with the browser's
-//! grant, codes and line, and the first that fails answers the script:
+//! surface: the browser's [`Performer`]s on the one Spend sequence
+//! ([`super::spend`]; spec 2026-11-19-claxbot-browser §4.6, §6.8). What
+//! each answers to the sequence's steps:
 //!
-//! 1. A call journaled at its place answers from the journal
-//!    ([`crate::surface::Call::replay`]), before any other check: what
-//!    it answered, what it charged and what the run shows of it. No
-//!    browser opens.
-//! 2. The run's binding has the operation and the host has a source
-//!    (the provider's), or `browser_disabled`. An operation the binding
-//!    lacks is refused by the run loop before the session sees it
-//!    ([`crate::surface::SurfaceProvider::undeclared`], [`disabled`]), and
-//!    refused the same here by a session handed one all the same.
-//! 3. The operation is still granted now ([`BrowserAccess::now`]: the
-//!    admin or the person may have turned it off since the run started,
-//!    or the source lost its credentials,
-//!    [`crate::browser::BrowserSource::configured`]), or
-//!    `browser_disabled`. Browsing is granted only while the person's web
-//!    choice is on too.
-//! 4. Its arguments hold ([`crate::browser::opts`]: the target or the
-//!    URL, the options, every cap), or `invalid_args`.
-//! 5. `test`: the target exists: the version the call names, and the
-//!    page in the draft or that version, or `browser_target_not_found`.
-//!    `browse`: the URL and every `goto` step's URL may be opened under
-//!    the admin's URL rule ([`crate::browser::browse::BrowseScope::allowed`],
-//!    the sender's URLs read from the request now), or `url_not_allowed`.
-//! 6. The run's tests (or browses) have room, or `browser_cap`. The count is of the
-//!    run's journaled browser calls marked `counted`
-//!    ([`clax_store::Store::bot_spend_counts`]): those whose browser
-//!    opened, and those Browser Run refused, so a script cannot retry a
-//!    failing Browser Run without end; not those the host refused before
-//!    asking it (`browser_busy`, a cancelled run).
-//! 7. The browser line exists (else `browser_unavailable`: browser
-//!    pricing is not configured), and the person can pay for the call's
-//!    time cap at its rate (at most their credits left this week, unless
-//!    their credits are not enforced), or `credits_exhausted`.
-//! 8. The source opens a browser ([`crate::browser::BrowserSource::open`])
-//!    and the test runs ([`run_test`]) on the run's draft as the session
-//!    holds it, edits not yet committed included, or on the version, with
-//!    the source's deadline at the call's time cap from before the open,
-//!    which it bounds too. A browse runs on the URL, its page's every
-//!    request held to the rule's hosts
-//!    ([`crate::browser::browse::BrowsePolicy`]).
+//! - **Live** (step 3): `browser.open.artifact` for a test,
+//!   `browser.open.url` for a browse.
+//! - **Arguments** (step 4, [`crate::browser::opts`]): the target or the
+//!   URL, the options, every cap, the call's time at most
+//!   `browser.call_seconds`.
+//! - **Admission** (step 5). A test: the target exists, the version the
+//!   call names and the page in the draft or that version, or
+//!   `browser_target_not_found`. A browse: the URL and every `goto`
+//!   step's URL pass the admin's URL rule
+//!   ([`crate::browser::browse::BrowseScope::allowed`], the run's sources
+//!   read now), or `url_not_allowed` or `url_not_in_prior_context`.
+//! - **Cap** (step 7): the run's tests or browses counted: those whose
+//!   browser opened, and those Browser Run refused, so a script cannot
+//!   retry a failing Browser Run without end; not those the host refused
+//!   before asking it (`browser_busy`, a cancelled run).
+//! - **Price** (step 8): the call's time cap at the browser line.
+//! - **Perform** (step 9): the source opens a browser
+//!   ([`crate::browser::BrowserSource::open`]) and the test runs
+//!   ([`run_test`]) on the run's draft as the session holds it, edits not
+//!   yet committed included, or on the version, with the source's
+//!   deadline at the call's time cap from before the open, which it
+//!   bounds too. A browse runs on the URL, its page's every request held
+//!   to the rule's hosts ([`crate::browser::browse::BrowsePolicy`]).
 //!
 //! Calls of one step are performed one after the other (the session's
-//! `browsing` lock), so two tests a script starts together never hold
-//! two browsers of the instance's at once, and each is counted and
-//! charged before the next is checked.
+//! `browsing` lock, [`Performer::serial`]), so two tests a script starts
+//! together never hold two browsers of the instance's at once, and each
+//! is counted and charged before the next is checked.
 //!
-//! # What is written
+//! # What is charged and shown
 //!
-//! Every call past check 2 is journaled by the session with its
-//! `bot.browser` record in one transaction
-//! ([`clax_store::Store::spend_journaled`], with no page), refusals too,
-//! uncharged. A call whose browser opened is charged its measured time
-//! (from the open to the close, by the provider's clock, rounded up to
-//! the whole second) at the rate check 7 read, whatever it answered: a
-//! result, a timeout, a cancellation, or none, its future dropped by the
-//! sandbox on a cancel (`Opened`). Each screenshot is kept just
-//! before as an item of the run's content (surface `clax`, then noted
-//! with the call's operation and key); one that cannot be kept fails its
-//! step. A failed transaction leaves them to the run's prune, writes
-//! nothing else, and is answered [`Answer::unwritten`], so the step run
-//! again makes the call again.
+//! A call whose browser opened is charged its measured time (from the
+//! open to the close, by the provider's clock, rounded up to the whole
+//! second) at the rate step 8 read, whatever it answered: a result, a
+//! timeout, a cancellation, or none, its future dropped by the sandbox on
+//! a cancel (`Opened`). A page that throws or an assertion that fails is
+//! an answer (`passed: false`), journaled and charged as any. Each
+//! screenshot is kept just before as an item of the run's content
+//! (surface `clax`, then noted with the call's operation and key); one
+//! that cannot be kept fails its step. A failed transaction leaves them
+//! to the run's prune.
 //!
-//! Each entry keeps, beside the script's value or the error: `cost_milli`,
-//! the charge; `browser`, what the run panel shows (`target`, `path` and
-//! `viewport` once the arguments hold, or a browse's `url` and
-//! `viewport`; then `ms`, `passed`, `steps` as
-//! `[ok, failed]`, `tests` when saved tests ran, the counts of `errors`,
-//! `console` and `blocked`, and the screenshots' IDs); and `counted`. The
-//! `bot.browser` record names the operation, the version (none for the
-//! draft) and the path, or a browse's URL, the viewport, `ms` and
-//! `passed`, beside what the
-//! store adds (`run`, `step`, `credits_milli`) and `ok` or `code`.
+//! Each entry keeps under `browser` what the run panel shows (`target`,
+//! `path` and `viewport` once the arguments hold, or a browse's `url` and
+//! `viewport`; then `ms`, `passed`, `steps` as `[ok, failed]`, `tests`
+//! when saved tests ran, the counts of `errors`, `console` and `blocked`,
+//! and the screenshots' IDs). Each `bot.spend` record of a browser call
+//! names the version (none for the draft) and the path, or a browse's
+//! URL, the viewport, `ms` and `passed`.
 //!
 //! The script's value is the test's result (spec §5.1) with each
 //! screenshot step's value and `screenshots` the items' `Image` handles,
@@ -85,64 +62,25 @@
 //! in [`from_browser`] alone).
 
 use super::session::ClaxSession;
+use super::spend::{self, Finish, Performer, PriceCap, Priced, Seen};
 use crate::browser::browse::{BrowsePolicy, BrowseScope};
 use crate::browser::opts::{self, BrowserOpts, BrowserTarget, Mode, Step};
 use crate::browser::serve::{Pages, Site};
 use crate::browser::session::{RequestPolicy, Start, TestPolicy, TestRun, run_test};
 use crate::browser::{
-    BrowserAccess, BrowserError, BrowserGrant, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_CAP,
-    CODE_BROWSER_DISABLED, CODE_BROWSER_TARGET_NOT_FOUND, CODE_BROWSER_TIMEOUT,
-    CODE_BROWSER_UNAVAILABLE, CODE_CREDITS_EXHAUSTED, Cdp, OP_BROWSE, OP_TEST,
+    BrowserError, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_TARGET_NOT_FOUND,
+    CODE_BROWSER_TIMEOUT, CODE_BROWSER_UNAVAILABLE, Cdp, OP_BROWSE, OP_TEST,
 };
-use crate::capability::UrlRule;
+use crate::capability::{BrowserTerms, Capability, OpenGrant, Terms, UrlRule};
 use crate::host::host_error;
-use crate::surface::{Answer, Call, Fields, err_json, recorded};
+use crate::surface::Call;
+use crate::web::PublicUrl;
 use clax_bot_sandbox::{CODE_CANCELLED, HostError};
 use clax_core::ArtifactId;
-use clax_core::audit::{AuditKind, AuditRecord};
 use clax_store::bot_content::NewContent;
-use clax_store::bot_runs::CallEntry;
-use clax_store::bot_web::Spend;
-use clax_store::credits::{
-    Applies, KeySource, LINE_BROWSER_TIME, Metered, Rate, row_credits_milli,
-};
+use clax_store::credits::LINE_BROWSER_TIME;
 use serde_json::{Value, json};
 use std::sync::Arc;
-
-/// What the run shows of a browser call beside its answer: `browser`,
-/// its summary.
-fn showing(browser: Value) -> Fields {
-    Fields::from_iter([("browser".to_string(), browser)])
-}
-
-/// What the run shows of a call to `op` on `args` before its arguments
-/// are read: the target as the script gave it, or the URL. `None` for
-/// an operation that is not the browser's.
-fn shown(op: &str, args: &[Value]) -> Option<Value> {
-    match op {
-        OP_TEST => Some(json!({"target": args.first().cloned().unwrap_or(Value::Null)})),
-        OP_BROWSE => Some(json!({"url": args.first().cloned().unwrap_or(Value::Null)})),
-        _ => None,
-    }
-}
-
-/// Check 2: what a script is answered for a browser operation its run's
-/// binding does not have, and for one it has on a host with no browser
-/// source. Refused, charged nothing, with what the run shows of the
-/// call, for the run loop to journal; `None` for an operation that is
-/// not the browser's.
-pub(super) fn disabled(op: &str, args: &[Value]) -> Option<Answer> {
-    let browser = shown(op, args)?;
-    let refusal = HostError::new(
-        CODE_BROWSER_DISABLED,
-        format!("clax.{op} is not available to this run"),
-    );
-    Some(
-        Answer::refused(refusal)
-            .uncharged()
-            .showing(showing(browser)),
-    )
-}
 
 /// `e` as the script sees it: a retryable error is
 /// [`HostError::retryable`], and its message says to try again. The only
@@ -156,109 +94,34 @@ fn from_browser(e: &BrowserError) -> HostError {
     }
 }
 
-/// How a browser call ends, before it is written.
-struct Finish {
-    res: Result<Value, HostError>,
-    /// What to charge, at the rate checked, and its credits.
-    usage: Option<(Metered, i64)>,
-    /// Whether the call counts against the run's cap (check 6).
-    counted: bool,
-    /// Fields the `bot.browser` record adds.
-    audit: Vec<(&'static str, Value)>,
-}
-
-impl Finish {
-    /// A refusal past check 2: uncharged, not counted.
-    fn refused(e: HostError) -> Finish {
-        Finish {
-            res: Err(e),
-            usage: None,
-            counted: false,
-            audit: Vec::new(),
-        }
-    }
-}
-
-/// The journal entry's result of a browser call (see the module docs).
-fn entry_result(f: &Finish, cost: i64, shown: &Value) -> Value {
-    let mut v = match &f.res {
-        Ok(v) => json!({"value": v}),
-        Err(e) => err_json(e),
-    };
-    v["cost_milli"] = json!(cost);
-    v["browser"] = shown.clone();
-    if f.counted {
-        v["counted"] = json!(true);
-    }
-    v
-}
-
-/// A browser call as its journal entry `e` answers it: its value or its
-/// failure, what it charged (0 when the entry keeps no cost) and what
-/// the run shows of it (`shown` when the entry keeps no `browser`).
-fn from_entry(e: &CallEntry, shown: Value) -> Answer {
-    let r = e.result();
-    let result = if e.ok() {
-        Ok(r.get("value").cloned().unwrap_or(Value::Null))
-    } else {
-        recorded(e)
-    };
-    Answer::written(result)
-        .charged(r["cost_milli"].as_i64().unwrap_or(0))
-        .showing(showing(r.get("browser").cloned().unwrap_or(shown)))
-}
-
-/// A browser call that failed with `e` and wrote nothing: no entry, no
-/// charge, no cost shown. Nothing journals it, and the step run again
-/// makes the call again.
-fn unwritten(e: HostError, shown: Value) -> Answer {
-    Answer::unwritten(e).showing(showing(shown))
-}
-
-/// The credits of `ms` milliseconds of browser time at `rate` on a `ks`
-/// key, as the store charges a usage of that quantity at that rate.
-fn price(rate: &Rate, ks: KeySource, ms: i64) -> clax_core::Result<i64> {
-    if ks == KeySource::Own && rate.applies == Applies::InstanceKey {
-        return Ok(0);
-    }
-    row_credits_milli(
-        ms,
-        rate.cost_micro_usd,
-        rate.margin_bp,
-        rate.fixed_credits_milli,
-        rate.credit_price_micro_usd,
-        rate.unit.base(),
-    )
-}
-
 /// `ms` rounded up to the whole second, in milliseconds.
 fn whole_seconds(ms: i64) -> i64 {
     (ms.max(0) + 999) / 1000 * 1000
 }
 
-/// What the checks after the arguments read, and what the call's answer
-/// is made with.
-struct Ctx {
-    grant: BrowserGrant,
+/// What a performed call's answer is made with: its operation, what the
+/// Spend sequence read before it ([`Seen`]) and the price it checked
+/// ([`Priced`]).
+struct Ctx<'a> {
     /// The call's operation, `browser.test` or `browser.browse`.
     op: &'static str,
-    /// The run's counted tests and browses before the call.
-    tests: u32,
-    browses: u32,
-    rate: Rate,
-    ks: KeySource,
-    /// The person's credits left this week before the call.
-    credits: i64,
+    seen: &'a Seen,
+    priced: &'a Priced,
 }
 
-impl Ctx {
-    /// `left` once the run made `tests` and `browses` counted calls,
+impl Ctx<'_> {
+    /// `left` once the run made one more counted call of [`Ctx::op`],
     /// with `credits_milli` left this week.
-    fn left(&self, tests: u32, browses: u32, credits_milli: i64) -> Value {
-        let under = |max: Option<u32>, n: u32| max.map_or(0, |max| max.saturating_sub(n));
+    fn left(&self, credits_milli: i64) -> Value {
+        let (mut tests, mut browses) = (self.seen.count(OP_TEST), self.seen.count(OP_BROWSE));
+        if self.op == OP_BROWSE {
+            browses += 1;
+        } else {
+            tests += 1;
+        }
         json!({
-            "tests": under(self.grant.test.as_ref().map(|g| g.max_per_run), tests),
-            "browses": under(self.grant.browse.as_ref().map(|g| g.max_per_run), browses),
+            "tests": self.seen.left_of(Capability::OpenArtifact, tests),
+            "browses": self.seen.left_of(Capability::OpenUrl, browses),
             "credits": credits_milli.max(0) as f64 / 1000.0,
         })
     }
@@ -276,7 +139,7 @@ impl Ctx {
 struct Opened<'a, 's, 'c> {
     session: &'a ClaxSession<'s>,
     call: &'a Call<'c>,
-    cx: &'a Ctx,
+    cx: &'a Ctx<'a>,
     options: &'a BrowserOpts,
     audit: &'a [(&'static str, Value)],
     shown: Value,
@@ -302,123 +165,89 @@ impl Drop for Opened<'_, '_, '_> {
 /// The handle of one kept screenshot, or why it could not be kept.
 type Kept = Result<Value, String>;
 
-impl ClaxSession<'_> {
-    /// Performs the browser call `call`, or answers it from its entry;
-    /// see the module documentation.
-    pub(super) async fn browser(&self, call: &Call<'_>) -> Answer {
-        let Some(mut shown) = shown(call.op, call.args) else {
-            return Answer::refused(HostError::new(
-                crate::api::CODE_UNKNOWN_OP,
-                format!("clax.{} is not a browser operation", call.op),
-            ));
-        };
-        // Check 1, before any other: a call given its entry is answered
-        // from it, whatever the binding and the host have by now.
-        if let Some(e) = call.replay {
-            return from_entry(e, shown);
-        }
-        // Check 2.
-        let source = match &self.provider.browser {
-            Some(s) if self.cx.binding.has(call.op) => s.clone(),
-            _ => {
-                return disabled(call.op, call.args)
-                    .expect("a browser operation has a refusal for a run without it");
-            }
-        };
-        let _one_at_a_time = self.browsing.lock().await;
-        let f = self.browser_fresh(&source, call, &mut shown).await;
-        self.write_browser(call, shown, f)
+/// `clax.browser.test`.
+pub(super) struct Test;
+
+/// `clax.browser.browse`.
+pub(super) struct Browse;
+
+/// A test's arguments, and what its admission found.
+pub(super) struct TestArgs {
+    max_per_run: u32,
+    options: BrowserOpts,
+    target: BrowserTarget,
+    /// What the call's records add once its arguments are read.
+    audit: Vec<(&'static str, Value)>,
+    /// The artifact and the files of the target, found at admission.
+    found: Option<(ArtifactId, Pages)>,
+}
+
+/// A browse's arguments, and what its admission found.
+pub(super) struct BrowseArgs {
+    max_per_run: u32,
+    rule: UrlRule,
+    options: BrowserOpts,
+    url: String,
+    audit: Vec<(&'static str, Value)>,
+    /// What the browse may open, and its URL, found at admission.
+    found: Option<(BrowseScope, PublicUrl)>,
+}
+
+/// The browser source; [`super::spend`]'s step 2 has made sure there is
+/// one.
+fn browser_source(s: &ClaxSession<'_>) -> Arc<dyn BrowserSource> {
+    s.provider
+        .browser
+        .clone()
+        .expect("the Spend sequence performs a browser call only on a host with a browser source")
+}
+
+/// The open grant of `terms`.
+fn open_grant(terms: &Terms) -> &OpenGrant {
+    let Terms::Open(g) = terms else {
+        unreachable!("a browser capability's terms are an open grant")
+    };
+    g
+}
+
+/// What a browser call may cost at most: its time cap.
+fn time_cap(options: &BrowserOpts) -> PriceCap {
+    PriceCap {
+        line: LINE_BROWSER_TIME.to_string(),
+        qty: i64::from(options.timeout_s) * 1000,
+        costs: format!("a browser call of {} s can cost", options.timeout_s),
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl Performer for Test {
+    type Args = TestArgs;
+
+    fn capability(&self, _args: &[Value]) -> Capability {
+        Capability::OpenArtifact
     }
 
-    /// Journals `f` at the call's place, with its `bot.browser` record
-    /// and its charge, and answers what the journal holds.
-    fn write_browser(&self, call: &Call<'_>, shown: Value, f: Finish) -> Answer {
-        let store = self.store();
-        let cost = f.usage.as_ref().map_or(0, |(_, c)| *c);
-        let entry = match self.cx.claim.entry(call.place, call.op, call.raw) {
-            Ok(e) => e.answered(f.res.is_ok(), entry_result(&f, cost, &shown)),
-            Err(e) => return unwritten(e, shown),
-        };
-        let mut audit = AuditRecord::new(AuditKind::BotBrowser, store.now()).with("op", call.op);
-        for (k, v) in f.audit {
-            audit = audit.with(k, v);
-        }
-        audit = match &f.res {
-            Ok(_) => audit.with("ok", true),
-            Err(e) => audit.with("ok", false).with("code", e.code.as_str()),
-        };
-        let spend = Spend {
-            entry,
-            usage: f.usage.map(|(m, _)| m),
-            page: None,
-            audit,
-        };
-        match store.spend_journaled(&self.run, self.cx.claim.driver(), spend) {
-            Ok(spent) => {
-                // Charged at the rate checked, the charge is its price.
-                debug_assert!(spent.replayed || spent.credits_milli == cost);
-                from_entry(&spent.entry, shown)
-            }
-            Err(e) => unwritten(host_error(&e), shown),
-        }
+    fn shown(&self, args: &[Value]) -> Value {
+        json!({"target": args.first().cloned().unwrap_or(Value::Null)})
     }
 
-    /// Checks 3 to 8 of a call not in the journal, on `source`.
-    async fn browser_fresh(
+    fn serial(&self) -> bool {
+        true
+    }
+
+    fn check_args(
         &self,
-        source: &Arc<dyn BrowserSource>,
+        _s: &ClaxSession<'_>,
         call: &Call<'_>,
+        terms: &Terms,
+        browser: Option<BrowserTerms>,
         shown: &mut Value,
-    ) -> Finish {
-        let (op, args) = (call.op, call.args);
-        let store = self.store();
-        let run = &self.run;
-        // Check 3.
-        let grant = match BrowserAccess::now(store, &run.person, source.configured()) {
-            Ok(BrowserAccess::On(g)) => g,
-            Ok(BrowserAccess::Off(why)) => {
-                return Finish::refused(HostError::new(
-                    CODE_BROWSER_DISABLED,
-                    format!(
-                        "browser use was turned off ({}) since this run started; do without it",
-                        why.as_str()
-                    ),
-                ));
-            }
-            Err(e) => return Finish::refused(host_error(&e)),
-        };
-        let (op, max_per_run, seconds, mode) = if op == OP_BROWSE {
-            let Some(b) = &grant.browse else {
-                return Finish::refused(HostError::new(
-                    CODE_BROWSER_DISABLED,
-                    "browsing (browser.open.url) was turned off since this run started; do \
-                     without clax.browser.browse",
-                ));
-            };
-            (OP_BROWSE, b.max_per_run, b.seconds, Mode::Browse)
-        } else {
-            let Some(t) = &grant.test else {
-                return Finish::refused(HostError::new(
-                    CODE_BROWSER_DISABLED,
-                    "the admin turned clax.browser.test off since this run started; do without it",
-                ));
-            };
-            (OP_TEST, t.max_per_run, t.seconds, Mode::Test)
-        };
-        // Check 4.
-        let options = match opts::parse_opts(&args[1], mode, seconds) {
-            Ok(o) => o,
-            Err(e) => return Finish::refused(from_browser(&e)),
-        };
-        if mode == Mode::Browse {
-            return self
-                .browse(source, call, grant, max_per_run, options, shown)
-                .await;
-        }
-        let target = match opts::parse_target(&args[0]) {
-            Ok(t) => t,
-            Err(e) => return Finish::refused(from_browser(&e)),
-        };
+    ) -> Result<TestArgs, HostError> {
+        let seconds = browser.map_or(0, |b| b.call_seconds);
+        let options =
+            opts::parse_opts(&call.args[1], Mode::Test, seconds).map_err(|e| from_browser(&e))?;
+        let target = opts::parse_target(&call.args[0]).map_err(|e| from_browser(&e))?;
         *shown = json!({
             "target": target.version.map_or_else(|| "draft".to_string(), |n| format!("v{n}")),
             "path": target.path,
@@ -431,77 +260,136 @@ impl ClaxSession<'_> {
         if let Some(n) = target.version {
             audit.insert(0, ("version", json!(n)));
         }
-        let with_audit = |f: Finish, more: Vec<(&'static str, Value)>| Finish {
-            audit: audit.iter().cloned().chain(more).collect(),
-            ..f
+        Ok(TestArgs {
+            max_per_run: open_grant(terms).max_per_run,
+            options,
+            target,
+            audit,
+            found: None,
+        })
+    }
+
+    fn noted(&self, args: &TestArgs) -> (Vec<(&'static str, Value)>, Vec<(&'static str, Value)>) {
+        (args.audit.clone(), Vec::new())
+    }
+
+    async fn admit(
+        &self,
+        s: &ClaxSession<'_>,
+        _call: &Call<'_>,
+        args: &mut TestArgs,
+        _shown: &mut Value,
+    ) -> Result<(), HostError> {
+        let artifact = ArtifactId::parse(&s.run.artifact_id).map_err(|e| host_error(&e))?;
+        let pages = s.pages(&artifact, &args.target).await?;
+        args.found = Some((artifact, pages));
+        Ok(())
+    }
+
+    fn count_key(&self, _call: &Call<'_>, args: &TestArgs) -> (&'static str, u32, &'static str) {
+        (OP_TEST, args.max_per_run, "browser tests")
+    }
+
+    fn price_cap(&self, _call: &Call<'_>, args: &TestArgs) -> PriceCap {
+        time_cap(&args.options)
+    }
+
+    async fn perform(
+        &self,
+        s: &ClaxSession<'_>,
+        call: &Call<'_>,
+        args: &TestArgs,
+        seen: &Seen,
+        priced: &Priced,
+        shown: &mut Value,
+    ) -> Finish {
+        let Some((artifact, pages)) = &args.found else {
+            unreachable!("a test is performed only once admitted")
         };
-        // Check 5.
-        let artifact = match ArtifactId::parse(&run.artifact_id) {
-            Ok(a) => a,
-            Err(e) => return with_audit(Finish::refused(host_error(&e)), vec![]),
-        };
-        let pages = match self.pages(&artifact, &target).await {
-            Ok(p) => p,
-            Err(e) => return with_audit(Finish::refused(e), vec![]),
-        };
-        // Checks 6 and 7.
-        let cx = match self.browser_ctx(grant, op, max_per_run, &options) {
-            Ok(cx) => cx,
-            Err(e) => return with_audit(Finish::refused(e), vec![]),
-        };
-        let site = Site::new(&artifact, pages);
+        let source = browser_source(s);
+        let site = Site::new(artifact, pages.clone());
         let policy = TestPolicy {
             site: &site,
             source: source.as_ref(),
-            store,
-            person: &run.person,
+            store: s.store(),
+            person: &s.run.person,
         };
         let start = Start::Test {
             origin: site.origin.clone(),
-            path: target.path.clone(),
+            path: args.target.path.clone(),
         };
-        // Check 8.
-        let (f, more) = self
-            .open_and_run(source, call, &cx, &options, &start, &policy, &audit, shown)
-            .await;
-        with_audit(f, more)
+        let cx = Ctx { op: OP_TEST, seen, priced };
+        s.open_and_run(&source, call, &cx, &args.options, &start, &policy, &args.audit, shown)
+            .await
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl Performer for Browse {
+    type Args = BrowseArgs;
+
+    fn capability(&self, _args: &[Value]) -> Capability {
+        Capability::OpenUrl
     }
 
-    /// Checks 5 to 8 of a browse, its options `options` read.
-    async fn browse(
+    fn shown(&self, args: &[Value]) -> Value {
+        json!({"url": args.first().cloned().unwrap_or(Value::Null)})
+    }
+
+    fn serial(&self) -> bool {
+        true
+    }
+
+    fn check_args(
         &self,
-        source: &Arc<dyn BrowserSource>,
+        _s: &ClaxSession<'_>,
         call: &Call<'_>,
-        grant: BrowserGrant,
-        max_per_run: u32,
-        options: BrowserOpts,
+        terms: &Terms,
+        browser: Option<BrowserTerms>,
         shown: &mut Value,
-    ) -> Finish {
+    ) -> Result<BrowseArgs, HostError> {
+        let g = open_grant(terms);
+        let seconds = browser.map_or(0, |b| b.call_seconds);
+        let options =
+            opts::parse_opts(&call.args[1], Mode::Browse, seconds).map_err(|e| from_browser(&e))?;
         let Some(url) = call.args[0].as_str() else {
-            return Finish::refused(HostError::new(
+            return Err(HostError::new(
                 crate::api::CODE_BAD_ARGS,
                 "url: must be a string, the public URL to open",
             ));
         };
         *shown = json!({"url": url, "viewport": options.viewport.label()});
-        let audit = [
+        let audit = vec![
             ("url", json!(url)),
             ("viewport", json!(options.viewport.label())),
         ];
-        let with_audit = |f: Finish, more: Vec<(&'static str, Value)>| Finish {
-            audit: audit.iter().cloned().chain(more).collect(),
-            ..f
-        };
-        // Check 5.
-        let scope = match self.browse_scope(source.as_ref(), &grant).await {
-            Ok(s) => s,
-            Err(e) => return with_audit(Finish::refused(e), vec![]),
-        };
-        let url = match scope.allowed(url) {
-            Ok(u) => u,
-            Err(e) => return with_audit(Finish::refused(from_browser(&e)), vec![]),
-        };
-        for (i, step) in options.steps.iter().enumerate() {
+        Ok(BrowseArgs {
+            max_per_run: g.max_per_run,
+            rule: g.url_rule.clone().unwrap_or(UrlRule::Sender),
+            options,
+            url: url.to_string(),
+            audit,
+            found: None,
+        })
+    }
+
+    fn noted(&self, args: &BrowseArgs) -> (Vec<(&'static str, Value)>, Vec<(&'static str, Value)>) {
+        (args.audit.clone(), Vec::new())
+    }
+
+    async fn admit(
+        &self,
+        s: &ClaxSession<'_>,
+        _call: &Call<'_>,
+        args: &mut BrowseArgs,
+        _shown: &mut Value,
+    ) -> Result<(), HostError> {
+        let scope = s
+            .browse_scope(browser_source(s).as_ref(), &args.rule)
+            .await?;
+        let url = scope.allowed(&args.url).map_err(|e| from_browser(&e))?;
+        for (i, step) in args.options.steps.iter().enumerate() {
             if let Step::Goto(to) = step
                 && let Err(e) = scope.allowed(to)
             {
@@ -510,39 +398,56 @@ impl ClaxSession<'_> {
                     format!("opts.steps[{i}].goto: {}", e.message),
                     false,
                 );
-                return with_audit(Finish::refused(from_browser(&e)), vec![]);
+                return Err(from_browser(&e));
             }
         }
-        // Checks 6 and 7.
-        let cx = match self.browser_ctx(grant, OP_BROWSE, max_per_run, &options) {
-            Ok(cx) => cx,
-            Err(e) => return with_audit(Finish::refused(e), vec![]),
+        args.found = Some((scope, url));
+        Ok(())
+    }
+
+    fn count_key(&self, _call: &Call<'_>, args: &BrowseArgs) -> (&'static str, u32, &'static str) {
+        (OP_BROWSE, args.max_per_run, "browses")
+    }
+
+    fn price_cap(&self, _call: &Call<'_>, args: &BrowseArgs) -> PriceCap {
+        time_cap(&args.options)
+    }
+
+    async fn perform(
+        &self,
+        s: &ClaxSession<'_>,
+        call: &Call<'_>,
+        args: &BrowseArgs,
+        seen: &Seen,
+        priced: &Priced,
+        shown: &mut Value,
+    ) -> Finish {
+        let Some((scope, url)) = &args.found else {
+            unreachable!("a browse is performed only once admitted")
         };
-        let policy = BrowsePolicy::new(&scope, source.as_ref());
+        let source = browser_source(s);
+        let policy = BrowsePolicy::new(scope, source.as_ref());
         let start = Start::Browse {
             url: url.as_str().to_string(),
         };
-        // Check 8.
-        let (f, more) = self
-            .open_and_run(source, call, &cx, &options, &start, &policy, &audit, shown)
-            .await;
-        with_audit(f, more)
+        let cx = Ctx { op: OP_BROWSE, seen, priced };
+        s.open_and_run(&source, call, &cx, &args.options, &start, &policy, &args.audit, shown)
+            .await
     }
+}
 
-    /// What a browse under `grant`'s rule may open: the instance's own
-    /// hosts from `source`, and the run's sources
+impl ClaxSession<'_> {
+    /// What a browse under `rule` may open: the instance's own hosts from
+    /// `source`, and the run's sources
     /// ([`crate::web::access::sources`]: the request this run answers, its
     /// journaled searches and its page store), read now; under
     /// `any_public` none are read.
     async fn browse_scope(
         &self,
         source: &dyn BrowserSource,
-        grant: &BrowserGrant,
+        rule: &UrlRule,
     ) -> Result<BrowseScope, HostError> {
-        let rule = grant
-            .browse
-            .as_ref()
-            .map_or(UrlRule::Sender, |b| b.rule.clone());
+        let rule = rule.clone();
         let own = source.own_hosts().map_err(|why| {
             HostError::new(
                 CODE_BROWSER_UNAVAILABLE,
@@ -573,9 +478,9 @@ impl ClaxSession<'_> {
         Ok(BrowseScope::new(rule, own, found))
     }
 
-    /// Check 8: opens a browser on `source` and runs `start` under
+    /// Step 9: opens a browser on `source` and runs `start` under
     /// `policy`, then ends the call ([`ClaxSession::tested`]). `audit` is
-    /// what the call's `bot.browser` record holds so far, for the record
+    /// what the call's `bot.spend` record holds so far, for the record
     /// written should this future be dropped once the browser opened
     /// ([`Opened`]).
     #[allow(clippy::too_many_arguments)]
@@ -583,13 +488,13 @@ impl ClaxSession<'_> {
         &self,
         source: &Arc<dyn BrowserSource>,
         call: &Call<'_>,
-        cx: &Ctx,
+        cx: &Ctx<'_>,
         options: &BrowserOpts,
         start: &Start,
         policy: &dyn RequestPolicy,
         audit: &[(&'static str, Value)],
         shown: &mut Value,
-    ) -> (Finish, Vec<(&'static str, Value)>) {
+    ) -> Finish {
         // The call's time cap bounds the open too: an upgrade that stalls
         // ends at the deadline, counted (Browser Run was asked) and not
         // charged (no browser opened).
@@ -607,25 +512,19 @@ impl ClaxSession<'_> {
                     ),
                     true,
                 );
-                return (
-                    Finish {
-                        counted: true,
-                        ..Finish::refused(from_browser(&e))
-                    },
-                    vec![],
-                );
+                return Finish {
+                    counted: true,
+                    ..Finish::refused(from_browser(&e))
+                };
             }
             futures::future::Either::Left((Ok(t), _)) => t,
             futures::future::Either::Left((Err(e), _)) => {
                 // Refused before Browser Run was asked: not counted.
                 let counted = e.code != CODE_BROWSER_BUSY && e.code != CODE_CANCELLED;
-                return (
-                    Finish {
-                        counted,
-                        ..Finish::refused(from_browser(&e))
-                    },
-                    vec![],
-                );
+                return Finish {
+                    counted,
+                    ..Finish::refused(from_browser(&e))
+                };
             }
         };
         // Declared before the connection, so a dropped future closes the
@@ -660,7 +559,7 @@ impl ClaxSession<'_> {
     fn abandoned(
         &self,
         call: &Call<'_>,
-        cx: &Ctx,
+        cx: &Ctx<'_>,
         options: &BrowserOpts,
         audit: &[(&'static str, Value)],
         mut shown: Value,
@@ -670,14 +569,8 @@ impl ClaxSession<'_> {
             .num_milliseconds()
             .max(0);
         let qty = whole_seconds(ms).min(i64::from(options.timeout_s) * 1000);
-        let usage = match price(&cx.rate, cx.ks, qty) {
-            Ok(cost) => Some((
-                Metered {
-                    rate: Some(cx.rate),
-                    ..Metered::new(LINE_BROWSER_TIME, qty, cx.ks)
-                },
-                cost,
-            )),
+        let usage = match cx.priced.usage(qty) {
+            Ok(usage) => Some(usage),
             Err(e) => {
                 tracing::warn!(
                     "clax-bot: run {}: an abandoned browser call could not be priced: {e}",
@@ -688,18 +581,23 @@ impl ClaxSession<'_> {
         };
         shown["ms"] = json!(ms);
         let f = Finish {
-            res: Err(HostError::new(
-                CODE_CANCELLED,
-                "the run stopped while the browser was open",
-            )),
             usage,
             counted: true,
             audit: audit.iter().cloned().chain([("ms", json!(ms))]).collect(),
+            ..Finish::refused(HostError::new(
+                CODE_CANCELLED,
+                "the run stopped while the browser was open",
+            ))
         };
-        let _ = self.write_browser(call, shown, f);
+        let c = if cx.op == OP_BROWSE {
+            Capability::OpenUrl
+        } else {
+            Capability::OpenArtifact
+        };
+        let _ = spend::write(self, call, c, false, shown, f);
     }
 
-    /// Check 5: the files of `target`, or `browser_target_not_found`.
+    /// Step 5: the files of `target`, or `browser_target_not_found`.
     async fn pages(
         &self,
         artifact: &ArtifactId,
@@ -741,99 +639,25 @@ impl ClaxSession<'_> {
         Ok(Pages::Version(artifact.clone(), n))
     }
 
-    /// Checks 6 and 7: the run's counted calls of `op` under its cap
-    /// `max_per_run`, the line's rate, and the person's credits for the
-    /// call's time cap.
-    fn browser_ctx(
-        &self,
-        grant: BrowserGrant,
-        op: &'static str,
-        max_per_run: u32,
-        options: &BrowserOpts,
-    ) -> Result<Ctx, HostError> {
-        let store = self.store();
-        let counted = store
-            .bot_spend_counts(&self.run.id, "browser")
-            .map_err(|e| host_error(&e))?;
-        let count = |op: &str| counted.get(op).copied().unwrap_or(0);
-        let (tests, browses) = (count(OP_TEST), count(OP_BROWSE));
-        let (used, what) = if op == OP_BROWSE {
-            (browses, "browses")
-        } else {
-            (tests, "browser tests")
-        };
-        if used >= max_per_run {
-            return Err(HostError::new(
-                CODE_BROWSER_CAP,
-                format!("this run has used its {max_per_run} {what}; work with what you have"),
-            ));
-        }
-        let rate = store
-            .rate_of(LINE_BROWSER_TIME)
-            .map_err(|e| host_error(&e))?
-            .ok_or_else(|| {
-                HostError::new(
-                    CODE_BROWSER_UNAVAILABLE,
-                    format!(
-                        "browser pricing is not configured on this instance (it has no cost \
-                         line {LINE_BROWSER_TIME}); do without clax.{op}"
-                    ),
-                )
-            })?;
-        let ks = self.key_source();
-        let most =
-            price(&rate, ks, i64::from(options.timeout_s) * 1000).map_err(|e| host_error(&e))?;
-        let credits = self.week_left()?;
-        let unenforced = store
-            .flags_of(&self.run.person)
-            .map_err(|e| host_error(&e))?
-            .claxbot_unenforced;
-        if !unenforced && most > credits {
-            return Err(HostError::new(
-                CODE_CREDITS_EXHAUSTED,
-                format!(
-                    "the person you act for has {} credits left this week and a browser call of \
-                     {} s can cost {}; finish with what you have",
-                    credits as f64 / 1000.0,
-                    options.timeout_s,
-                    most as f64 / 1000.0
-                ),
-            ));
-        }
-        Ok(Ctx {
-            grant,
-            op,
-            tests,
-            browses,
-            rate,
-            ks,
-            credits,
-        })
-    }
-
     /// How a test whose browser opened ends: charged its time, rounded
     /// up to the second and at most the call's time cap (what the credits
     /// check priced), and counted; its screenshots kept, its result
-    /// completed; and the `bot.browser` record's `ms` and `passed`.
+    /// completed; and the `bot.spend` record's `ms` and `passed`.
     fn tested(
         &self,
         call: &Call<'_>,
-        cx: &Ctx,
+        cx: &Ctx<'_>,
         options: &BrowserOpts,
         tested: TestRun,
         shown: &mut Value,
-    ) -> (Finish, Vec<(&'static str, Value)>) {
+    ) -> Finish {
         let ms = (tested.closed_at - tested.opened_at)
             .num_milliseconds()
             .max(0);
         let qty = whole_seconds(ms).min(i64::from(options.timeout_s) * 1000);
-        let cost = match price(&cx.rate, cx.ks, qty) {
-            Ok(c) => c,
-            Err(e) => return (Finish::refused(host_error(&e)), vec![]),
-        };
-        let usage = Metered {
-            rate: Some(cx.rate),
-            ..Metered::new(LINE_BROWSER_TIME, qty, cx.ks)
+        let (usage, cost) = match cx.priced.usage(qty) {
+            Ok(x) => x,
+            Err(e) => return Finish::refused(host_error(&e)),
         };
         shown["ms"] = json!(ms);
         let mut more = vec![("ms", json!(ms))];
@@ -875,27 +699,19 @@ impl ClaxSession<'_> {
                 }
                 v["screenshots"] = Value::Array(handles);
                 v["cost"] = json!(cost as f64 / 1000.0);
-                let (tests, browses) = if cx.op == OP_BROWSE {
-                    (cx.tests, cx.browses + 1)
-                } else {
-                    (cx.tests + 1, cx.browses)
-                };
-                v["left"] = cx.left(tests, browses, cx.credits - cost);
+                v["left"] = cx.left(cx.priced.credits - cost);
                 summarize(shown, &v, ids);
                 more.push(("passed", v["passed"].clone()));
                 Ok(v)
             }
             Err(e) => Err(from_browser(&e)),
         };
-        (
-            Finish {
-                res,
-                usage: Some((usage, cost)),
-                counted: true,
-                audit: Vec::new(),
-            },
-            more,
-        )
+        Finish {
+            usage: Some((usage, cost)),
+            counted: true,
+            audit: more,
+            ..Finish::new(res)
+        }
     }
 
     /// Keeps one screenshot as an item of the run's content, noted as

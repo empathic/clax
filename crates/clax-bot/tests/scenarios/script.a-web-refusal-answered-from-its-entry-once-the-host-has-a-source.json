@@ -415,6 +415,7 @@
       "ok": false,
       "op": "web.search",
       "result": {
+        "capability": "web.search",
         "code": "web_disabled",
         "message": "clax.web.search is not available to this run"
       },

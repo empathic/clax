@@ -179,6 +179,7 @@
     "ok": false,
     "op": "web.fetch",
     "result": {
+      "capability": "web.fetch",
       "code": "url_not_in_prior_context",
       "cost_milli": 0,
       "message": "https://elsewhere.example/x is not in the sender's words, a search result or a page you fetched; fetch only URLs from those",

@@ -182,7 +182,7 @@ async fn a_search_then_a_fetch_of_a_result_is_answered_and_charged_twice() {
     let web: Vec<Value> = env
         .bot_events()
         .into_iter()
-        .filter(|(k, _)| k == "bot.web")
+        .filter(|(k, _)| k == "bot.spend")
         .map(|(_, b)| b)
         .collect();
     assert_eq!(web.len(), 2);
@@ -1292,7 +1292,7 @@ async fn refused_and_stored_fetches_are_in_the_audit_trail() {
     let web: Vec<Value> = env
         .bot_events()
         .into_iter()
-        .filter(|(k, _)| k == "bot.web")
+        .filter(|(k, _)| k == "bot.spend")
         .map(|(_, b)| b)
         .collect();
     assert_eq!(web.len(), 3, "{web:?}");

@@ -6,8 +6,9 @@
 //! rules ([`super::rules`]) and hands it to the part that performs its
 //! operation: the draft's ([`super::draft`]), the publish
 //! ([`super::publish`]), the host's reads and writes
-//! ([`super::replies`]), the web's ([`super::web`]) or the browser's
-//! ([`super::browser`]). Each says, by the
+//! ([`super::replies`]), or the Spend sequence's ([`super::spend`]),
+//! with the web's ([`super::web`]) or the browser's ([`super::browser`])
+//! performer. Each says, by the
 //! constructor of its [`Answer`], who journals the call
 //! ([`crate::surface`], "Who journals a call").
 
@@ -32,10 +33,8 @@ enum Part {
     Publish,
     /// The host's reads and writes ([`super::replies`]).
     Host,
-    /// The web's ([`super::web`]).
-    Web,
-    /// The browser's ([`super::browser`]).
-    Browser,
+    /// The Spend sequence's ([`super::spend`]): every charged call.
+    Spend,
 }
 
 /// The part that performs each operation of `src/clax.d.ts`, by its
@@ -63,10 +62,10 @@ const PARTS: &[(&str, Part)] = &[
     ("threads.read", Part::Host),
     ("threads.reply", Part::Host),
     ("threads.resolve", Part::Host),
-    (crate::web::OP_SEARCH, Part::Web),
-    (crate::web::OP_FETCH, Part::Web),
-    (crate::browser::OP_TEST, Part::Browser),
-    (crate::browser::OP_BROWSE, Part::Browser),
+    (crate::web::OP_SEARCH, Part::Spend),
+    (crate::web::OP_FETCH, Part::Spend),
+    (crate::browser::OP_TEST, Part::Spend),
+    (crate::browser::OP_BROWSE, Part::Spend),
 ];
 
 /// The part that performs operation `op`.
@@ -101,7 +100,7 @@ pub(super) struct ClaxSession<'s> {
     pub state: Mutex<State>,
     /// Held while a browser call is performed, so that the step's
     /// browser calls open one browser after another, each counted and
-    /// charged before the next is checked ([`super::browser`]).
+    /// charged before the next is checked ([`super::spend::Performer::serial`]).
     pub browsing: tokio::sync::Mutex<()>,
 }
 
@@ -148,8 +147,13 @@ impl StepSession for ClaxSession<'_> {
             Part::Draft => self.draft_op(&call).await,
             Part::Publish => self.publish(&call).await,
             Part::Host => self.host(&call, spec.access()).await,
-            Part::Web => self.web(&call).await,
-            Part::Browser => self.browser(&call).await,
+            Part::Spend => match super::spend::perform(self, &call).await {
+                Some(answer) => answer,
+                None => Answer::refused(HostError::new(
+                    api::CODE_UNKNOWN_OP,
+                    format!("clax.{} is not a charged operation", call.op),
+                )),
+            },
         };
         if answer.result().is_ok() {
             self.count(&call);
@@ -189,7 +193,7 @@ mod tests {
 
     /// Each operation of Clax's surface has one part that performs it,
     /// nothing else has one, and the operations that are charged are the
-    /// ones the web and the browser perform.
+    /// ones the Spend sequence performs.
     #[test]
     fn every_operation_has_one_part() {
         let names: Vec<&str> = api::definition().operations().map(|o| o.name).collect();
@@ -197,7 +201,7 @@ mod tests {
         assert_eq!(performed, names);
         for name in names {
             let charged = api::op(name).unwrap().access() == api::Access::Spend;
-            let spends = matches!(part(name), Some(Part::Web | Part::Browser));
+            let spends = part(name) == Some(Part::Spend);
             assert_eq!(charged, spends, "{name}");
         }
         for unknown in ["", "nope.op", "files", "files.read.x", "clax.files.read"] {

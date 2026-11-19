@@ -312,8 +312,11 @@ impl Store {
                 }
                 None => format!("body LIKE ?{n} ESCAPE '\\'"),
             };
+            // A `bot.web` record (written before every charged call was a
+            // `bot.spend`) is found by the words of `bot.spend` too.
             conds.push(format!(
-                "(kind LIKE ?{n} ESCAPE '\\' OR actor LIKE ?{n} ESCAPE '\\' OR {body})"
+                "(kind LIKE ?{n} ESCAPE '\\' OR actor LIKE ?{n} ESCAPE '\\' OR {body}
+                  OR (kind = 'bot.web' AND 'bot.spend' LIKE ?{n} ESCAPE '\\'))"
             ));
         }
         if let Some(a) = &query.actor {
@@ -485,6 +488,49 @@ mod tests {
             display_name: None,
             person: true,
         }
+    }
+
+    /// A `bot.web` record, written before every charged call was a
+    /// `bot.spend`, is found by a search for `bot.spend` (or `spend`) as
+    /// the `bot.spend` records are; a search for `bot.web` still finds it
+    /// and no `bot.spend`.
+    #[test]
+    fn a_bot_web_row_is_found_by_the_bot_spend_filter() {
+        let clock = Arc::new(ManualClock::at("2026-10-21T10:00:00Z"));
+        let (_d, st) = store_with_clock(clock);
+        let old = st
+            .record_event(
+                DAEMON,
+                AuditRecord::new(AuditKind::BotWeb, st.now()).with("op", "web.fetch"),
+            )
+            .unwrap();
+        let new = st
+            .record_event(
+                DAEMON,
+                AuditRecord::new(AuditKind::BotSpend, st.now()).with("op", "web.search"),
+            )
+            .unwrap();
+        st.record_event(DAEMON, AuditRecord::new(AuditKind::BotCall, st.now()))
+            .unwrap();
+        let found = |q: &str| -> Vec<i64> {
+            let query = AuditQuery {
+                q: Some(q.into()),
+                ..AuditQuery::default()
+            };
+            let mut seqs: Vec<i64> = st
+                .query_audit(&AuditReader::Admin, &query)
+                .unwrap()
+                .events
+                .iter()
+                .map(|e| e.seq)
+                .collect();
+            seqs.sort_unstable();
+            seqs
+        };
+        assert_eq!(found("bot.spend"), [old, new]);
+        assert_eq!(found("spend"), [old, new]);
+        assert_eq!(found("bot.web"), [old]);
+        assert!(!found("bot.call").contains(&old));
     }
 
     #[test]

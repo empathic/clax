@@ -382,15 +382,15 @@ fn body_class(kind: &str, field: &str) -> Class {
         // §4.8): the capability, op, outcome, charge, the source kind, a
         // session's ID, its viewport, version, path and time, a host end's
         // reason, a fetch's format and source and Cloudflare's request ID
-        // are codes and numbers; a query and a URL are the model's or a
-        // page's text.
+        // are codes and numbers; a query, a URL and a search provider's
+        // whole answer are the model's or a page's text.
         (
             "bot.spend",
             "capability" | "run" | "step" | "op" | "ok" | "code" | "credits_milli" | "provider"
             | "source" | "format" | "request_id" | "stored" | "session" | "kind" | "viewport"
             | "version" | "path" | "ms" | "passed" | "reason",
         ) => Safe,
-        ("bot.spend", "query" | "url") => Text,
+        ("bot.spend", "query" | "url" | "response") => Text,
         ("bot.run_end", "run" | "outcome" | "credits_milli") => Safe,
         ("bot.run_end", "reason") => Text,
         ("bot.cancel", "run" | "by") => Safe,

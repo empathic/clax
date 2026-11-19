@@ -916,6 +916,10 @@ pub fn recorded(entry: &CallEntry) -> Result<Value, HostError> {
         r["code"].as_str().unwrap_or("call_failed"),
         r["message"].as_str().unwrap_or(""),
     );
+    let failure = match r["capability"].as_str() {
+        Some(c) => failure.with_capability(c),
+        None => failure,
+    };
     Err(if r["retryable"] == json!(true) {
         failure.retryable()
     } else {
@@ -924,11 +928,15 @@ pub fn recorded(entry: &CallEntry) -> Result<Value, HostError> {
 }
 
 /// A failure as a journal entry keeps it: `code`, `message`, and
-/// `retryable` when it is. What [`recorded`] reads back.
+/// `retryable` when it is and `capability` when it names one. What
+/// [`recorded`] reads back.
 pub(crate) fn err_json(e: &HostError) -> Value {
     let mut v = json!({"code": e.code, "message": e.message});
     if e.retryable {
         v["retryable"] = json!(true);
+    }
+    if let Some(c) = &e.capability {
+        v["capability"] = json!(c);
     }
     v
 }

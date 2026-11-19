@@ -709,14 +709,18 @@ fn refused_at_check_2(row: &Value) -> bool {
 }
 
 /// Checks that each journal row of a web operation refused at check 2
-/// in what `left` holds is `{code, message}` alone, and answers how
+/// in what `left` holds is `{capability, code, message}` alone, and answers how
 /// many there are.
 fn the_refused_rows_are_the_run_loops(left: &Left) -> usize {
     let mut rows = 0;
     for row in left.journal.as_array().expect("the journal") {
         if refused_at_check_2(row) {
             let keys: Vec<&String> = row["result"].as_object().unwrap().keys().collect();
-            assert_eq!(keys, ["code", "message"], "the run loop's row: {row}");
+            assert_eq!(
+                keys,
+                ["capability", "code", "message"],
+                "the run loop's row: {row}"
+            );
             rows += 1;
         }
     }

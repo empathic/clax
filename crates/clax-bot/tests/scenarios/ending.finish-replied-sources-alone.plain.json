@@ -62,6 +62,7 @@
       },
       "at": "2026-10-21T10:00:00.000Z",
       "body": {
+        "capability": "web.fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "credits_milli": 95,
@@ -80,7 +81,7 @@
         "call": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {

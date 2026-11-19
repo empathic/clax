@@ -61,12 +61,9 @@ pub const OP_BROWSE: &str = "browser.browse";
 pub const CODE_BROWSER_DISABLED: &str = "browser_disabled";
 /// The run's tests (or browses) are used up.
 pub const CODE_BROWSER_CAP: &str = "browser_cap";
-/// The person cannot pay for one call at its time cap.
-pub const CODE_CREDITS_EXHAUSTED: &str = "credits_exhausted";
+pub use crate::capability::{CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED};
 /// No such version of the artifact, or no such page in the target.
 pub const CODE_BROWSER_TARGET_NOT_FOUND: &str = "browser_target_not_found";
-/// `browse`: the URL fails the host check or the URL rule.
-pub const CODE_URL_NOT_ALLOWED: &str = "url_not_allowed";
 /// The instance's concurrent browsers are all in use; retryable.
 pub const CODE_BROWSER_BUSY: &str = "browser_busy";
 /// Browser Run refused or failed before the page opened: retryable unless

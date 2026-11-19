@@ -539,7 +539,7 @@ async fn the_journal_rows_of_web_operations_a_run_lacks_are_pinned() {
                 .expect("a failure")
                 .keys()
                 .collect();
-            assert_eq!(keys, ["code", "message"], "{name}: {row}");
+            assert_eq!(keys, ["capability", "code", "message"], "{name}: {row}");
         }
         cases.push(json!({
             "case": name,
