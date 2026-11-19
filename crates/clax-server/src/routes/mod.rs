@@ -3,6 +3,7 @@
 //! a handler's signature must show.
 
 pub mod admin;
+pub mod analytics;
 pub mod app_bundles;
 pub mod app_drafts;
 pub mod approvals;

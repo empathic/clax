@@ -5,12 +5,13 @@
 
 use crate::integrations::feedback as feedback_integration;
 use crate::routes::{
-    admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
-    confirmations, connect, content, discovery, docs, drafts, extension, feedback, git_token,
-    grants, health, inbox, jobs, live, live_layers, login, mcp_http, passkeys, people, perf,
-    permissions, questions, queue_agent, queue_reporter, queues, remote_apps, remote_artifacts,
-    remote_requests, remotes, resolve, room, sample, sessions, settings, site_signin, sites,
-    snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
+    admin, analytics, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot,
+    client_imports, confirmations, connect, content, discovery, docs, drafts, extension, feedback,
+    git_token, grants, health, inbox, jobs, live, live_layers, login, mcp_http, passkeys, people,
+    perf, permissions, questions, queue_agent, queue_reporter, queues, remote_apps,
+    remote_artifacts, remote_requests, remotes, resolve, room, sample, sessions, settings,
+    site_signin, sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers,
+    watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{bot_content, bot_joins, bot_messages, bot_surfaces, events, mcp, net};
@@ -412,6 +413,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/artifacts/{aid}/permissions",
             get(permissions::permissions),
         )
+        .route("/api/artifacts/{aid}/analytics", get(analytics::read))
         .route(
             "/api/artifacts/{aid}/capability-approval",
             put(permissions::approve),

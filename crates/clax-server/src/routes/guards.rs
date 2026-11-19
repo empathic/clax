@@ -381,6 +381,7 @@ mod l10 {
     pub(super) fn module_source_opt(m: &str) -> Option<&'static str> {
         Some(match m {
             "admin" => include_str!("admin.rs"),
+            "analytics" => include_str!("analytics.rs"),
             "app_bundles" => include_str!("app_bundles.rs"),
             "app_drafts" => include_str!("app_drafts.rs"),
             "client_imports" => include_str!("client_imports.rs"),

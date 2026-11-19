@@ -458,9 +458,11 @@ that a batch lands.
 - Written: `PATCH /api/artifacts/<id> {"analytics": "off"}` (`"on"`
   turns it on again; anything else 400 `invalid_argument`), as a new
   `SettingChange::Analytics(bool)` in
-  `crates/clax-server/src/routes/setting_change.rs`, whose
-  `needs_approval` is false: whoever administers the artifact may send it,
-  anyone else 403 `admin_only`; a page never may (403 `not_for_pages`); an
+  `crates/clax-server/src/routes/setting_change.rs`, which needs no
+  approval (`SettingChange::approval` is `None`): whoever administers the artifact may send it,
+  anyone else 403 `admin_only` (a person whose rights do not let them
+  update the artifact, a viewer, is refused 403 `not_permitted` first, as
+  for every `PATCH`); a page never may (403 `not_for_pages`); an
   agent's change asks no one; one setting changed per request, as today
   (the error text of the "one at a time" refusal names all three). The
   browser may send it alone without the token (`PatchBody::site_only`
@@ -483,9 +485,14 @@ that a batch lands.
 - Whoever administers the artifact, from their browser or with the owner's
   token; anyone else 403 `admin_only`. It refuses agents
   (`DeniedToGrants::refuse_agents`, 403 `not_for_agents`), as `GET
-  /api/artifacts/{aid}/permissions` does (Open question 5). Declared in
-  `clax_http::agent::ROUTE_NEEDS` as `AnalyticsRead`, Denied; the contract's
-  route table is regenerated (`CLAX_UPDATE_GOLDEN=1` and the test
+  /api/artifacts/{aid}/permissions` does (Open question 5), and pages (403
+  `not_for_pages`, as that route does). Its handler takes `DeniedToGrants`,
+  which makes it Denied: `clax_http::agent::ROUTE_NEEDS` lists only the
+  routes agents reach (the route table's generator refuses a Denied entry
+  there), so `agent.rs` does not change. The contract's route table lists it
+  in its second table, generated from the router and the handler's source,
+  once `routes/guards.rs`'s `module_source_opt` names the module; it is
+  regenerated (`CLAX_UPDATE_GOLDEN=1` and the test
   `the_contract_route_table_is_the_declared_one`,
   `crates/clax-server/src/routes/guards.rs`).
 - `from` and `to` default to the last 30 days ending today (UTC); the
@@ -726,10 +733,11 @@ Depends on Task 1. Runs in parallel with Task 4 (no shared file but
 (`SettingChange::Analytics`), `crates/clax-server/src/routes/artifacts.rs`
 (`PatchBody.analytics`, the GET field), `crates/clax-server/src/routes/analytics.rs`
 (new), `crates/clax-server/src/routes/mod.rs`, `crates/clax-server/src/router.rs`,
-`crates/clax-http/src/agent.rs` (`AnalyticsRead`, `ROUTE_NEEDS`),
-`crates/clax-store/src/toolpath/redact.rs` (`analytics` as `Class::Safe`,
+`crates/clax-server/src/routes/guards.rs` (the module's source, for the
+route table), `crates/clax-store/src/toolpath/redact.rs` (`analytics` as `Class::Safe`,
 beside `content_security_policy`), `docs/contract.md` (the regenerated
-route table only), `crates/clax-server/tests/api_analytics.rs` (new).
+route table only), `crates/clax-server/tests/api_analytics.rs` (new, a
+module of `tests/integration.rs`).
 Depends on Task 1. In parallel with Task 3.
 
 **Task 5. Worker.** Files: `crates/clax-worker/src/lib.rs` (`CF-IPCountry`
