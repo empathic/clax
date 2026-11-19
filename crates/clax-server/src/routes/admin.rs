@@ -922,8 +922,10 @@ pub async fn set_browser(
 // ---------------------------------------------------------------------------
 
 /// The live grants the admin made, as `GET /api/admin/bot/grants` lists
-/// them: each `{id, capability, grantee, person, issued_at}`, `grantee`
-/// `everyone` or `person`, `person` the person's key (null for everyone),
+/// them: each `{id, capability, grantee, person, granter, issued_at}`,
+/// `grantee` `everyone` or `person`, `person` the person's key (null for
+/// everyone), `granter` `instance` (the admin page), `migration` (main's
+/// web switches) or `config` (config.toml's, at the daemon's start),
 /// the instance-wide grants first, then by capability.
 ///
 /// # Errors
@@ -947,6 +949,7 @@ pub fn grants_view(st: &Store) -> clax_core::Result<Value> {
                 "capability": g.capability,
                 "grantee": if person.is_some() { "person" } else { "everyone" },
                 "person": person,
+                "granter": g.granter,
                 "issued_at": g.issued_at,
             });
             Some((person.is_some(), g.capability, row))

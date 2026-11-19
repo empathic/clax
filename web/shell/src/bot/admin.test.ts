@@ -613,6 +613,24 @@ describe("Admin › Browser", () => {
     expect([...content.querySelectorAll(".capgrants li span")].map(x => x.textContent)).toEqual(["Sam"]);
   });
 
+  it("a grant config.toml made says so and is revoked like any other", async () => {
+    const FETCH = { id: "g9", capability: "web.fetch" as const, grantee: "everyone" as const, person: null, granter: "config" as const, issued_at: "2026-10-21T09:00:00Z" };
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings(),
+      "GET /api/admin/bot/grants": { grants: [FETCH] },
+      "GET /api/admin/people": [],
+      "DELETE /api/admin/bot/grants/g9": { grants: [] },
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    const card = m.root.querySelector<HTMLElement>("#cap-web-fetch-h")!.closest("section")!;
+    expect(card.querySelector(".capgrants li span")!.textContent).toBe("Everyone on this instance · from config.toml");
+    click(card.querySelector<HTMLElement>('button[aria-label="Revoke web fetch from everyone on this instance"]')!);
+    await settle();
+    expect(calls.find(c => c.method === "DELETE")!.url).toBe("/api/admin/bot/grants/g9");
+    expect(card.querySelectorAll(".capgrants li").length).toBe(0);
+  });
+
   it("url_rule_any_public_warns", async () => {
     const calls = stubFetch({
       "GET /api/admin/browser": browserSettings(),

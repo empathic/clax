@@ -467,7 +467,8 @@ fn loose_mode(path: &std::path::Path) -> Option<u32> {
 /// instance holds a Cloudflare account ID and token
 /// ([`crate::bot::web_configured`]). `[bot.web]` and `[bot.browser]` are
 /// laid over the stored `web.*` and `browser.*` settings as the rest of
-/// `[bot]` is ([`bot_overrides`]).
+/// `[bot]` is ([`bot_overrides`]); a web switch they turn on is granted to
+/// everyone once ([`clax_store::Store::grant_web_from_config`]).
 fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bot::Bot {
     let catalog_url = catalog_url.unwrap_or_else(|| {
         // A hosted core reads it from the file and the environment too,
@@ -503,6 +504,17 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
     };
     let (ov, enabled) = bot_overrides(cfg);
     s.store.set_bot_overrides(ov);
+    // A web switch on only in the configuration gets the instance-wide
+    // grant migration 67 writes for a stored one, once
+    // (`Store::grant_web_from_config`).
+    match s.store.grant_web_from_config(&clax_core::audit::AuditCtx::DAEMON) {
+        Ok(issued) if !issued.is_empty() => tracing::info!(
+            grants = ?issued,
+            "granted the web capabilities config.toml turns on to everyone on this instance"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "could not grant the web capabilities config.toml turns on"),
+    }
     bot.enabled = enabled;
     if let Ok(b) = cfg.bot()
         && let Ok(key) = std::env::var(&b.api_key_env)

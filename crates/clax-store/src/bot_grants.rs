@@ -61,6 +61,12 @@ pub const GRANTER_INSTANCE: &str = "instance";
 /// The granter of a grant migration 67 wrote from main's web switches.
 pub const GRANTER_MIGRATION: &str = "migration";
 
+/// The granter of an instance-wide grant a daemon wrote at its start
+/// because its config.toml (or the environment) turns a web switch on
+/// ([`Store::grant_web_from_config`]): shown on the admin page as from
+/// config.toml.
+pub const GRANTER_CONFIG: &str = "config";
+
 /// Who a grant is to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Grantee {
@@ -408,7 +414,7 @@ impl Store {
                     if parent.is_some() {
                         return Err(not_held("an admin grant has no parent"));
                     }
-                    if granter != GRANTER_INSTANCE && granter != GRANTER_MIGRATION {
+                    if ![GRANTER_INSTANCE, GRANTER_MIGRATION, GRANTER_CONFIG].contains(&granter) {
                         return Err(not_held("only the instance grants to people"));
                     }
                     match &to {
@@ -493,6 +499,47 @@ impl Store {
             }
             Ok(ended.into_iter().map(|g| g.id).collect())
         })
+    }
+
+    /// The instance-wide grant of each of `web.search` and `web.fetch` that
+    /// the daemon's configuration turns on (its switch an override from
+    /// config.toml or the environment, [`Store::set_bot_overrides`]) and
+    /// that no grant to everyone has ever been written for, live or
+    /// revoked: what migration 67 writes for a switch stored on, which it
+    /// cannot see for one set only in the configuration. Issued as
+    /// `ctx`, granter [`GRANTER_CONFIG`], each recorded as `bot.grant`,
+    /// with every person's grant to their runs. So it is written at most
+    /// once per instance and capability: a restart after the admin
+    /// revokes it writes nothing. No `browser.open` kind is ever granted
+    /// here. Returns the grants issued.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn grant_web_from_config(&self, ctx: &AuditCtx) -> Result<Vec<String>> {
+        use crate::bot_settings::{Setting, SettingSource};
+        let eff = self.effective_bot_settings()?;
+        let mut issued = Vec::new();
+        for (cap, switch) in [
+            ("web.search", Setting::WebSearchEnabled),
+            ("web.fetch", Setting::WebFetchEnabled),
+        ] {
+            let on_in_config = eff.get(&switch).is_some_and(|e| {
+                matches!(e.source, SettingSource::Config(_)) && e.value.as_bool() == Some(true)
+            });
+            if !on_in_config {
+                continue;
+            }
+            let ever = self.cap_grants(&GrantFilter {
+                capability: Some(cap.to_string()),
+                grantee: Some(EVERYONE.to_string()),
+                live: false,
+            })?;
+            if !ever.is_empty() {
+                continue;
+            }
+            issued.push(self.issue_cap_grant(ctx, cap, GRANTER_CONFIG, EVERYONE, None)?.id);
+        }
+        Ok(issued)
     }
 
     /// Every person key of the instance: the owner, then each connected
@@ -842,5 +889,53 @@ mod tests {
         assert_eq!(events.len(), 6);
         assert!(events[3..].iter().all(|e| e["op"] == "revoke"));
         assert_eq!(events[3]["grant"], root.id.as_str());
+    }
+
+    /// A daemon whose web switches are on only in config.toml gets the
+    /// instance-wide grants migration 67 would have written, once: a
+    /// grant the admin revokes is not written again, a stored switch and
+    /// a switch off write none, and no browser kind is ever granted.
+    #[test]
+    fn a_config_web_switch_grants_everyone_once() {
+        use crate::bot_settings::{Overrides, Setting};
+        use serde_json::json;
+        let (_d, st) = store();
+        // Off, or on only in the store: nothing.
+        assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
+        st.set_bot_settings(DAEMON, &[(Setting::WebSearchEnabled, Some(json!(true)))])
+            .unwrap();
+        assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
+        let mut ov = Overrides::default();
+        ov.set(Setting::WebFetchEnabled, &json!(true), "file").unwrap();
+        ov.set(Setting::WebSearchEnabled, &json!(false), "file").unwrap();
+        ov.set(Setting::BrowserOpenUrlEnabled, &json!(true), "file").unwrap();
+        st.set_bot_overrides(ov);
+        let issued = st.grant_web_from_config(DAEMON).unwrap();
+        assert_eq!(issued.len(), 1);
+        let g = st
+            .cap_grants(&GrantFilter {
+                grantee: Some(EVERYONE.into()),
+                ..GrantFilter::default()
+            })
+            .unwrap();
+        assert_eq!(g.len(), 1, "{g:?}");
+        assert_eq!((g[0].capability.as_str(), g[0].granter.as_str()), ("web.fetch", GRANTER_CONFIG));
+        assert!(st.person_caps(OWNER).unwrap()["web.fetch"].reaches_runs());
+        // A restart writes nothing more, and after a revoke nothing again.
+        assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
+        st.revoke_cap_grant(DAEMON, &g[0].id).unwrap();
+        assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
+        assert!(!st.person_caps(OWNER).unwrap()["web.fetch"].reaches_runs());
+        for cap in BROWSER_CAPABILITIES {
+            assert!(
+                st.cap_grants(&GrantFilter {
+                    capability: Some(cap.into()),
+                    ..GrantFilter::default()
+                })
+                .unwrap()
+                .is_empty(),
+                "{cap}"
+            );
+        }
     }
 }

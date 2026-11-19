@@ -495,7 +495,7 @@ export type BrowserPatch = {
 export const getAdminBrowser = () => call<BrowserSettings>("/api/admin/browser");
 export const putAdminBrowser = (patch: BrowserPatch) => call<BrowserSettings>("/api/admin/browser", "PUT", patch);
 /** One live grant the admin made (`GET /api/admin/bot/grants`): of `capability`, to everyone on the instance or to one person. */
-export type AdminGrant = { id: string; capability: CapabilityId; grantee: "everyone" | "person"; person: PersonKey | null; issued_at: string };
+export type AdminGrant = { id: string; capability: CapabilityId; grantee: "everyone" | "person"; person: PersonKey | null; granter?: "instance" | "migration" | "config"; issued_at: string };
 export const getAdminGrants = () => call<{ grants: AdminGrant[] }>("/api/admin/bot/grants");
 /** Grants `capability` to everyone on the instance, or to one person. */
 export const grantCapability = (capability: CapabilityId, to: "everyone" | PersonKey) =>

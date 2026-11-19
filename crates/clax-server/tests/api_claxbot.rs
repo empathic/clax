@@ -3695,6 +3695,7 @@ async fn admin_grants_to_everyone_and_revokes() {
             (json!("browser.open.content"), json!("person"), json!(sam)),
         ]
     );
+    assert!(grants.iter().all(|g| g["granter"] == "instance"), "{grants:?}");
     // Refusals: a second grant to the same grantee, an unknown capability,
     // a person the instance does not have, not everyone.
     for (body, want) in [
