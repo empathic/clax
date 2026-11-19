@@ -7,7 +7,9 @@
 to the revised design: five capabilities on one mechanism, `clax.web`
 retrieval with an HTML format, and `clax.browser` sessions that live
 across script steps, on a URL, the run's clax or supplied content,
-charged by browser time.
+charged by browser time, driven by a Playwright-shaped `Page`,
+`Locator` and `expect` (spec §6.1, §6.5, §6.9 to §6.12; the owner's
+sixth direction, decision `e3168e55`).
 
 **Spec:** `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md`
 ("spec §n"). Read it whole, and its open threads (`qualifier threads
@@ -19,7 +21,12 @@ Task 1. The web tools' design is `2026-11-02-claxbot-web-tools-design.md`
 `Capabilities::now`, `CapSet`, `UrlRule`) and `clax/spend.rs` (one Spend
 sequence, a `Performer` per operation); `web/` and `browser/` become
 performers on it. Browser sessions live in a host-owned registry
-(`browser/live.rs`) of tasks that own their sockets. `clax-store` gains
+(`browser/live.rs`) of tasks that own their sockets; locators resolve
+and actions auto-wait in `browser/locate.rs` and `browser/act.rs`.
+The sandbox's shared prelude (`crates/clax-bot-sandbox/src/prelude.js`)
+gains the `Page` layer over six flat `browser.*` operations, and
+`browser/layer.rs` is the one table the model's declaration is
+generated from and the prelude's table is checked against. `clax-store` gains
 `bot_cap_grants`, `bot_runs.caps`, `bot_browser_sessions` and the
 per-second line, all in the branch's own migration 67, edited in place.
 
@@ -32,19 +39,22 @@ axum, tokio-tungstenite), TypeScript (`web/bridge`), Svelte 5
 - Everything in `AGENTS.md`. No `unsafe`, no hard links, no Perl, no new
   npm runtime dependency, no new Rust crate (the recording format needs
   none, spec §6.6).
-- **Verification.** `just test-affected` is broken at its bazel query
-  step. Each task runs, in the background, logged under `target/`:
+- **Verification is narrow per task, full per phase.** `just
+  test-affected` is broken at its bazel query step. Each task runs only
+  the targets it names (the crates it touches), in the background,
+  logged under `target/unify-task-N.log`, and reports the summary lines.
+  The last task of each phase also runs the full suite, logged under
+  `target/unify-phase-X.log`:
 
-      bazel test //crates/clax-bot/... //crates/clax-store/... //crates/clax-server/... //crates/clax-cli/... //bazel/wasm:check //web:unit //web:lint //web:typecheck //web:bundle_size //apps/clax_app:prompt_sync > target/unify-task-N.log 2>&1
+      bazel test //crates/clax-bot/... //crates/clax-store/... //crates/clax-server/... //crates/clax-cli/... //crates/clax-core/... //bazel/wasm:check //web:unit //web:lint //web:typecheck //web:bundle_size //apps/clax_app:prompt_sync
 
-  and reports the summary lines. While iterating, the narrower target
-  the task names first. Never `--nocache_test_results`: a wrong cache hit
-  is a BUILD-input bug to fix.
+  Never `--nocache_test_results`: a wrong cache hit is a BUILD-input bug
+  to fix.
 - Commit each task alone with `git -c commit.gpgsign=false commit`, a
   conventional subject, no attribution lines; never push.
 - **Every task compiles and passes on its own.** Where an old API has
   callers a later task moves, the task keeps it as a shim over the new
-  one; Task 17 removes the shims.
+  one; Task 20 removes the shims.
 - **Migration 67 is the branch's own** (unmerged; `AGENTS.md`): edit it
   in place, never add 68. A dev home an earlier build migrated is reset,
   not upgraded. Main's data (`bot_person_prefs.web`, `bot_runs.web`,
@@ -84,11 +94,11 @@ task that owns it.
    the page store as `markdown` (Task 8, `an_auto_fetch_from_main_answers_from_the_store`).
 3. **A session opened in step 1 and clicked in step 3, step 2 a model
    turn longer than `keep_alive`**: the heartbeat kept it, the click is
-   charged from the open's end to its own end (Task 12,
+   charged from the open's end to its own end (Task 14,
    `a_session_lives_across_steps_and_its_time_is_charged_once`).
 4. **Step 2 replayed after a crash**: every journaled call answers from
    the journal; the first un-journaled call answers
-   `browser_session_lost` (Task 12, `a_replay_after_a_restart_answers_lost`).
+   `browser_session_lost` (Task 14, `a_replay_after_a_restart_answers_lost`).
 5. **The idle end fires while no step is open**: the tail is charged
    with no step, once (Task 9, `a_host_end_with_no_open_step_charges_once`).
 6. **A `goto` out of an artifact session**: refused without
@@ -97,11 +107,25 @@ task that owns it.
    `browser_disabled` (Task 11, `a_goto_out_converts_the_session_once`).
 7. **The person revokes `browser.open.content` mid-session**: the
    session closes before `PUT /api/me/bot` answers, and its next call is
-   `browser_session_closed` `revoked` (Task 14,
+   `browser_session_closed` `revoked` (Task 17,
    `a_revoke_closes_the_session_before_it_answers`).
 8. **`open({html})` with neither `web.fetch` nor `browser.open.url`**
-   works, and its page's request to another origin is blocked (Task 12,
+   works, and its page's request to another origin is blocked (Task 14,
    `content_opens_without_any_web_capability`).
+9. **A script that replaced `Array.prototype.push` and
+   `JSON.stringify` before calling `page.getByRole(...).click()`** sends
+   the same `browser.act` call as one that did not (Task 13,
+   `a_page_ignores_replaced_builtins`).
+10. **A replayed step whose `expect` waited 3 s live** answers from the
+   journal at once with the same pass, and charges nothing (Task 14,
+   `a_replayed_expect_answers_at_once`).
+11. **A locator matching two buttons** fails `click` at once with a
+   strict-mode message naming both, as an answer journaled and charged,
+   thrown by the prelude as an `Error`; the session stays open (Tasks
+   12 and 14, `two_matches_are_a_strict_mode_violation`).
+12. **A run holding `browser.open.content` alone** is declared no
+   `runTests`, and its `BrowserSource` lists only `{html, files?}`
+   (Task 15, `the_declaration_holds_only_the_runs_methods_and_kinds`).
 
 ## Threads
 
@@ -112,9 +136,9 @@ it builds. Open threads on code the plan touches, to account for:
   `214066ff` (iframes and workers bypass a browse's policy), `9cf3f36d`
   (popup closing rests on `waitForDebuggerOnStart`): Task 10.
 - `ee9cc794` (no Browser Run session ID in `bot.browser`): unchanged by
-  this plan; Task 14 keeps the record's question open.
+  this plan; Task 17 keeps the record's question open.
 - `a395ac41` (screenshots scaled to the default image side, not the
-  run's): Task 12 passes `RunLimits::image_side` to the registry.
+  run's): Task 14 passes `RunLimits::image_side` to the registry.
 - `a602eba5`, `70a0f3e0`, `285218bc` (`clax/web.rs`): Task 6 keeps each
   behaviour as it is and re-anchors their records onto `clax/spend.rs`.
 - `c56c644b` (a browse's own time cap): Task 3 replaces both caps with
@@ -123,8 +147,16 @@ it builds. Open threads on code the plan touches, to account for:
   7 replaces the switch; reply with the commit.
 - `840f091e` (where the web namespace's rule lives): Task 5 keeps the
   namespace doc comment as the rule.
-- `7166a9f8` (a call's `ms` is always 0 in run events): Task 15 takes a
+- `7166a9f8` (a call's `ms` is always 0 in run events): Task 18 takes a
   session call's `ms` from its journal entry, not the run loop's record.
+- The Playwright-shaped API's spec records: decisions `e3168e55`
+  (owner), `0a68bd34`, `a6a4be11`, `0ea8fdf2`, `aeb201b7`, `d0c458ee`,
+  `b103bb09`, `64081c34`, `3e3c85fa`, `a978ffa2`; risks `f83e9b51`
+  (prelude budget, prompt size: Task 13, Task 15), `c2b4608a`
+  (getByRole: Task 12), `7bda2d4c` (actionability: Task 12),
+  `a1237142` (`Function.prototype.toString` in QuickJS: Task 13);
+  alternatives `3cb2a1f8`, `306b1499`, `dcb76129`, `8c891ad2`,
+  `d8f7f6d3`, `da63457e`. Each task names those it builds.
 
 ## File Structure
 
@@ -142,8 +174,12 @@ it builds. Open threads on code the plan touches, to account for:
 | `crates/clax-bot/src/web/page.rs` | `clean_html`; formats |
 | `crates/clax-bot/src/browser/live.rs` (new) | `BrowserSessions`, the session task |
 | `crates/clax-bot/src/browser/session.rs` | `run_test` split into open, act, collect, close primitives |
+| `crates/clax-bot/src/browser/locate.rs`, `act.rs` (new) | Locator steps resolved per call; actionability, strictness, input, `expect`'s retries |
+| `crates/clax-bot/src/browser/layer.rs` (new) | The `Page`/`Locator`/`expect` method table: declaration, `args` checks, the prelude's table checked |
+| `crates/clax-bot/src/browser.examples.ts` (new) | Playwright-style scripts the generated declaration must compile |
+| `crates/clax-bot-sandbox/src/prelude.js`, `lib.rs`, `conformance` | The `Page` layer, its table, the global `expect`; the budget test |
 | `crates/clax-bot/src/browser/serve.rs` | `ContentSite`; the left origin |
-| `crates/clax-bot/src/browser/opts.rs` | `BrowserSource` parsing; session operation arguments |
+| `crates/clax-bot/src/browser/opts.rs` | `BrowserSource` parsing; viewports; `BrowserTestOpts` |
 | `crates/clax-bot/src/browser/record.rs` (new) | Screencast frames and the clip manifest |
 | `crates/clax-bot/src/clax.d.ts`, `api.rs`, `prompt.rs`, `clax/session.rs`, `clax/provider.rs`, `events.rs` | Declaration by `CapSet`, the new operations, the registry |
 | `crates/clax-bot/tests/browser.rs`, `tests/web.rs` | Run-level tests |
@@ -183,7 +219,7 @@ files the audit kind changes.
   (`search` → `web.search`, `fetch` → `web.fetch`) and the branch's
   `bot_runs.browser` (`test` → `browser.open.artifact`, `browse` →
   `browser.open.url`). The branch's `bot_person_prefs.browser` and
-  `bot_runs.browser` stay until Task 17.
+  `bot_runs.browser` stay until Task 20.
 - `Store::issue_cap_grant(ctx, capability, granter, grantee, parent) ->
   Result<GrantRow>` (an instance-wide grant issues every person's child
   in its transaction; refused when the granter does not hold the
@@ -265,7 +301,7 @@ writes the new keys, its JSON shape unchanged until Task 7),
   bool) -> Result<Capabilities>`; `get(cap) -> Result<&Terms, Off>`;
   `live() -> CapSet`; `browser() -> Option<BrowserTerms>`.
 - `WebAccess::now` and `BrowserAccess::now` become thin views over it
-  (shims, removed in Task 17).
+  (shims, removed in Task 20).
 
 - [ ] **Tests first** (in-module): `each_capability_is_on_and_off_on_its_own` (all five, admin and person), `the_admin_reason_comes_before_the_persons`, `not_configured_per_capability`, `an_offered_capability_with_no_grant_is_not_granted`, `a_revoked_parent_leaves_the_run_nothing`, `caps_round_trip_through_their_text`, `open_artifact_needs_no_web_capability`.
 - [ ] `bazel test //crates/clax-bot:clax_bot_lib_test //crates/clax-server/...`; fail; implement; full verification.
@@ -291,7 +327,10 @@ source answers `url_not_in_prior_context`), `clax/web.rs`,
 
 ### Task 5: Declare by capabilities
 
-Builds `df067c3c`.
+Builds `df067c3c`. The browser namespace stays the first version's
+(`test`, `browse`) until Task 15 replaces it with the `Page`
+declaration; this task makes only its presence follow the run's
+capabilities.
 
 **Files:** `crates/clax-bot/src/api.rs` (`OpShape` replaced by
 `CapSet`: `declared(name, &CapSet)`, `dts(&CapSet)`), `prompt.rs`
@@ -301,8 +340,9 @@ run's source kinds), `crates/clax-store/src/bot_runs.rs`
 §6.1's rule), `clax/provider.rs`, goldens under `crates/clax-bot/src/`
 and `tests/golden`.
 
-- [ ] **Tests first:** `a_web_capability_set_declares_what_it_did` (byte for byte with today's web goldens), `browser_namespace_needs_an_open_capability`, `test_and_run_tests_need_the_artifact_capability`, `the_browser_rules_name_the_runs_source_kinds`.
-- [ ] Regenerate goldens as `golden.rs` documents; review every diff by eye; full verification (`//apps/clax_app:prompt_sync` among them).
+- [ ] **Tests first:** `a_web_capability_set_declares_what_it_did` (byte for byte with today's web goldens), `browser_namespace_needs_an_open_capability`, `test_needs_the_artifact_capability`, `the_browser_rules_name_the_runs_source_kinds`.
+- [ ] Regenerate goldens as `golden.rs` documents; review every diff by eye.
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-store/... //apps/clax_app:prompt_sync`.
 - [ ] Commit: `feat(bot): declare operations by the run's capabilities`
 
 ### Task 6: One Spend path, one error style, one audit kind
@@ -322,10 +362,12 @@ filter also matches `bot.web`), `docs/contract.md` (the audit kinds).
 count_key; fn price_cap; async fn perform; fn shown }`; `spend::run(session,
 call, &dyn Performer) -> Answer` doing spec §4.6's ten steps in order.
 Both families write `bot.spend` with `capability`; the `HostError` of
-every family carries `capability`.
+every family carries `capability`. A performer's `perform` may answer
+`ok: false` (spec §4.7: a failure on the page is an answer), journaled
+and charged as any answer: Task 14's session performers rely on it.
 
-- [ ] **Tests first:** the existing `tests/web.rs` and `tests/browser.rs` suites pass unchanged except the audit kind; `the_check_order_is_one_for_every_performer` (a table test driving each performer to each refusal in order); `every_call_writes_one_bot_spend`; `a_bot_web_row_is_found_by_the_bot_spend_filter`.
-- [ ] `bazel test //crates/clax-bot/... //crates/clax-store/...`; fail; implement; full verification.
+- [ ] **Tests first:** the existing `tests/web.rs` and `tests/browser.rs` suites pass unchanged except the audit kind; `the_check_order_is_one_for_every_performer` (a table test driving each performer to each refusal in order); `every_call_writes_one_bot_spend`; `a_bot_web_row_is_found_by_the_bot_spend_filter`; `an_ok_false_answer_is_journaled_and_charged`.
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-store/...`.
 - [ ] Re-anchor `a602eba5`, `70a0f3e0`, `285218bc` onto `clax/spend.rs` where the behaviour moved.
 - [ ] Commit: `refactor(bot): one Spend path for every capability`
 
@@ -349,7 +391,8 @@ its price; offered but not granted shows "not granted to you"), `api.ts`, `admin
 `crates/clax-server/tests/api_claxbot.rs`.
 
 - [ ] **Tests first:** server `admin_browser_round_trips_each_capability`, `admin_web_keeps_its_fields_and_adds_the_cards`, `admin_grants_to_everyone_and_revokes`, `a_browser_kind_is_granted_to_no_one_until_the_admin_grants_it`, `me_bot_lists_each_capability_and_whether_it_is_granted`, `me_put_web_sets_both_web_capabilities`; vitest `each_capability_has_its_own_card`, `a_card_lists_and_revokes_its_grants`, `the_me_page_switches_one_capability`, `url_rule_any_public_warns`.
-- [ ] `bazel test //crates/clax-server/... //web:unit`; fail; implement; full verification.
+- [ ] Verify: `bazel test //crates/clax-server/... //web:unit //web:lint //web:typecheck`.
+- [ ] **Phase A gate:** the full suite (Global Constraints), logged to `target/unify-phase-A.log`.
 - [ ] Commit: `feat(shell): grant each capability on its own`
 
 ## Phase B: retrieval
@@ -372,10 +415,17 @@ key, each row's format read from its fetch's journal entry,
 `toMarkdown`), `clax.d.ts` (`fetch`'s doc and type).
 
 - [ ] **Tests first:** `clean_html_removes_code_and_keeps_structure`, `relative_links_become_absolute`, `html_of_a_non_html_type_is_unsupported`, `an_auto_fetch_from_main_answers_from_the_store`, `two_formats_of_one_page_are_two_requests`, `migration_67_keeps_every_page_with_its_format`; Worker: the html format in its sandbox test.
-- [ ] `bazel test //crates/clax-bot/... //crates/clax-store/... //crates/clax-server/... //bazel/wasm:check`; fail; implement; full verification.
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-store/... //crates/clax-server/... //bazel/wasm:check`.
+- [ ] **Phase B gate:** the full suite, logged to `target/unify-phase-B.log`.
 - [ ] Commit: `feat(bot): fetch a page's HTML`
 
 ## Phase C: browser sessions
+
+The order inside this phase: the store (9), the live session (10), its
+sources (11), the driver's locators and actions (12) and the prelude's
+layer (13) are independent of one another after 10; Task 14 joins
+them into flat operations on the Spend path; Task 15 declares them;
+Task 16 adds recording.
 
 ### Task 9: Browser time in segments
 
@@ -400,7 +450,7 @@ Result<u32>`. `Store::browser_session(run, session) ->
 Result<Option<SessionRow>>`.
 
 - [ ] **Tests first:** `segments_of_a_session_sum_to_its_open_time`, `a_replayed_call_charges_nothing`, `a_host_end_with_no_open_step_charges_once`, `a_second_end_charges_nothing`, `a_point_before_the_charged_one_is_refused`, `a_start_marks_open_sessions_lost`.
-- [ ] `bazel test //crates/clax-store/...`; fail; implement; full verification.
+- [ ] Verify: `bazel test //crates/clax-store/...`.
 - [ ] Commit: `feat(store): charge browser time in segments, once`
 
 ### Task 10: The live session
@@ -418,20 +468,25 @@ behaviour), `browser/cdp.rs` (crash and detach events end waits as
 
 **Interfaces produced:** `BrowserSessions::new(source, limits)`;
 `open(run, kind, start, policy, viewport, deadline) -> Result<Handle,
-BrowserError>`; `call(run, handle, op, draft) -> Result<Acted,
-BrowserError>` (`browser_session_lost`, `browser_session_closed`);
-`close(run, handle, reason)`; `end_run(run)`; `reevaluate(&dyn
-Fn(&RunId, kind) -> bool)`; `ended() -> Vec<Ended>` (host ends for the
-store to charge). The task per session: serves `Fetch.requestPaused`
-between calls, heartbeats after 20 s idle, fires idle and lifetime by
-the source's deadline, ends as lost on crash or detach.
-`Target.setAutoAttach {autoAttach: true, waitForDebuggerOnStart: true,
-flatten: true}`: each attached iframe or worker gets `Fetch.enable` (and,
-for a worker, WebSocket and WebTransport removed by `Runtime.evaluate`)
-before `Runtime.runIfWaitingForDebugger`.
+BrowserError>`; `call(run, handle, call: SessionCall, draft) ->
+Result<Answered, BrowserError>` (`browser_session_lost`,
+`browser_session_closed`), where `SessionCall` is `Page {action, args}
+| Act {locator, action, args} | Expect {locator, matcher, args}` (spec
+§6.9) and the task hands each to a `SessionDriver` trait that Task 12
+implements for `Act` and `Expect`; this task implements `Page` for
+`goto`, `reload`, `title`, `content` and `evaluate` only, enough to
+test the session; `close(run, handle, reason)`; `end_run(run)`;
+`reevaluate(&dyn Fn(&RunId, kind) -> bool)`; `ended() -> Vec<Ended>`
+(host ends for the store to charge). The task per session: serves
+`Fetch.requestPaused` between calls, heartbeats after 20 s idle, fires
+idle and lifetime by the source's deadline, ends as lost on crash or
+detach. `Target.setAutoAttach {autoAttach: true, waitForDebuggerOnStart:
+true, flatten: true}`: each attached iframe or worker gets
+`Fetch.enable` (and, for a worker, WebSocket and WebTransport removed by
+`Runtime.evaluate`) before `Runtime.runIfWaitingForDebugger`.
 
 - [ ] **Tests first** (against `FakeChrome`): `requests_are_served_between_calls`, `the_heartbeat_is_sent_after_twenty_idle_seconds`, `the_idle_end_fires_by_the_deadline`, `the_lifetime_end_cuts_a_running_call`, `a_crashed_page_ends_the_session_as_lost`, `an_iframe_and_a_worker_are_held_to_the_policy`, `a_popup_is_closed_after_auto_attach`, `run_test_answers_as_before` (the existing session tests unchanged).
-- [ ] `bazel test //crates/clax-bot:clax_bot_lib_test`; fail; implement; full verification.
+- [ ] Verify: `bazel test //crates/clax-bot:clax_bot_lib_test`.
 - [ ] Reply on `369f1a79`, `11b7cb34`, `214066ff`, `9cf3f36d` with the tests and the commit (closes are the owner's).
 - [ ] Commit: `feat(bot): browser sessions that outlive a step`
 
@@ -449,47 +504,164 @@ Builds `b2f849b9`, `ef116de5`.
 `goto` out swaps the policy once and records the new kind).
 
 - [ ] **Tests first:** `content_is_served_at_its_own_origin`, `content_reaches_nothing_else`, `content_files_take_text_base64_and_images`, `content_over_its_caps_is_invalid_args`, `a_goto_within_the_origin_needs_nothing`, `a_goto_out_converts_the_session_once`, `an_artifact_session_serves_the_draft_as_the_last_call_saw_it`.
-- [ ] `bazel test //crates/clax-bot/...`; fail; implement; full verification.
+- [ ] Verify: `bazel test //crates/clax-bot:clax_bot_lib_test`.
 - [ ] Commit: `feat(bot): open the browser on a URL, the clax or supplied content`
 
-### Task 12: The session operations
+### Task 12: Locators, actions and `expect` in the driver
 
-Builds `633b7b5e`, `87804b1a`, `0a6381ce`; spec §6.1–§6.5, §6.8.
+Builds `0a68bd34` (locators and actions), `64081c34` (`expect` retried
+in the browser), `a6a4be11` (evaluate in the page); spec §6.5, §6.10.
+Accounts for risks `c2b4608a` (getByRole over the accessibility tree)
+and `7bda2d4c` (actionability over CDP): a test pins each approximation
+the risk names.
 
-**Files:** `crates/clax-bot/src/clax.d.ts` (the `browser` namespace of
-spec §6.1; `browse` removed; `test` takes `{artifact, path}`),
-`clax/browser.rs` (performers `Open`, `SessionCall`, `Close`, `Test` on
-`spend.rs`: per-call segments through `Spend.session`; the run's open
-sessions; per-kind caps; `left`; `new` counts; a `credits_exhausted`
-refusal closes the session), `clax/session.rs` (`PARTS` for every new
-operation), `clax/provider.rs` (`with_browser_sessions`; screenshots at
-`RunLimits::image_side`, `a395ac41`), `prompt.rs` and goldens,
-`crates/clax-bot/tests/browser.rs`, `tests/common/mod.rs`.
+**Files:** create `crates/clax-bot/src/browser/locate.rs` (the
+`LocatorStep` enum and its parse from JSON, at most 16 steps, `{regex,
+flags}`; resolution per call: `{css}`, `{text}`, `{label}`,
+`{placeholder}`, `{testId}`, `{nth}`, `{hasText}`, `{hasNotText}` by
+`Runtime.callFunctionOn` over the scope's elements, `{role}` by
+`Accessibility.queryAXTree` and `DOM.resolveNode`, names matched by the
+driver; a description of the chain in Playwright's words,
+`getByRole('button', { name: 'Save' })`) and `browser/act.rs` (each
+locator action of spec §6.5's table with its actionability checks,
+strictness, scrolling, `Input.dispatchMouseEvent`,
+`Input.dispatchKeyEvent`, `Input.insertText`, the key table of
+Playwright's names; every `expect` matcher of §6.10, its `.not`, its
+in-browser retry; the page actions `keyboard.*`, `mouse.*`,
+`setViewportSize`, `waitForLoadState`, `waitForURL`, `goBack`,
+`goForward`, `consoleMessages`, `pageErrors`, `failedRequests`,
+`screenshot` of a locator or the page; timeouts and their caps);
+`browser/live.rs` (the `SessionDriver` for `Act` and `Expect`, and the
+remaining `Page` actions); `browser/fake.rs` (`FakeChrome` keeps a small
+DOM with boxes, an accessibility tree and a hit-test answer, and
+records input events; no real browser).
 
-- [ ] **Tests first** (`tests/browser.rs`, through the run loop): `a_session_lives_across_steps_and_its_time_is_charged_once`, `a_replayed_step_opens_no_browser`, `a_replay_after_a_restart_answers_lost` (a new registry), `an_idle_session_answers_closed_idle`, `a_failed_click_is_an_answer_not_an_error`, `content_opens_without_any_web_capability`, `an_open_of_a_kind_the_run_lacks_is_disabled`, `a_second_open_past_the_runs_limit_is_capped`, `credits_running_out_close_the_session`, `the_run_end_closes_its_sessions`, `test_still_answers_its_result`, `two_calls_in_one_promise_all_run_in_order`.
-- [ ] `bazel test //crates/clax-bot/...`; fail; implement; regenerate goldens; full verification.
+**Interfaces produced:** `act::perform(cdp, scope, LocatorAction,
+args, deadline) -> Answered { ok, value, error, timeout, url }`,
+`act::expect(...)`, `act::page(...)`; failures as `ok: false` with
+Playwright's message, never a `BrowserError` unless the session is lost.
+
+- [ ] **Tests first** (against `FakeChrome`, with its manual deadline, no sleeps): `each_step_kind_resolves_as_the_spec_says`, `a_chain_scopes_its_next_step`, `role_names_match_as_substrings_unless_exact`, `two_matches_are_a_strict_mode_violation`, `click_waits_until_the_cover_is_gone`, `click_times_out_naming_the_cover`, `an_unstable_box_is_waited_for`, `fill_selects_and_inserts`, `count_and_is_visible_do_not_wait`, `expect_retries_in_the_browser_and_answers_once`, `expect_not_waits_for_the_condition_to_stop`, `to_have_text_with_an_array_matches_in_order`, `timeouts_are_capped_by_call_seconds`, `evaluate_calls_the_source_with_its_arg`, `a_regex_step_matches_in_the_page`.
+- [ ] Verify: `bazel test //crates/clax-bot:clax_bot_lib_test`.
+- [ ] Reply on `c2b4608a` and `7bda2d4c` with the tests that pin each approximation (closes are the owner's).
+- [ ] Commit: `feat(bot): locators, auto-waiting actions and expect in the browser driver`
+
+### Task 13: The prelude's `Page`, `Locator` and `expect`
+
+Builds `b103bb09` (the layer), `64081c34` (the value matchers),
+`a6a4be11` (sending a function), `0ea8fdf2` (console objects). Accounts
+for risks `f83e9b51` (the budget) and `a1237142`
+(`Function.prototype.toString` in QuickJS: settle it first; if the
+native sandbox does not keep source, stop and record a blocker with the
+failing case before building on it).
+
+**Files:** `crates/clax-bot-sandbox/src/prelude.js` (the layer: the
+method table as a JSON literal between `// browser-layer-table:begin`
+and `:end` markers; `Page`, `Locator`, `Keyboard`, `Mouse`, `Response`,
+`ConsoleMessage` and page-error objects with `toJSON`; `clax.browser`
+as `{open, test}`, the flat `page`, `act`, `expect`, `close` kept in
+the closure; the global `expect` with the locator, page and value
+matchers; `page.url()` from the last answer; `setDefaultTimeout`;
+installed only when the ops list holds the five session operations;
+every built-in it uses captured before the script runs),
+`crates/clax-bot-sandbox/src/lib.rs` (`PRELUDE`'s doc names the layer
+and its install rule; `pub const PRELUDE_BUDGET_BYTES: usize = 24 *
+1024`; conformance cases), `crates/clax-bot-js/tests/sandbox.rs` and
+the Worker sandbox's conformance run (`crates/clax-worker/src/sandbox/tests.rs`).
+
+Conformance cases use a recording host that answers each flat call from
+a script; no browser.
+
+- [ ] **Tests first** (`clax_bot_sandbox::conformance`, run by both sandboxes): `each_method_makes_its_one_flat_call` (a table-driven case over every row: method, arguments, the flat call expected), `locator_builders_and_url_make_no_call`, `an_ok_false_answer_throws_timeout_error_or_error`, `a_failed_matcher_throws_expected`, `value_matchers_agree_with_the_harness` (the cases of `web/bridge/test`'s `expect` table, copied as data), `evaluate_sends_a_functions_source`, `evaluate_refuses_a_native_function`, `a_page_ignores_replaced_builtins`, `the_layer_is_absent_without_the_session_ops`, `the_flat_ops_are_not_on_clax`, `returned_console_messages_show_their_data`; `the_prelude_stays_within_its_budget` (`PRELUDE.len() <= PRELUDE_BUDGET_BYTES`).
+- [ ] Verify: `bazel test //crates/clax-bot-sandbox/... //crates/clax-bot-js/... //bazel/wasm:check`, and the Worker sandbox's test target if its `BUILD.bazel` has one.
+- [ ] Reply on `a1237142` with the case that shows QuickJS keeps (or does not keep) function source; on `f83e9b51` with the prelude's size after the layer.
+- [ ] Commit: `feat(sandbox): a Playwright-shaped Page, Locator and expect in the prelude`
+
+### Task 14: The flat session operations on the Spend path
+
+Builds `b103bb09` (the six operations), `d0c458ee` (`browser.test`
+without steps), `0a68bd34` (failures are answers), `633b7b5e`,
+`87804b1a`, `0a6381ce`; spec §6.2 to §6.4, §6.8, §6.9.
+
+**Files:** `crates/clax-bot/src/clax.d.ts` (the flat `browser`
+operations of spec §6.9: `open`, `page`, `act`, `expect`, `close`,
+`test`, with `BrowserPageAction`, `BrowserLocatorAction` and
+`BrowserMatcher` as unions of string literals, `BrowserLocatorStep`,
+`BrowserAnswer`, `BrowserOpened`, `BrowserTestOpts`; `browse` and
+`test`'s `steps`, `html`, `text` and `screenshots` removed),
+`clax/browser.rs` (performers `Open`, `Page`, `Act`, `Expect`,
+`Close`, `Test` on `spend.rs`: per-call segments through
+`Spend.session`; the run's open sessions; per-kind caps; `left`; a
+`credits_exhausted` refusal closes the session; each action's `args`
+checked by `browser/layer.rs`'s entry for it, created here with the
+`args` checks only, Task 15 adding signatures and docs),
+`browser/opts.rs` (`BrowserTestOpts`; the steps parser removed),
+`browser/session.rs` (`run_test` without steps), `clax/session.rs`
+(`PARTS` for every new operation), `clax/provider.rs`
+(`with_browser_sessions`; screenshots at `RunLimits::image_side`,
+`a395ac41`), `crates/clax-bot/tests/browser.rs`, `tests/common/mod.rs`.
+
+Run-level tests drive scripts through the prelude's `Page` (Task 13)
+against `FakeBrowserSource`.
+
+- [ ] **Tests first** (`tests/browser.rs`, through the run loop): `a_session_lives_across_steps_and_its_time_is_charged_once`, `a_replayed_step_opens_no_browser`, `a_replay_after_a_restart_answers_lost` (a new registry), `a_replayed_expect_answers_at_once`, `an_idle_session_answers_closed_idle`, `a_failed_click_is_journaled_and_thrown`, `two_matches_are_a_strict_mode_violation` (through the run), `content_opens_without_any_web_capability`, `an_open_of_a_kind_the_run_lacks_is_disabled`, `a_second_open_past_the_runs_limit_is_capped`, `credits_running_out_close_the_session`, `the_run_end_closes_its_sessions`, `test_runs_the_saved_tests_in_one_call`, `an_unknown_action_is_invalid_args`, `two_calls_in_one_promise_all_run_in_order`.
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-store/...`.
 - [ ] Reply on `a395ac41` with the commit.
-- [ ] Commit: `feat(bot): browser sessions for a computer-use loop`
+- [ ] Commit: `feat(bot): browser session operations behind the Page layer`
 
-### Task 13: Recording
+### Task 15: The declaration: `Page`, `Locator` and `expect`
 
-Builds `c448d956`.
+Builds `3e3c85fa` (generated and checked), `e3168e55` (the owner's
+decision: Playwright's names and signatures, only what works),
+`a978ffa2` (what is not declared). Accounts for `f83e9b51`'s prompt
+size: report the declaration's line and byte count in the commit
+message.
+
+**Files:** `crates/clax-bot/src/browser/layer.rs` (every row of spec
+§6.1 and §6.10: class, method, TypeScript signature, one-line doc in
+Playwright's meaning, flat operation and action or none, parameter
+names, `args` check, capability needed beyond `browser.open.*`),
+`api.rs` (`dts(&CapSet)` writes the `browser` namespace, `Page`,
+`Locator`, `Keyboard`, `Mouse`, `Response`, `ConsoleMessage`,
+`LocatorAssertions`, `PageAssertions`, `ValueAssertions` and the
+`expect` overloads from the table, with only the run's methods and
+source kinds, in place of the surface's flat `browser` operations),
+`prompt.rs` (the namespace's rules of spec §6.1), `clax.d.ts` (the
+`browser` namespace's doc comment), create
+`crates/clax-bot/src/browser.examples.ts` (scripts as Playwright's docs
+write them, using every declared method), `crates/clax-bot/BUILD.bazel`
+(a `tsc --noEmit` test over the generated declaration and the examples,
+with the repository's pinned TypeScript; if wiring it outside `web/` is
+heavy, the same check inside `//web:typecheck` reading the golden),
+goldens.
+
+- [ ] **Tests first:** `every_row_has_its_action_in_the_flat_union_and_back`, `the_prelude_table_equals_the_layer_table` (reads `clax_bot_sandbox::PRELUDE` between the markers), `the_declaration_holds_only_the_runs_methods_and_kinds`, `no_flat_browser_operation_is_declared_to_the_model`, `the_declaration_and_examples_compile` (the TypeScript test), goldens per shape (`browser-artifact`, `browser-content`, `browser-url-artifact-content`).
+- [ ] Regenerate goldens as `golden.rs` documents; review every diff by eye.
+- [ ] Verify: `bazel test //crates/clax-bot/... //apps/clax_app:prompt_sync` and the TypeScript test's target.
+- [ ] Commit: `feat(bot): declare the browser as Playwright's Page, Locator and expect`
+
+### Task 16: Recording
+
+Builds `c448d956`, `aeb201b7` (`page.record`, not `recordVideo`).
 
 **Files:** create `crates/clax-bot/src/browser/record.rs`
 (`Page.startScreencast {format: "jpeg", quality: 70, maxWidth,
 maxHeight}`, `Page.screencastFrameAck` for each frame, at most 8 a
 second kept, `Page.stopScreencast`; frames to content items, the
-manifest item `application/vnd.clax.frames+json`); `clax/browser.rs`
-(`record` performer); `crates/clax-store/src/bot_content.rs` (accept the
-manifest's media type as a non-image item); `clax.d.ts`.
+manifest item `application/vnd.clax.frames+json`); `browser/live.rs`
+(the `record` page action); `browser/layer.rs` (its row, if Task 15
+left it out); `crates/clax-store/src/bot_content.rs` (accept the
+manifest's media type as a non-image item); the prelude's table row
+for `Page.record` if Task 13 did not add it.
 
-- [ ] **Tests first:** `every_frame_is_acknowledged`, `frames_are_kept_at_most_eight_a_second`, `four_evenly_spaced_frames_are_returned`, `the_manifest_names_each_frame_and_its_time`, `ten_seconds_is_the_most`.
-- [ ] `bazel test //crates/clax-bot/... //crates/clax-store/...`; fail; implement; full verification.
+- [ ] **Tests first:** `every_frame_is_acknowledged`, `frames_are_kept_at_most_eight_a_second`, `four_evenly_spaced_frames_are_returned`, `the_manifest_names_each_frame_and_its_time`, `ten_seconds_is_the_most`, `page_record_makes_one_call` (conformance, if the row is new).
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-store/...` (and `//crates/clax-bot-sandbox/...` if the prelude changed).
+- [ ] **Phase C gate:** the full suite, plus `//crates/clax-bot-sandbox/... //crates/clax-bot-js/...`, logged to `target/unify-phase-C.log`.
 - [ ] Commit: `feat(bot): record a browser session as a frame sequence`
 
 ## Phase D: the daemon and people
 
-### Task 14: Wire sessions into the daemon
+### Task 17: Wire sessions into the daemon
 
 Builds `df067c3c` (revoke), `95e6aeb2` (keep-alive).
 
@@ -502,38 +674,41 @@ it; a task drains `ended()` into `Store::end_browser_session`),
 answering), the run loop's end of a run (`end_run`),
 `crates/clax-server/tests/api_claxbot_run.rs`, `api_browser_source.rs`.
 
-- [ ] **Tests first:** `open_sends_keep_alive_60000`, `a_session_across_two_steps_through_the_daemon` (fake CDP server), `a_revoke_closes_the_session_before_it_answers`, `an_admin_switch_off_closes_every_session_of_its_kind`, `a_restart_marks_sessions_lost`, `the_run_end_closes_and_charges`.
-- [ ] `bazel test //crates/clax-server/...`; fail; implement; full verification.
+- [ ] **Tests first:** `open_sends_keep_alive_60000`, `a_session_across_two_steps_through_the_daemon` (fake CDP server, a script using `page.getByRole(...).click()` in its second step), `a_revoke_closes_the_session_before_it_answers`, `an_admin_switch_off_closes_every_session_of_its_kind`, `a_restart_marks_sessions_lost`, `the_run_end_closes_and_charges`.
+- [ ] Verify: `bazel test //crates/clax-server/...`.
 - [ ] Comment on `ee9cc794`: the session ID is still not known; sessions make it more useful (one ID across many calls).
 - [ ] Commit: `feat(server): hold browser sessions across steps on the daemon`
 
-### Task 15: The run panel's sessions and clips
+### Task 18: The run panel's sessions and clips
 
 **Files:** `crates/clax-bot/src/events.rs` (a session call carries
-`browser: {session, kind, op, ms, ok}` and `cost_milli`; `ms` from the
-journal entry, `7166a9f8`), `crates/clax-server/src/routes/bot.rs`
-(`run_content` also serves a frame manifest as JSON under the same
-headers), `web/shell/src/bot/RunPanel.svelte`, `model.ts`
-(`sessionLine`, grouping a session's calls), a flipbook component,
-`run-panel.test.ts`.
+`browser: {session, kind, op, action, locator, ms, ok}` and
+`cost_milli`; `ms` from the journal entry, `7166a9f8`),
+`crates/clax-server/src/routes/bot.rs` (`run_content` also serves a
+frame manifest as JSON under the same headers),
+`web/shell/src/bot/RunPanel.svelte`, `model.ts` (`sessionLine`,
+grouping a session's calls; a call named as the script wrote it,
+`getByRole('button', { name: 'Book' }).click()`, from its action and
+locator), a flipbook component, `run-panel.test.ts`.
 
-- [ ] **Tests first:** server `a_frame_manifest_is_served_as_json_to_the_runs_viewers`; vitest `a_session_is_one_line_with_its_calls`, `a_host_end_shows_its_reason`, `a_clip_plays_its_frames_in_order`.
-- [ ] `bazel test //crates/clax-server/... //web:unit //web:lint //web:typecheck //web:bundle_size`; fail; implement; full verification.
+- [ ] **Tests first:** server `a_frame_manifest_is_served_as_json_to_the_runs_viewers`; vitest `a_session_is_one_line_with_its_calls`, `a_call_is_named_as_the_script_wrote_it`, `a_host_end_shows_its_reason`, `a_clip_plays_its_frames_in_order`.
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-server/... //web:unit //web:lint //web:typecheck //web:bundle_size`.
 - [ ] Commit: `feat(shell): browser sessions and clips in the run panel`
 
-### Task 16: Docs
+### Task 19: Docs
 
 **Files:** `docs/usage.md` (the five capabilities, their settings,
 prices and risks; sessions and what they cost while a model thinks; the
-token permissions), `docs/contract.md` (the admin and Me routes'
+token permissions; the script API is Playwright's subset, and where to
+find what is declared), `docs/contract.md` (the admin and Me routes'
 fields; `bot.spend`, `bot.grant`; `bot.web` and `me.web` as
 historical; the content route's manifest), `crates/clax-worker/README.md`
 (browser capabilities not configured; `html` fetch works).
 
-- [ ] Full verification (doc tests reading `docs/`).
+- [ ] Verify: the doc tests that read `docs/`: `bazel test //crates/clax-server/... //crates/clax-cli/...`.
 - [ ] Commit: `docs(claxbot): capabilities and browser sessions for operators`
 
-### Task 17: Remove the first version's shapes
+### Task 20: Remove the first version's shapes
 
 **Files:** `migrations.rs` (67 no longer adds `bot_person_prefs.browser`
 or `bot_runs.browser`; its mark becomes `bot_browser_sessions`;
@@ -544,13 +719,15 @@ the Me route's `web` field), `bot_runs.rs` (`Run::browser` removed;
 `crates/clax-core/src/audit/mod.rs` (`bot.browser` and `me.browser`
 removed: no main data holds them), `web/access.rs` and
 `browser/access.rs` (`WebAccess`, `BrowserAccess`, `WebShape`,
-`BrowserShape` removed where nothing reads them), `crates/clax-server/tests/live_browser_run.rs`
+`BrowserShape` removed where nothing reads them), `browser/opts.rs` (any
+step type left from the first version), `crates/clax-server/tests/live_browser_run.rs`
 (one session across two calls with a pause longer than `keep_alive`,
-by the heartbeat; still skipped without credentials), `justfile`
-(`browser-live` unchanged in form).
+by the heartbeat, driven through a `Page`; still skipped without
+credentials), `justfile` (`browser-live` unchanged in form).
 
-- [ ] **Tests first:** `migration_67_from_main_has_no_branch_columns`; the whole suite.
-- [ ] Full verification.
+- [ ] **Tests first:** `migration_67_from_main_has_no_branch_columns`.
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-store/... //crates/clax-server/... //crates/clax-core/...`.
+- [ ] **Phase D gate:** the full suite, logged to `target/unify-phase-D.log`.
 - [ ] Commit: `refactor(bot): drop the first version's browser grant and shapes`
 
 ## Before merge
