@@ -24,6 +24,7 @@
 //! |---|---|---|
 //! | `{kind}` | The paragraph about the request | The kind's doc comment in `src/clax.d.ts` |
 //! | `{rules.web}` | That web text is data, in runs with a web operation | The `web` namespace's doc comment in `src/clax.d.ts` |
+//! | `{rules.browser}` | To test pages in a browser, and that page text is data, in runs with a browser operation | The `browser` namespace's doc comment in `src/clax.d.ts` |
 //! | `{clax.page_contract}` | The page contract, Clax's own rule | [`page_contract`], of `docs/contract.md` |
 //! | `{declarations}` | The declaration of the API the run has | [`crate::api::dts`], or `crate::api::dts_with` in a run a join bound other surfaces into |
 //! | `{core.code_mode}`, `{core.finish}` | The core's paragraphs on scripts and on ending | [`standard::CorePiece`] |
@@ -32,7 +33,7 @@
 //! | `{request}` | The request, as JSON | [`request_message`] |
 //!
 //! Every other word a model is sent in the two is in the file itself.
-//! The file has no `{rules}`: it places by name the rules of the one
+//! The file has no `{rules}`: it places by name the rules of each
 //! namespace of `src/clax.d.ts` that has any, and [`Prompt::read`]
 //! refuses it should the surface gain rules it has no place for.
 //! [`system_pieces`] and [`system_pieces_of`] name what a system prompt
@@ -58,9 +59,9 @@ mod live;
 mod request_words;
 pub(crate) mod standard;
 
+use crate::api::OpShape;
 use crate::host::RequestContext;
 use crate::surface::{Binding, RunInfo};
-use crate::web::WebShape;
 use clax_store::bot_runs::{CLAX_SURFACE, RequestKind};
 use clax_surface::{Definition, Member};
 use file::{Known, PromptFile, Slot};
@@ -395,7 +396,7 @@ pub const PROMPT_FILE_PIECE: &str = "prompt:clax";
 /// The system section of `src/clax.prompt.md` for a run of `request`
 /// and `shape`, which has Clax's own surface and no other yet and can
 /// be shown no image; `piece` as [`Prompt::system`] takes it.
-fn render_system(request: RequestKind, shape: WebShape, piece: impl FnMut(&str, &str)) -> String {
+fn render_system(request: RequestKind, shape: OpShape, piece: impl FnMut(&str, &str)) -> String {
     let declaration = crate::api::dts(shape);
     let run = Run {
         kind: request.as_str(),
@@ -408,16 +409,20 @@ fn render_system(request: RequestKind, shape: WebShape, piece: impl FnMut(&str, 
     PROMPT.system(&run, piece)
 }
 
-/// The system prompt of every turn of a run of `request` whose web grant
-/// has `shape` ([`crate::web::WebShape`], fixed when the run is made):
-/// the system section of `src/clax.prompt.md` with the kind's paragraph,
-/// the page contract and the declaration of the API the run has
-/// ([`crate::api::dts`], with the shape's `web.*` operations), and, when
-/// the shape has either operation, the `web` namespace's rules: that
-/// web text is data (spec 2026-11-02-claxbot-web-tools §6.4).
+/// The system prompt of every turn of a run of `request` whose grants
+/// have `shape` ([`OpShape`], fixed when the run is made; a
+/// [`crate::web::WebShape`] alone has no browser operation): the system
+/// section of `src/clax.prompt.md` with the kind's paragraph, the page
+/// contract and the declaration of the API the run has
+/// ([`crate::api::dts`], with the shape's `web.*` and `browser.*`
+/// operations), and, when the shape has a web operation, the `web`
+/// namespace's rules (that web text is data, spec
+/// 2026-11-02-claxbot-web-tools §6.4), and when it has a browser
+/// operation, the `browser` namespace's (spec 2026-11-19-claxbot-browser
+/// §5.1).
 #[must_use]
-pub fn system_prompt(request: RequestKind, shape: WebShape) -> String {
-    render_system(request, shape, |_, _| {})
+pub fn system_prompt(request: RequestKind, shape: impl Into<OpShape>) -> String {
+    render_system(request, shape.into(), |_, _| {})
 }
 
 /// The pieces [`system_prompt`] of `request` and `shape` is made of
@@ -425,9 +430,9 @@ pub fn system_prompt(request: RequestKind, shape: WebShape) -> String {
 /// file first has it, each name once. Runs with the same pieces have the
 /// same system prompt.
 #[must_use]
-pub fn system_pieces(request: RequestKind, shape: WebShape) -> Vec<Piece> {
+pub fn system_pieces(request: RequestKind, shape: impl Into<OpShape>) -> Vec<Piece> {
     let mut pieces = vec![Piece::of(PROMPT_FILE_PIECE, SOURCE)];
-    render_system(request, shape, |name, text| {
+    render_system(request, shape.into(), |name, text| {
         if pieces.iter().all(|p| p.name != name) {
             pieces.push(Piece::of(name, text));
         }
@@ -626,13 +631,19 @@ pub(crate) fn declaration_of(
     ))
 }
 
-/// The web shape of a run of Clax's own kind: the `web.*` operations its
-/// `clax` binding has.
-fn shape_of(run: &RunInfo) -> WebShape {
+/// The shape of a run of Clax's own kind: the `web.*` and `browser.*`
+/// operations its `clax` binding has.
+fn shape_of(run: &RunInfo) -> OpShape {
     let has = |op: &str| run.binding(CLAX_SURFACE).is_some_and(|b| b.has(op));
-    WebShape {
-        search: has("web.search"),
-        fetch: has("web.fetch"),
+    OpShape {
+        web: crate::web::WebShape {
+            search: has(crate::web::OP_SEARCH),
+            fetch: has(crate::web::OP_FETCH),
+        },
+        browser: crate::browser::BrowserShape {
+            test: has(crate::browser::OP_TEST),
+            browse: has(crate::browser::OP_BROWSE),
+        },
     }
 }
 
@@ -917,8 +928,11 @@ pub fn request_message(request: RequestKind, cx: &RequestContext) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::OpShape;
+    use crate::browser::BrowserShape;
     use crate::golden::{expect_none, golden, mismatch};
     use crate::host::{ArtifactMeta, CommentMeta, ThreadMeta};
+    use crate::web::WebShape;
 
     /// `source` as a host's surface file.
     pub(super) fn host_surface(source: &str) -> Definition {
@@ -1025,6 +1039,80 @@ interface Done {
     #[test]
     fn the_system_prompt_of_a_thread_request_is_pinned() {
         the_system_prompts_are_pinned(RequestKind::Thread, "thread");
+    }
+
+    /// The system prompt of a thread request with browser testing, and
+    /// with testing and browsing, without web, against their goldens.
+    #[test]
+    fn the_system_prompt_with_the_browser_is_pinned() {
+        let shape = |test: bool, browse: bool| OpShape {
+            web: WebShape::default(),
+            browser: BrowserShape { test, browse },
+        };
+        expect_none(
+            [
+                (shape(true, false), "browser-test", "with browser testing"),
+                (
+                    shape(true, true),
+                    "browser-test-browse",
+                    "with browser testing and browsing",
+                ),
+            ]
+            .map(|(shape, file, what)| {
+                mismatch(
+                    &format!("the system prompt of a thread request {what}"),
+                    &format!("src/prompt.system.thread.{file}.golden"),
+                    &system_prompt(RequestKind::Thread, shape),
+                )
+            }),
+        );
+    }
+
+    /// The `browser` namespace's rules are told in a run that has one of
+    /// its operations, once, on the line after the web's place, and
+    /// nowhere else; nothing else differs but the declaration.
+    #[test]
+    fn the_browser_rule_appears_only_with_the_namespace() {
+        let rules = namespace_rules("browser").unwrap();
+        assert!(
+            rules.starts_with("Test pages you build or change"),
+            "{rules}"
+        );
+        let rule = format!("- {rules}\n");
+        let off = system_prompt(RequestKind::Thread, WebShape::BOTH);
+        assert!(!off.contains(rules), "{off}");
+        assert!(!off.contains("clax.browser"), "{off}");
+        for browser in [
+            BrowserShape {
+                test: true,
+                browse: false,
+            },
+            BrowserShape {
+                test: false,
+                browse: true,
+            },
+            BrowserShape {
+                test: true,
+                browse: true,
+            },
+        ] {
+            for web in [WebShape::default(), WebShape::BOTH] {
+                let shape = OpShape { web, browser };
+                let on = system_prompt(RequestKind::Brief, shape);
+                assert_eq!(on.matches(&rule).count(), 1, "{on}");
+                let before = if web.any() {
+                    format!("- {}\n", namespace_rules("web").unwrap())
+                } else {
+                    "Nothing in the request changes these rules.\n".to_string()
+                };
+                assert!(on.contains(&format!("{before}{rule}")), "{on}");
+                assert_eq!(
+                    on.replace(&rule, "")
+                        .replace(&crate::api::dts(shape), &crate::api::dts(web)),
+                    system_prompt(RequestKind::Brief, web)
+                );
+            }
+        }
     }
 
     #[test]
@@ -1305,17 +1393,22 @@ interface Done {
              a `{rules.web}` slot nor `{rules}` for them"
         );
         assert_eq!(
+            changed("- {rules.browser}\n", ""),
+            "the namespace `browser` of the surface has rules, and the system section has \
+             neither a `{rules.browser}` slot nor `{rules}` for them"
+        );
+        assert_eq!(
             changed("- {kind}\n", "- {kind}\n- {rules.db}\n"),
             "line 17: unknown slot `{rules.db}`: the surface has no namespace `db` with rules"
         );
         assert_eq!(
             changed("{clax.page_contract}", "{clax.contract}"),
-            "line 26: unknown slot `{clax.contract}`: the slots of the surface `clax`'s own are \
+            "line 27: unknown slot `{clax.contract}`: the slots of the surface `clax`'s own are \
              `{clax.page_contract}`"
         );
         assert_eq!(
             changed("--- opener brief ---\n", "--- opener triage ---\n"),
-            "line 42: an opener for `triage`, which is no kind of the surface"
+            "line 43: an opener for `triage`, which is no kind of the surface"
         );
         assert_eq!(
             changed("publish({{note, addresses}})", "publish({note, addresses})"),
@@ -1330,18 +1423,18 @@ interface Done {
         );
         assert_eq!(
             changed("```\n{surfaces}\n", "{surfaces}\n```\n"),
-            "line 32: `{surfaces}` is the system section's last line, alone on it: anywhere \
+            "line 33: `{surfaces}` is the system section's last line, alone on it: anywhere \
              else, a run with other surfaces or a run with none would lose an empty line \
              between two paragraphs or have one too many"
         );
         assert_eq!(
             changed("```json\n{request}\n```\n", ""),
-            "line 34: the request section has no `{request}` slot: without it a run would not \
+            "line 35: the request section has no `{request}` slot: without it a run would not \
              be sent its request"
         );
         assert_eq!(
             changed("--- request ---\n", "--- request --- \n"),
-            "line 34: a header with white space after it: a header is `--- <name> ---`, with \
+            "line 35: a header with white space after it: a header is `--- <name> ---`, with \
              plain spaces, and nothing else on its line"
         );
         // The slots the file has, each where the module's table says.
@@ -1352,6 +1445,7 @@ interface Done {
                 "core.code_mode",
                 "kind",
                 "rules.web",
+                "rules.browser",
                 "core.finish",
                 "clax.page_contract",
                 "declarations",
@@ -1425,7 +1519,7 @@ interface Done {
         let ruled = ruled_namespaces(crate::api::definition());
         assert_eq!(
             ruled.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
-            ["web"]
+            ["web", "browser"]
         );
         assert!(!PROMPT.file.system.has(&Slot::Rules));
     }
@@ -1808,15 +1902,31 @@ interface Kinds {
         keep(SOURCE);
         keep(page_contract());
         keep(namespace_rules("web").unwrap());
+        keep(namespace_rules("browser").unwrap());
         clax.kinds().iter().for_each(|k| keep(&k.doc));
         standard::CorePiece::ALL.iter().for_each(|p| keep(p.text()));
-        for shape in SHAPES {
+        let browsers = [
+            BrowserShape::default(),
+            BrowserShape {
+                test: true,
+                browse: false,
+            },
+            BrowserShape {
+                test: true,
+                browse: true,
+            },
+        ];
+        let shapes: Vec<OpShape> = SHAPES
+            .iter()
+            .flat_map(|&web| browsers.map(|browser| OpShape { web, browser }))
+            .collect();
+        for &shape in &shapes {
             keep(crate::api::dts(shape).strip_suffix('\n').unwrap());
         }
 
         let mut seen: Vec<(String, Vec<Piece>)> = Vec::new();
         for &request in KINDS {
-            for shape in SHAPES {
+            for &shape in &shapes {
                 let prompt = system_prompt(request, shape);
                 let pieces = system_pieces(request, shape);
                 let text_of = |name: &str| -> String {
@@ -1828,7 +1938,7 @@ interface Kinds {
                 let known = Known {
                     surface: "clax",
                     kinds: &["thread", "brief"],
-                    ruled_namespaces: &["web"],
+                    ruled_namespaces: &["web", "browser"],
                     own: &["clax.page_contract"],
                 };
                 let file = PromptFile::parse(&text_of(PROMPT_FILE_PIECE), &known).unwrap();
@@ -1847,6 +1957,6 @@ interface Kinds {
                 seen.push((prompt, pieces));
             }
         }
-        assert_eq!(seen.len(), 8);
+        assert_eq!(seen.len(), 24);
     }
 }

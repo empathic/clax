@@ -7,6 +7,7 @@
 use super::tests::host_surface;
 use super::*;
 use crate::golden::golden;
+use crate::web::WebShape;
 use clax_surface::RunScope;
 
 /// ClaxShell's surface file as the surfaces design writes it.
@@ -457,13 +458,20 @@ fn a_run_of_claxs_own_kind_is_sent_claxs_prompt() {
     let ops: Vec<&str> = clax.operations().map(|o| o.name).collect();
     let run = run_of("clax.brief", vec![binding(clax, &ops)], json!({}));
     let bound = [(&run.bindings[0], &shell)];
+    let every = crate::api::OpShape {
+        web: WebShape::BOTH,
+        browser: crate::browser::BrowserShape {
+            test: true,
+            browse: true,
+        },
+    };
     assert_eq!(
         system_of(&run, &shell, &bound, Some("not a prompt file")).unwrap(),
-        system_prompt(RequestKind::Brief, WebShape::BOTH)
+        system_prompt(RequestKind::Brief, every)
     );
     assert_eq!(
         system_pieces_of(&run, &shell, &bound, None).unwrap(),
-        system_pieces(RequestKind::Brief, WebShape::BOTH)
+        system_pieces(RequestKind::Brief, every)
     );
 }
 

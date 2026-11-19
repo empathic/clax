@@ -3,7 +3,7 @@
 
 use super::session::{ClaxSession, State};
 use super::tally::Tally;
-use super::web;
+use super::{browser, web};
 use crate::api;
 use crate::draft::Draft;
 use crate::host::BotHost;
@@ -11,7 +11,7 @@ use crate::run::bot_ctx;
 use crate::surface::{
     Answer, Binding, BindingAsStored, End, Fields, RunInfo, StepCx, StepSession, SurfaceProvider,
 };
-use crate::web::{WebShape, WebSource};
+use crate::web::WebSource;
 use clax_bot_sandbox::HostError;
 use clax_core::CoreError;
 use clax_core::audit::AuditIds;
@@ -123,15 +123,16 @@ impl SurfaceProvider for ClaxProvider {
         api::definition()
     }
 
-    /// Every operation but the web's, which a run has by its grant.
+    /// Every operation but the web's and the browser's, which a run has
+    /// by its grants.
     fn standing(&self, op: &str) -> bool {
-        api::declared(op, WebShape::default())
+        api::declared(op, api::OpShape::default())
     }
 
-    /// A web operation the run did not declare is refused in the words
-    /// a host with no web source refuses it in.
+    /// A web or browser operation the run did not declare is refused in
+    /// the words a host with no such source refuses it in.
     fn undeclared(&self, op: &str, args: &[Value]) -> Option<Answer> {
-        web::disabled(op, args)
+        web::disabled(op, args).or_else(|| browser::disabled(op, args))
     }
 
     fn for_run(&self, row: &Run, _binding: &BindingAsStored) -> Option<Arc<dyn SurfaceProvider>> {

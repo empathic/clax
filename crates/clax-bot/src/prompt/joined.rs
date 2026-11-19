@@ -9,6 +9,7 @@
 use super::tests::host_surface;
 use super::*;
 use crate::golden::golden;
+use crate::web::WebShape;
 
 /// The host protocol's contract fixture, whose `files` hold the
 /// surface `desk`.

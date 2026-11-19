@@ -1,6 +1,6 @@
 //! Clax's own surface, which the run loop reaches through the seam
 //! ([`crate::surface`]): the facts and rules of artifacts, threads,
-//! drafts and the web, which the run loop knows nothing of.
+//! drafts, the web and the browser, which the run loop knows nothing of.
 //!
 //! - [`provider`]: [`ClaxProvider`], the surface's
 //!   [`crate::surface::SurfaceProvider`];
@@ -8,8 +8,8 @@
 //!   and what it published, replied and created;
 //! - [`rules`]: what a run may reach (its request's threads; one new
 //!   artifact, in a brief's run);
-//! - [`draft`], [`publish`], [`replies`], [`web`]: the operations, by
-//!   what performs them;
+//! - [`draft`], [`publish`], [`replies`], [`web`], [`browser`]: the
+//!   operations, by what performs them;
 //! - [`ending`]: the roster, and what a run's end leaves on its threads
 //!   (a notice, or a finished run's summary and sources) and starts
 //!   (the follow-ups);
@@ -19,6 +19,7 @@
 //! The run loop's own folds are [`crate::history`], which reads nothing
 //! here.
 
+mod browser;
 mod draft;
 mod ending;
 mod provider;

@@ -23,7 +23,6 @@
 use crate::api;
 use crate::bot_surfaces::{Snapshot, allow_patterns};
 use crate::surface::Binding;
-use crate::web::WebShape;
 use clax_store::bot_runs::{Bindings, CLAX_SURFACE, StoredBinding};
 use clax_surface::{Access, Limits, RunScope};
 use serde_json::Value;
@@ -45,7 +44,7 @@ pub fn clax_binding(artifact_id: &str, web: &str, browser: &str) -> StoredBindin
     let v1 = Bindings::clax(artifact_id, web, browser);
     let stored = v1.of(CLAX_SURFACE).expect("a clax run's one binding");
     let had = Binding::from_stored(stored, api::definition(), |op| {
-        api::declared(op, WebShape::default())
+        api::declared(op, api::OpShape::default())
     });
     StoredBinding::bound(
         CLAX_SURFACE,
@@ -207,7 +206,7 @@ mod tests {
         for web in ["", "search", "fetch", "search,fetch"] {
             let v1 = Bindings::clax("a1", web, "");
             let had = Binding::from_stored(v1.of(CLAX_SURFACE).unwrap(), def, |op| {
-                api::declared(op, WebShape::default())
+                api::declared(op, api::OpShape::default())
             });
             let v2 = clax_binding("a1", web, "");
             assert_eq!(v2.operations(), Some(had.operations.as_slice()), "{web:?}");
