@@ -971,7 +971,7 @@
           "tool_use_id": "tu_1"
         },
         "stop_reason": "tool_use",
-        "system": "<13789 bytes, sha256 b1fa3759bd5f6dcad5ba70d56ffa946266c17e9b3b4e96202202e2c51f4f0895, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
+        "system": "<13927 bytes, sha256 b43a054b2b06927dafc73de93a5c77220ced660163a5fe0dc7c6fbaae2ef9b46, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
         "usage": {
           "cache_creation_input_tokens": 500,
           "cache_read_input_tokens": 2000,
