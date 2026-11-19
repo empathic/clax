@@ -569,7 +569,7 @@ describe("Admin › Browser", () => {
     });
     const m = mount(AdminBrowser, {});
     await settle();
-    expect(m.root.textContent).toContain("A page can steer ClaxBot, and ClaxBot writes what it types, the code it runs and the URLs it opens: it can type data into a form on a site it was sent to, and under Any public URL put an artifact's data in a URL. Browsing also needs each person's web switch on.");
+    expect(m.root.textContent).toContain("A page can steer ClaxBot, and ClaxBot writes what it types, the code it runs and the URLs it opens: it can type data into a form on a site it may open, and under Any public URL send an artifact's data to any site. Under the other rules a browsed page reaches only the hosts the rule admits, so what a page loads from elsewhere is left out. Browsing also needs each person's web switch on.");
     const rule = m.root.querySelector<HTMLSelectElement>("#ab-rule")!;
     expect([...rule.options].map(o => [o.value, o.textContent])).toEqual([["sender", "Only URLs in the sender's own words"], ["allowlist", "Allowlist"], ["any_public", "Any public URL"]]);
     expect(m.root.querySelector("#ab-allow")).toBeNull();

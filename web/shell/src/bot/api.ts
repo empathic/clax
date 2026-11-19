@@ -115,7 +115,7 @@ export type BotCall = {
   /** A browser call's summary (absent to a reader of the artifact, who does not see the draft it shows). */
   browser?: BrowserSummary;
 };
-/** What the run shows of a browser call: its target (`draft` or `v<n>`; before its arguments were read, the target as the script gave it), path and viewport, then, once a test ran, its time, whether it passed, its steps as `[ok, failed]`, its saved tests, the counts of uncaught errors, console messages and blocked requests, and its screenshots' content IDs. */
+/** What the run shows of a browser call: a test's target (`draft` or `v<n>`; before its arguments were read, the target as the script gave it) and path, or a browse's URL (as the script gave it), and its viewport, then, once a test ran, its time, whether it passed, its steps as `[ok, failed]`, its saved tests, the counts of uncaught errors, console messages and blocked requests, and its screenshots' content IDs. */
 export type BrowserSummary = {
   target?: string | { version?: number } | null; path?: string; viewport?: string; url?: string;
   ms?: number; passed?: boolean; steps?: [number, number]; tests?: { passed: number; failed: number };

@@ -204,6 +204,27 @@ describe("the run panel", () => {
     m.unmount();
   });
 
+  it("a_browse_call_shows_its_url", async () => {
+    const long = `https://news.example/${"a".repeat(120)}`;
+    daemon({ "GET /api/bot/runs/r7": json(run({ id: "r7", status: "finished", steps: [{ n: 1, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Read", calls: [
+      { op: "browser.browse", ok: true, ms: 0, cost_milli: 10, browser: { url: "https://news.example/story", viewport: "desktop", ms: 2500, passed: true, steps: [1, 0], errors: 0, console: 0, blocked: 3, screenshots: ["c_b"] } },
+      { op: "browser.browse", ok: false, ms: 0, cost_milli: 0, error: "url_not_allowed", browser: { url: long, viewport: "phone" } },
+      { op: "browser.browse", ok: false, ms: 0, cost_milli: 0, error: "invalid_args", browser: { url: 42 as unknown as string } },
+    ] }] })) });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r7");
+    flush();
+    await settle();
+    const rows = [...document.querySelectorAll("#bot-run-panel .calls li")];
+    expect(rows[0].querySelector(".bl")!.textContent).toBe("https://news.example/story · desktop · passed · 0 errors · 3 blocked · 2.5 s · 0.01 credits");
+    expect(rows[0].querySelector<HTMLImageElement>(".shots img")!.alt).toBe("Screenshot 1 of the browse");
+    // A long URL is cut; a refused call says what it was asked.
+    expect(rows[1].querySelector(".bl")!.textContent).toBe(`${long.slice(0, 79)}… · phone`);
+    expect(rows[1].textContent).toContain("url_not_allowed");
+    expect(rows[2].querySelector(".bl")!.textContent).toBe("a URL");
+    m.unmount();
+  });
+
   it("finish_lists_sources", async () => {
     daemon({ "GET /api/bot/runs/r4": json(run({ id: "r4", status: "finished", steps: [
       { n: 1, kind: "finish", status: "done", started_at: "x", credits_milli: 0, summary: "Added the release notes.", sources: [{ title: "Svelte blog", url: "https://svelte.dev/blog" }, { title: "javascript:alert(1)", url: "javascript:alert(1)" }, { title: "Again", url: "https://svelte.dev/blog" }] },

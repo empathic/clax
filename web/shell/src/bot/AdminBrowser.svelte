@@ -129,7 +129,7 @@
     <div class="fields">
       <div class="field"><Switch checked={browseOn} label="Browse public pages" disabled={ro("browse.enabled")} onchange={on => { browseOn = on; }} /> <SourceBadge source={b.sources["browse.enabled"]} /></div>
     </div>
-    <p class="note">A page can steer ClaxBot, and ClaxBot writes what it types, the code it runs and the URLs it opens: it can type data into a form on a site it was sent to, and under Any public URL put an artifact's data in a URL. Browsing also needs each person's web switch on.</p>
+    <p class="note">A page can steer ClaxBot, and ClaxBot writes what it types, the code it runs and the URLs it opens: it can type data into a form on a site it may open, and under Any public URL send an artifact's data to any site. Under the other rules a browsed page reaches only the hosts the rule admits, so what a page loads from elsewhere is left out. Browsing also needs each person's web switch on.</p>
     <div class="fields">
       <div class="field">
         <label for="ab-rule">URLs a browse may open <SourceBadge source={b.sources["browse.url_rule"]} /></label>

@@ -97,13 +97,17 @@ export function callCost(milli: number | undefined): string | null {
   return `${credits(milli)} ${milli === 1000 ? "credit" : "credits"}`;
 }
 
-/** A browser call's line in the run panel: "draft · phone · passed · 0 errors · 4.1 s · 0.01 credits" (its target and path, viewport, outcome, saved tests, errors, console messages and blocked requests when there were any, time, cost); a call refused before it ran says only what it was asked. Null for a call that is not the browser's (or one a reader sees without its summary). */
+/** The most characters of a browse's URL its line shows. */
+const URL_CHARS = 80;
+
+/** A browser call's line in the run panel: "draft · phone · passed · 0 errors · 4.1 s · 0.01 credits" (a test's target and path, or a browse's URL, cut at 80 characters; viewport, outcome, saved tests, errors, console messages and blocked requests when there were any, time, cost); a call refused before it ran says only what it was asked. Null for a call that is not the browser's (or one a reader sees without its summary). */
 export function browserLine(c: Pick<BotCall, "browser" | "cost_milli">): string | null {
   const b = c.browser;
   if (!b) return null;
   const t = b.target;
   const target = typeof t === "string" ? t : typeof t?.version === "number" ? `v${t.version}` : "draft";
-  const parts = [b.path && b.path !== "index.html" ? `${target} ${b.path}` : target];
+  const url = typeof b.url === "string" ? ([...b.url].length > URL_CHARS ? `${[...b.url].slice(0, URL_CHARS - 1).join("")}…` : b.url) : null;
+  const parts = ["url" in b ? url ?? "a URL" : b.path && b.path !== "index.html" ? `${target} ${b.path}` : target];
   if (b.viewport) parts.push(b.viewport);
   if (typeof b.passed === "boolean") {
     parts.push(b.passed ? "passed" : "failed");
