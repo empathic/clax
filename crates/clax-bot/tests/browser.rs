@@ -557,6 +557,69 @@ async fn a_failure_after_opening_is_charged_at_most_the_time_cap_and_counts() {
     );
 }
 
+/// The run is cancelled while its browser is open: the sandbox drops the
+/// call, and the browser's time so far is still charged, counted,
+/// journaled and audited, once.
+#[tokio::test]
+async fn a_run_cancelled_while_the_browser_is_open_is_charged_its_time() {
+    let env = Arc::new(Env::new().await);
+    let clock = env.clock.clone();
+    let held = Arc::new(tokio::sync::Notify::new());
+    let hold = held.clone();
+    // The page navigates 2.5 s in and its load never comes.
+    env.browser.opens(move || {
+        let (clock, hold) = (clock.clone(), hold.clone());
+        Ok(FakeChrome::page(PageModel::new().on(move |cmd: &Value| {
+            (cmd["method"] == "Page.navigate").then(|| {
+                clock.advance_millis(2_500);
+                hold.notify_one();
+                vec![]
+            })
+        })))
+    });
+    env.api
+        .push(env.script_turn("tu_1", "Test", "return await clax.browser.test();"));
+    let run = env.run_with_browser("test");
+    let cancel = clax_bot_sandbox::CancelToken::new();
+    let task = {
+        let (env, run, cancel) = (env.clone(), run.clone(), cancel.clone());
+        tokio::spawn(async move {
+            let deps = env.deps();
+            let d = DriverId::mint();
+            // The turn, then the script.
+            env.tick(&deps, &run, &d).await;
+            clax_bot::tick(
+                &deps,
+                &run,
+                &d,
+                clax_bot::TickOpts {
+                    budget: None,
+                    cancel,
+                    events: &*env.hub,
+                },
+            )
+            .await
+            .unwrap()
+        })
+    };
+    within("the browser is open", held.notified()).await;
+    env.store
+        .cancel_run(&clax_bot::run::bot_ctx("*owner"), &run)
+        .unwrap();
+    cancel.cancel();
+    within("the cancelled tick ends", task).await.unwrap();
+    assert_eq!(env.browser.opened(), 1);
+    assert_eq!(browser_rows(&env), [3_000]);
+    let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
+    assert_eq!(counted.get("browser.test"), Some(&1), "{counted:?}");
+    let audit = browser_events(&env);
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(
+        (&audit[0]["ok"], &audit[0]["code"], &audit[0]["ms"]),
+        (&json!(false), &json!("cancelled"), &json!(2_500))
+    );
+}
+
 #[tokio::test]
 async fn an_eval_value_shaped_like_a_screenshot_stays_a_value() {
     let env = Env::new().await;

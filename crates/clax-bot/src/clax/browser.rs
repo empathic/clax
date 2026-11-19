@@ -56,7 +56,8 @@
 //! uncharged. A call whose browser opened is charged its measured time
 //! (from the open to the close, by the provider's clock, rounded up to
 //! the whole second) at the rate check 7 read, whatever it answered: a
-//! result, a timeout, a cancellation. Each screenshot is kept just
+//! result, a timeout, a cancellation, or none, its future dropped by the
+//! sandbox on a cancel (`Opened`). Each screenshot is kept just
 //! before as an item of the run's content (surface `clax`, then noted
 //! with the call's operation and key); one that cannot be kept fails its
 //! step. A failed transaction leaves them to the run's prune, writes
@@ -261,6 +262,41 @@ impl Ctx {
     }
 }
 
+/// A call whose browser opened and has not ended. The sandbox drops a
+/// host call's future when the run is cancelled or its claim is lost
+/// (`clax_bot_js`), so the call's own cancellation path, which closes the
+/// browser and charges it, may never run: dropped while armed, this
+/// journals, charges and audits the time so far
+/// ([`ClaxSession::abandoned`]). `Browser.close` cannot be sent from a
+/// drop; the socket's close ends the session, and Browser Run ends the
+/// browser after its keep-alive. After a lost claim the journal write is
+/// refused, as any other write of that claim's.
+struct Opened<'a, 's, 'c> {
+    session: &'a ClaxSession<'s>,
+    call: &'a Call<'c>,
+    cx: &'a Ctx,
+    options: &'a BrowserOpts,
+    audit: &'a [(&'static str, Value)],
+    shown: Value,
+    opened_at: chrono::DateTime<chrono::Utc>,
+    armed: bool,
+}
+
+impl Drop for Opened<'_, '_, '_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.session.abandoned(
+                self.call,
+                self.cx,
+                self.options,
+                self.audit,
+                std::mem::take(&mut self.shown),
+                self.opened_at,
+            );
+        }
+    }
+}
+
 /// The handle of one kept screenshot, or why it could not be kept.
 type Kept = Result<Value, String>;
 
@@ -424,7 +460,7 @@ impl ClaxSession<'_> {
         };
         // Check 8.
         let (f, more) = self
-            .open_and_run(source, call, &cx, &options, &start, &policy, shown)
+            .open_and_run(source, call, &cx, &options, &start, &policy, &audit, shown)
             .await;
         with_audit(f, more)
     }
@@ -486,7 +522,7 @@ impl ClaxSession<'_> {
         };
         // Check 8.
         let (f, more) = self
-            .open_and_run(source, call, &cx, &options, &start, &policy, shown)
+            .open_and_run(source, call, &cx, &options, &start, &policy, &audit, shown)
             .await;
         with_audit(f, more)
     }
@@ -529,7 +565,10 @@ impl ClaxSession<'_> {
     }
 
     /// Check 8: opens a browser on `source` and runs `start` under
-    /// `policy`, then ends the call ([`ClaxSession::tested`]).
+    /// `policy`, then ends the call ([`ClaxSession::tested`]). `audit` is
+    /// what the call's `bot.browser` record holds so far, for the record
+    /// written should this future be dropped once the browser opened
+    /// ([`Opened`]).
     #[allow(clippy::too_many_arguments)]
     async fn open_and_run(
         &self,
@@ -539,6 +578,7 @@ impl ClaxSession<'_> {
         options: &BrowserOpts,
         start: &Start,
         policy: &dyn RequestPolicy,
+        audit: &[(&'static str, Value)],
         shown: &mut Value,
     ) -> (Finish, Vec<(&'static str, Value)>) {
         let transport = match source.open(self.cx.cancel).await {
@@ -555,6 +595,18 @@ impl ClaxSession<'_> {
                 );
             }
         };
+        // Declared before the connection, so a dropped future closes the
+        // socket before the guard writes the charge.
+        let mut opened = Opened {
+            session: self,
+            call,
+            cx,
+            options,
+            audit,
+            shown: shown.clone(),
+            opened_at: self.provider.clock.now(),
+            armed: true,
+        };
         let deadline = source.deadline(
             self.provider.clock.now() + chrono::Duration::seconds(i64::from(options.timeout_s)),
         );
@@ -568,7 +620,53 @@ impl ClaxSession<'_> {
             self.provider.browser_limits,
         )
         .await;
+        opened.armed = false;
         self.tested(call, cx, options, tested, shown)
+    }
+
+    /// Journals, charges and audits a call whose browser opened at
+    /// `opened_at` and whose future was dropped before it ended: its time
+    /// so far, counted, answered `cancelled` ([`Opened`]).
+    fn abandoned(
+        &self,
+        call: &Call<'_>,
+        cx: &Ctx,
+        options: &BrowserOpts,
+        audit: &[(&'static str, Value)],
+        mut shown: Value,
+        opened_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        let ms = (self.provider.clock.now() - opened_at)
+            .num_milliseconds()
+            .max(0);
+        let qty = whole_seconds(ms).min(i64::from(options.timeout_s) * 1000);
+        let usage = match price(&cx.rate, cx.ks, qty) {
+            Ok(cost) => Some((
+                Metered {
+                    rate: Some(cx.rate),
+                    ..Metered::new(LINE_BROWSER_TIME, qty, cx.ks)
+                },
+                cost,
+            )),
+            Err(e) => {
+                tracing::warn!(
+                    "clax-bot: run {}: an abandoned browser call could not be priced: {e}",
+                    self.run.id
+                );
+                None
+            }
+        };
+        shown["ms"] = json!(ms);
+        let f = Finish {
+            res: Err(HostError::new(
+                CODE_CANCELLED,
+                "the run stopped while the browser was open",
+            )),
+            usage,
+            counted: true,
+            audit: audit.iter().cloned().chain([("ms", json!(ms))]).collect(),
+        };
+        let _ = self.write_browser(call, shown, f);
     }
 
     /// Check 5: the files of `target`, or `browser_target_not_found`.
