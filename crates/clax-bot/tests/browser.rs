@@ -511,3 +511,39 @@ async fn saved_tests_results_come_through() {
         json!({"passed": 1, "failed": 1})
     );
 }
+
+#[tokio::test]
+async fn a_failure_after_opening_is_charged_at_most_the_time_cap_and_counts() {
+    let env = Env::new().await;
+    let clock = env.clock.clone();
+    let source = env.browser.clone();
+    // The page never loads: its time runs 5 s past the 60 s cap before
+    // the deadline is seen.
+    env.browser.opens(move || {
+        let clock = clock.clone();
+        let source = source.clone();
+        Ok(FakeChrome::page(PageModel::new().on(move |cmd: &Value| {
+            (cmd["method"] == "Page.navigate").then(|| {
+                clock.advance_millis(65_000);
+                source.fire_deadline();
+                vec![]
+            })
+        })))
+    });
+    let (run, v) = one_script(
+        &env,
+        "test",
+        "try { await clax.browser.test(); return 'tested'; } catch (e) { return e.code; }",
+    )
+    .await;
+    assert_eq!(v, "browser_timeout");
+    assert_eq!(env.browser.opened(), 1);
+    assert_eq!(browser_rows(&env), [60_000]);
+    let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
+    assert_eq!(counted.get("browser.test"), Some(&1), "{counted:?}");
+    let rows = env.store.usage_of_run(&run).unwrap();
+    let row = rows.iter().find(|r| r.line == LINE_BROWSER_TIME).unwrap();
+    assert_eq!(script_calls(&env, &run, 0)[0]["cost_milli"], row.credits_milli);
+    let audit = browser_events(&env);
+    assert_eq!((&audit[0]["ok"], &audit[0]["code"]), (&json!(false), &json!("browser_timeout")));
+}

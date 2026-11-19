@@ -427,7 +427,7 @@ impl ClaxSession<'_> {
             self.provider.browser_limits,
         )
         .await;
-        let (f, more) = self.tested(call, &cx, tested, shown);
+        let (f, more) = self.tested(call, &cx, &options, tested, shown);
         with_audit(f, more)
     }
 
@@ -538,20 +538,22 @@ impl ClaxSession<'_> {
         })
     }
 
-    /// How a test whose browser opened ends: charged its time and
-    /// counted, its screenshots kept, its result completed; and the
-    /// `bot.browser` record's `ms` and `passed`.
+    /// How a test whose browser opened ends: charged its time, rounded
+    /// up to the second and at most the call's time cap (what the credits
+    /// check priced), and counted; its screenshots kept, its result
+    /// completed; and the `bot.browser` record's `ms` and `passed`.
     fn tested(
         &self,
         call: &Call<'_>,
         cx: &Ctx,
+        options: &BrowserOpts,
         tested: TestRun,
         shown: &mut Value,
     ) -> (Finish, Vec<(&'static str, Value)>) {
         let ms = (tested.closed_at - tested.opened_at)
             .num_milliseconds()
             .max(0);
-        let qty = whole_seconds(ms);
+        let qty = whole_seconds(ms).min(i64::from(options.timeout_s) * 1000);
         let cost = match price(&cx.rate, cx.ks, qty) {
             Ok(c) => c,
             Err(e) => return (Finish::refused(host_error(&e)), vec![]),
