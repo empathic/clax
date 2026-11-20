@@ -1699,6 +1699,33 @@ async fn an_open_of_a_kind_the_run_lacks_is_disabled() {
     assert_eq!(env.browser.opened(), 0);
 }
 
+/// A browser capability granted after the run was made is not added to
+/// it (spec §4.3, §4.4): with `browser.open.url` live for the person and
+/// not declared by the run, an open on a URL and a `goto` out of an
+/// artifact session are both `browser_disabled`.
+#[tokio::test]
+async fn a_kind_granted_mid_run_is_not_added_to_it() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    browse_rule(&env, "any_public");
+    env.admin_sets(&[(Setting::BrowserOpenUrlEnabled, json!(true))]);
+    let (_, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "const codes = [];
+         try { await clax.browser.open({ url: 'https://public.example/' }); codes.push('opened'); }
+         catch (e) { codes.push(e.code); }
+         const p = await clax.browser.open({ artifact: 'draft' });
+         try { await p.goto('https://public.example/'); codes.push('went'); }
+         catch (e) { codes.push(e.code); }
+         await p.close();
+         return codes;",
+    )
+    .await;
+    assert_eq!(v, json!(["browser_disabled", "browser_disabled"]));
+    assert_eq!(env.browser.opened(), 1);
+}
+
 /// A run holds at most `browser.max_open_per_run` sessions at once (1 by
 /// default): another open answers `browser_cap` until one is closed.
 #[tokio::test]

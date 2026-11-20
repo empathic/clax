@@ -16,7 +16,9 @@
 //!    [`disabled`]), and refused the same here by a session handed one
 //!    all the same.
 //! 3. **Live.** The capability the call needs
-//!    ([`Performer::capability`]) is live for the run's person now
+//!    ([`Performer::capability`]) is one the run declared (`bot_runs.caps`:
+//!    one granted since it was made is not added, spec §4.4), else
+//!    `<family>_disabled` naming it, and is live for the run's person now
 //!    ([`Capabilities::now`], with what the host can perform,
 //!    [`Performer::configured`]), or `<family>_disabled` naming it; a
 //!    source whose host found it cannot run here
@@ -66,7 +68,7 @@
 
 use super::session::ClaxSession;
 use crate::capability::{
-    BrowserTerms, CODE_CREDITS_EXHAUSTED, Capabilities, Capability, Family, Off, Terms,
+    BrowserTerms, CODE_CREDITS_EXHAUSTED, CapSet, Capabilities, Capability, Family, Off, Terms,
 };
 use crate::host::host_error;
 use crate::surface::{Answer, Call, Fields, err_json, recorded};
@@ -370,6 +372,18 @@ fn off(op: &str, c: Capability, why: Off) -> HostError {
     )
 }
 
+/// Why a call of `op` needing `c` is refused at step 3: the run was not
+/// made with `c` (a capability granted mid-run is not added, spec §4.4).
+fn undeclared_cap(op: &str, c: Capability) -> HostError {
+    HostError::new(
+        code(c.family(), "disabled"),
+        format!(
+            "clax.{op} needs {}, which this run was not started with; do without it",
+            c.id()
+        ),
+    )
+}
+
 /// Performs `call` through the Spend sequence with `p`, or answers it
 /// from its entry; see the module documentation.
 pub(super) async fn run<P: Performer>(s: &ClaxSession<'_>, call: &Call<'_>, p: &P) -> Answer {
@@ -410,7 +424,10 @@ async fn fresh<P: Performer>(
     let store = s.store();
     let run = &s.run;
     let family = c.family();
-    // Step 3.
+    // Step 3: declared by the run, then live for its person.
+    if !CapSet::parse(&run.caps).has(c) {
+        return Finish::refused(undeclared_cap(call.op, c));
+    }
     let caps = match Capabilities::now(store, &run.person, &|k| s.configured(k)) {
         Ok(caps) => caps,
         Err(e) => return Finish::refused(host_error(&e)),

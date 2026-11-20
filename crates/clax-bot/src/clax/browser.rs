@@ -30,8 +30,8 @@
 //! - **Perform** (step 9): the host's session registry
 //!   ([`crate::browser::live::BrowserSessions`]) opens the session or
 //!   performs the call; a `goto` out of an artifact or content session is
-//!   given the URL session's policy when `browser.open.url` is live and
-//!   its rule admits the URL, and is refused `browser_disabled` by the
+//!   given the URL session's policy when the run declared
+//!   `browser.open.url`, it is live and its rule admits the URL, and is refused `browser_disabled` by the
 //!   session otherwise.
 //!
 //! # What is charged
@@ -66,7 +66,7 @@
 use super::session::ClaxSession;
 use super::spend::{self, Finish, Performer, PriceCap, Priced, Seen};
 use crate::browser::browse::{BrowsePolicy, BrowseScope};
-use crate::browser::cap::{Caveat, Class, origin_of};
+use crate::browser::cap::{Cap, Caveat, Class, origin_of};
 use crate::browser::layer::{self, Op};
 use crate::browser::live::{
     BrowserSessions, CallCtx, Nav, SessionCall, SessionTimes, new_session_id,
@@ -248,6 +248,9 @@ pub(super) struct CallArgs {
     cap_call: Option<CapCall>,
     /// Where a `navigate` call goes, for its capability's `origin` caveat.
     nav: Nav,
+    /// The capability that authorized the call, once checked: its
+    /// session's task holds a navigation to its `origin` caveat again.
+    held: Option<Cap>,
 }
 
 /// What a `share` or `revoke` asks of the page's capability (spec §18.4).
@@ -913,6 +916,7 @@ impl Performer for SessionOp {
                         terms,
                         cap_call: Some(cap_call),
                         nav: Nav::None,
+                        held: None,
                     });
                 }
                 if action == "record"
@@ -990,6 +994,7 @@ impl Performer for SessionOp {
             terms,
             cap_call: None,
             nav,
+            held: None,
         })
     }
 
@@ -1027,9 +1032,10 @@ impl Performer for SessionOp {
             (_, Some(row)) => layer::class(row),
             (_, None) => None,
         };
-        sessions
+        let (_, cap) = sessions
             .authorize(&s.run.id, handle, class, &args.nav)
             .map_err(|e| from_browser(&e))?;
+        args.held = Some(cap);
         if let Some(c) = args.row.and_then(|r| r.needs)
             && self.kind.is_some_and(|k| cap_of(k) != c)
         {
@@ -1082,6 +1088,7 @@ impl Performer for SessionOp {
                 let deadline = s.provider.clock.now()
                     + chrono::Duration::seconds(i64::from(args.terms.call_seconds));
                 let mut ctx = CallCtx::new(deadline, s.cx.cancel.clone());
+                ctx.held = args.held.clone().map(|c| (c, run.to_string()));
                 if self.kind == Some(SessionKind::Artifact) {
                     ctx.pages = Some(s.draft_pages());
                 }
@@ -1373,7 +1380,8 @@ impl ClaxSession<'_> {
 
     /// The URL session's policy a `goto` of `url` out of session
     /// `session`'s origin is given: none when it stays in the origin, or
-    /// when `browser.open.url` is not live (the session then refuses it
+    /// when `browser.open.url` is not declared by the run or not live (the
+    /// session then refuses it
     /// `browser_disabled`); the refusal of the URL rule otherwise.
     async fn leave_policy(
         &self,
@@ -1386,6 +1394,11 @@ impl ClaxSession<'_> {
             .leaves(&self.run.id, session, url)
             .map_err(|e| from_browser(&e))?
         {
+            return Ok(None);
+        }
+        // Declared by the run, then live: a grant made since the run
+        // started is not added (spec §4.4).
+        if !crate::capability::CapSet::parse(&self.run.caps).has(Capability::OpenUrl) {
             return Ok(None);
         }
         let Ok(terms) = seen.caps.get(Capability::OpenUrl) else {
