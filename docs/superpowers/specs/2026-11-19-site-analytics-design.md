@@ -206,7 +206,12 @@ not in `inner_path`):
 - **Method and body:** `POST` only (405 otherwise); a JSON body of at most
   2 KiB read with that limit (413 past it); unknown fields ignored; a
   malformed body 400 `invalid_argument`. Each field is checked and
-  normalized: `file` at most 512 bytes with no control characters;
+  normalized: `file` at most 512 bytes with no control characters, and
+  one of the reported version's pages (its `index.html` or a file stored
+  as `text/html`, `clax_core::analytics::is_page`, looked up with
+  `Store::file_meta`, one read of the version's row, as the page's own
+  load made), else not counted, so a forged path never reaches the seen
+  rows or the Pages table;
   `version` an integer from 1 to the artifact's `current_version` (else
   the view is not counted); `referrer` a lowercase host name of at most
   253 bytes of letters, digits, `-` and `.` (anything else, an IP address

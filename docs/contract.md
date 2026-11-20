@@ -11901,8 +11901,9 @@ was made; and a run's end, sent until it is acknowledged.
   counted or not; it is not counted with `Sec-GPC: 1`, from a User-Agent
   that is empty or names a bot, crawler, spider, link preview fetcher or
   headless browser, for an artifact deleted, a draft or `off`, for a
-  `version` outside 1 to the current one or a `file` over 512 bytes or
-  with a control character, or from a client address (an IPv6 address by
+  `version` outside 1 to the current one, a `file` over 512 bytes or
+  with a control character, or a `file` that is not one of that
+  version's HTML pages (its `index.html` or a `text/html` file), or from a client address (an IPv6 address by
   its /64) past 30 reports at once, one more every 2 s. A timing outside 0
   to 600 000 is dropped and the view counted without it. A referring host
   that is not a lowercase host name of letters, digits, `-` and `.` of at

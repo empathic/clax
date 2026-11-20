@@ -311,9 +311,13 @@ impl Analytics {
     /// Counts a view of artifact `aid` from address key `client` with
     /// User-Agent `ua`, in the store's time: nothing when the artifact is
     /// not counted (`Store::analytics_on`: missing, deleted, a draft, or
-    /// its setting off) or `view`'s version is past its current one. Then
-    /// writes the batch if that made it due. True when the view was
-    /// counted.
+    /// its setting off), when `view`'s version is past its current one, or
+    /// when `view`'s path is not one of that version's pages
+    /// ([`clax_core::analytics::is_page`]): a path a page cannot be served
+    /// at never reaches the seen set or the Pages table. Looking it up
+    /// reads the version's row once (`Store::file_meta`), as the page's own
+    /// load did. Then writes the batch if that made it due. True when the
+    /// view was counted.
     ///
     /// # Errors
     /// The store's.
@@ -332,6 +336,12 @@ impl Analytics {
             return Ok(false);
         };
         if view.version > a.current_version {
+            return Ok(false);
+        }
+        let page = st
+            .file_meta(aid, view.version, &view.path)?
+            .is_some_and(|m| clax_core::analytics::is_page(&view.path, &m.content_type));
+        if !page {
             return Ok(false);
         }
         let now = st.now_utc();
@@ -536,7 +546,13 @@ mod tests {
         let p = clax_core::publish::validate(
             serde_json::from_value(serde_json::json!({
                 "title": "Doc",
-                "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+                "files": {
+                    "index.html": {"content": "<p>", "encoding": "utf8"},
+                    "b.html": {"content": "<p>", "encoding": "utf8"},
+                    "p0.html": {"content": "<p>", "encoding": "utf8"},
+                    "p1.html": {"content": "<p>", "encoding": "utf8"},
+                    "p2.html": {"content": "<p>", "encoding": "utf8"},
+                }
             }))
             .unwrap(),
         )
@@ -829,6 +845,42 @@ mod tests {
                 .unwrap()
         );
         assert!(an.pending(a.as_str()).is_empty());
+    }
+
+    #[test]
+    fn a_path_that_is_not_one_of_the_versions_pages_is_not_counted() {
+        let (_d, st) = store(Arc::new(ManualClock::at("2026-11-19T10:00:00Z")));
+        let p = clax_core::publish::validate(
+            serde_json::from_value(serde_json::json!({
+                "title": "Doc",
+                "files": {
+                    "index.html": {"content": "<p>", "encoding": "utf8"},
+                    "guide/b.html": {"content": "<p>", "encoding": "utf8"},
+                    "app.js": {"content": "1", "encoding": "utf8"},
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (a, _) = st.create_artifact(&AuditCtx::DAEMON, p, None).unwrap();
+        let a = ArtifactId::parse(&a.id).unwrap();
+        let an = Analytics::default();
+        for path in ["nope.html", "app.js", "<script>alert(1)</script>", "guide/"] {
+            assert!(
+                !an.count(&st, &a, ip("192.0.2.1"), UA, view(path)).unwrap(),
+                "{path}"
+            );
+        }
+        assert!(an.pending(a.as_str()).is_empty(), "nothing pending");
+        assert!(an.lock().seen.is_empty() && an.lock().batch.seen.is_empty());
+        assert!(
+            an.count(&st, &a, ip("192.0.2.1"), UA, view("guide/b.html"))
+                .unwrap()
+        );
+        assert!(
+            an.count(&st, &a, ip("192.0.2.1"), UA, view("index.html"))
+                .unwrap()
+        );
     }
 
     #[test]

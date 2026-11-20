@@ -188,6 +188,19 @@ pub fn referrer(raw: &str, own: &[&str], site_domain: Option<&str>) -> String {
     if ours { String::new() } else { host }
 }
 
+/// Whether a version's file at `path`, stored as `content_type`, is a page
+/// whose views are counted: an HTML file (`text/html`, parameters ignored),
+/// or `index.html`, which is always served as a page.
+pub fn is_page(path: &str, content_type: &str) -> bool {
+    path == "index.html"
+        || content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case("text/html")
+}
+
 /// A load timing measured for a view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Metric {
@@ -697,6 +710,15 @@ mod tests {
         ] {
             assert_eq!(country(bad), "XX", "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_page_is_an_html_file_or_the_index() {
+        assert!(is_page("a/b.html", "text/html"));
+        assert!(is_page("a.htm", "Text/HTML; charset=utf-8"));
+        assert!(is_page("index.html", "application/octet-stream"));
+        assert!(!is_page("app.js", "text/javascript"));
+        assert!(!is_page("notes.md", "text/markdown"));
     }
 
     #[test]
