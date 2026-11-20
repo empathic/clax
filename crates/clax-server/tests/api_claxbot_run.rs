@@ -2721,6 +2721,7 @@ async fn a_restart_marks_sessions_lost() {
                     opened_at: ts.store.now_utc(),
                     through_ms: 10,
                 }),
+                grant: None,
                 audit: clax_core::audit::AuditRecord::new(
                     clax_core::audit::AuditKind::BotSpend,
                     ts.store.now(),

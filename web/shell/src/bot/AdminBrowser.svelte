@@ -14,7 +14,7 @@
   // fields changed.
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
-  import { type AdminGrant, type AdminPerson, type BrowseRule, type BrowserPatch, type BrowserSettings, adminPeople, getAdminBrowser, getAdminGrants, putAdminBrowser } from "./api";
+  import { type AdminGrant, type AdminPerson, type AdminShare, type BrowseRule, type BrowserPatch, type BrowserSettings, adminPeople, getAdminBrowser, getAdminGrants, putAdminBrowser, revokeGrant } from "./api";
   import { hosted } from "./me";
   import { credits, readOnlySource } from "./model";
   import CapabilityCard from "./CapabilityCard.svelte";
@@ -26,6 +26,12 @@
   type Family = "call_seconds" | "idle_seconds" | "max_seconds" | "max_open_per_run" | "max_concurrent";
   let b = $state<BrowserSettings | null>(null);
   let grants = $state<AdminGrant[]>([]);
+  let shares = $state<AdminShare[]>([]);
+  let shareErr = $state<string | null>(null);
+  async function revokeShare(id: string) {
+    shareErr = null;
+    try { const g = await revokeGrant(id); grants = g.grants; shares = g.shares ?? []; } catch (e) { shareErr = refusal(e); }
+  }
   let people = $state<AdminPerson[]>([]);
   let err = $state<string | null>(null);
   let saved = $state("");
@@ -104,7 +110,7 @@
   onMount(() => {
     void Promise.allSettled([
       getAdminBrowser().then(take, e => { err = refusal(e); }),
-      getAdminGrants().then(g => { grants = g.grants; }, () => {}),
+      getAdminGrants().then(g => { grants = g.grants; shares = g.shares ?? []; }, () => {}),
       adminPeople().then(p => { people = p; }, () => {}),
       hosted().then(h => { local = !h; }),
     ]).then(release);
@@ -149,6 +155,22 @@
   <section class="bcard" aria-labelledby="ab-url"><h3 id="ab-url">{KINDS[0].title}</h3>{@render card(KINDS[0], b)}</section>
   <section class="bcard" aria-labelledby="ab-artifact"><h3 id="ab-artifact">{KINDS[1].title}</h3>{@render card(KINDS[1], b)}</section>
   <section class="bcard" aria-labelledby="ab-content"><h3 id="ab-content">{KINDS[2].title}</h3>{@render card(KINDS[2], b)}</section>
+  <section class="bcard" aria-labelledby="ab-shares">
+    <h3 id="ab-shares">Shared pages</h3>
+    {#if shares.length}
+      <ul class="capgrants">
+        {#each shares as sh (sh.id)}
+          <li>
+            <span>{sh.run ? `Run ${sh.run}` : `Exported to grant ${sh.grant}`}: {sh.actions.join(", ")}{#if sh.expires_at}{` · until ${sh.expires_at}`}{/if}</span>
+            <button type="button" aria-label={`Revoke the shared page ${sh.id}`} onclick={() => void revokeShare(sh.id)}>Revoke</button>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="note">No page of a run is shared or exported now.</p>
+    {/if}
+    {#if shareErr}<p class="err" role="alert">{shareErr}</p>{/if}
+  </section>
   <section class="bcard" aria-labelledby="ab-family">
     <h3 id="ab-family">Browser sessions</h3>
     <div class="fields">

@@ -68,6 +68,10 @@ pub struct Spend {
     /// segment, one item of [`LINE_BROWSER_TIME`] whose quantity is the
     /// point the call charges through less the session's charged point.
     pub session: Option<SessionSpend>,
+    /// What the call writes of the grants: a page's share, or its revoke
+    /// (spec 2026-11-19-claxbot-browser-design §18.4), recorded as
+    /// ClaxBot for the run's person.
+    pub grant: Option<crate::bot_grants::GrantWrite>,
     /// The call's `bot.spend` record: the store sets its artifact, `run`,
     /// `step` and `credits_milli`.
     pub audit: AuditRecord,
@@ -559,6 +563,7 @@ impl Store {
             usage,
             page,
             session,
+            grant,
             audit,
         } = s;
         self.with_tx(|tx| {
@@ -620,17 +625,20 @@ impl Store {
                 insert_page(tx, &run.id, n, entry.seq(), page)?;
             }
             insert_call(tx, &entry, &now)?;
-            let mut rec = audit;
-            rec.ids.artifact = Some(run.artifact_id.clone());
-            rec.body.insert("run".into(), run.id.as_str().into());
-            rec.body.insert("step".into(), n.into());
-            rec.body.insert("credits_milli".into(), credits.into());
             let ctx = AuditCtx {
                 actor: Actor::Bot {
                     on_behalf_of: run.person.clone(),
                 },
                 ..AuditCtx::DAEMON
             };
+            if let Some(w) = &grant {
+                self.write_grant_in(tx, &ctx, &run.id, w)?;
+            }
+            let mut rec = audit;
+            rec.ids.artifact = Some(run.artifact_id.clone());
+            rec.body.insert("run".into(), run.id.as_str().into());
+            rec.body.insert("step".into(), n.into());
+            rec.body.insert("credits_milli".into(), credits.into());
             self.record_audit(tx, &ctx, rec)?;
             Ok(Spent {
                 entry,
@@ -967,6 +975,7 @@ mod tests {
             usage: Some(Metered::new(LINE_WEB_FETCH, 1, KeySource::Instance)),
             page: Some(WebPageRow { seq, ..page(url) }),
             session: None,
+            grant: None,
             audit: AuditRecord::new(AuditKind::BotWeb, st.now())
                 .with("op", "web.fetch")
                 .with("url", url)
@@ -1236,6 +1245,7 @@ mod tests {
             usage: None,
             page: None,
             session: None,
+            grant: None,
             audit: AuditRecord::new(AuditKind::BotWeb, st.now())
                 .with("op", "web.search")
                 .with("query", "rust"),
@@ -1462,6 +1472,7 @@ mod tests {
             usage: Some(Metered::new(LINE_BROWSER_TIME, qty, KeySource::Instance)),
             page: None,
             session: Some(s),
+            grant: None,
             audit: AuditRecord::new(AuditKind::BotSpend, st.now())
                 .with("capability", "clax-browser:open-artifact")
                 .with("op", "browser.page"),

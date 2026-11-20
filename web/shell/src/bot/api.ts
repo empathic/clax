@@ -496,12 +496,14 @@ export const getAdminBrowser = () => call<BrowserSettings>("/api/admin/browser")
 export const putAdminBrowser = (patch: BrowserPatch) => call<BrowserSettings>("/api/admin/browser", "PUT", patch);
 /** One live grant an admin made (`GET /api/admin/bot/grants`): of `capability`, to everyone on the instance or to one person; `granter` the admin's person key, or `migration`/`config` for the instance's own; `conveys` false once its granter is no longer an admin. */
 export type AdminGrant = { id: string; capability: CapabilityId; grantee: "everyone" | "person"; person: PersonKey | null; granter?: string; conveys?: boolean; issued_at: string };
-export const getAdminGrants = () => call<{ grants: AdminGrant[] }>("/api/admin/bot/grants");
+/** One live page share or export (spec 2026-11-19-claxbot-browser §18.4, §18.5): within `run`, or to the machine grant `grant`, conveying `actions` until `expires_at`. */
+export type AdminShare = { id: string; run: string | null; grant: string | null; granter: string; actions: string[]; origins: string[] | null; expires_at: string | null; issued_at: string };
+export const getAdminGrants = () => call<{ grants: AdminGrant[]; shares?: AdminShare[] }>("/api/admin/bot/grants");
 /** Grants `capability` to everyone on the instance, or to one person. */
 export const grantCapability = (capability: CapabilityId, to: "everyone" | PersonKey) =>
   call<{ grants: AdminGrant[] }>("/api/admin/bot/grants", "POST", { capability, grantee: to === "everyone" ? "everyone" : { person: to } });
 /** Revokes one of the admin's grants, and the grants it issued. */
-export const revokeGrant = (id: string) => call<{ grants: AdminGrant[] }>(`/api/admin/bot/grants/${e(id)}`, "DELETE");
+export const revokeGrant = (id: string) => call<{ grants: AdminGrant[]; shares?: AdminShare[] }>(`/api/admin/bot/grants/${e(id)}`, "DELETE");
 export const providerModels = () => call<ProviderModels>("/api/admin/provider/models");
 /** `POST /api/admin/pricing/tokenulator`: refreshes the price catalog, then
  * prices `model`'s token lines from it, as `providerId` (its tokenulator.dev

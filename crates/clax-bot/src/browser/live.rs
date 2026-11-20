@@ -64,9 +64,10 @@
 //! ([`BrowserSessions::authorize`]): one that does not verify, is not held
 //! by the calling run, or names a session this process does not hold (the
 //! daemon restarted) answers `browser_session_lost`, whose message never
-//! repeats it; one whose caveats refuse the call, or that was revoked
-//! ([`BrowserSessions::revoke`]: it and every capability under it),
-//! answers `browser_forbidden`; a session that ended answers
+//! repeats it; one whose caveats refuse the call answers
+//! `browser_forbidden`, as the Spend path answers one whose grant the store
+//! holds revoked (spec §18.4, §18.6: a revoke is the store's, of it and
+//! every capability under it); a session that ended answers
 //! `browser_session_closed` with its reason (or `browser_session_lost`,
 //! for a lost one), whichever capability names it. Everything else,
 //! events, records and messages, names a session by its ID.
@@ -247,9 +248,6 @@ enum Msg {
 /// A session the registry holds.
 struct Entry {
     run: String,
-    /// The capability IDs revoked (spec §18.6): a capability whose chain
-    /// holds one is refused.
-    revoked: BTreeSet<String>,
     kind: SessionKind,
     /// `None` while open; why it ended once it did.
     ended: Option<SessionEnd>,
@@ -433,7 +431,6 @@ impl BrowserSessions {
             id.clone(),
             Entry {
                 run: run.to_string(),
-                revoked: BTreeSet::new(),
                 kind,
                 ended: None,
                 tx,
@@ -510,10 +507,11 @@ impl BrowserSessions {
     /// Closes, `dropped`, every open session of run `run` that no
     /// capability among `held` keeps open, each closed before this answers
     /// (spec §18.7): one keeps its session open when it verifies, names
-    /// it, is held by `run` and has no revoked ID in its chain; its
-    /// expiry and classes are not read, so the decision is the same
-    /// whenever it is made from the same `held`.
-    pub async fn close_unheld(&self, run: &str, held: &[String]) {
+    /// it, is held by `run` and its grant is live: a root, or a share whose
+    /// ID is among `live` (the store's, `Store::live_shares`); its expiry
+    /// and actions are not read, so the decision is the same whenever it
+    /// is made from the same `held` and `live`.
+    pub async fn close_unheld(&self, run: &str, held: &[String], live: &BTreeSet<String>) {
         let holder = Holder::Run(run.to_string());
         let caps: Vec<Cap> = held.iter().filter_map(|h| self.keys.verify(h)).collect();
         let doomed: Vec<String> = {
@@ -527,7 +525,7 @@ impl BrowserSessions {
                             c.session() == id.as_str()
                                 && c.run() == e.run
                                 && c.admits(&holder)
-                                && !c.revoked_in(&e.revoked)
+                                && (c.is_root() || live.contains(c.id()))
                         })
                 })
                 .map(|(id, _)| id.clone())
@@ -653,9 +651,6 @@ impl BrowserSessions {
                     "this process holds no such session for this run",
                 ));
             };
-            if cap.revoked_in(&e.revoked) {
-                return Err(forbidden(super::cap::Refusal::Revoked.message()));
-            }
             match nav {
                 Nav::None => Target::None,
                 Nav::Goto(url) => {
@@ -693,23 +688,21 @@ impl BrowserSessions {
         Ok(self.keys.child(&parent, more))
     }
 
-    /// Revokes the capability `handle` and every capability shared from
-    /// it (spec §18.6), for a call of run `run`, and answers it.
+    /// The capability `handle` a revoke ends, with every capability shared
+    /// from it (spec §18.6), for a call of run `run`: the revoke itself is
+    /// the store's, its grant rows revoked in the call's Spend.
     ///
     /// # Errors
     /// As [`BrowserSessions::authorize`] for a call of no class;
     /// `invalid_args` for a session's root, which is closed instead.
     pub fn revoke(&self, run: &str, handle: &str) -> Result<Cap, BrowserError> {
-        let (session, cap) = self.authorize(run, handle, None, &Nav::None)?;
+        let (_, cap) = self.authorize(run, handle, None, &Nav::None)?;
         if cap.is_root() {
             return Err(BrowserError::new(
                 crate::api::CODE_BAD_ARGS,
                 "this page opened its browser session: close it instead of revoking it",
                 false,
             ));
-        }
-        if let Some(e) = lock(&self.reg).sessions.get_mut(&session) {
-            e.revoked.insert(cap.id().to_string());
         }
         Ok(cap)
     }
@@ -2079,18 +2072,17 @@ mod tests {
         }
     }
 
-    /// Revoking a capability refuses it and every one shared from it, and
-    /// nothing else; the root is closed, not revoked; closing the session
+    /// A revoke names the capability it ends and refuses a session's
+    /// root, whose session is closed instead; the registry itself refuses
+    /// nothing revoked (the store does, spec §18.6); closing the session
     /// ends every capability of it.
     #[tokio::test]
-    async fn revoking_a_parent_revokes_its_children_and_closing_ends_all() {
+    async fn a_revoke_is_the_stores_and_closing_ends_all() {
         let w = World::new();
         let (o, _) = w.open(TIMES).await;
         let share = |h: &str| w.sessions.share("run-1", h, &[]).unwrap().encode();
         let parent = share(&o.handle);
         let child = share(&parent);
-        let grandchild = share(&child);
-        let sibling = share(&o.handle);
         let ok = |h: &str| {
             w.sessions
                 .authorize("run-1", h, Some(Class::Read), &Nav::None)
@@ -2101,54 +2093,47 @@ mod tests {
         );
         let revoked = w.sessions.revoke("run-1", &parent).unwrap();
         assert_eq!(revoked.encode(), parent);
-        for h in [&parent, &child, &grandchild] {
-            let e = ok(h).unwrap_err();
-            assert_eq!(e.code, CODE_BROWSER_FORBIDDEN);
-            assert!(e.message.contains("revoked"), "{}", e.message);
-            assert_eq!(
-                w.sessions.share("run-1", h, &[]).unwrap_err().code,
-                CODE_BROWSER_FORBIDDEN
-            );
-        }
-        assert!(ok(&o.handle).is_ok() && ok(&sibling).is_ok());
+        assert!(ok(&parent).is_ok() && ok(&child).is_ok());
         w.sessions
             .close("run-1", "s1", SessionEnd::Closed)
             .await
             .unwrap();
-        for h in [&o.handle, &sibling, &child] {
+        for h in [&o.handle, &parent, &child] {
             assert_eq!(ok(h).unwrap_err().code, CODE_BROWSER_SESSION_CLOSED);
         }
     }
 
     /// A session stays open while a capability of it that is held by its
-    /// run and not revoked is held, whatever its classes or expiry; it
-    /// closes `dropped`, queued for the store, once none is.
+    /// run and whose grant is live (a root, or a share the store holds
+    /// live) is held, whatever its actions or expiry; it closes `dropped`,
+    /// queued for the store, once none is.
     #[tokio::test]
     async fn a_session_not_held_closes_dropped() {
         let w = World::new();
         let (o, log) = w.open(TIMES).await;
         let now = w.clock.now().timestamp_millis();
-        let read = w
+        let read_cap = w
             .sessions
             .share(
                 "run-1",
                 &o.handle,
                 &[ops(&[Class::Read]), Caveat::Expires(now + 1_000)],
             )
-            .unwrap()
-            .encode();
+            .unwrap();
+        let read = read_cap.encode();
+        let live: BTreeSet<String> = [read_cap.id().to_string()].into();
         w.sessions
-            .close_unheld("run-1", std::slice::from_ref(&o.handle))
+            .close_unheld("run-1", std::slice::from_ref(&o.handle), &live)
             .await;
         w.clock.advance(3);
         w.sessions
-            .close_unheld("run-1", std::slice::from_ref(&read))
+            .close_unheld("run-1", std::slice::from_ref(&read), &live)
             .await;
         assert!(
             w.sessions.ended().is_empty(),
             "an expired read-only page holds it"
         );
-        w.sessions.close_unheld("run-2", &[]).await;
+        w.sessions.close_unheld("run-2", &[], &live).await;
         assert!(
             w.sessions.ended().is_empty(),
             "another run's call ends nothing"
@@ -2156,10 +2141,10 @@ mod tests {
         let foreign = Keys::new([9; 32]).root("s1", "run-1").encode();
         let mut tampered = read.clone();
         tampered.insert(10, 'x');
-        let revoked = w.sessions.share("run-1", &o.handle, &[]).unwrap().encode();
-        w.sessions.revoke("run-1", &revoked).unwrap();
+        // A share whose grant is not among the live ones holds nothing.
+        let unlisted = w.sessions.share("run-1", &o.handle, &[]).unwrap().encode();
         w.sessions
-            .close_unheld("run-1", &[foreign, tampered, revoked, "x".into()])
+            .close_unheld("run-1", &[foreign, tampered, unlisted, "x".into()], &live)
             .await;
         assert_eq!(
             w.sessions

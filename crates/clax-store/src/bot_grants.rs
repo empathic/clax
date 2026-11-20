@@ -1075,6 +1075,193 @@ impl Store {
     }
 }
 
+/// A page's share, as its grant row (spec §18.4): written in the share's
+/// Spend transaction ([`crate::bot_web::Spend::grant`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareGrant {
+    /// The new capability's ID: its macaroon is the row's token.
+    pub id: String,
+    /// The run that shares it, its granter and grantee.
+    pub run: String,
+    /// The sharer's grant: the parent page's share, or for a share of a
+    /// session's root the person's runs grant of the session's open action.
+    pub parent: String,
+    /// The session actions it conveys.
+    pub actions: Vec<String>,
+    /// The origins a `navigate` of it may reach, when it is bounded.
+    pub origins: Option<Vec<String>>,
+    /// When it expires (RFC 3339), if it does.
+    pub expires_at: Option<String>,
+}
+
+/// What a call's Spend writes of the grants: a share's row, or the
+/// revoke of a share and every grant under it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GrantWrite {
+    Share(ShareGrant),
+    Revoke(String),
+}
+
+/// Whether `g` is a share's or an export's row.
+fn is_share(g: &GrantRow) -> bool {
+    g.event == "share"
+}
+
+impl Store {
+    /// Writes `w` on `tx` as `ctx`: a share's row, recorded as
+    /// `grant.issue` (its parent must be issued), or the revoke of a share
+    /// of `run` and every grant under it, reason `granter`.
+    ///
+    /// # Errors
+    /// `not_held` for a share whose parent is not issued, or a revoke of
+    /// a grant that is not a share of `run`; the store's.
+    pub(crate) fn write_grant_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        run: &str,
+        w: &GrantWrite,
+    ) -> Result<()> {
+        let holder = Grantee::Run(run.to_string()).as_text();
+        let not_held = |why: &str| CoreError::invalid("not_held", why.to_string());
+        match w {
+            GrantWrite::Share(sh) => {
+                if sh.run != run {
+                    return Err(not_held("a run shares only within its own holder"));
+                }
+                if !grant_in(tx, &sh.parent)?.is_some_and(|p| p.live()) {
+                    return Err(not_held("the sharer's grant is not issued"));
+                }
+                let mut conditions = json!({});
+                if let Some(t) = &sh.expires_at {
+                    conditions["expires_at"] = json!(t);
+                }
+                let now = self.now();
+                let g = insert_grant(
+                    tx,
+                    NewGrant {
+                        id: Some(sh.id.clone()),
+                        access: vec![Access {
+                            kind: TYPE_BROWSER.to_string(),
+                            actions: sh.actions.clone(),
+                            locations: sh.origins.clone(),
+                        }],
+                        granter: &holder,
+                        grantee: &holder,
+                        parent: Some(&sh.parent),
+                        conditions,
+                        event: "share",
+                    },
+                    &now,
+                    &set_by(ctx),
+                )?;
+                self.record_audit(tx, ctx, issue_record(&g, now))?;
+            }
+            GrantWrite::Revoke(id) => {
+                let ok = grant_in(tx, id)?.is_some_and(|g| is_share(&g) && g.grantee == holder);
+                if !ok {
+                    return Err(not_held("only a share of the run itself is revoked here"));
+                }
+                self.revoke_grant_in(tx, ctx, id, RevokeReason::Granter)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the share `id` conveys `action` of `clax-browser` (none for
+    /// a call that needs no action) at `location` to run `run` at `now`
+    /// (spec §18.4): its row is a share to the run, it and every grant of
+    /// its chain are issued and hold, and each lists the action.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn share_conveys(
+        &self,
+        run: &str,
+        id: &str,
+        action: Option<&str>,
+        location: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        let holder = Grantee::Run(run.to_string()).as_text();
+        self.with_read(|c| {
+            let Some(g) = grant_in(c, id)? else {
+                return Ok(false);
+            };
+            if !is_share(&g) || g.grantee != holder || !chain_holds(c, &g, now)? {
+                return Ok(false);
+            }
+            let Some(action) = action else {
+                return Ok(true);
+            };
+            let mut at = Some(g);
+            while let Some(row) = at {
+                if !allows(&row.access, TYPE_BROWSER, action, location) {
+                    return Ok(false);
+                }
+                at = match &row.parent {
+                    Some(p) => grant_in(c, p)?,
+                    None => None,
+                };
+            }
+            Ok(true)
+        })
+    }
+
+    /// The shares of run `run` whose grant and every grant of its chain are
+    /// issued, their expiry not read (spec §18.7).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn live_shares(&self, run: &str) -> Result<BTreeSet<String>> {
+        let holder = Grantee::Run(run.to_string()).as_text();
+        self.with_read(|c| {
+            let mut out = BTreeSet::new();
+            for g in issued_to(c, &holder)? {
+                if is_share(&g) && chain_issued(c, &g)? {
+                    out.insert(g.id);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Every issued share and export, oldest first (the admin's page).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn live_share_grants(&self) -> Result<Vec<GrantRow>> {
+        Ok(self
+            .cap_grants(&GrantFilter {
+                live: true,
+                ..GrantFilter::default()
+            })?
+            .into_iter()
+            .filter(is_share)
+            .collect())
+    }
+}
+
+/// Whether `g` and every parent up to its root are issued, on `c`, their
+/// conditions not read.
+fn chain_issued(c: &Connection, g: &GrantRow) -> Result<bool> {
+    let mut seen = BTreeSet::new();
+    let mut at = Some(g.clone());
+    while let Some(row) = at {
+        if !row.live() || !seen.insert(row.id.clone()) {
+            return Ok(false);
+        }
+        at = match &row.parent {
+            Some(p) => match grant_in(c, p)? {
+                Some(parent) => Some(parent),
+                None => return Ok(false),
+            },
+            None => None,
+        };
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 #[warn(clippy::disallowed_methods)]
 mod tests {
@@ -1490,4 +1677,69 @@ mod tests {
             }
         }
     }
+
+    /// A share is a child of the sharer's grant: it conveys only what it
+    /// and every grant of its chain list, while each is issued and before
+    /// its expiry, and a revoke of its parent ends it (spec §18.4).
+    #[test]
+    fn a_share_conveys_only_within_its_chain() {
+        let (_d, st) = store();
+        let cap = "clax-browser:open-artifact";
+        admin_everyone(&st, cap);
+        let runs_grant = st.person_caps(OWNER).unwrap()[cap].runs_grant.clone().unwrap();
+        let share = |id: &str, parent: &str, actions: &[&str], expires: Option<&str>| {
+            st.with_tx(|tx| {
+                st.write_grant_in(
+                    tx,
+                    DAEMON,
+                    "r1",
+                    &GrantWrite::Share(ShareGrant {
+                        id: id.into(),
+                        run: "r1".into(),
+                        parent: parent.into(),
+                        actions: actions.iter().map(|a| (*a).to_string()).collect(),
+                        origins: None,
+                        expires_at: expires.map(str::to_string),
+                    }),
+                )
+            })
+        };
+        share("s1", &runs_grant, &["read", "act"], None).unwrap();
+        share("s2", "s1", &["read"], Some("2100-01-01T00:00:00.000Z")).unwrap();
+        let now = st.now_utc();
+        let conveys = |id: &str, action: &str| {
+            st.share_conveys("r1", id, Some(action), None, now).unwrap()
+        };
+        assert!(conveys("s1", "act") && conveys("s2", "read"));
+        assert!(!conveys("s2", "act"), "no wider than itself");
+        assert!(!st.share_conveys("r2", "s1", Some("read"), None, now).unwrap(), "another run's");
+        let later = chrono::DateTime::parse_from_rfc3339("2100-01-02T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(!st.share_conveys("r1", "s2", Some("read"), None, later).unwrap(), "expired");
+        assert_eq!(
+            st.live_shares("r1").unwrap(),
+            ["s1".to_string(), "s2".to_string()].into()
+        );
+        assert_eq!(
+            code(&share("s3", "nope", &["read"], None).unwrap_err()),
+            "not_held"
+        );
+        st.with_tx(|tx| st.write_grant_in(tx, DAEMON, "r1", &GrantWrite::Revoke("s1".into())))
+            .unwrap();
+        assert!(!conveys("s2", "read"), "its parent revoked");
+        assert!(st.live_shares("r1").unwrap().is_empty());
+        let s2 = st.cap_grant("s2").unwrap().unwrap();
+        assert_eq!(s2.revoke_reason.as_deref(), Some("parent_ended"));
+        // A run revokes only its own share; the runs grant is not one.
+        let e = st
+            .with_tx(|tx| st.write_grant_in(tx, DAEMON, "r1", &GrantWrite::Revoke(runs_grant.clone())))
+            .unwrap_err();
+        assert_eq!(code(&e), "not_held");
+        let issued = events(&st, "grant.issue");
+        assert!(issued.iter().any(|e| e["grant_id"] == "s2"
+            && e["event"] == "share"
+            && e["expires_at"] == "2100-01-01T00:00:00.000Z"));
+    }
+
 }

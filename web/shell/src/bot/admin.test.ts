@@ -560,6 +560,24 @@ describe("Admin › Browser", () => {
     expect(m.root.querySelector('.acts [role="status"]')!.textContent).toContain("Saved.");
   });
 
+  it("a_shared_page_is_listed_and_revoked", async () => {
+    const SHARE = { id: "cap22charactersxxxxxxx", run: "r1", grant: null, granter: "run:r1", actions: ["read"], origins: null, expires_at: "2026-10-21T10:00:00.000Z", issued_at: "2026-10-21T09:00:00Z" };
+    const calls = stubFetch({
+      "GET /api/admin/browser": browserSettings(),
+      "GET /api/admin/bot/grants": { grants: [], shares: [SHARE] },
+      "GET /api/admin/people": [],
+      "DELETE /api/admin/bot/grants/cap22charactersxxxxxxx": { grants: [], shares: [] },
+    });
+    const m = mount(AdminBrowser, {});
+    await settle();
+    const card = m.root.querySelector<HTMLElement>("#ab-shares")!.closest("section")!;
+    expect(card.querySelector(".capgrants li span")!.textContent).toBe("Run r1: read · until 2026-10-21T10:00:00.000Z");
+    click(card.querySelector<HTMLElement>('button[aria-label="Revoke the shared page cap22charactersxxxxxxx"]')!);
+    await settle();
+    expect(calls.find(c => c.method === "DELETE")!.url).toBe("/api/admin/bot/grants/cap22charactersxxxxxxx");
+    expect(card.textContent).toContain("No page of a run is shared or exported now.");
+  });
+
   it("each_capability_has_its_own_card", async () => {
     const calls = stubFetch({
       "GET /api/admin/browser": browserSettings(),
@@ -570,7 +588,7 @@ describe("Admin › Browser", () => {
     const m = mount(AdminBrowser, {});
     await settle();
     const titles = [...m.root.querySelectorAll("section.bcard > h3")].map(h => h.textContent);
-    expect(titles).toEqual(["Open a public URL", "Open the run's clax", "Open supplied content", "Browser sessions"]);
+    expect(titles).toEqual(["Open a public URL", "Open the run's clax", "Open supplied content", "Shared pages", "Browser sessions"]);
     // Each card has its switch, its cap and its grants; none is granted.
     for (const label of ["Open public URLs", "Open the run's clax", "Open supplied content"]) {
       expect(m.root.querySelector(`[role="switch"][aria-label="${label}"]`)).not.toBeNull();

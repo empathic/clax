@@ -953,7 +953,10 @@ pub async fn set_browser(
 /// (main's web switches) or `config` (config.toml's, at the daemon's
 /// start), `conveys` false once its granter is no longer an admin; the
 /// grants to everyone first, then by capability. A selector's children
-/// and a person's grants to their runs are not listed.
+/// and a person's grants to their runs are not listed. `shares` lists each
+/// live page share and export (spec §18.4, §18.5): `{id, run, grant,
+/// granter, actions, origins, expires_at, issued_at}`, `run` the run it is
+/// a share within, `grant` the machine grant an export is to.
 ///
 /// # Errors
 /// The store's.
@@ -982,7 +985,32 @@ pub fn grants_view(st: &Store) -> clax_core::Result<Value> {
         rows.push((person.is_some(), cap.to_string(), row));
     }
     rows.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-    Ok(json!({"grants": rows.into_iter().map(|(_, _, r)| r).collect::<Vec<_>>()}))
+    let shares: Vec<Value> = st
+        .live_share_grants()?
+        .into_iter()
+        .map(|g| {
+            let holder = g.grantee.split_once(':').map_or("", |(_, h)| h).to_string();
+            let (run, grant) = if g.grantee.starts_with("grant:") {
+                (Value::Null, json!(holder))
+            } else {
+                (json!(holder), Value::Null)
+            };
+            json!({
+                "id": g.id,
+                "run": run,
+                "grant": grant,
+                "granter": g.granter,
+                "actions": g.access.first().map(|a| a.actions.clone()).unwrap_or_default(),
+                "origins": g.access.first().and_then(|a| a.locations.clone()),
+                "expires_at": g.conditions.get("expires_at"),
+                "issued_at": g.issued_at,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "grants": rows.into_iter().map(|(_, _, r)| r).collect::<Vec<_>>(),
+        "shares": shares,
+    }))
 }
 
 /// `GET /api/admin/bot/grants` (see the module documentation).
@@ -1050,9 +1078,9 @@ pub async fn grant(
     Ok(Json(v))
 }
 
-/// `DELETE /api/admin/bot/grants/<id>`: revokes the admin's grant `id`
-/// and every grant issued under it; answers the grants. 404 for no admin
-/// grant of that ID.
+/// `DELETE /api/admin/bot/grants/<id>`: revokes the admin's grant, page
+/// share or export `id` and every grant issued under it; answers the
+/// grants. 404 for no such grant of that ID.
 pub async fn revoke_grant(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -1070,6 +1098,7 @@ pub async fn revoke_grant(
             let ours = match Grantee::parse(&g.grantee) {
                 Ok(Grantee::Everyone) => true,
                 Ok(Grantee::Person(_)) => g.parent.is_none(),
+                Ok(Grantee::Run(_) | Grantee::Grant(_)) => g.event == "share",
                 _ => false,
             };
             if !ours {

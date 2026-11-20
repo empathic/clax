@@ -1286,8 +1286,75 @@ async fn a_shared_read_only_page_reads_and_cannot_click() {
     ] {
         assert!(!text.contains("cxk_"), "{what} holds a capability: {text}");
     }
+    // The share is a child grant row of the person's grant to their runs,
+    // its ID the capability's, revoked by the run's own revoke.
+    let g = env.store.cap_grant(id).unwrap().unwrap();
+    let holder = format!("run:{run}");
+    assert_eq!(
+        (g.granter.as_str(), g.grantee.as_str(), g.event.as_str()),
+        (holder.as_str(), holder.as_str(), "share")
+    );
+    let runs = env.store.person_caps(clax_store::roles::OWNER).unwrap()
+        ["clax-browser:open-artifact"]
+        .runs_grant
+        .clone();
+    assert_eq!(g.parent, runs);
+    assert_eq!(g.access[0].actions, ["read"]);
+    assert_eq!(g.revoke_reason.as_deref(), Some("granter"));
     let row = session_row(&env, &run, &only_session(&env, &run));
     assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::RunEnded));
+}
+
+/// A share revoked from the admin's page, between two scripts, refuses
+/// its next call (spec §18.6: revocation is the store's), and the page it
+/// was shared from still works.
+#[tokio::test]
+async fn a_share_revoked_in_the_store_is_refused_at_its_next_call() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Share",
+        "state.page = await clax.browser.open({ artifact: 'draft' });
+         state.ro = await state.page.share({ actions: ['read'] });
+         return 1;",
+    ));
+    env.api.push(env.script_turn(
+        "tu_2",
+        "Use",
+        "const out = [];
+         try { await state.ro.title(); out.push('read'); } catch (e) { out.push(e.code); }
+         out.push(await state.page.title());
+         return out;",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_caps("clax-browser:open-artifact");
+    let mut a = env.deps();
+    crash_once(
+        &mut a,
+        CrashPoint::AfterCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    env.drive(&a, &run, &DriverId::mint()).await;
+    let shares = env.store.live_share_grants().unwrap();
+    assert_eq!(shares.len(), 1, "{shares:?}");
+    env.store
+        .revoke_cap_grant(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &shares[0].id,
+            clax_store::bot_grants::RevokeReason::Owner,
+        )
+        .unwrap();
+    // The crashed driver's claim lapses.
+    env.clock.advance(61);
+    let out = env.drive(&a, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(
+        script_result(&env, &run, 1)["value"],
+        json!(["browser_forbidden", "Hello"])
+    );
 }
 
 /// A step executed again after a crash before its commit answers its
@@ -1355,6 +1422,11 @@ async fn a_replayed_share_answers_the_same_capability() {
             .is_some_and(|s| s.starts_with("<browser page: read; expires ")),
         "{}",
         script_result(&env, &run, 0)
+    );
+    assert_eq!(
+        env.store.live_share_grants().unwrap().len(),
+        1,
+        "the replayed share wrote no second row"
     );
     let row = session_row(&env, &run, &only_session(&env, &run));
     assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::RunEnded));

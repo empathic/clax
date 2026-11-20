@@ -277,7 +277,11 @@ impl SurfaceProvider for ClaxProvider {
     /// tail (spec 2026-11-19-claxbot-browser §17.4).
     async fn state_committed(&self, run: &RunInfo, _step: i64, held: &[String]) {
         if let Some(sessions) = &self.sessions {
-            sessions.close_unheld(&run.id, held).await;
+            let live = self.store.live_shares(&run.id).unwrap_or_else(|e| {
+                tracing::warn!("clax-bot: run {}: its live shares do not read: {e}", run.id);
+                std::collections::BTreeSet::new()
+            });
+            sessions.close_unheld(&run.id, held, &live).await;
             super::browser::charge_ended(&self.store, sessions);
         }
     }

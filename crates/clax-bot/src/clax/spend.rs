@@ -106,6 +106,9 @@ pub(super) struct Finish {
     /// What a browser session's call does to its session's row: the
     /// segment it charges (spec §10.3).
     pub session: Option<SessionSpend>,
+    /// What the call writes of the grants: a page's share or its revoke
+    /// (spec §18.4).
+    pub grant: Option<clax_store::bot_grants::GrantWrite>,
     /// Whether the call reached its source, and so counts against the
     /// run's cap (step 7).
     pub counted: bool,
@@ -123,6 +126,7 @@ impl Finish {
             usage: None,
             page: None,
             session: None,
+            grant: None,
             counted: false,
             audit: Vec::new(),
             entry: Vec::new(),
@@ -616,6 +620,7 @@ fn write_with(
         usage: f.usage.map(|(m, _)| m),
         page: f.page,
         session: f.session,
+        grant: f.grant,
         audit,
     };
     match store.spend_journaled(&s.run, s.cx.claim.driver(), spend) {

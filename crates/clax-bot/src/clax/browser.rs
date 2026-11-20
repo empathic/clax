@@ -78,7 +78,7 @@
 use super::session::ClaxSession;
 use super::spend::{self, Finish, Performer, PriceCap, Priced, Seen};
 use crate::browser::browse::{BrowsePolicy, BrowseScope};
-use crate::browser::cap::{Cap, Caveat, Class, origin_of};
+use crate::browser::cap::{Cap, Caveat, Class, Refusal, origin_of};
 use crate::browser::layer::{self, Op};
 use crate::browser::live::{
     BrowserSessions, CallCtx, Nav, SessionCall, SessionTimes, new_session_id,
@@ -90,7 +90,7 @@ use crate::browser::session::{
 };
 use crate::browser::{
     BrowserError, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_CAP, CODE_BROWSER_DISABLED,
-    CODE_BROWSER_TARGET_NOT_FOUND, CODE_BROWSER_TIMEOUT, CODE_BROWSER_UNAVAILABLE, Cdp,
+    CODE_BROWSER_FORBIDDEN, CODE_BROWSER_TARGET_NOT_FOUND, CODE_BROWSER_TIMEOUT, CODE_BROWSER_UNAVAILABLE, Cdp,
 };
 use crate::capability::{BrowserTerms, Capability, OpenGrant, Terms, UrlRule};
 use crate::host::host_error;
@@ -99,6 +99,7 @@ use crate::web::PublicUrl;
 use clax_bot_sandbox::{CODE_CANCELLED, HostError};
 use clax_core::ArtifactId;
 use clax_store::bot_content::NewContent;
+use clax_store::bot_grants::{GrantWrite, ShareGrant};
 use clax_store::bot_web::{SessionEnd, SessionKind, SessionSpend};
 use clax_store::credits::LINE_BROWSER_TIME;
 use serde_json::{Value, json};
@@ -1066,9 +1067,38 @@ impl Performer for SessionOp {
             (_, Some(row)) => layer::class(row),
             (_, None) => None,
         };
-        let (_, cap) = sessions
+        let (session, cap) = sessions
             .authorize(&s.run.id, handle, class, &args.nav)
             .map_err(|e| from_browser(&e))?;
+        // A shared page's grant is live in the store and conveys the call's
+        // action (spec §18.4), as well as its macaroon allowing it.
+        if !cap.is_root() {
+            let location = match &args.nav {
+                Nav::Goto(url) => sessions
+                    .goto_target(&s.run.id, &session, url)
+                    .ok()
+                    .and_then(|t| origin_of(&t)),
+                _ => None,
+            };
+            let now = chrono::DateTime::from_timestamp_millis(sessions.now_ms())
+                .unwrap_or_else(|| s.provider.clock.now());
+            let conveys = s
+                .store()
+                .share_conveys(
+                    &s.run.id,
+                    cap.id(),
+                    class.map(Class::as_str),
+                    location.as_deref(),
+                    now,
+                )
+                .map_err(|e| host_error(&e))?;
+            if !conveys {
+                return Err(HostError::new(
+                    CODE_BROWSER_FORBIDDEN,
+                    Refusal::Revoked.message(),
+                ));
+            }
+        }
         args.held = Some(cap);
         if let Some(c) = args.row.and_then(|r| r.needs)
             && self.kind.is_some_and(|k| cap_of(k) != c)
@@ -1111,7 +1141,7 @@ impl Performer for SessionOp {
         let run = s.run.id.as_str();
         let session = args.session.as_str();
         if let Some(cc) = &args.cap_call {
-            return cap_call(&sessions, run, call, cc, shown);
+            return cap_call(s, &sessions, self.kind, call, cc, shown);
         }
         let answered = match &args.call {
             None => sessions
@@ -1290,16 +1320,22 @@ impl Performer for SessionOp {
     }
 }
 
-/// A `share` or `revoke` of the capability `call` names (spec §18.4): the
-/// registry's alone, uncharged, journaled and audited with the
-/// capabilities' IDs and never the capabilities (§18.9).
+/// A `share` or `revoke` of the capability `call` names (spec §18.4):
+/// minted by the registry, its grant row written (a share) or revoked (a
+/// revoke) in the call's Spend transaction, uncharged, journaled and
+/// audited with the capabilities' IDs and never the capabilities (§18.9).
+/// A share of a session's root has for parent the person's grant to their
+/// runs of the session's open action (`kind`'s); a share of a share, that
+/// share's grant.
 fn cap_call(
+    s: &ClaxSession<'_>,
     sessions: &BrowserSessions,
-    run: &str,
+    kind: Option<SessionKind>,
     call: &Call<'_>,
     cc: &CapCall,
     shown: &mut Value,
 ) -> Finish {
+    let run = s.run.id.as_str();
     let handle = call
         .args
         .first()
@@ -1329,9 +1365,43 @@ fn cap_call(
                 Err(e) => return Finish::refused(from_browser(&e)),
             };
             let parent = child.chain()[child.chain().len() - 2].clone();
+            let parent_grant = if child.chain().len() == 2 {
+                let held = kind.map(cap_of).and_then(|c| {
+                    s.store()
+                        .person_caps(&s.run.person)
+                        .ok()
+                        .and_then(|h| h.get(c.id()).and_then(|p| p.runs_grant.clone()))
+                });
+                match held {
+                    Some(g) => g,
+                    None => {
+                        return Finish::refused(HostError::new(
+                            CODE_BROWSER_FORBIDDEN,
+                            Refusal::Revoked.message(),
+                        ));
+                    }
+                }
+            } else {
+                parent.clone()
+            };
+            let actions_held: Vec<String> = match actions {
+                Some(a) => a.iter().map(|c| c.as_str().to_string()).collect(),
+                None => Class::ALL.iter().map(|c| c.as_str().to_string()).collect(),
+            };
+            let grant = GrantWrite::Share(ShareGrant {
+                id: child.id().to_string(),
+                run: run.to_string(),
+                parent: parent_grant,
+                actions: actions_held,
+                origins: origins.clone(),
+                expires_at: expires_ms.and_then(chrono::DateTime::from_timestamp_millis).map(
+                    |t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                ),
+            });
             shown["capability"] = json!(child.id());
             shown["ok"] = json!(true);
             Finish {
+                grant: Some(grant),
                 audit: vec![
                     ("capability", json!(child.id())),
                     ("parent", json!(parent)),
@@ -1355,6 +1425,7 @@ fn cap_call(
                 shown["capability"] = json!(cap.id());
                 shown["ok"] = json!(true);
                 Finish {
+                    grant: Some(GrantWrite::Revoke(cap.id().to_string())),
                     audit: vec![("capability", json!(cap.id()))],
                     ..Finish::new(Ok(answer(Value::Null)))
                 }

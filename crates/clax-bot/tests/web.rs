@@ -1903,6 +1903,7 @@ impl WebSource for RacedToThePage {
                     links: Vec::new(),
                 }),
                 session: None,
+                grant: None,
                 audit: AuditRecord::new(AuditKind::BotWeb, self.store.now())
                     .with("op", "web.fetch"),
             };
