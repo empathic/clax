@@ -1667,10 +1667,12 @@ impl Store {
     }
 
     /// Revokes person `public_id` (spec §6.4): their live grants end (by the
-    /// owner), their unused invites are revoked, and `person_revoked_at` is
-    /// set. Their viewer row and authorship stay. Recorded under `ctx`: each
-    /// grant's `grant.revoke`, each invite's `invite.revoke`, then
-    /// `person.revoke` (once).
+    /// owner), their unused invites are revoked, their browser sign-in
+    /// sessions end (so reinstating them opens none of them again), and
+    /// `person_revoked_at` is set. Their viewer row and authorship stay.
+    /// Recorded under `ctx`: each grant's `grant.revoke`, each invite's
+    /// `invite.revoke`, each sign-in session's `session.end` (reason
+    /// `person_revoked`), then `person.revoke` (once).
     ///
     /// # Errors
     /// `not_a_person` for the owner or a viewer who is not a person;
@@ -1726,6 +1728,23 @@ impl Store {
                 "UPDATE viewers SET person_revoked_at = ?2 WHERE id = ?1 AND person_revoked_at IS NULL",
                 params![id, now],
             )?;
+            // Their browser sign-in sessions end, each recorded as its
+            // `session.end`: a reinstatement opens none of them again, and
+            // the site sessions made from them end with them.
+            let ended: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "UPDATE browser_sessions SET ended_at = ?2
+                     WHERE viewer_id = ?1 AND ended_at IS NULL RETURNING sha256",
+                )?;
+                stmt.query_map(params![id, now], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for hash in ended {
+                let mut rec = AuditRecord::new(AuditKind::SessionEnd, now.as_str())
+                    .with("reason", "person_revoked");
+                rec.ids.session = Some(super::hosted::browser_session_id(&hash));
+                self.record_audit(tx, ctx, rec)?;
+            }
             // A GitHub account's person revoked: the account is blocked.
             super::github::block_in(tx, &id, &now)?;
             if n > 0 {
@@ -1742,8 +1761,8 @@ impl Store {
 
     /// Reinstates revoked person `public_id`: clears `person_revoked_at`
     /// and the block on their GitHub account, so what they made is served
-    /// again and they may sign in again themselves. Their grants and
-    /// invites stay ended; nothing is handed out. Recorded under `ctx` as
+    /// again and they may sign in again themselves. Their grants, invites
+    /// and browser sign-in sessions stay ended; nothing is handed out. Recorded under `ctx` as
     /// `person.reinstate`.
     ///
     /// # Errors
