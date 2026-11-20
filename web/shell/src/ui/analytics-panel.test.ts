@@ -76,6 +76,8 @@ describe("AnalyticsPanel", () => {
     expect(texts("[data-table=devices] tbody th")).toEqual(["Phone"]);
     expect(texts("[data-table=versions_viewed] tbody th")).toEqual(["v2"]);
     expect(texts("[data-table=pages] tbody tr:first-child td")).toEqual(["3", "4"]);
+    // A table's visitors are a sum of daily visitors, named as the total is.
+    expect(texts("[data-table=pages] thead th")).toEqual(["Page", "Daily visitors", "Views"]);
     expect(q("[data-testid=analytics-setting-note]")!.textContent).toContain("Clax is counting visits to this clax's site");
     expect(button("Stop counting visits")).toBeDefined();
   });

@@ -146,6 +146,7 @@ test("on a hosted Clax a visitor's page views are counted, shown to the administ
     const chart = panel.getByTestId("analytics-chart");
     await expect(chart.locator("[data-version-mark]")).toHaveText(["v1"]);
     await expect(chart.getByTestId("analytics-chart-summary")).toContainText("1 daily visitor, 2 page views. Published: v1 on ");
+    await expect(panel.locator("[data-table=pages] thead th")).toHaveText(["Page", "Daily visitors", "Views"]);
     await expect(row(panel, "pages", "index.html")).toHaveText(["1", "1"]);
     await expect(row(panel, "pages", "about.html")).toHaveText(["1", "1"]);
     await expect(row(panel, "referrers", "Direct or unknown")).toHaveText(["1", "2"]);

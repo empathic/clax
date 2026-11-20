@@ -137,7 +137,8 @@ export const TABLES: readonly { kind: TableKind; heading: string; column: string
   { kind: "devices", heading: "Devices", column: "Device", other: "Other devices" },
   { kind: "versions_viewed", heading: "Versions", column: "Version", other: "Other versions" },
 ];
-export const TABLE_VISITORS = "Visitors";
+/** A table's visitors column: over a range, a sum of daily visitors, named as the total is. */
+export const TABLE_VISITORS = VISITORS;
 export const TABLE_VIEWS = "Views";
 export const DIRECT = "Direct or unknown";
 export const UNKNOWN_COUNTRY = "Unknown";
