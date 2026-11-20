@@ -155,3 +155,35 @@ async fn a_step_executed_again_starts_from_the_committed_state() {
     let r = results(&env, &run);
     assert_eq!(r[1]["value"], 2, "{}", r[1]);
 }
+
+/// A state of tens of thousands of small members is fitted in one pass:
+/// it keeps as many as fit, lists the rest, and the next script reads
+/// what it kept.
+#[tokio::test]
+async fn a_state_of_many_small_members_keeps_as_many_as_fit() {
+    let env = Env::new().await;
+    let r = scripts(
+        &env,
+        &[
+            "for (let i = 0; i < 40000; i++) state['k' + String(i).padStart(5, '0')] = 'x'.repeat(80); return 1;",
+            "const k = Object.keys(state); return [k.length, JSON.stringify(state).length, k[0], k[k.length - 1]];",
+        ],
+    )
+    .await;
+    let told = &r[0]["state"];
+    let listed = told["dropped"].as_array().unwrap().len() as u64;
+    assert_eq!(listed, 20, "{told}");
+    // Largest first, and among equals the last first.
+    assert_eq!(told["dropped"][0]["path"], "state.k39999", "{told}");
+    let kept = r[1]["value"][0].as_u64().unwrap();
+    assert_eq!(kept + listed + told["more"].as_u64().unwrap(), 40000);
+    // Each member is `"kNNNNN":"x…"` (91 bytes) and a comma; the stored
+    // `{"value":…,"handles":[]}` keeps 15 bytes more than the value.
+    let value_bytes = r[1]["value"][1].as_u64().unwrap();
+    assert_eq!(value_bytes, 2 + kept * 92 - 1);
+    let stored = value_bytes + 23;
+    let cap = clax_bot::state::CAP_BYTES as u64;
+    assert!(stored <= cap && stored + 92 > cap, "{stored} of {cap}");
+    assert_eq!(r[1]["value"][2], "k00000");
+    assert_eq!(r[1]["value"][3], format!("k{:05}", kept - 1));
+}

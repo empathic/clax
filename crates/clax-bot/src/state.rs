@@ -135,17 +135,47 @@ pub fn fit(left: Option<StateOut>, stopped: Option<&str>) -> Fitted {
         Value::Object(m) => m,
         _ => Map::new(),
     };
-    let size = |m: &Map<String, Value>| {
-        prune(Value::Object(m.clone()), &out.handles)
-            .to_string()
-            .len()
-    };
-    while size(&members) > CAP_BYTES && !members.is_empty() {
-        let (key, bytes) = members
-            .iter()
-            .map(|(k, v)| (k.clone(), v.to_string().len()))
-            .max_by_key(|(_, n)| *n)
-            .expect("a member");
+    // Each member is sized once, as it is written out, and the largest
+    // are left out first by subtracting their sizes from the total; the
+    // state is pruned once, after. The total is exact for a state with no
+    // handles and at least the stored size for one with them: a member is
+    // charged each handle entry it names, and each marker at the widest
+    // index pruning can give it.
+    let handle_bytes: Vec<usize> = out
+        .handles
+        .iter()
+        .map(|h| h.to_string().len() + 1)
+        .collect();
+    let widest = out.handles.len().saturating_sub(1).to_string().len();
+    let mut sized: Vec<(String, usize, usize)> = members
+        .iter()
+        .map(|(k, v)| {
+            let bytes = v.to_string().len();
+            let mut named = Vec::new();
+            markers(v, &mut named);
+            let mut cost = json!(k).to_string().len() + 1 + bytes + 1;
+            let mut charged: Vec<usize> = Vec::new();
+            for i in named {
+                cost = cost + widest - i.to_string().len().min(widest);
+                if i < handle_bytes.len() && !charged.contains(&i) {
+                    charged.push(i);
+                    cost += handle_bytes[i];
+                }
+            }
+            (k.clone(), bytes, cost)
+        })
+        .collect();
+    // Largest first; among equals, the last first.
+    sized.reverse();
+    sized.sort_by(|a, b| b.1.cmp(&a.1));
+    let base = empty().to_string().len();
+    let mut total = base + sized.iter().map(|m| m.2).sum::<usize>();
+    let mut left_out = sized.into_iter();
+    while total.saturating_sub(1) > CAP_BYTES {
+        let Some((key, bytes, cost)) = left_out.next() else {
+            break;
+        };
+        total -= cost;
         members.remove(&key);
         let path = if key
             .chars()
