@@ -395,10 +395,9 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
   }
 }
 
-/** The most sites the "Same app as…" list carries, and the most origins one site joins (the daemon's bound). */
+/** The most sites the "Same app as…" list carries. */
 export const MAX_SITES = 200;
-export const MAX_SITE_ORIGINS = 16;
-const origins = (v: unknown) => Array.isArray(v) && v.length >= 1 && v.length <= MAX_SITE_ORIGINS && v.every(origin);
+const origins = (v: unknown) => Array.isArray(v) && v.length >= 1 && v.every(origin);
 const suggestion = (v: unknown) => shape(v, ["origin", "origins", "reason", "path"]) && origin(v.origin) && origins(v.origins)
   && (v.reason === "path" || v.reason === "title") && (v.path === null || path(v.path));
 const siteChoice = (v: unknown) => shape(v, ["key", "name", "origins"]) && origin(v.key) && origin(v.name) && origins(v.origins);

@@ -7349,8 +7349,7 @@ credential, writes the token or the extension's credential (else 403
   while `remaining` is above 0 the client repeats the request, which is
   idempotent. 409 `joining` while either site has a join not finished
   (repeat that join first), 409 `unmerging` while either has an un-merge
-  under way; 400 `same_origin`, `too_many_origins` (a site joins at most
-  16), `too_many_rules` (64 in force).
+  under way; 400 `same_origin`, `too_many_rules` (64 in force).
 - **`POST /api/live/sites/split`** `{origin}` splits `origin` off its
   site: from then on it is a site of its own, and its new pages and
   threads are its own. What the site holds (pages, threads, rules,

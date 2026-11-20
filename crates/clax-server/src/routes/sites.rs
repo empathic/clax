@@ -233,7 +233,7 @@ async fn join_batch(
 /// request, which is idempotent, until it is 0). 409 `joining` while
 /// either site has a join not finished (repeat that join first), 409
 /// `unmerging` while either has an un-merge under way; 400 `same_origin`,
-/// `unknown_site`, `too_many_origins`, `too_many_rules`.
+/// `unknown_site`, `too_many_rules`.
 pub async fn join(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
