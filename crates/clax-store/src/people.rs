@@ -262,6 +262,32 @@ pub struct GrantCaller {
     pub rights: Rights,
 }
 
+/// The values of a ClaxBot run that decide its rights
+/// ([`Store::bot_rights`], [`Store::check_bot_write_in`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunRightsInput<'a> {
+    /// The person key the run acts for.
+    pub person: &'a str,
+    /// The grant of the agent that asked for the run.
+    pub agent_grant: Option<&'a str>,
+    /// Whether the run's rights apply only at its own artifact
+    /// ([`crate::bot_runs::Run::is_limited_to_its_artifact`]).
+    pub limited_to_its_artifact: bool,
+    /// The run's artifact; `None` for a run that has none.
+    pub artifact: Option<&'a str>,
+}
+
+impl<'a> From<&'a super::bot_runs::Run> for RunRightsInput<'a> {
+    fn from(run: &'a super::bot_runs::Run) -> Self {
+        RunRightsInput {
+            person: &run.person,
+            agent_grant: run.agent_grant.as_deref(),
+            limited_to_its_artifact: run.is_limited_to_its_artifact(),
+            artifact: run.artifact(),
+        }
+    }
+}
+
 /// What revoking a person ended.
 #[derive(Debug, Default)]
 pub struct RevokedPerson {
@@ -2008,25 +2034,23 @@ impl Store {
         self.with_read(|c| grant_caller_in(c, gid, session))
     }
 
-    /// The rights a ClaxBot run acting for `person` (a person key) holds:
-    /// with `agent_grant` (the agent that asked for the run), that grant's
-    /// as an agent of it holds them, its person's narrowed by it, so a run
-    /// never exceeds the agent that asked; else its person's own; `None`
-    /// for the owner's own run, which holds every right.
+    /// The rights of a ClaxBot run that acts for `run.person`.
+    ///
+    /// - A run that an agent asked for (`run.agent_grant`) has the rights
+    ///   of that grant: its person's rights, narrowed by the grant. A run
+    ///   limited to its own artifact has them at that artifact alone
+    ///   ([`Rights::only_at`]), and no rights when it has no artifact.
+    /// - The owner's own run has every right: the answer is `None`.
+    /// - Any other run has its person's own rights.
     ///
     /// # Errors
     /// `grant_revoked` for a grant that ended; the store's.
-    pub fn bot_rights(
-        &self,
-        person: &str,
-        agent_grant: Option<&str>,
-    ) -> Result<Option<clax_core::rights::Rights>> {
-        self.with_read(|c| bot_rights_in(c, person, agent_grant))
+    pub fn bot_rights(&self, run: RunRightsInput<'_>) -> Result<Option<clax_core::rights::Rights>> {
+        self.with_read(|c| bot_rights_in(c, run))
     }
 
-    /// That a ClaxBot run acting for `person` (a person key), asked for by
-    /// `agent_grant`'s agent when given, may still have write right
-    /// `action` of `kind` at artifact `aid`, read on `tx` (inside a
+    /// That a ClaxBot run acting for `run.person` may still have write
+    /// right `action` of `kind` at artifact `aid`, read on `tx` (inside a
     /// journaled write's transaction, so a revoke committed before it is
     /// seen): a connected person while connected, not revoked and with
     /// their `claxbot` flag on; the rights [`Store::bot_rights`] gives,
@@ -2037,13 +2061,13 @@ impl Store {
     pub fn check_bot_write_in(
         &self,
         tx: &super::bot_runs::Tx<'_>,
-        person: &str,
-        agent_grant: Option<&str>,
+        run: RunRightsInput<'_>,
         aid: Option<&str>,
         kind: clax_core::rights::RightType,
         action: &str,
     ) -> Result<()> {
         let c = tx.0;
+        let person = run.person;
         let refused = |why: &str| {
             Err(CoreError::invalid(
                 "forbidden",
@@ -2058,7 +2082,7 @@ impl Store {
                 return refused("no longer has ClaxBot");
             }
         }
-        let rights = match bot_rights_in(c, person, agent_grant) {
+        let rights = match bot_rights_in(c, run) {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(()),
             Err(_) => return refused("asked through an agent whose grant has ended"),
@@ -2655,12 +2679,17 @@ impl Store {
 /// [`Store::bot_rights`] on `c`.
 fn bot_rights_in(
     c: &rusqlite::Connection,
-    person: &str,
-    agent_grant: Option<&str>,
+    run: RunRightsInput<'_>,
 ) -> Result<Option<clax_core::rights::Rights>> {
-    if let Some(g) = agent_grant {
-        return Ok(Some(grant_caller_in(c, g, None)?.rights));
+    if let Some(g) = run.agent_grant {
+        let rights = grant_caller_in(c, g, None)?.rights;
+        return Ok(Some(match (run.limited_to_its_artifact, run.artifact) {
+            (false, _) => rights,
+            (true, Some(aid)) => rights.only_at(aid),
+            (true, None) => Rights::default(),
+        }));
     }
+    let person = run.person;
     if person == super::roles::OWNER {
         return Ok(None);
     }
@@ -3920,6 +3949,83 @@ pub(crate) mod tests {
                 .unwrap()
         );
         assert!(!st.artifact_created_by("nope", None).unwrap());
+    }
+
+    #[test]
+    fn a_brief_an_agents_grant_asked_for_holds_its_rights_at_its_artifact_alone() {
+        use crate::bot_runs::{NewRun, RequestKind};
+        use clax_core::rights::RightType::{Artifacts, Comments, Db};
+        let (_d, _c, st) = store();
+        let (gid, _, _) = approved(&st, "Sam", KEY_A);
+        let sam = st.grant(&gid).unwrap().person.unwrap();
+        let s = st.register_session(DAEMON, reg(Some(&gid))).unwrap();
+        let p = |t: &str| {
+            clax_core::publish::validate(
+                serde_json::from_value(serde_json::json!({
+                    "title": t, "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let (tides, _) = st.create_artifact(DAEMON, p("tides"), Some(&s.id)).unwrap();
+        let (diary, _) = st.create_artifact(DAEMON, p("diary"), Some(&s.id)).unwrap();
+        let run = |request: RequestKind, grant: Option<&str>, thread: &str| {
+            st.create_run(
+                DAEMON,
+                NewRun {
+                    artifact_id: tides.id.clone(),
+                    person: sam.clone(),
+                    request,
+                    thread_ids: vec![thread.into()],
+                    model: "m".into(),
+                    key_source: crate::credits::KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: grant.map(str::to_string),
+                    web: String::new(),
+                },
+            )
+            .unwrap()
+        };
+        let own = |a: &str| st.artifact_created_by(a, Some(&sam)).unwrap();
+        let limited = run(RequestKind::Brief, Some(&gid), "t1");
+        assert!(limited.is_limited_to_its_artifact());
+        let rights = st
+            .bot_rights(RunRightsInput::from(&limited))
+            .unwrap()
+            .unwrap();
+        assert!(rights.allows(Artifacts, "update", Some(&tides.id), &own));
+        assert!(rights.allows(Comments, "reply", Some(&tides.id), &own));
+        assert!(rights.db_level(&tides.id, "write", &own).is_some());
+        for (kind, action) in [(Artifacts, "read"), (Comments, "read"), (Db, "read")] {
+            assert!(!rights.allows(kind, action, Some(&diary.id), &own));
+        }
+        assert!(!rights.allows(Artifacts, "create", None, &own));
+        // A limited run with no artifact has no rights. It does not get the
+        // grant's rights instead.
+        let mut orphan = limited.clone();
+        orphan.artifact_id.clear();
+        assert!(orphan.is_limited_to_its_artifact());
+        let rights = st
+            .bot_rights(RunRightsInput::from(&orphan))
+            .unwrap()
+            .unwrap();
+        assert!(rights.is_empty(), "{:?}", rights.to_json());
+        assert!(!rights.allows(Artifacts, "read", Some(&tides.id), &own));
+        // A thread's run under the grant, and the person's own brief, keep
+        // the reach they have.
+        for other in [
+            run(RequestKind::Thread, Some(&gid), "t2"),
+            run(RequestKind::Brief, None, "t3"),
+        ] {
+            assert!(!other.is_limited_to_its_artifact());
+            let rights = st
+                .bot_rights(RunRightsInput::from(&other))
+                .unwrap()
+                .unwrap();
+            assert!(rights.allows(Artifacts, "read", Some(&diary.id), &own));
+            assert!(rights.allows(Artifacts, "create", None, &own));
+        }
     }
 
     #[test]
