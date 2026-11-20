@@ -33,11 +33,15 @@ async function firstBackground(page: Page, path: string): Promise<string> {
   return page.evaluate(() => (window as unknown as { firstBg: string }).firstBg);
 }
 
+// The icon the entry names: the link's own, kept as `data-plain` while the
+// unread badge (shell/src/q/badge.ts) shows the dotted mark in its place,
+// as it does when an earlier test on the worker's daemon left an item unread.
 test("both entries name the Echo mark as their icon, and it is served", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Icon", PAGE, {});
+  const icon = page.locator('link[rel="icon"]');
   for (const path of ["/", `/a/${artifact.id}`]) {
     await page.goto(`${d.base}${path}`);
-    await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", "/_clax/mark.svg");
+    await expect.poll(() => icon.evaluate((l: HTMLLinkElement) => l.dataset.plain ?? l.getAttribute("href"))).toBe("/_clax/mark.svg");
   }
   const res = await page.request.get(`${d.base}/_clax/mark.svg`);
   expect(res.status()).toBe(200);
