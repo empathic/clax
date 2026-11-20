@@ -1095,15 +1095,24 @@ pub fn admit_run(
 /// and grants, the person grants to their runs, and the host's sources
 /// can perform now.
 pub(crate) fn run_caps(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<CapSet> {
+    Ok(run_capabilities(st, bot, person)?.live())
+}
+
+/// What [`run_caps`] reads: each capability's terms for `person` now, or
+/// why it is off, and the browser family's settings.
+pub(crate) fn run_capabilities(
+    st: &Store,
+    bot: &Bot,
+    person: &str,
+) -> clax_core::Result<clax_bot::capability::Capabilities> {
     use clax_bot::capability::{Capabilities, Capability, Family};
     let web = crate::bot::web_configured(st, bot)?;
     let browser = crate::bot::browser_configured(st, bot)?;
-    Ok(Capabilities::now(st, person, &|c| match c {
+    Capabilities::now(st, person, &|c| match c {
         Capability::WebSearch => web.search,
         Capability::WebFetch => web.fetch,
         c => c.family() == Family::Browser && browser,
-    })?
-    .live())
+    })
 }
 
 /// Starts a run of `request` on artifact `aid` for `sender`, as `ctx`:
@@ -2500,7 +2509,7 @@ fn exports_view(st: &Store, run: &Run, person: &str) -> clax_core::Result<Value>
         "pages": pages,
         "grants": machine_grants(st, person)?,
         "exports": exports,
-        "released": false,
+        "released": true,
     }))
 }
 
@@ -2508,9 +2517,10 @@ fn exports_view(st: &Store, run: &Run, person: &str) -> clax_core::Result<Value>
 /// the pages of its last committed state they may export (`pages:
 /// [{path}]`), their live machine grants (`grants: [{id, name}]`), their
 /// live exports (`exports: [{id, grant, actions, expires_at,
-/// issued_at}]`), and `released: false`: no export's capability is
-/// released to its holder in this version (spec §18.5). 404 for anyone
-/// else.
+/// issued_at}]`), and `released: true`: each export's capability is
+/// released to the person ([`export_capability`]) for their machine to
+/// call it with (`POST /api/bot/pages`, [`page_call`]; spec §18.5). 404
+/// for anyone else.
 pub async fn exports(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -2538,17 +2548,22 @@ pub struct ExportBody {
     actions: Option<Vec<String>>,
     #[serde(default)]
     expires_s: Option<u32>,
+    #[serde(default)]
+    origins: Option<Vec<String>>,
 }
 
-/// `POST /api/bot/runs/<id>/exports {path, grant, actions?, expires_s?}`:
-/// the person the run acts for exports the page at `path` of its last
-/// committed state to their machine grant `grant` (spec §18.5): the host
-/// mints the page's capability for `holder=grant:<grant>`, narrowed to
-/// `actions` (of `read`, `act`, `navigate`, `record`, `close`; all five
-/// when absent) and `expires_s` seconds, and writes its grant row (granter
-/// the person, parent the page's grant), recorded as `grant.issue`.
-/// Answers the exports. 404 for another's run, no such page or no such
-/// grant of theirs; 400 `invalid_args` for an action that is none; 503
+/// `POST /api/bot/runs/<id>/exports {path, grant, actions?, expires_s?,
+/// origins?}`: the person the run acts for exports the page at `path` of
+/// its last committed state to their machine grant `grant` (spec §18.5):
+/// the host mints the page's capability for `holder=grant:<grant>`,
+/// narrowed to `actions` (of `read`, `act`, `navigate`, `record`,
+/// `close`; all five when absent), `expires_s` seconds and the `origins`
+/// a `navigate` may reach (each `scheme://host[:port]`), and writes its
+/// grant row (granter the person, parent the page's grant, the
+/// capability unsigned as its token), recorded as `grant.issue`. Answers
+/// the exports. 404 for another's run, no such page or no such grant of
+/// theirs; 400 `invalid_args` for an action that is none or an origin
+/// that is not one; 503
 /// `browser_unavailable` on a host that holds no browser sessions; the
 /// page's own refusal (`browser_session_lost`, `browser_session_closed`)
 /// when its session is gone.
@@ -2579,6 +2594,16 @@ pub async fn export(
             })
             .collect::<Result<_, _>>()?,
     };
+    if let Some(os) = &b.origins {
+        for o in os {
+            if clax_bot::browser::cap::origin_of(o).as_deref() != Some(o.as_str()) {
+                return Err(ApiError::bad_request(
+                    "invalid_args",
+                    format!("`{o}` is not an origin (scheme://host[:port])"),
+                ));
+            }
+        }
+    }
     let Some(sessions) = s.bot.browser_sessions.clone() else {
         return Err(ApiError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -2609,6 +2634,9 @@ pub async fn export(
             if let Some(ms) = expires_ms {
                 more.push(Caveat::Expires(ms));
             }
+            if let Some(os) = &b.origins {
+                more.push(Caveat::Origin(os.iter().cloned().collect()));
+            }
             let cap = sessions
                 .export(&run.id, &handle, &b.grant, &more)
                 .map_err(|e| CoreError::invalid(e.code, e.message))?;
@@ -2636,6 +2664,8 @@ pub async fn export(
                     grant: b.grant.clone(),
                     parent,
                     actions: actions.iter().map(|c| c.as_str().to_string()).collect(),
+                    origins: b.origins.clone(),
+                    token: cap.unsigned(),
                     expires_at: expires_ms
                         .and_then(chrono::DateTime::from_timestamp_millis)
                         .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
@@ -2691,4 +2721,339 @@ pub async fn unexport(
         })
         .await?;
     Ok(Json(v))
+}
+
+/// `GET /api/bot/runs/<id>/exports/<eid>/capability`: for the person who
+/// exported `eid`, a page of run `id`, its capability (`{id, capability,
+/// shown}`, `capability` the serialized macaroon, `shown` its actions and
+/// expiry as a page shows them), to give their machine, which calls it
+/// with `POST /api/bot/pages` ([`page_call`]; spec §18.5). The grant row
+/// keeps it unsigned; it is signed again with the instance key here, and
+/// never stored or cached (`Cache-Control: no-store`). 404 for an export
+/// that is not theirs, not of this run, or revoked (it, or a grant of its
+/// chain); 503 `browser_unavailable` on a host that holds no browser
+/// sessions.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn export_capability(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let (_, person) = me(&s, &d).await?;
+    let (rid, eid) = path(p)?;
+    let Some(sessions) = s.bot.browser_sessions.clone() else {
+        return Err(no_browser());
+    };
+    let (run, id) = (rid.clone(), eid.clone());
+    let token = s
+        .store_call(move |st| {
+            own_run(st, &run, &person)?;
+            st.export_token(&person, &id)?.ok_or(CoreError::NotFound)
+        })
+        .await?;
+    let cap = sessions
+        .signed(&token)
+        .filter(|c| c.run() == rid && c.id() == eid)
+        .ok_or_else(ApiError::not_found)?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"id": eid, "capability": cap.encode(), "shown": cap.shown()})),
+    )
+        .into_response())
+}
+
+/// [`export_capability`] on wasm32 (the Worker), which holds no browser
+/// session: 503 `browser_unavailable` for the person a run acts for.
+#[cfg(target_arch = "wasm32")]
+pub async fn export_capability(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let (_, person) = me(&s, &d).await?;
+    let (rid, _) = path(p)?;
+    s.store_call(move |st| own_run(st, &rid, &person).map(|_| ()))
+        .await?;
+    Err(no_browser())
+}
+
+/// 503 `browser_unavailable`: this host holds no browser sessions.
+fn no_browser() -> ApiError {
+    ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "browser_unavailable",
+        "this host holds no browser sessions",
+    )
+}
+
+/// `POST /api/bot/pages`'s body: the exported page's capability, and the
+/// call (`op` one of `page`, `act`, `expect`, `close`; `action` the page
+/// or locator action, or the matcher; `locator` a locator's steps;
+/// `args` its options), as a script's `browser.page`, `browser.act`,
+/// `browser.expect` and `browser.close` take them.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PageCallBody {
+    page: String,
+    op: String,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    locator: Option<Value>,
+    #[serde(default)]
+    args: Option<Value>,
+}
+
+/// `e` as the route answers it: 403 for `browser_forbidden` and
+/// `browser_disabled`, 404 for `browser_session_lost`, 410 for
+/// `browser_session_closed`, 503 for `browser_unavailable`,
+/// `browser_busy` and `browser_timeout`, 400 for the rest.
+#[cfg(not(target_arch = "wasm32"))]
+fn browser_refusal(e: &clax_bot::browser::BrowserError) -> ApiError {
+    use clax_bot::browser as b;
+    let status = match e.code {
+        b::CODE_BROWSER_FORBIDDEN | b::CODE_BROWSER_DISABLED => StatusCode::FORBIDDEN,
+        b::CODE_BROWSER_SESSION_LOST => StatusCode::NOT_FOUND,
+        b::CODE_BROWSER_SESSION_CLOSED => StatusCode::GONE,
+        b::CODE_BROWSER_UNAVAILABLE | b::CODE_BROWSER_BUSY | b::CODE_BROWSER_TIMEOUT => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        _ => StatusCode::BAD_REQUEST,
+    };
+    ApiError::new(status, e.code, e.message.clone())
+}
+
+/// `POST /api/bot/pages {page, op, action?, locator?, args?}`: a machine
+/// grant's agent (the grant flow's `Clax-Grant`) calls the page an export
+/// to that grant is a capability of (spec §18.5), answered as a script's
+/// call is (`{ok, url, ms, cost, value | error, timeout?}`, a screenshot
+/// as `{media_type, data}`, [`clax_bot::browser::held`]). A call needs
+/// both proofs (§18.4): the macaroon verifies and every caveat holds for
+/// `holder=grant:<the caller's grant>` (actions, expiry, origin), and the
+/// store says the export's grant and every grant of its chain are issued,
+/// hold now and convey the call's action at its origin; and the session's
+/// open action is still the run's (declared by it and live for its
+/// person). Its browser time is charged, as every call of the session, to
+/// the person the run acts for, on the run, with a `bot.spend` record
+/// naming the export and the grant (`Store::charge_held_browser_call`);
+/// the run's journal is its own steps' and gains nothing. 403 `forbidden`
+/// for a caller that is no machine grant; 403 `browser_forbidden` for a
+/// capability whose caveats or grant refuse the call (revoked, expired,
+/// an action or origin outside it); 404 `browser_session_lost` for one
+/// that does not verify or is another grant's (it says nothing of the
+/// session), and once the run ended (the registry forgets its sessions);
+/// 410 `browser_session_closed` once its session closed; 402
+/// `credits_exhausted` when the person cannot pay one call's time cap; 400 `invalid_args` for a call the layer does not
+/// take, and 403 `browser_disabled` for `record`, `runTests` and a `goto`
+/// out of the session's origin; 503 `browser_unavailable` on a host that
+/// holds no browser sessions or prices no browser time.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn page_call(
+    State(s): State<AppState>,
+    a: clax_http::agent::Agent<clax_http::agent::BotPageCall>,
+    req: Result<Json<PageCallBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    use clax_bot::browser::cap::{Holder, origin_of};
+    use clax_bot::browser::live::{CallCtx, Nav};
+    use clax_store::bot_web::SessionEnd;
+    let Some(grant) = a.grant().map(str::to_string) else {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "an exported page is called by the machine grant it was exported to",
+        ));
+    };
+    let b = body(req)?;
+    let held = clax_bot::browser::held::parse(
+        &b.op,
+        b.action.as_deref(),
+        b.locator.as_ref(),
+        b.args.as_ref(),
+    )
+    .map_err(|e| browser_refusal(&e))?;
+    let Some(sessions) = s.bot.browser_sessions.clone() else {
+        return Err(no_browser());
+    };
+    let holder = Holder::Grant(grant.clone());
+    let (session, cap) = sessions
+        .authorize_for(&holder, &b.page, Some(held.class), &held.nav)
+        .map_err(|e| browser_refusal(&e))?;
+    let run_id = cap.run().to_string();
+    let location = match &held.nav {
+        Nav::Goto(url) => sessions
+            .goto_target(&run_id, &session, url)
+            .ok()
+            .and_then(|t| origin_of(&t)),
+        _ => None,
+    };
+    let now = chrono::DateTime::from_timestamp_millis(sessions.now_ms())
+        .unwrap_or_else(|| s.store.now_utc());
+    let kind = sessions
+        .open_sessions(&run_id)
+        .into_iter()
+        .find(|(id, _)| *id == session)
+        .map(|(_, k)| k)
+        .ok_or_else(|| {
+            browser_refusal(&clax_bot::browser::BrowserError::new(
+                clax_bot::browser::CODE_BROWSER_SESSION_CLOSED,
+                "this exported page's browser session has ended",
+                false,
+            ))
+        })?;
+    let (bot, cap_id, class, g, r) = (
+        s.bot.clone(),
+        cap.id().to_string(),
+        held.class,
+        grant.clone(),
+        run_id.clone(),
+    );
+    let checked = s
+        .store_call(move |st| {
+            held_call_terms(st, &bot, &g, &r, &cap_id, class, kind, location, now)
+        })
+        .await??;
+    let deadline = s.store.now_utc() + chrono::Duration::seconds(i64::from(checked));
+    let mut ctx = CallCtx::new(deadline, clax_bot_sandbox::CancelToken::new());
+    ctx.held = Some(std::sync::Arc::new((cap.clone(), holder)));
+    let answered = match &held.call {
+        None => sessions
+            .close(&run_id, &session, SessionEnd::Closed)
+            .await
+            .map(|at| (at, None)),
+        Some(c) => sessions
+            .call(&run_id, &session, c.clone(), ctx)
+            .await
+            .map(|a| (a.at_ms, Some(a))),
+    };
+    let (at_ms, answered) = answered.map_err(|e| browser_refusal(&e))?;
+    let op = match b.op.as_str() {
+        "page" => clax_bot::browser::OP_PAGE,
+        "act" => clax_bot::browser::OP_ACT,
+        "expect" => clax_bot::browser::OP_EXPECT,
+        _ => clax_bot::browser::OP_CLOSE,
+    };
+    let mut audit = clax_core::audit::AuditRecord::new(AuditKind::BotSpend, s.store.now())
+        .with("capability", kind.capability())
+        .with("op", op)
+        .with("session", session.as_str())
+        .with("export", cap.id())
+        .with("grant", grant.as_str())
+        .with("ok", answered.as_ref().is_none_or(|a| a.ok));
+    if let Some(action) = &b.action {
+        audit = audit.with("action", action.as_str());
+    }
+    let close = held.call.is_none();
+    let (ms, credits) = s
+        .store_call(move |st| st.charge_held_browser_call(&run_id, &session, at_ms, close, audit))
+        .await?;
+    Ok(Json(clax_bot::browser::held::answer(
+        answered.as_ref(),
+        ms,
+        credits,
+    )))
+}
+
+/// What a holder's call of export `export` (a capability of a session of
+/// `kind` of run `run`) needs of the store before it is made (see
+/// [`page_call`]): its grant conveys `class` at `location` to grant
+/// `grant` at `now`; the run has not ended and still holds the session's
+/// open action; the person can pay one call's time cap. Answers that cap,
+/// in seconds, or the refusal.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
+fn held_call_terms(
+    st: &Store,
+    bot: &Bot,
+    grant: &str,
+    run: &str,
+    export: &str,
+    class: clax_bot::browser::cap::Class,
+    kind: clax_store::bot_web::SessionKind,
+    location: Option<String>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> clax_core::Result<Result<u32, ApiError>> {
+    use clax_bot::browser::cap::Refusal;
+    use clax_bot::capability::Capability;
+    use clax_store::credits::{Applies, LINE_BROWSER_TIME, row_credits_milli};
+    let forbidden = |why: String| {
+        ApiError::new(
+            StatusCode::FORBIDDEN,
+            clax_bot::browser::CODE_BROWSER_FORBIDDEN,
+            why,
+        )
+    };
+    if !st.export_conveys(grant, export, class.as_str(), location.as_deref(), now)? {
+        return Ok(Err(forbidden(Refusal::Revoked.message())));
+    }
+    let run = st.run(run)?.ok_or(CoreError::NotFound)?;
+    if run.status.is_terminal() {
+        return Ok(Err(ApiError::new(
+            StatusCode::GONE,
+            clax_bot::browser::CODE_BROWSER_SESSION_CLOSED,
+            "this exported page's run has ended, and its browser session with it",
+        )));
+    }
+    let caps = run_capabilities(st, bot, &run.person)?;
+    let open = Capability::parse(kind.capability());
+    let declared = CapSet::parse(&run.caps);
+    let (Some(open), Some(terms)) = (open, caps.browser()) else {
+        return Ok(Err(forbidden(format!(
+            "{} is no longer the run's",
+            kind.capability()
+        ))));
+    };
+    if !declared.has(open) || caps.get(open).is_err() {
+        return Ok(Err(forbidden(format!(
+            "{} is no longer the run's",
+            kind.capability()
+        ))));
+    }
+    let Some(rate) = st.rate_of(LINE_BROWSER_TIME)? else {
+        return Ok(Err(no_browser()));
+    };
+    let ks = st.key_source_of(&run.person)?;
+    let most = if ks == KeySource::Own && rate.applies == Applies::InstanceKey {
+        0
+    } else {
+        row_credits_milli(
+            i64::from(terms.call_seconds) * 1000,
+            rate.cost_micro_usd,
+            rate.margin_bp,
+            rate.fixed_credits_milli,
+            rate.credit_price_micro_usd,
+            rate.unit.base(),
+        )?
+    };
+    let left = st.week_usage(&run.person, now)?.remaining_milli();
+    if !st.flags_of(&run.person)?.claxbot_unenforced && most > left {
+        return Ok(Err(ApiError::new(
+            StatusCode::PAYMENT_REQUIRED,
+            "credits_exhausted",
+            format!(
+                "the person this page's run acts for has {} credits left this week and a browser \
+                 call of {} s can cost {}",
+                left as f64 / 1000.0,
+                terms.call_seconds,
+                most as f64 / 1000.0
+            ),
+        )));
+    }
+    Ok(Ok(terms.call_seconds))
+}
+
+/// [`page_call`] on wasm32 (the Worker), which holds no browser session:
+/// 403 `forbidden` for a caller that is no machine grant, else 503
+/// `browser_unavailable`.
+#[cfg(target_arch = "wasm32")]
+pub async fn page_call(
+    State(_s): State<AppState>,
+    a: clax_http::agent::Agent<clax_http::agent::BotPageCall>,
+) -> Result<Json<Value>, ApiError> {
+    if a.grant().is_none() {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "an exported page is called by the machine grant it was exported to",
+        ));
+    }
+    Err(no_browser())
 }

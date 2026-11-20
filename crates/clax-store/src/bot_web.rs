@@ -698,6 +698,96 @@ impl Store {
         self.end_bot_session_row(run_id, session, at_ms, reason, None)
     }
 
+    /// Charges a call of session `session` of run `run_id` that the holder
+    /// of an export made (spec 2026-11-19-claxbot-browser-design §18.5,
+    /// §18.8), the session's browser at `at_ms` milliseconds after it
+    /// opened when it answered: the segment from its charged point to
+    /// `at_ms` (nothing when `at_ms` is not past it), as
+    /// [`LINE_BROWSER_TIME`] to the run's person on the run, on its open
+    /// step if one is open and else on none, added to the run's
+    /// `credits_milli`; moves the charged point to `at_ms`, or for a
+    /// `close` closes the row `closed`; and records `audit` (a `bot.spend`
+    /// record) with the run's artifact, `run`, `step`, `ms` (the segment)
+    /// and `credits_milli` set, as ClaxBot for the run's person; in one
+    /// transaction. Answers the segment and the credits charged. Nothing
+    /// enters the run's journal: the call is no step's.
+    ///
+    /// # Errors
+    /// `NotFound` for no such run; `run_invalid` when it has ended;
+    /// `session_mismatch` for a session the run does not have or that is
+    /// closed; the charge's (`unknown_cost_line`); the store's. A refused
+    /// charge writes nothing.
+    pub fn charge_held_browser_call(
+        &self,
+        run_id: &str,
+        session: &str,
+        at_ms: i64,
+        close: bool,
+        audit: AuditRecord,
+    ) -> Result<(i64, i64)> {
+        let at = self.now_utc();
+        let ov = self.bot_overrides();
+        self.with_tx(|tx| {
+            let run = run_in(tx, run_id)?.ok_or(CoreError::NotFound)?;
+            if run.status.is_terminal() {
+                return Err(CoreError::invalid(
+                    "run_invalid",
+                    format!("run {run_id} has ended"),
+                ));
+            }
+            let Some(row) = session_in(tx, run_id, session)?.filter(SessionRow::is_open) else {
+                return Err(session_mismatch(
+                    run_id,
+                    format!("session {session} is not open"),
+                ));
+            };
+            let step = open_step_in(tx, run_id)?.map(|s| s.n);
+            let through = at_ms.max(row.charged_ms);
+            let segment = through - row.charged_ms;
+            let rows = charge_rows_in(
+                tx,
+                &ov,
+                &run.person,
+                Some(run_id),
+                step,
+                &[Metered::new(LINE_BROWSER_TIME, segment, run.key_source)],
+                at,
+            )?;
+            let credits: i64 = rows.iter().map(|u| u.credits_milli).sum();
+            let now = clax_core::time::stamp(at);
+            if credits != 0 {
+                tx.execute(
+                    "UPDATE bot_runs SET credits_milli = credits_milli + ?2, updated_at = ?3
+                      WHERE id = ?1",
+                    params![run_id, credits, now],
+                )?;
+            }
+            if close {
+                close_session_in(tx, run_id, session, through, SessionEnd::Closed, &now)?;
+            } else {
+                tx.execute(
+                    "UPDATE bot_browser_sessions SET charged_ms = ?3
+                      WHERE run_id = ?1 AND session_id = ?2",
+                    params![run_id, session, through],
+                )?;
+            }
+            let mut rec = audit
+                .with("run", run_id)
+                .with("step", step)
+                .with("ms", segment)
+                .with("credits_milli", credits);
+            rec.ids.artifact = Some(run.artifact_id.clone());
+            let ctx = AuditCtx {
+                actor: Actor::Bot {
+                    on_behalf_of: run.person.clone(),
+                },
+                ..AuditCtx::DAEMON
+            };
+            self.record_audit(tx, &ctx, rec)?;
+            Ok((segment, credits))
+        })
+    }
+
     /// [`Store::end_bot_browser_session`] for a session whose open was
     /// never written (its Spend refused): when run `run_id` has no row for
     /// `session`, one of `kind` opened at `opened_at` is made first,

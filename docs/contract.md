@@ -6444,6 +6444,7 @@ router), and a test fails when it differs:
 | `POST /api/queues/{qid}/reports/{tid}/fix` | Own | `clax-comments` `reply` | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports/{tid}/diagnostics` | Own | `clax-comments` `read` | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports/{tid}/comments/{cid}/clip` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `POST /api/bot/pages` | Own | none | 2 MiB | yes |
 
 | Route | Class | Refuses the owner's agents |
 |---|---|---|
@@ -6553,6 +6554,7 @@ router), and a test fails when it differs:
 | `GET /api/bot/runs/{id}/exports` | Denied | no |
 | `POST /api/bot/runs/{id}/exports` | Denied | no |
 | `DELETE /api/bot/runs/{id}/exports/{eid}` | Denied | no |
+| `GET /api/bot/runs/{id}/exports/{eid}/capability` | Denied | no |
 | `GET /api/bot/surfaces` | Denied | no |
 | `PUT /api/bot/surfaces/{name}` | Denied | no |
 | `PUT /api/bot/surfaces/{name}/content` | Denied | no |

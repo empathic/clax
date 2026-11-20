@@ -2521,7 +2521,8 @@ pub const MIGRATIONS: &[&str] = &[
     // version, event): an admin's to a person (`person:<key>`) or to
     // everyone (the selector `people_of:instance`, with a child per
     // person), a person's to their own runs (`runs_of:<key>`) and a page's
-    // share (`run:<ID>`), written only by `crate::bot_grants`; `bot_runs.caps` is the run's
+    // share (`run:<ID>`) or export (`grant:<ID>`, whose `token_json` is its
+    // capability unsigned, spec §18.5), written only by `crate::bot_grants`; `bot_runs.caps` is the run's
     // capabilities when it was made, capability IDs sorted and
     // comma-separated. The Rust step ([`BROWSER_MIGRATION`]) writes main's
     // web switches as explicit grants and fills `caps` from `web`
@@ -2578,7 +2579,8 @@ pub const MIGRATIONS: &[&str] = &[
         revoked_at TEXT,
         revoked_by TEXT,
         revoke_reason TEXT
-            CHECK (revoke_reason IN ('granter', 'controller', 'owner', 'parent_ended'))
+            CHECK (revoke_reason IN ('granter', 'controller', 'owner', 'parent_ended')),
+        token_json TEXT
     );
     CREATE INDEX bot_cap_grants_by_grantee ON bot_cap_grants(grantee, status);
     CREATE INDEX bot_cap_grants_by_parent ON bot_cap_grants(parent) WHERE parent IS NOT NULL;

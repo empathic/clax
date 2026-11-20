@@ -2074,20 +2074,51 @@ capability is never read as wider than its caveats.
   new holder replaces, and only the host mints), `actions`, `expires`,
   and writes its grant row: granter the person, grantee `grant:<ID>`,
   parent the page's grant (its share row, or the run's `runs_of` grant),
-  `event` `share`, `access` the actions, `conditions` the expiry
-  (`POST /api/bot/runs/<id>/exports {path, grant, actions?,
-  expires_s?}`; `GET` lists the run's pages, the person's machine grants
+  `event` `share`, `access` the actions and origins, `conditions` the
+  expiry, and the capability without its signature as the row's token
+  (`token_json`) (`POST /api/bot/runs/<id>/exports {path, grant,
+  actions?, expires_s?, origins?}`, `origins` the `origin` caveat a
+  share takes; `GET` lists the run's pages, the person's machine grants
   and their live exports; `DELETE
   /api/bot/runs/<id>/exports/<eid>` revokes one, reason `granter`). The
   grant conveys `conv(g) ∩ caps(person)`. The model never sees it, and
   `page.share` cannot make one.
-- **The transport is deferred** **(design)**: the serialized macaroon is
-  released only to its authenticated holder, through the grant flow
-  (`clax-http::grant_auth`, `routes/grants.rs`), and no route yet serves
-  a browser call to a grant holder, so no export is released and no
-  call is made under one; the row, its listing and its revocation exist
-  so the transport adds a route and nothing else. Until then an export
-  does not keep its session open (§18.7).
+- **The transport** **(design, built)**: two routes, and nothing else.
+  - **Release**: `GET /api/bot/runs/<id>/exports/<eid>/capability`
+    answers the person who made the export (their browser, refused to
+    every agent) `{id, capability, shown}`, `Cache-Control: no-store`:
+    the row's unsigned capability signed again with the instance key
+    (§18.2), so the row alone allows no call and the macaroon is stored
+    nowhere. 404 for an export not theirs, not of the run, or revoked
+    (it or a grant of its chain); `browser_unavailable` on a host with no
+    browser sessions (the Worker). The person gives it to their machine;
+    the machine cannot fetch it itself.
+  - **Calls**: `POST /api/bot/pages {page, op, action?, locator?, args?}`,
+    a grant-flow route (`Clax-Grant`, signed; class `Own`, no right of an
+    artifact). `op` and the rest are `browser.page`'s, `browser.act`'s,
+    `browser.expect`'s and `browser.close`'s, read by the layer's rows
+    (`clax_bot::browser::held`); `share` and `revoke` are a run's own,
+    and `record` and `runTests` (which keep what they make in the run's
+    content) are refused `browser_disabled`. A call needs both proofs
+    (§18.4): the macaroon verifies and every caveat holds for
+    `holder=grant:<the caller's grant>`, and the export's row and every
+    row of its chain are issued, hold at the registry's clock and convey
+    the call's action at its origin; and the run has not ended and still
+    holds the session's open action (declared and live for its person,
+    §4.4). It answers what a script's call answers, a screenshot as the
+    image itself (`{media_type, data}`), and is held to the session's
+    own request policy: a `goto` out of an artifact or content session's
+    origin is refused, and a URL session's pages reach only what its
+    run's URL rule admitted. Refusals: 403 `forbidden` for a caller that
+    is no machine grant, 403 `browser_forbidden`, 404
+    `browser_session_lost` (also for another grant's page, which says
+    nothing of the session, and once the run ended: the registry forgets
+    its sessions), 410 `browser_session_closed`, 402
+    `credits_exhausted`, 503 `browser_unavailable`.
+  - **Not journaled in the run.** A holder's call is no step of the run,
+    so the run's journal (which a resumed step replays) gains nothing;
+    the call is recorded as a `bot.spend` record (§18.9) and charged on
+    the run (§18.8).
 
 ### 18.6 Revocation **(owner: transitive, in the store; design: how)**
 
@@ -2126,18 +2157,23 @@ it open until the session's idle time ends it, since it can make no call
 to keep it awake. The decision reads the committed state and the
 store's revocations, never the clock or a script's own objects, so a
 step executed again decides the same unless a revoke came between, in
-which case it closes a session no call could use. An export, once §18.5's
-transport exists, will hold its session as a live grant with its expiry,
-re-evaluated when the grant ends.
+which case it closes a session no call could use. A live export (its row
+and every row of its chain issued, its expiry not read) of a session of
+`R` holds that session open as well (`Store::live_export_tokens`, each
+signed again with the instance key); a revoked export stops holding it
+at `R`'s next commit, and makes no call before.
 
 ### 18.8 Charging **(design)**
 
 Browser time is the session's, charged to the person the opening run
 acts for, whichever capability's call made it (§10.3: each millisecond
-once). In this version every call is its own run's, so nothing changes.
-When §18.5's transport exists, an export's calls are charged to the same
-person: the export is the payer's own act, and `expires`, the session's
-idle time and its lifetime bound what it costs.
+once). An export's calls are charged to the same person, on the run,
+the segment from the session's charged point to the call's end, as a
+script's call is (`Store::charge_held_browser_call`): the export is the
+payer's own act, and `expires`, the session's idle time and its
+lifetime bound what it costs. Before a call, the person must be able to
+pay one call's time cap (`browser.call_seconds`), else
+`credits_exhausted`, as for a script's.
 
 ### 18.9 Audit **(design)**
 
@@ -2146,7 +2182,11 @@ the session's ID and, never the macaroon or its signature:
 
 - a share: `action: "share"`, `capability` (the new ID), `parent` (the
   page's), `actions`, `expires`, `origins`;
-- a revoke: `action: "revoke"`, `capability`.
+- a revoke: `action: "revoke"`, `capability`;
+- an export's call (§18.5): `capability` (the session's open action),
+  `op`, `action`, `session`, `export` (its ID), `grant`, `ok`, `run`,
+  `step` (the run's open step, if any), `ms` and `credits_milli`. A
+  holder's call the route refuses is answered and not recorded.
 
 Each also writes its grant's `grant.issue` (`event: share`) or
 `grant.revoke` in the same transaction (§4.8); an export and a revoke on

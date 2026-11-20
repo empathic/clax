@@ -141,6 +141,8 @@ mod l10 {
         ("bot::exports", Bot),
         ("bot::export", Bot),
         ("bot::unexport", Bot),
+        ("bot::export_capability", Bot),
+        ("bot::page_call", NoArtifact),
         ("bot::events", Bot),
         ("admin::people", Bot),
         ("admin::set_flags", Bot),
@@ -627,6 +629,10 @@ mod l10 {
         (
             "bot_joins::put",
             "a host's joins: no audit kind records them yet (crates/clax-core/src/audit/mod.rs)",
+        ),
+        (
+            "bot::page_call",
+            "an exported page's call records its own bot.spend as ClaxBot for the run's person, in the charge's transaction (Store::charge_held_browser_call)",
         ),
         ("working::renew", "a heartbeat (§6.11)"),
         (
@@ -1832,6 +1838,7 @@ mod agents {
                 Own,
                 Some((Comments, "read")),
             ),
+            ("POST", "/api/bot/pages", Own, None),
         ]
     };
 

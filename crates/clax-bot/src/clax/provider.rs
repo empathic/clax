@@ -273,15 +273,23 @@ impl SurfaceProvider for ClaxProvider {
     }
 
     /// Closes, `dropped`, every open browser session of the run whose
-    /// handle the committed state does not hold, and charges each one's
-    /// tail (spec 2026-11-19-claxbot-browser §17.4).
+    /// handle the committed state does not hold and no live export is a
+    /// capability of, and charges each one's tail (spec
+    /// 2026-11-19-claxbot-browser §17.4, §18.7).
     async fn state_committed(&self, run: &RunInfo, _step: i64, held: &[String]) {
         if let Some(sessions) = &self.sessions {
             let live = self.store.live_shares(&run.id).unwrap_or_else(|e| {
                 tracing::warn!("clax-bot: run {}: its live shares do not read: {e}", run.id);
                 std::collections::BTreeSet::new()
             });
-            sessions.close_unheld(&run.id, held, &live).await;
+            let exported = self.store.live_export_tokens().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "clax-bot: run {}: the live exports do not read: {e}",
+                    run.id
+                );
+                Vec::new()
+            });
+            sessions.close_unheld(&run.id, held, &live, &exported).await;
             super::browser::charge_ended(&self.store, sessions);
         }
     }

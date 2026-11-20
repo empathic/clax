@@ -41,6 +41,7 @@ pub mod browse;
 pub mod cap;
 pub mod cdp;
 pub mod fake;
+pub mod held;
 pub mod layer;
 pub mod live;
 pub mod locate;

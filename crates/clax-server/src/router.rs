@@ -604,6 +604,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/bot/runs/{id}/exports/{eid}",
             axum::routing::delete(bot::unexport),
         )
+        .route(
+            "/api/bot/runs/{id}/exports/{eid}/capability",
+            get(bot::export_capability),
+        )
+        .route("/api/bot/pages", post(bot::page_call))
         .route("/api/admin/people", get(admin::people))
         .route("/api/admin/people/{person}/flags", put(admin::set_flags))
         .route("/api/admin/people/{person}/role", put(admin::set_role))

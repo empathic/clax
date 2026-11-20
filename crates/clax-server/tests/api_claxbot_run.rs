@@ -2840,7 +2840,7 @@ async fn a_runs_pages_are_listed_for_export_to_the_persons_grants() {
         .unwrap();
     assert_eq!(v["pages"], json!([{"path": "state.page"}]), "{v}");
     assert_eq!(v["exports"], json!([]));
-    assert_eq!(v["released"], false, "no export is released yet");
+    assert_eq!(v["released"], true, "an export is released to its person");
     let res = ts
         .client
         .post(&url)
@@ -2864,5 +2864,412 @@ async fn a_runs_pages_are_listed_for_export_to_the_persons_grants() {
     assert!(
         ts.store.live_share_grants().unwrap().is_empty(),
         "nothing written"
+    );
+}
+
+/// A registry daemon on every interface (it may invite the owner's
+/// machine) whose store and registry read `clock`, with a content session
+/// of a run of the owner's open, charged through its open and held by
+/// the run's last committed state as `state.page`, and the owner's
+/// machine connected: what an export is made of (spec §18.5).
+struct Exportable {
+    ts: TestServer,
+    clock: std::sync::Arc<clax_core::working::ManualClock>,
+    rid: String,
+    session: String,
+    machine: clax_testkit::TestClient,
+}
+
+async fn exportable() -> Exportable {
+    use clax_store::bot_runs::{DriverId, StepCommit, StepKind};
+    use clax_store::bot_web::{SessionKind, SessionSpend, Spend};
+    use clax_store::credits::{KeySource, LINE_BROWSER_TIME, Metered};
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-11-20T10:00:00Z"));
+    let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
+    source.opens(|| {
+        Ok(clax_bot::browser::FakeChrome::page(
+            clax_bot::browser::PageModel::new().screenshot(vec![137, 80, 78, 71]),
+        ))
+    });
+    let src = source.clone();
+    let ts =
+        TestServer::spawn_on_with_clock_and("0.0.0.0".parse().unwrap(), clock.clone(), move |s| {
+            let web = std::sync::Arc::new(clax_bot::web::FakeWebSource::new());
+            let _ = clax_server::bot::driver_with_sources(s, web, src);
+        })
+        .await;
+    browser_on(&ts).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/browser", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"content": {"enabled": true}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let rid = run_with_caps(&ts, "clax-browser:open-content").await;
+    let opened = opened_in_registry(&ts, &rid, SessionKind::Content).await;
+    let d = DriverId::mint();
+    ts.store.claim_run(&rid, &d, 60).unwrap().unwrap();
+    ts.store.begin_step(&rid, &d, 1, StepKind::Script).unwrap();
+    let run = ts.store.run(&rid).unwrap().unwrap();
+    let entry = ts
+        .store
+        .call_entry(&rid, &d, 1, 1, 0, "browser.open", "h")
+        .unwrap()
+        .answered(true, json!({"value": {"session": opened.session}}));
+    ts.store
+        .spend_journaled(
+            &run,
+            &d,
+            Spend {
+                entry,
+                usage: Some(Metered::new(
+                    LINE_BROWSER_TIME,
+                    opened.at_ms,
+                    KeySource::Instance,
+                )),
+                page: None,
+                session: Some(SessionSpend::Open {
+                    session: opened.session.clone(),
+                    kind: SessionKind::Content,
+                    opened_at: ts.store.now_utc(),
+                    through_ms: opened.at_ms,
+                }),
+                grant: None,
+                audit: clax_core::audit::AuditRecord::new(
+                    clax_core::audit::AuditKind::BotSpend,
+                    ts.store.now(),
+                )
+                .with("capability", "clax-browser:open-content")
+                .with("op", "browser.open"),
+            },
+        )
+        .unwrap();
+    ts.store
+        .commit_bot_step(
+            &clax_bot::run::bot_ctx(clax_store::roles::OWNER),
+            &rid,
+            &d,
+            1,
+            StepCommit {
+                payload: json!({"state": {
+                    "value": {"page": {"$clax": 0}},
+                    "handles": [{"page": opened.handle, "url": "about:blank", "of": "Page"}]
+                }}),
+                usage: vec![],
+                events: vec![],
+                draft: vec![],
+                reason: None,
+                delivered: vec![],
+            },
+        )
+        .unwrap();
+    let machine = machine_of(&ts, json!({"me": true})).await;
+    Exportable {
+        ts,
+        clock,
+        rid,
+        session: opened.session,
+        machine,
+    }
+}
+
+/// A machine connected by an invite made with `body`.
+async fn machine_of(ts: &TestServer, body: Value) -> clax_testkit::TestClient {
+    let cmd = ts.invite_with(body).await;
+    let code = cmd.rsplit_once("/i/").unwrap().1;
+    let m = clax_testkit::TestClient::new(ts);
+    m.grant_request(json!({"access_token": {"access": ["clax:full"]}, "clax": {"invite": code}}))
+        .await;
+    m
+}
+
+impl Exportable {
+    /// Exports `state.page` to the owner's machine with `body`'s
+    /// `actions`, `expires_s` and `origins`: the export's ID.
+    async fn export(&self, body: Value) -> String {
+        let before: Vec<String> = self
+            .ts
+            .store
+            .exports_of(clax_store::roles::OWNER)
+            .unwrap()
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        let mut b = json!({"path": "state.page", "grant": self.machine.grant_id()});
+        for (k, v) in body.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        let res = self
+            .ts
+            .client
+            .post(format!(
+                "{}/api/bot/runs/{}/exports",
+                self.ts.base, self.rid
+            ))
+            .header("cookie", self.ts.owner_cookie())
+            .header("origin", &self.ts.base)
+            .json(&b)
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let v: Value = res.json().await.unwrap();
+        assert_eq!(status, 200, "{v}");
+        // The new one: the exports issued at one instant list by ID.
+        let new: Vec<String> = v["exports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["id"].as_str().unwrap().to_string())
+            .filter(|id| !before.contains(id))
+            .collect();
+        assert_eq!(new.len(), 1, "{v}");
+        new[0].clone()
+    }
+
+    /// `GET …/exports/<eid>/capability` with `cookie`.
+    async fn capability(&self, eid: &str, cookie: &str) -> reqwest::Response {
+        self.ts
+            .client
+            .get(format!(
+                "{}/api/bot/runs/{}/exports/{eid}/capability",
+                self.ts.base, self.rid
+            ))
+            .header("cookie", cookie)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// The owner's release of export `eid`'s capability.
+    async fn released(&self, eid: &str) -> String {
+        let res = self.capability(eid, &self.ts.owner_cookie()).await;
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.headers()["cache-control"], "no-store");
+        let v: Value = res.json().await.unwrap();
+        v["capability"].as_str().unwrap().to_string()
+    }
+
+    /// `machine`'s call of `page` with `call`: its status, code and body.
+    async fn call(
+        &self,
+        machine: &clax_testkit::TestClient,
+        page: &str,
+        mut call: Value,
+    ) -> (u16, Value) {
+        call["page"] = json!(page);
+        let res = machine
+            .agent("POST", "/api/bot/pages", None, Some(call))
+            .await;
+        let status = res.status().as_u16();
+        (status, res.json().await.unwrap())
+    }
+
+    fn charged_ms(&self) -> i64 {
+        self.ts
+            .store
+            .bot_browser_session(&self.rid, &self.session)
+            .unwrap()
+            .unwrap()
+            .charged_ms
+    }
+}
+
+fn shot() -> Value {
+    json!({"op": "page", "action": "screenshot"})
+}
+
+/// The person exports a page of their run to their machine, which reads
+/// it through `POST /api/bot/pages` with the released capability: its
+/// grant row is issued under the person's runs grant and listed, the
+/// call is answered as a script's (the screenshot as its image), and its
+/// time is charged to the person on the run with a `bot.spend` record
+/// naming the export and the grant and never the capability (spec
+/// §18.5, §18.8).
+#[tokio::test]
+async fn an_exported_page_is_called_by_its_machine_and_charged_to_its_person() {
+    let x = exportable().await;
+    let eid = x.export(json!({"actions": ["read", "close"]})).await;
+    let row = x.ts.store.cap_grant(&eid).unwrap().unwrap();
+    assert_eq!(row.grantee, format!("grant:{}", x.machine.grant_id()));
+    assert_eq!(
+        row.parent,
+        x.ts.store.person_caps(clax_store::roles::OWNER).unwrap()["clax-browser:open-content"]
+            .runs_grant
+    );
+    assert!(
+        x.ts.store
+            .events_after(0, 10_000)
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "grant.issue" && e.body.contains(&eid)),
+        "recorded as grant.issue"
+    );
+    let page = x.released(&eid).await;
+    assert!(page.starts_with("cxk_"), "{page}");
+    let before = x.charged_ms();
+    x.clock.advance(2);
+    let (status, v) = x.call(&x.machine, &page, shot()).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["value"]["media_type"], "image/png", "{v}");
+    assert!(x.charged_ms() > before, "the call's time is charged");
+    let spend: Vec<Value> =
+        x.ts.store
+            .events_after(0, 10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "bot.spend" && e.body.contains(&eid))
+            .map(|e| serde_json::from_str(&e.body).unwrap())
+            .collect();
+    assert_eq!(spend.len(), 1, "{spend:?}");
+    assert_eq!(spend[0]["grant"], x.machine.grant_id().as_str());
+    assert_eq!(spend[0]["run"], x.rid.as_str());
+    assert_eq!(spend[0]["ms"], json!(x.charged_ms() - before));
+    assert!(
+        !spend[0].to_string().contains(&page[4..20]),
+        "no capability"
+    );
+    // A close ends the session, and the page with it.
+    let (status, v) = x.call(&x.machine, &page, json!({"op": "close"})).await;
+    assert_eq!((status, v["ok"].clone()), (200, json!(true)), "{v}");
+    assert!(
+        !x.ts
+            .store
+            .bot_browser_session(&x.rid, &x.session)
+            .unwrap()
+            .unwrap()
+            .is_open()
+    );
+    let (status, v) = x.call(&x.machine, &page, shot()).await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (410, Some("browser_session_closed")),
+        "{v}"
+    );
+}
+
+/// What the capability and its grant do not allow is refused, and a
+/// refusal charges nothing: another person's release, another machine's
+/// call (lost to it, as a forged page is) and a caller that is no machine; an action or an origin outside the export's caveats;
+/// a call once it expired, once it was revoked, and once the run ended.
+#[tokio::test]
+async fn an_exported_page_refuses_what_its_capability_does_not_allow() {
+    let x = exportable().await;
+    let read = x
+        .export(json!({"actions": ["read", "navigate"], "origins": ["https://allowed.example"]}))
+        .await;
+    let page = x.released(&read).await;
+    let forbidden = |(status, v): (u16, Value)| {
+        assert_eq!(
+            (status, v["error"]["code"].as_str()),
+            (403, Some("browser_forbidden")),
+            "{v}"
+        );
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    // Another person: no release, and their machine's call is not the
+    // grant's.
+    let (sam_browser, base) = x.ts.lan_person("Sam").await;
+    let res = sam_browser
+        .get(format!(
+            "{base}/api/bot/runs/{}/exports/{read}/capability",
+            x.rid
+        ))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status();
+    let text = res.text().await.unwrap();
+    assert_eq!(status, 404, "{text}");
+    assert!(!text.contains("cxk_"), "{text}");
+    // Another machine's call is not the grant's: the page is lost to it,
+    // as a forged one is, and says nothing of the session.
+    let mia = x.ts.connect_person("Mia", "clax:full").await;
+    let before = x.charged_ms();
+    let (status, v) = x.call(&mia, &page, shot()).await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (404, Some("browser_session_lost")),
+        "{v}"
+    );
+    // Not a machine grant at all.
+    let res =
+        x.ts.client
+            .post(format!("{}/api/bot/pages", x.ts.base))
+            .header("cookie", x.ts.owner_cookie())
+            .json(&json!({"page": page, "op": "page", "action": "title"}))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(res.status(), 403);
+    // An action and an origin outside the caveats.
+    forbidden(
+        x.call(
+            &x.machine,
+            &page,
+            json!({"op": "act", "action": "click", "locator": [{"css": "p"}]}),
+        )
+        .await,
+    );
+    let why = forbidden(
+        x.call(
+            &x.machine,
+            &page,
+            json!({"op": "page", "action": "goto", "args": {"url": "https://other.example/"}}),
+        )
+        .await,
+    );
+    assert!(why.contains("other.example"), "{why}");
+    assert_eq!(x.charged_ms(), before, "a refusal charges nothing");
+    // Expired.
+    let soon = x
+        .export(json!({"actions": ["read"], "expires_s": 60}))
+        .await;
+    let soon_page = x.released(&soon).await;
+    let (status, v) = x.call(&x.machine, &soon_page, shot()).await;
+    assert_eq!(status, 200, "{v}");
+    x.clock.advance(61);
+    forbidden(x.call(&x.machine, &soon_page, shot()).await);
+    // Revoked: refused at once, and no longer released.
+    let res =
+        x.ts.client
+            .delete(format!(
+                "{}/api/bot/runs/{}/exports/{read}",
+                x.ts.base, x.rid
+            ))
+            .header("cookie", x.ts.owner_cookie())
+            .header("origin", &x.ts.base)
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(res.status(), 200);
+    forbidden(x.call(&x.machine, &page, shot()).await);
+    assert_eq!(
+        x.capability(&read, &x.ts.owner_cookie()).await.status(),
+        404
+    );
+    // The run's end closes its session and the registry forgets it: every
+    // page of it is lost.
+    let all = x.export(json!({})).await;
+    let all_page = x.released(&all).await;
+    x.ts.state
+        .bot
+        .browser_sessions
+        .clone()
+        .unwrap()
+        .end_run(&x.rid)
+        .await;
+    let (status, v) = x.call(&x.machine, &all_page, shot()).await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (404, Some("browser_session_lost")),
+        "{v}"
     );
 }

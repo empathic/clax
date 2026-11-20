@@ -1189,7 +1189,41 @@ impl Store {
         location: Option<&str>,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool> {
-        let holder = Grantee::Run(run.to_string()).as_text();
+        self.conveys_to(&Grantee::Run(run.to_string()), id, action, location, now)
+    }
+
+    /// Whether the export `id` conveys `action` of `clax-browser` at
+    /// `location` to machine grant `grant` at `now` (spec §18.5): as
+    /// [`Store::share_conveys`] for a share, its grantee the grant.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn export_conveys(
+        &self,
+        grant: &str,
+        id: &str,
+        action: &str,
+        location: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        self.conveys_to(
+            &Grantee::Grant(grant.to_string()),
+            id,
+            Some(action),
+            location,
+            now,
+        )
+    }
+
+    fn conveys_to(
+        &self,
+        grantee: &Grantee,
+        id: &str,
+        action: Option<&str>,
+        location: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        let holder = grantee.as_text();
         self.with_read(|c| {
             let Some(g) = grant_in(c, id)? else {
                 return Ok(false);
@@ -1263,8 +1297,14 @@ pub struct ExportGrant {
     pub parent: String,
     /// The session actions it conveys.
     pub actions: Vec<String>,
+    /// The origins a `navigate` of it may reach, when it is bounded.
+    pub origins: Option<Vec<String>>,
     /// When it expires (RFC 3339), if it does.
     pub expires_at: Option<String>,
+    /// Its capability without the signature (the browser's
+    /// `Cap::unsigned`): what [`Store::export_token`] releases to the
+    /// person, signed again with the instance key.
+    pub token: String,
 }
 
 impl Store {
@@ -1303,7 +1343,7 @@ impl Store {
                     access: vec![Access {
                         kind: TYPE_BROWSER.to_string(),
                         actions: e.actions.clone(),
-                        locations: None,
+                        locations: e.origins.clone(),
                     }],
                     granter: &e.person,
                     grantee: &to,
@@ -1314,8 +1354,65 @@ impl Store {
                 &now,
                 &set_by(ctx),
             )?;
+            tx.execute(
+                "UPDATE bot_cap_grants SET token_json = ?2 WHERE id = ?1",
+                params![g.id, e.token],
+            )?;
             self.record_audit(tx, ctx, issue_record(&g, now.clone()))?;
             Ok(g)
+        })
+    }
+
+    /// The capability of export `id`, unsigned, when it is an issued export
+    /// `person` made and its chain is issued; else `None`.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn export_token(&self, person: &str, id: &str) -> Result<Option<String>> {
+        self.with_read(|c| {
+            let Some(g) = grant_in(c, id)? else {
+                return Ok(None);
+            };
+            if !is_share(&g)
+                || g.granter != person
+                || !g.grantee.starts_with("grant:")
+                || !chain_issued(c, &g)?
+            {
+                return Ok(None);
+            }
+            Ok(c.query_row(
+                "SELECT token_json FROM bot_cap_grants WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )?)
+        })
+    }
+
+    /// The capability, unsigned, of every export whose grant and every
+    /// grant of its chain are issued, its expiry not read (spec §18.7).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn live_export_tokens(&self) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            let rows: Vec<(String, String)> = c
+                .prepare_cached(
+                    "SELECT id, token_json FROM bot_cap_grants
+                      WHERE status = 'issued' AND event = 'share'
+                        AND grantee LIKE 'grant:%' AND token_json IS NOT NULL
+                      ORDER BY issued_at, id",
+                )?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut out = Vec::new();
+            for (id, token) in rows {
+                if let Some(g) = grant_in(c, &id)?
+                    && chain_issued(c, &g)?
+                {
+                    out.push(token);
+                }
+            }
+            Ok(out)
         })
     }
 
@@ -1931,7 +2028,9 @@ mod tests {
                     grant: "g_sams".into(),
                     parent: parent.into(),
                     actions: vec!["read".into()],
+                    origins: Some(vec!["https://example.com".into()]),
                     expires_at: Some("2100-01-01T00:00:00.000Z".into()),
+                    token: format!("{{\"i\":\"{id}\"}}"),
                 },
             )
         };
@@ -1942,8 +2041,42 @@ mod tests {
         );
         assert_eq!(code(&export("e2", &theirs).unwrap_err()), "not_held");
         assert_eq!(st.exports_of(&sam).unwrap().len(), 1);
+        // Its token is released to the person who made it alone, and it
+        // conveys its actions within its origins to its grant alone.
+        let token = Some("{\"i\":\"e1\"}".to_string());
+        assert_eq!(st.export_token(&sam, "e1").unwrap(), token);
+        assert_eq!(st.export_token(OWNER, "e1").unwrap(), None);
+        assert_eq!(st.export_token(&sam, &mine).unwrap(), None, "not an export");
+        assert_eq!(
+            st.live_export_tokens().unwrap(),
+            vec![token.clone().unwrap()]
+        );
+        let now = st.now_utc();
+        let ex = Some("https://example.com");
+        assert!(st.export_conveys("g_sams", "e1", "read", ex, now).unwrap());
+        assert!(
+            st.export_conveys("g_sams", "e1", "read", None, now)
+                .unwrap()
+        );
+        assert!(!st.export_conveys("g_sams", "e1", "act", ex, now).unwrap());
+        assert!(
+            !st.export_conveys("g_sams", "e1", "read", Some("https://other.example"), now)
+                .unwrap()
+        );
+        assert!(!st.export_conveys("g_other", "e1", "read", ex, now).unwrap());
+        let later = chrono::DateTime::parse_from_rfc3339("2100-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(
+            !st.export_conveys("g_sams", "e1", "read", ex, later)
+                .unwrap(),
+            "expired"
+        );
         st.revoke_cap_grant(DAEMON, "e1", RevokeReason::Granter)
             .unwrap();
         assert!(st.exports_of(&sam).unwrap().is_empty());
+        assert_eq!(st.export_token(&sam, "e1").unwrap(), None);
+        assert!(st.live_export_tokens().unwrap().is_empty());
+        assert!(!st.export_conveys("g_sams", "e1", "read", ex, now).unwrap());
     }
 }

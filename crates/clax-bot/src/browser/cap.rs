@@ -383,6 +383,15 @@ impl Cap {
             .collect()
     }
 
+    /// It without its signature, as JSON `{"i": identifier, "c":
+    /// [caveat, …]}`: what an export's grant row keeps (spec §18.5), from
+    /// which [`Keys::signed`] makes it again with the instance key, so the
+    /// row alone allows no call.
+    #[must_use]
+    pub fn unsigned(&self) -> String {
+        serde_json::json!({"i": self.mac.identifier(), "c": self.mac.caveats()}).to_string()
+    }
+
     /// Its earliest expiry, if it has one.
     #[must_use]
     pub fn expires(&self) -> Option<i64> {
@@ -535,7 +544,36 @@ impl Keys {
     #[must_use]
     pub fn verify(&self, s: &str) -> Option<Cap> {
         let mac = Macaroon::decode(PREFIX, s)?;
-        let mut parts = mac.identifier().splitn(5, '/');
+        let (session, run, chain) = self.parts(mac.identifier())?;
+        mac.verify(&self.session_key(&session)).ok()?;
+        Some(Cap {
+            session,
+            run,
+            chain,
+            mac,
+        })
+    }
+
+    /// The capability [`Cap::unsigned`] answered, signed again with its
+    /// session's key; `None` for JSON that is not one, or an identifier
+    /// that names another instance key.
+    #[must_use]
+    pub fn signed(&self, unsigned: &str) -> Option<Cap> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Unsigned {
+            i: String,
+            c: Vec<String>,
+        }
+        let u: Unsigned = serde_json::from_str(unsigned).ok()?;
+        let (session, run, chain) = self.parts(&u.i)?;
+        Some(self.mint(&session, &run, chain, &u.c))
+    }
+
+    /// An identifier's session, run and chain, when it is of this
+    /// instance key's version and ID.
+    fn parts(&self, identifier: &str) -> Option<(String, String, Vec<String>)> {
+        let mut parts = identifier.splitn(5, '/');
         let (v, key, session, chain, run) = (
             parts.next()?,
             parts.next()?,
@@ -550,13 +588,7 @@ impl Keys {
         if chain.iter().any(|id| id.len() != 22) {
             return None;
         }
-        mac.verify(&self.session_key(session)).ok()?;
-        Some(Cap {
-            session: session.to_string(),
-            run: run.to_string(),
-            chain,
-            mac,
-        })
+        Some((session.to_string(), run.to_string(), chain))
     }
 }
 
@@ -571,6 +603,18 @@ mod tests {
 
     /// A leaked string's prefix says what it is: a browser capability is
     /// never read as the owner's browser-session cookie.
+    #[test]
+    fn an_unsigned_capability_is_signed_again_by_its_key_alone() {
+        let root = keys().root("sess1", "run-1");
+        let child = keys().child_for(&root, &Holder::Grant("g1".into()), &[ops(&[Class::Read])]);
+        let again = keys().signed(&child.unsigned()).unwrap();
+        assert_eq!(again.encode(), child.encode());
+        assert!(!child.unsigned().contains(&child.encode()[PREFIX.len()..]));
+        assert!(Keys::new([8; 32]).signed(&child.unsigned()).is_none());
+        assert!(keys().signed("{}").is_none());
+        assert!(keys().signed(&child.encode()).is_none());
+    }
+
     #[test]
     fn the_prefix_is_not_the_owner_cookie_s() {
         assert_ne!(PREFIX, clax_store::browser_login::OWNER_SESSION_PREFIX);

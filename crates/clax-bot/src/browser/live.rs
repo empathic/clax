@@ -171,9 +171,9 @@ pub struct Answered {
 /// of the draft, the draft as the call sees it; and, when the run may
 /// leave the session's origin by this call (`clax-browser:open-url` live, the
 /// URL admitted by its rule), the URL session's policy it would then
-/// have; and the capability that authorized the call, with the run that
-/// holds it, whose `origin` caveat the session's task holds a `goto` or
-/// `reload` to again, against the page's URL as it navigates (spec
+/// have; and the capability that authorized the call, with its holder
+/// (the run, or the machine grant an export is to), whose `origin` caveat
+/// the session's task holds a `goto` or `reload` to again, against the page's URL as it navigates (spec
 /// §18.3): the page may have moved since [`BrowserSessions::authorize`]
 /// read it.
 #[derive(Clone)]
@@ -182,7 +182,7 @@ pub struct CallCtx {
     pub cancel: CancelToken,
     pub pages: Option<Pages>,
     pub leave: Option<Arc<dyn RequestPolicy>>,
-    pub held: Option<Arc<(Cap, String)>>,
+    pub held: Option<Arc<(Cap, Holder)>>,
 }
 
 impl CallCtx {
@@ -510,10 +510,26 @@ impl BrowserSessions {
     /// it, is held by `run` and its grant is live: a root, or a share whose
     /// ID is among `live` (the store's, `Store::live_shares`); its expiry
     /// and actions are not read, so the decision is the same whenever it
-    /// is made from the same `held` and `live`.
-    pub async fn close_unheld(&self, run: &str, held: &[String], live: &BTreeSet<String>) {
+    /// is made from the same `held` and `live`. A session a live export
+    /// is a capability of is kept open as well (§18.7): `exported` is each
+    /// live export's capability, unsigned ([`Cap::unsigned`], the store's
+    /// `Store::live_export_tokens`), and one keeps its session when it
+    /// signs with this registry's key and is of a session of `run`.
+    pub async fn close_unheld(
+        &self,
+        run: &str,
+        held: &[String],
+        live: &BTreeSet<String>,
+        exported: &[String],
+    ) {
         let holder = Holder::Run(run.to_string());
         let caps: Vec<Cap> = held.iter().filter_map(|h| self.keys.verify(h)).collect();
+        let kept: BTreeSet<String> = exported
+            .iter()
+            .filter_map(|u| self.keys.signed(u))
+            .filter(|c| c.run() == run)
+            .map(|c| c.session().to_string())
+            .collect();
         let doomed: Vec<String> = {
             let reg = lock(&self.reg);
             reg.sessions
@@ -521,6 +537,7 @@ impl BrowserSessions {
                 .filter(|(id, e)| {
                     e.run == run
                         && e.ended.is_none()
+                        && !kept.contains(id.as_str())
                         && !caps.iter().any(|c| {
                             c.session() == id.as_str()
                                 && c.run() == e.run
@@ -603,10 +620,11 @@ impl BrowserSessions {
     /// held by `run`, or names no session this process holds of the run
     /// that opened it; its message does not repeat the handle.
     pub fn resolve(&self, run: &str, handle: &str) -> Result<String, BrowserError> {
-        self.verified(run, handle).map(|c| c.session().to_string())
+        self.verified(&Holder::Run(run.to_string()), handle)
+            .map(|c| c.session().to_string())
     }
 
-    fn verified(&self, run: &str, handle: &str) -> Result<Cap, BrowserError> {
+    fn verified(&self, holder: &Holder, handle: &str) -> Result<Cap, BrowserError> {
         let lost = || {
             BrowserError::new(
                 CODE_BROWSER_SESSION_LOST,
@@ -618,7 +636,7 @@ impl BrowserSessions {
         let cap = self.keys.verify(handle).ok_or_else(lost)?;
         let reg = lock(&self.reg);
         match reg.sessions.get(cap.session()) {
-            Some(e) if e.run == cap.run() && cap.admits(&Holder::Run(run.to_string())) => Ok(cap),
+            Some(e) if e.run == cap.run() && cap.admits(holder) => Ok(cap),
             _ => Err(lost()),
         }
     }
@@ -639,7 +657,22 @@ impl BrowserSessions {
         class: Option<Class>,
         nav: &Nav,
     ) -> Result<(String, Cap), BrowserError> {
-        let cap = self.verified(run, handle)?;
+        self.authorize_for(&Holder::Run(run.to_string()), handle, class, nav)
+    }
+
+    /// [`BrowserSessions::authorize`] for a call `holder` makes: a run's, or
+    /// a machine grant's with a page exported to it (spec §18.5).
+    ///
+    /// # Errors
+    /// As [`BrowserSessions::authorize`].
+    pub fn authorize_for(
+        &self,
+        holder: &Holder,
+        handle: &str,
+        class: Option<Class>,
+        nav: &Nav,
+    ) -> Result<(String, Cap), BrowserError> {
+        let cap = self.verified(holder, handle)?;
         let session = cap.session().to_string();
         self.sender(cap.run(), &session)?;
         let forbidden = |why: String| BrowserError::new(CODE_BROWSER_FORBIDDEN, why, false);
@@ -660,15 +693,21 @@ impl BrowserSessions {
                 Nav::History => Target::Unknown,
             }
         };
-        let holder = Holder::Run(run.to_string());
         let u = Use {
-            holder: &holder,
+            holder,
             class,
             target,
             now_ms: self.clock.now().timestamp_millis(),
         };
         cap.check(&u).map_err(|r| forbidden(r.message()))?;
         Ok((session, cap))
+    }
+
+    /// The capability `unsigned` is ([`Cap::unsigned`]), signed with this
+    /// registry's key, when it is one of its key.
+    #[must_use]
+    pub fn signed(&self, unsigned: &str) -> Option<Cap> {
+        self.keys.signed(unsigned)
     }
 
     /// The registry's clock, in Unix milliseconds: what `expires` caveats
@@ -1241,15 +1280,14 @@ impl Task {
         action: &str,
         args: &Value,
     ) -> Option<BrowserError> {
-        let (cap, run) = ctx.held.as_deref()?;
+        let (cap, holder) = ctx.held.as_deref()?;
         let target = match action {
             "goto" => goto_url(url, args["url"].as_str().unwrap_or_default()),
             "reload" => url.to_string(),
             _ => return None,
         };
-        let holder = Holder::Run(run.clone());
         let u = Use {
-            holder: &holder,
+            holder,
             class: None,
             target: Target::Url(target),
             now_ms: self.clock.now().timestamp_millis(),
@@ -2149,6 +2187,54 @@ mod tests {
         }
     }
 
+    /// A live export of a session keeps it open at the commit whose state
+    /// holds none of its pages (spec §18.7); an export signed with another
+    /// key, or of another run's session, keeps nothing. Its holder calls
+    /// it as the grant, which its run cannot.
+    #[tokio::test]
+    async fn a_live_export_keeps_its_session_open() {
+        let w = World::new();
+        let (o, _log) = w.open(TIMES).await;
+        let grant = Holder::Grant("g1".into());
+        let export = w.sessions.export("run-1", &o.handle, "g1", &[]).unwrap();
+        let (session, _) = w
+            .sessions
+            .authorize_for(&grant, &export.encode(), Some(Class::Read), &Nav::None)
+            .unwrap();
+        assert_eq!(session, o.session);
+        assert_eq!(
+            w.sessions
+                .authorize("run-1", &export.encode(), Some(Class::Read), &Nav::None)
+                .unwrap_err()
+                .code,
+            CODE_BROWSER_SESSION_LOST,
+            "the run holds no page exported to a grant"
+        );
+        let live = BTreeSet::new();
+        w.sessions
+            .close_unheld("run-1", &[], &live, &[export.unsigned()])
+            .await;
+        assert!(w.sessions.ended().is_empty(), "the export holds it");
+        let other = Keys::new([9; 32]);
+        let foreign = other
+            .child_for(&other.root(&o.session, "run-1"), &grant, &[])
+            .unsigned();
+        w.sessions
+            .close_unheld("run-2", &[], &live, &[export.unsigned()])
+            .await;
+        w.sessions
+            .close_unheld("run-1", &[], &live, &[foreign, "{}".into()])
+            .await;
+        assert_eq!(
+            w.sessions
+                .ended()
+                .iter()
+                .map(|e| e.reason)
+                .collect::<Vec<_>>(),
+            [SessionEnd::Dropped]
+        );
+    }
+
     /// A session stays open while a capability of it that is held by its
     /// run and whose grant is live (a root, or a share the store holds
     /// live) is held, whatever its actions or expiry; it closes `dropped`,
@@ -2169,17 +2255,17 @@ mod tests {
         let read = read_cap.encode();
         let live: BTreeSet<String> = [read_cap.id().to_string()].into();
         w.sessions
-            .close_unheld("run-1", std::slice::from_ref(&o.handle), &live)
+            .close_unheld("run-1", std::slice::from_ref(&o.handle), &live, &[])
             .await;
         w.clock.advance(3);
         w.sessions
-            .close_unheld("run-1", std::slice::from_ref(&read), &live)
+            .close_unheld("run-1", std::slice::from_ref(&read), &live, &[])
             .await;
         assert!(
             w.sessions.ended().is_empty(),
             "an expired read-only page holds it"
         );
-        w.sessions.close_unheld("run-2", &[], &live).await;
+        w.sessions.close_unheld("run-2", &[], &live, &[]).await;
         assert!(
             w.sessions.ended().is_empty(),
             "another run's call ends nothing"
@@ -2190,7 +2276,12 @@ mod tests {
         // A share whose grant is not among the live ones holds nothing.
         let unlisted = w.sessions.share("run-1", &o.handle, &[]).unwrap().encode();
         w.sessions
-            .close_unheld("run-1", &[foreign, tampered, unlisted, "x".into()], &live)
+            .close_unheld(
+                "run-1",
+                &[foreign, tampered, unlisted, "x".into()],
+                &live,
+                &[],
+            )
             .await;
         assert_eq!(
             w.sessions
@@ -2321,7 +2412,7 @@ mod tests {
         let navigated = log.sent("Page.navigate").len();
         for (action, args) in [("goto", json!({"url": "/p"})), ("reload", json!({}))] {
             let mut ctx = CallCtx::new(w.clock.now() + Duration::seconds(60), CancelToken::new());
-            ctx.held = Some(Arc::new((only_a.clone(), "run-1".to_string())));
+            ctx.held = Some(Arc::new((only_a.clone(), Holder::Run("run-1".to_string()))));
             let r = w
                 .sessions
                 .call(
