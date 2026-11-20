@@ -746,6 +746,7 @@ impl Event<'_> {
             Some(K::InviteCreate | K::InviteRevoke) => self.str("invite_id").map(Obj::Invite),
             Some(
                 K::GrantRequest
+                | K::GrantIssue
                 | K::GrantApprove
                 | K::GrantDeny
                 | K::GrantRevoke
@@ -777,9 +778,7 @@ impl Event<'_> {
                 .str("subject_person")
                 .map(Obj::Person)
                 .or(Some(Obj::Install)),
-            Some(K::ViewAudit | K::AdminProvider | K::AdminSettings | K::BotGrant) => {
-                Some(Obj::Install)
-            }
+            Some(K::ViewAudit | K::AdminProvider | K::AdminSettings) => Some(Obj::Install),
             Some(K::AdminRole | K::AdminFlag | K::AdminCredits | K::BotRefused | K::MeWeb) => {
                 self.str("person").map(Obj::Person)
             }
@@ -1286,11 +1285,27 @@ impl Event<'_> {
                 self.show("grant_id"),
                 self.show("reason")
             ),
-            Some(K::GrantRevoke) => format!(
-                "Ended grant {} (by {})",
+            Some(K::GrantIssue) => format!(
+                "Issued grant {} to {} ({}{})",
                 self.show("grant_id"),
-                self.show("by")
+                self.show("grantee"),
+                self.show("event"),
+                self.str("parent")
+                    .map(|p| format!(", under grant {p}"))
+                    .unwrap_or_default()
             ),
+            Some(K::GrantRevoke) => match self.str("reason") {
+                Some(r) => format!(
+                    "Ended grant {} (by {}, {r})",
+                    self.show("grant_id"),
+                    self.show("by")
+                ),
+                None => format!(
+                    "Ended grant {} (by {})",
+                    self.show("grant_id"),
+                    self.show("by")
+                ),
+            },
             Some(K::GrantToken) => format!(
                 "{} the tokens of grant {}",
                 if self.str("op") == Some("issue") {
@@ -1574,20 +1589,6 @@ impl Event<'_> {
                     "off"
                 },
                 self.show("person")
-            ),
-            Some(K::BotGrant) => format!(
-                "{} {} to {} (grant {}{})",
-                if self.str("op") == Some("revoke") {
-                    "Revoked"
-                } else {
-                    "Granted"
-                },
-                self.show("capability"),
-                self.show("grantee"),
-                self.show("grant"),
-                self.str("parent")
-                    .map(|p| format!(", under grant {p}"))
-                    .unwrap_or_default()
             ),
             Some(K::AdminKey) => format!(
                 "{} the {}{}",

@@ -4317,7 +4317,7 @@
   {
    "seq": 128,
    "at": "2026-10-06T14:09:37.128Z",
-   "kind": "bot.grant",
+   "kind": "grant.issue",
    "actor": {
     "type": "owner",
     "public_id": "u_4be1q8"
@@ -4336,12 +4336,24 @@
     "clax_version": "0.3.1",
     "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
     "via": "shell",
-    "grant": "01JBCB0T000000000000000G02",
-    "capability": "clax-browser:open-content",
-    "granter": "u_77c0zz",
-    "grantee": "runs_of:u_77c0zz",
+    "grant_id": "01JBCB0T000000000000000G02",
+    "granter": "*owner",
+    "grantee": "person:u_77c0zz",
+    "access": [
+     {
+      "type": "clax-browser",
+      "actions": [
+       "open-content",
+       "read",
+       "act",
+       "navigate",
+       "record",
+       "close"
+      ]
+     }
+    ],
     "parent": "01JBCB0T000000000000000G01",
-    "op": "issue"
+    "event": "admin"
    },
    "backfilled": false
   },

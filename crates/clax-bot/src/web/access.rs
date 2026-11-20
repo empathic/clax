@@ -465,7 +465,7 @@ mod tests {
     /// The instance-wide grant of every capability, once: no capability
     /// reaches a run without one (migration 67).
     fn grant_everyone(st: &Store) {
-        use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GRANTER_INSTANCE, GrantFilter};
+        use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GrantFilter};
         let live = st
             .cap_grants(&GrantFilter {
                 grantee: Some(EVERYONE.into()),
@@ -474,8 +474,8 @@ mod tests {
             })
             .unwrap();
         for cap in CAPABILITIES {
-            if !live.iter().any(|g| g.capability == cap) {
-                st.issue_cap_grant(&AuditCtx::DAEMON, cap, GRANTER_INSTANCE, EVERYONE, None)
+            if !live.iter().any(|g| g.lists(cap)) {
+                st.issue_cap_grant(&AuditCtx::DAEMON, cap, clax_store::roles::OWNER, EVERYONE)
                     .unwrap();
             }
         }

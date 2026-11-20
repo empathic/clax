@@ -55,12 +55,15 @@
 //!   null puts it back to its default, refused as `PUT /api/admin/web`
 //!   refuses. A capability switched on is granted to no one: the admin
 //!   grants it (`/api/admin/bot/grants`).
-//! - `GET /api/admin/bot/grants` lists the live grants the admin made
-//!   (to everyone, or to a person), `POST` `{capability, grantee:
-//!   "everyone" | {person}}` issues one (an instance-wide grant issues
-//!   every person's grant to their runs), `DELETE
-//!   /api/admin/bot/grants/<id>` revokes one and what it issued; each is
-//!   recorded as `bot.grant`.
+//! - `GET /api/admin/bot/grants` lists the live grants admins made (to
+//!   everyone, or to a person), each with its granter and whether it
+//!   conveys now (its granter still an admin); `POST` `{capability,
+//!   grantee: "everyone" | {person}}` issues one with the caller as its
+//!   granter (a grant to everyone issues each person's child and their
+//!   grant to their runs), `DELETE /api/admin/bot/grants/<id>` revokes one
+//!   and what it issued (reason `granter` for the caller's own, `owner`
+//!   for another admin's); each row is recorded as `grant.issue` or
+//!   `grant.revoke`.
 //! - `GET/PUT /api/admin/pricing`: the credit price, the free tier, the
 //!   default token rates, `require_explicit_price` and the cost lines,
 //!   with each priced model's rates and where they come from (`models`)
@@ -943,40 +946,41 @@ pub async fn set_browser(
 // Grants
 // ---------------------------------------------------------------------------
 
-/// The live grants the admin made, as `GET /api/admin/bot/grants` lists
-/// them: each `{id, capability, grantee, person, granter, issued_at}`,
-/// `grantee` `everyone` or `person`, `person` the person's key (null for
-/// everyone), `granter` `instance` (the admin page), `migration` (main's
-/// web switches) or `config` (config.toml's, at the daemon's start),
-/// the instance-wide grants first, then by capability.
+/// The live grants admins made, as `GET /api/admin/bot/grants` lists
+/// them: each `{id, capability, grantee, person, granter, conveys,
+/// issued_at}`, `grantee` `everyone` or `person`, `person` the person's
+/// key (null for everyone), `granter` the admin's person key, `migration`
+/// (main's web switches) or `config` (config.toml's, at the daemon's
+/// start), `conveys` false once its granter is no longer an admin; the
+/// grants to everyone first, then by capability. A selector's children
+/// and a person's grants to their runs are not listed.
 ///
 /// # Errors
 /// The store's.
 pub fn grants_view(st: &Store) -> clax_core::Result<Value> {
     use clax_store::bot_grants::{GrantFilter, Grantee};
-    let mut rows: Vec<(bool, String, Value)> = st
-        .cap_grants(&GrantFilter {
-            live: true,
-            ..GrantFilter::default()
-        })?
-        .into_iter()
-        .filter_map(|g| {
-            let person = match Grantee::parse(&g.grantee).ok()? {
-                Grantee::Everyone => None,
-                Grantee::Person(k) => Some(k),
-                Grantee::RunsOf(_) => return None,
-            };
-            let row = json!({
-                "id": g.id,
-                "capability": g.capability,
-                "grantee": if person.is_some() { "person" } else { "everyone" },
-                "person": person,
-                "granter": g.granter,
-                "issued_at": g.issued_at,
-            });
-            Some((person.is_some(), g.capability, row))
-        })
-        .collect();
+    let mut rows: Vec<(bool, String, Value)> = Vec::new();
+    for g in st.cap_grants(&GrantFilter {
+        live: true,
+        ..GrantFilter::default()
+    })? {
+        let person = match Grantee::parse(&g.grantee) {
+            Ok(Grantee::Everyone) => None,
+            Ok(Grantee::Person(k)) if g.parent.is_none() => Some(k),
+            _ => continue,
+        };
+        let Some(cap) = g.capability() else { continue };
+        let row = json!({
+            "id": g.id,
+            "capability": cap,
+            "grantee": if person.is_some() { "person" } else { "everyone" },
+            "person": person,
+            "granter": g.granter,
+            "conveys": st.grant_conveys(&g)?,
+            "issued_at": g.issued_at,
+        });
+        rows.push((person.is_some(), cap.to_string(), row));
+    }
     rows.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
     Ok(json!({"grants": rows.into_iter().map(|(_, _, r)| r).collect::<Vec<_>>()}))
 }
@@ -1016,16 +1020,14 @@ pub async fn grant(
     audit: DeferredAudit,
     req: Result<Json<GrantBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    use clax_store::bot_grants::{GRANTER_INSTANCE, Grantee};
+    use clax_store::bot_grants::Grantee;
     d.refuse_agents()?;
     admin(&s, &d).await?;
     let b = body(req)?;
     let v = s
         .store_call(move |st| {
             let grantee = match b.grantee {
-                GranteeBody::Everyone(e) if e == clax_store::bot_grants::EVERYONE => {
-                    Grantee::Everyone
-                }
+                GranteeBody::Everyone(e) if e == "everyone" => Grantee::Everyone,
                 GranteeBody::Person { person } if st.person_keys()?.contains(&person) => {
                     Grantee::Person(person)
                 }
@@ -1037,13 +1039,10 @@ pub async fn grant(
                 }
             };
             let ctx = audit.resolve(st)?;
-            st.issue_cap_grant(
-                &ctx,
-                &b.capability,
-                GRANTER_INSTANCE,
-                &grantee.as_text(),
-                None,
-            )?;
+            let granter = clax_store::roles::actor_person(&ctx.actor).ok_or_else(|| {
+                CoreError::invalid("not_held", "only a person who is an admin grants")
+            })?;
+            st.issue_cap_grant(&ctx, &b.capability, &granter, &grantee.as_text())?;
             grants_view(st)
         })
         .await?;
@@ -1061,21 +1060,30 @@ pub async fn revoke_grant(
     audit: DeferredAudit,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    use clax_store::bot_grants::{GrantFilter, Grantee};
+    use clax_store::bot_grants::{Grantee, RevokeReason};
     d.refuse_agents()?;
     admin(&s, &d).await?;
     let id = path(id)?;
     let v = s
         .store_call(move |st| {
-            let admins = st.cap_grants(&GrantFilter::default())?;
-            let ours = admins.iter().find(|g| g.id == id).is_some_and(|g| {
-                !matches!(Grantee::parse(&g.grantee), Ok(Grantee::RunsOf(_)) | Err(_))
-            });
+            let g = st.cap_grant(&id)?.ok_or(CoreError::NotFound)?;
+            let ours = match Grantee::parse(&g.grantee) {
+                Ok(Grantee::Everyone) => true,
+                Ok(Grantee::Person(_)) => g.parent.is_none(),
+                _ => false,
+            };
             if !ours {
                 return Err(CoreError::NotFound);
             }
             let ctx = audit.resolve(st)?;
-            st.revoke_cap_grant(&ctx, &id)?;
+            let reason = if clax_store::roles::actor_person(&ctx.actor).as_deref()
+                == Some(g.granter.as_str())
+            {
+                RevokeReason::Granter
+            } else {
+                RevokeReason::Owner
+            };
+            st.revoke_cap_grant(&ctx, &id, reason)?;
             grants_view(st)
         })
         .await?;

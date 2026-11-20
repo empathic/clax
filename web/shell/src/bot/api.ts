@@ -494,8 +494,8 @@ export type BrowserPatch = {
 };
 export const getAdminBrowser = () => call<BrowserSettings>("/api/admin/browser");
 export const putAdminBrowser = (patch: BrowserPatch) => call<BrowserSettings>("/api/admin/browser", "PUT", patch);
-/** One live grant the admin made (`GET /api/admin/bot/grants`): of `capability`, to everyone on the instance or to one person. */
-export type AdminGrant = { id: string; capability: CapabilityId; grantee: "everyone" | "person"; person: PersonKey | null; granter?: "instance" | "migration" | "config"; issued_at: string };
+/** One live grant an admin made (`GET /api/admin/bot/grants`): of `capability`, to everyone on the instance or to one person; `granter` the admin's person key, or `migration`/`config` for the instance's own; `conveys` false once its granter is no longer an admin. */
+export type AdminGrant = { id: string; capability: CapabilityId; grantee: "everyone" | "person"; person: PersonKey | null; granter?: string; conveys?: boolean; issued_at: string };
 export const getAdminGrants = () => call<{ grants: AdminGrant[] }>("/api/admin/bot/grants");
 /** Grants `capability` to everyone on the instance, or to one person. */
 export const grantCapability = (capability: CapabilityId, to: "everyone" | PersonKey) =>

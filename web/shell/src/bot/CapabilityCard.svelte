@@ -38,7 +38,7 @@
     <ul class="capgrants">
       {#each mine as g (g.id)}
         <li>
-          <span>{g.grantee === "everyone" ? "Everyone on this instance" : nameOf(g.person)}{#if g.granter === "config"}<small class="note">{" · from config.toml"}</small>{/if}</span>
+          <span>{g.grantee === "everyone" ? "Everyone on this instance" : nameOf(g.person)}{#if g.granter === "config"}<small class="note">{" · from config.toml"}</small>{:else if g.conveys === false}<small class="note">{` · conveys nothing: ${nameOf(g.granter ?? null)} is no longer an admin`}</small>{/if}</span>
           <button type="button" aria-disabled={busy} aria-label={`Revoke ${label} from ${g.grantee === "everyone" ? "everyone on this instance" : nameOf(g.person)}`} onclick={() => { if (!busy) void act(() => revokeGrant(g.id)); }}>Revoke</button>
         </li>
       {/each}

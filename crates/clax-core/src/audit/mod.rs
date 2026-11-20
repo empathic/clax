@@ -89,6 +89,7 @@ kinds! {
     InviteCreate = "invite.create",
     InviteRevoke = "invite.revoke",
     GrantRequest = "grant.request",
+    GrantIssue = "grant.issue",
     GrantApprove = "grant.approve",
     GrantDeny = "grant.deny",
     GrantRevoke = "grant.revoke",
@@ -117,7 +118,6 @@ kinds! {
     BotScript = "bot.script",
     BotCall = "bot.call",
     BotWeb = "bot.web",
-    BotGrant = "bot.grant",
     BotSpend = "bot.spend",
     BotRunEnd = "bot.run_end",
     BotCancel = "bot.cancel",
@@ -812,6 +812,7 @@ mod tests {
             "invite.create",
             "invite.revoke",
             "grant.request",
+            "grant.issue",
             "grant.approve",
             "grant.deny",
             "grant.revoke",
@@ -840,7 +841,6 @@ mod tests {
             "bot.script",
             "bot.call",
             "bot.web",
-            "bot.grant",
             "bot.spend",
             "bot.run_end",
             "bot.cancel",
@@ -1038,7 +1038,7 @@ mod tests {
             in_group(KindGroup::Views),
             ["view.run", "view.admin", "view.audit", "view.usage"]
         );
-        assert_eq!(in_group(KindGroup::Bot).len(), 11);
+        assert_eq!(in_group(KindGroup::Bot).len(), 10);
         assert_eq!(in_group(KindGroup::Admin).len(), 7);
         assert_eq!(
             in_group(KindGroup::Credits),

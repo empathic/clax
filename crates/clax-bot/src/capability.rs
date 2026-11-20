@@ -452,7 +452,7 @@ impl Capabilities {
 mod tests {
     use super::*;
     use clax_core::audit::AuditCtx;
-    use clax_store::bot_grants::{EVERYONE, GRANTER_INSTANCE, GrantFilter, Grantee};
+    use clax_store::bot_grants::{EVERYONE, GrantFilter, Grantee, RevokeReason};
     use clax_store::roles::OWNER;
     use serde_json::json;
 
@@ -468,7 +468,7 @@ mod tests {
     }
 
     fn grant(st: &Store, c: Capability, grantee: &str) -> String {
-        st.issue_cap_grant(&AuditCtx::DAEMON, c.id(), GRANTER_INSTANCE, grantee, None)
+        st.issue_cap_grant(&AuditCtx::DAEMON, c.id(), OWNER, grantee)
             .unwrap()
             .id
     }
@@ -505,7 +505,8 @@ mod tests {
             offer(&st, &[c], true);
             // The person's grant, alone.
             let mine = runs_grant(&st, OWNER, c);
-            st.revoke_cap_grant(&AuditCtx::DAEMON, &mine).unwrap();
+            st.revoke_cap_grant(&AuditCtx::DAEMON, &mine, RevokeReason::Controller)
+                .unwrap();
             let caps = now(&st, OWNER);
             assert_eq!(caps.get(c), Err(Off::PersonOff), "{}", c.id());
             assert_eq!(caps.live().iter().count(), 4, "{}", c.id());
@@ -523,7 +524,8 @@ mod tests {
         let c = Capability::OpenContent;
         grant(&st, c, EVERYONE);
         let mine = runs_grant(&st, OWNER, c);
-        st.revoke_cap_grant(&AuditCtx::DAEMON, &mine).unwrap();
+        st.revoke_cap_grant(&AuditCtx::DAEMON, &mine, RevokeReason::Controller)
+                .unwrap();
         assert_eq!(now(&st, OWNER).get(c), Err(Off::NotOffered));
         let none = |_: Capability| false;
         offer(&st, &[c], true);
@@ -589,19 +591,25 @@ mod tests {
         offer(&st, &[Capability::WebSearch], true);
         let root = grant(&st, Capability::WebSearch, EVERYONE);
         assert!(now(&st, OWNER).live().has(Capability::WebSearch));
-        st.revoke_cap_grant(&AuditCtx::DAEMON, &root).unwrap();
+        st.revoke_cap_grant(&AuditCtx::DAEMON, &root, RevokeReason::Granter)
+            .unwrap();
         assert_eq!(
             now(&st, OWNER).get(Capability::WebSearch),
             Err(Off::NotGranted)
         );
-        assert!(
-            st.cap_grants(&GrantFilter {
+        let live: Vec<String> = st
+            .cap_grants(&GrantFilter {
                 live: true,
                 ..GrantFilter::default()
             })
             .unwrap()
-            .is_empty(),
-            "the person's child ended with it"
+            .into_iter()
+            .map(|g| g.grantee)
+            .collect();
+        assert_eq!(
+            live,
+            [Grantee::RunsOf(OWNER.into()).as_text()],
+            "the person's child ended with it; their runs grant conveys nothing"
         );
         assert_eq!(now(&st, OWNER).live(), CapSet::default());
     }

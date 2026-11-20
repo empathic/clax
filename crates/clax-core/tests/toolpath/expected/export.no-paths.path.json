@@ -6761,15 +6761,27 @@
         },
         {
           "change": {
-            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/grant/01JBCB0T000000000000000G02": {
               "structural": {
-                "capability": "clax-browser:open-content",
-                "grant": "01JBCB0T000000000000000G02",
-                "grantee": "runs_of:u_77c0zz",
-                "granter": "u_77c0zz",
-                "op": "issue",
+                "access": [
+                  {
+                    "actions": [
+                      "open-content",
+                      "read",
+                      "act",
+                      "navigate",
+                      "record",
+                      "close"
+                    ],
+                    "type": "clax-browser"
+                  }
+                ],
+                "event": "admin",
+                "grant_id": "01JBCB0T000000000000000G02",
+                "grantee": "person:u_77c0zz",
+                "granter": "*owner",
                 "parent": "01JBCB0T000000000000000G01",
-                "type": "clax.bot.grant"
+                "type": "clax.grant.issue"
               }
             }
           },
@@ -6779,12 +6791,12 @@
               "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
               "clax_version": "0.3.1",
               "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-              "kind": "bot.grant",
+              "kind": "grant.issue",
               "seq": 128,
               "v": 1,
               "via": "shell"
             },
-            "description": "Granted clax-browser:open-content to runs_of:u_77c0zz (grant 01JBCB0T000000000000000G02, under grant 01JBCB0T000000000000000G01)"
+            "description": "Issued grant 01JBCB0T000000000000000G02 to person:u_77c0zz (admin, under grant 01JBCB0T000000000000000G01)"
           },
           "step": {
             "actor": "human:clax-owner",

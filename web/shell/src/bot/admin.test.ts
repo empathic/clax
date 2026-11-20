@@ -631,6 +631,19 @@ describe("Admin › Browser", () => {
     expect(card.querySelectorAll(".capgrants li").length).toBe(0);
   });
 
+  it("a grant whose granter is no longer an admin says it conveys nothing", async () => {
+    const SEARCH = { id: "g8", capability: "clax-web:search" as const, grantee: "everyone" as const, person: null, granter: "p_ana", conveys: false, issued_at: "2026-10-21T09:00:00Z" };
+    stubFetch({
+      "GET /api/admin/web": webSettings(),
+      "GET /api/admin/bot/grants": { grants: [SEARCH] },
+      "GET /api/admin/people": [{ ...SAM, person: "p_ana", name: "Ana" }],
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    const card = m.root.querySelector<HTMLElement>("#cap-clax-web-search-h")!.closest("section")!;
+    expect(card.querySelector(".capgrants li span")!.textContent).toBe("Everyone on this instance · conveys nothing: Ana is no longer an admin");
+  });
+
   it("url_rule_any_public_warns", async () => {
     const calls = stubFetch({
       "GET /api/admin/browser": browserSettings(),

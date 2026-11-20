@@ -209,9 +209,8 @@ async fn a_session_outlives_keep_alive_in_real_browser_run() {
             .issue_cap_grant(
                 &AuditCtx::DAEMON,
                 cap,
-                clax_store::bot_grants::GRANTER_INSTANCE,
+                clax_store::roles::OWNER,
                 clax_store::bot_grants::EVERYONE,
-                None,
             )
             .unwrap();
     }

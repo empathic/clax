@@ -23,7 +23,7 @@ const KEY: &str = "sk-ant-api03-FAKEKEYFORTESTS-wxyz";
 /// without one (migration 67). Whether the instance offers each is its
 /// settings'.
 fn grant_everyone(ts: &TestServer) {
-    use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GRANTER_INSTANCE, GrantFilter};
+    use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GrantFilter};
     let live = ts
         .store
         .cap_grants(&GrantFilter {
@@ -33,9 +33,9 @@ fn grant_everyone(ts: &TestServer) {
         })
         .unwrap();
     for cap in CAPABILITIES {
-        if !live.iter().any(|g| g.capability == cap) {
+        if !live.iter().any(|g| g.lists(cap)) {
             ts.store
-                .issue_cap_grant(&AuditCtx::DAEMON, cap, GRANTER_INSTANCE, EVERYONE, None)
+                .issue_cap_grant(&AuditCtx::DAEMON, cap, clax_store::roles::OWNER, EVERYONE)
                 .unwrap();
         }
     }

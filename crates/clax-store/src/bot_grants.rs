@@ -1,41 +1,62 @@
 //! ClaxBot's capability grants (migration 67, spec
-//! 2026-11-19-claxbot-browser-design §4.3, §11.2).
+//! 2026-11-19-claxbot-browser-design §4.2, §4.3, §11.2, §18.4).
 //!
 //! A run starts with no capability. Every capability it holds traces to
-//! rows of `bot_cap_grants`, and nothing is implied:
+//! rows of `bot_cap_grants`, each shaped as the zero-capability design's
+//! grant (`2026-11-17-zero-capability-gnap-design.md`, "Terms"): `{id,
+//! granter, grantee, access, parent?, conditions, status, version, event,
+//! issued_at}`, its `access` an array of RFC 9635 access objects of
+//! `clax-web` or `clax-browser` ([`Access`]). Nothing is implied, and a
+//! grant conveys `conv(g) ∩ caps(g.granter)`:
 //!
-//! - **The admin's grants** say who holds a capability: an instance-wide
-//!   grant to [`EVERYONE`], or one to a person (`person:<key>`). Their
-//!   granter is the instance ([`GRANTER_INSTANCE`]) or, for the grants
-//!   migration 67 wrote from main's web switches, [`GRANTER_MIGRATION`].
-//! - **A person's grant to their own runs** (`runs_of:<key>`) is what
-//!   reaches a run. It is the child of an admin grant the person holds,
-//!   and its granter is the person. Issuing an admin grant issues it, in
-//!   the same transaction, to every person the admin grant covers who has
-//!   no live one; a person who joins later gets it when their row is made
-//!   ([`Store::issue_joined_grants_in`]).
-//! - **A revoke ends the grant and its live descendants**, transitively.
-//!   A person revoking their own grant ends only theirs. A person's runs
-//!   grant ended under one admin grant while another still gives them the
-//!   capability is issued anew under the other.
+//! - **An admin's grant** gives an action to one person (`person:<key>`)
+//!   or to everyone, the selector [`EVERYONE`] (`people_of:instance`),
+//!   which conveys nothing itself and issues each person a child grant
+//!   (`person:<key>`, parent the selector). Its granter is the admin who
+//!   issued it, by person key ([`GRANTER_MIGRATION`] and
+//!   [`GRANTER_CONFIG`] stand for the instance's own acts), and it
+//!   conveys while that person is the owner or an admin: an admin who
+//!   loses the role stops conveying, without a row changing.
+//! - **A person's grant to their own runs** is the selector
+//!   `runs_of:<key>` (granter the person, no parent): what reaches their
+//!   runs, conveying what it lists of what the person holds. An admin's
+//!   grant issues it, in the same transaction, to each person it covers
+//!   who holds no live one; a person who joins later gets the selector's
+//!   child and it when their row is made ([`Store::issue_joined_grants_in`]).
+//! - **A page's share** is a child of the sharer's grant (§18.4): granter
+//!   and grantee `run:<ID>`, its ID the capability's, written in the
+//!   share's Spend transaction.
+//! - **A revoke ends the grant and its live descendants**, transitively,
+//!   the grant with the reason given ([`RevokeReason`]) and each
+//!   descendant `parent_ended`. A person's runs grant is no child of an
+//!   admin's, so one admin grant of two revoked leaves the person holding
+//!   the action from the other.
 //!
-//! Each row issued or revoked is recorded as `bot.grant {grant,
-//! capability, granter, grantee, parent, op}`; migration 67's rows are
-//! written by the migration alone, with `issued_by` `migration`.
+//! Each row issued is recorded as `grant.issue {grant_id, granter,
+//! grantee, access, parent?, event, expires_at?}`, each revoked as
+//! `grant.revoke {grant_id, by, reason}`; migration 67's rows are written
+//! by the migration alone.
 //!
-//! Whether the admin's switch offers a capability, and whether the host
-//! can perform it, are not grants: the caller intersects them
+//! Whether the admin's switch offers an action, and whether the host can
+//! perform it, are not grants: the caller intersects them
 //! (`clax_bot::capability::Capabilities::now`).
 
 use super::Store;
-use super::roles::{OWNER, set_by};
+use super::roles::{OWNER, role_in, set_by};
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::{CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Every capability a grant may name, in the order they are shown.
+/// The access type of retrieval (spec §4.2).
+pub const TYPE_WEB: &str = "clax-web";
+/// The access type of a running browser.
+pub const TYPE_BROWSER: &str = "clax-browser";
+
+/// Every capability a switch and a grant name, as `<type>:<action>`, in
+/// the order they are shown.
 pub const CAPABILITIES: [&str; 5] = [
     "clax-web:search",
     "clax-web:fetch",
@@ -54,40 +75,111 @@ pub const BROWSER_CAPABILITIES: [&str; 3] = [
     "clax-browser:open-content",
 ];
 
-/// The grantee of an instance-wide grant.
-pub const EVERYONE: &str = "everyone";
+/// A browser session's actions (spec §4.2, §18.3), which every grant of
+/// an `open-*` action lists beside it.
+pub const SESSION_ACTIONS: [&str; 5] = ["read", "act", "navigate", "record", "close"];
 
-/// The granter of a grant an admin issues.
-pub const GRANTER_INSTANCE: &str = "instance";
+/// The grantee of a grant to everyone on the instance: a selector grant.
+pub const EVERYONE: &str = "people_of:instance";
 
 /// The granter of a grant migration 67 wrote from main's web switches.
 pub const GRANTER_MIGRATION: &str = "migration";
 
-/// The granter of an instance-wide grant a daemon wrote at its start
+/// The granter of a grant to everyone a daemon wrote at its start
 /// because its config.toml (or the environment) turns a web switch on
 /// ([`Store::grant_web_from_config`]): shown on the admin page as from
 /// config.toml.
 pub const GRANTER_CONFIG: &str = "config";
 
+/// `cap` (`<type>:<action>`) as its type and action.
+#[must_use]
+pub fn split_capability(cap: &str) -> Option<(&str, &str)> {
+    cap.split_once(':')
+}
+
+/// One RFC 9635 §8 access object of `clax-web` or `clax-browser`: its
+/// type, actions and, when it has any, locations (origins, hosts or
+/// artifact IDs, spec §4.2). One without locations applies everywhere.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Access {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locations: Option<Vec<String>>,
+}
+
+impl Access {
+    /// Whether it allows `action` of `kind` at `location`: a call that
+    /// goes nowhere (`None`) is not held to its locations.
+    #[must_use]
+    pub fn allows(&self, kind: &str, action: &str, location: Option<&str>) -> bool {
+        self.kind == kind
+            && self.actions.iter().any(|a| a == action)
+            && match (&self.locations, location) {
+                (Some(ls), Some(l)) => ls.iter().any(|x| x == l),
+                _ => true,
+            }
+    }
+}
+
+/// Whether `access` allows `action` of `kind` at `location`.
+#[must_use]
+pub fn allows(access: &[Access], kind: &str, action: &str, location: Option<&str>) -> bool {
+    access.iter().any(|a| a.allows(kind, action, location))
+}
+
+/// The access array a grant of capability `cap` carries: its action, and
+/// for an `open-*` action the session's actions beside it (spec §4.2).
+///
+/// # Errors
+/// `unknown_capability`.
+pub fn access_of(cap: &str) -> Result<Vec<Access>> {
+    if !CAPABILITIES.contains(&cap) {
+        return Err(CoreError::invalid(
+            "unknown_capability",
+            format!("no capability is named '{cap}'"),
+        ));
+    }
+    let (kind, action) = split_capability(cap).expect("a capability is <type>:<action>");
+    let mut actions = vec![action.to_string()];
+    if kind == TYPE_BROWSER {
+        actions.extend(SESSION_ACTIONS.iter().map(|a| (*a).to_string()));
+    }
+    Ok(vec![Access {
+        kind: kind.to_string(),
+        actions,
+        locations: None,
+    }])
+}
+
 /// Who a grant is to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Grantee {
-    /// Every person of the instance, present and joining later.
+    /// Every person of the instance, present and joining later: a
+    /// selector grant ([`EVERYONE`]).
     Everyone,
     /// One person, by person key.
     Person(String),
-    /// A person's own runs, by the person's key.
+    /// A person's own runs, by the person's key: a selector grant.
     RunsOf(String),
+    /// One run, by its ID: a page's share (§18.4).
+    Run(String),
+    /// One grant of the grant flow, by its ID: an exported page (§18.5).
+    Grant(String),
 }
 
 impl Grantee {
-    /// The grantee as `bot_cap_grants.grantee` keeps it: `everyone`,
-    /// `person:<key>` or `runs_of:<key>`.
+    /// The grantee as `bot_cap_grants.grantee` keeps it.
+    #[must_use]
     pub fn as_text(&self) -> String {
         match self {
             Grantee::Everyone => EVERYONE.to_string(),
             Grantee::Person(k) => format!("person:{k}"),
             Grantee::RunsOf(k) => format!("runs_of:{k}"),
+            Grantee::Run(id) => format!("run:{id}"),
+            Grantee::Grant(id) => format!("grant:{id}"),
         }
     }
 
@@ -99,7 +191,9 @@ impl Grantee {
         let bad = || {
             CoreError::invalid(
                 "invalid_grantee",
-                format!("'{text}' is not everyone, person:<key> or runs_of:<key>"),
+                format!(
+                    "'{text}' is not {EVERYONE}, person:<key>, runs_of:<key>, run:<ID> or grant:<ID>"
+                ),
             )
         };
         if text == EVERYONE {
@@ -109,10 +203,40 @@ impl Grantee {
         if key.is_empty() {
             return Err(bad());
         }
+        let key = key.to_string();
         match kind {
-            "person" => Ok(Grantee::Person(key.to_string())),
-            "runs_of" => Ok(Grantee::RunsOf(key.to_string())),
+            "person" => Ok(Grantee::Person(key)),
+            "runs_of" => Ok(Grantee::RunsOf(key)),
+            "run" => Ok(Grantee::Run(key)),
+            "grant" => Ok(Grantee::Grant(key)),
             _ => Err(bad()),
+        }
+    }
+}
+
+/// Why a grant was revoked: the zero-capability design's reasons
+/// ("Journal records", `grant.revoke`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevokeReason {
+    /// Its granter revoked it.
+    Granter,
+    /// Its grantee's controller (the person) revoked it.
+    Controller,
+    /// An admin who is not its granter revoked it.
+    Owner,
+    /// An ancestor of it ended.
+    ParentEnded,
+}
+
+impl RevokeReason {
+    /// `granter`, `controller`, `owner` or `parent_ended`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RevokeReason::Granter => "granter",
+            RevokeReason::Controller => "controller",
+            RevokeReason::Owner => "owner",
+            RevokeReason::ParentEnded => "parent_ended",
         }
     }
 }
@@ -121,42 +245,81 @@ impl Grantee {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct GrantRow {
     pub id: String,
-    pub capability: String,
+    pub access: Vec<Access>,
+    /// A person key, `run:<ID>`, [`GRANTER_MIGRATION`] or
+    /// [`GRANTER_CONFIG`].
     pub granter: String,
-    /// `everyone`, `person:<key>` or `runs_of:<key>` ([`Grantee`]).
+    /// [`Grantee::as_text`].
     pub grantee: String,
     pub parent: Option<String>,
+    /// `{}`, or `{"expires_at": <RFC 3339>}`.
+    pub conditions: Value,
     /// `issued` or `revoked`.
     pub status: String,
+    pub version: i64,
+    /// `admin`, `bot`, `share`, `migration` or `config`.
+    pub event: String,
     pub issued_at: String,
     pub issued_by: String,
     pub revoked_at: Option<String>,
     pub revoked_by: Option<String>,
+    pub revoke_reason: Option<String>,
 }
 
 impl GrantRow {
-    /// Whether the grant is live (not revoked).
+    /// Whether it is issued (not revoked); its conditions are
+    /// [`GrantRow::holds_at`]'s.
+    #[must_use]
     pub fn live(&self) -> bool {
         self.status == "issued"
+    }
+
+    /// When it expires, if it does.
+    #[must_use]
+    pub fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.conditions
+            .get("expires_at")
+            .and_then(Value::as_str)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&chrono::Utc))
+    }
+
+    /// Whether it is issued and its conditions hold at `now`.
+    #[must_use]
+    pub fn holds_at(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        self.live() && self.expires_at().is_none_or(|t| now < t)
+    }
+
+    /// Whether it lists capability `cap` (`<type>:<action>`).
+    #[must_use]
+    pub fn lists(&self, cap: &str) -> bool {
+        split_capability(cap).is_some_and(|(k, a)| allows(&self.access, k, a, None))
+    }
+
+    /// The capability ([`CAPABILITIES`]) it is a grant of: the first it
+    /// lists. A share lists none.
+    #[must_use]
+    pub fn capability(&self) -> Option<&'static str> {
+        CAPABILITIES.into_iter().find(|c| self.lists(c))
     }
 }
 
 /// Which grants [`Store::cap_grants`] lists.
 #[derive(Clone, Debug, Default)]
 pub struct GrantFilter {
-    /// Only grants of this capability.
+    /// Only grants that list this capability.
     pub capability: Option<String>,
     /// Only grants to this grantee (its text, [`Grantee::as_text`]).
     pub grantee: Option<String>,
-    /// Only live grants.
+    /// Only grants issued (not revoked).
     pub live: bool,
 }
 
 /// What a person holds of one capability ([`Store::person_caps`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct PersonCap {
-    /// The live admin grant that gives the person the capability (one to
-    /// them, else the instance-wide one), if any.
+    /// A live admin grant to the person that conveys it now (one to them,
+    /// else a selector's child), if any.
     pub granted_by: Option<String>,
     /// The person's live grant of it to their own runs, if any.
     pub runs_grant: Option<String>,
@@ -164,41 +327,44 @@ pub struct PersonCap {
 
 impl PersonCap {
     /// Whether the capability reaches the person's runs.
+    #[must_use]
     pub fn reaches_runs(&self) -> bool {
         self.granted_by.is_some() && self.runs_grant.is_some()
     }
 }
 
-const GRANT_COLS: &str = "id, capability, granter, grantee, parent, status, issued_at, issued_by,
-    revoked_at, revoked_by";
+const GRANT_COLS: &str = "id, access_json, granter, grantee, parent, conditions_json, status,
+    version, event, issued_at, issued_by, revoked_at, revoked_by, revoke_reason";
 
 fn row_to_grant(r: &Row<'_>) -> rusqlite::Result<GrantRow> {
+    let json_col = |i: usize| -> rusqlite::Result<Value> {
+        let t: String = r.get(i)?;
+        serde_json::from_str(&t).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(i, rusqlite::types::Type::Text, Box::new(e))
+        })
+    };
+    let access = serde_json::from_value(json_col(1)?).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     Ok(GrantRow {
         id: r.get(0)?,
-        capability: r.get(1)?,
+        access,
         granter: r.get(2)?,
         grantee: r.get(3)?,
         parent: r.get(4)?,
-        status: r.get(5)?,
-        issued_at: r.get(6)?,
-        issued_by: r.get(7)?,
-        revoked_at: r.get(8)?,
-        revoked_by: r.get(9)?,
+        conditions: json_col(5)?,
+        status: r.get(6)?,
+        version: r.get(7)?,
+        event: r.get(8)?,
+        issued_at: r.get(9)?,
+        issued_by: r.get(10)?,
+        revoked_at: r.get(11)?,
+        revoked_by: r.get(12)?,
+        revoke_reason: r.get(13)?,
     })
 }
 
-fn check_capability(capability: &str) -> Result<()> {
-    if CAPABILITIES.contains(&capability) {
-        Ok(())
-    } else {
-        Err(CoreError::invalid(
-            "unknown_capability",
-            format!("no capability is named '{capability}'"),
-        ))
-    }
-}
-
-fn grant_in(c: &Connection, id: &str) -> Result<Option<GrantRow>> {
+pub(crate) fn grant_in(c: &Connection, id: &str) -> Result<Option<GrantRow>> {
     Ok(c.prepare_cached(&format!(
         "SELECT {GRANT_COLS} FROM bot_cap_grants WHERE id = ?1"
     ))?
@@ -206,15 +372,52 @@ fn grant_in(c: &Connection, id: &str) -> Result<Option<GrantRow>> {
     .optional()?)
 }
 
-/// The live grant of `capability` to `grantee` on `c`, if any.
-fn live_grant_to(c: &Connection, capability: &str, grantee: &str) -> Result<Option<GrantRow>> {
+/// The issued grants to `grantee` on `c`, oldest first.
+fn issued_to(c: &Connection, grantee: &str) -> Result<Vec<GrantRow>> {
     Ok(c.prepare_cached(&format!(
         "SELECT {GRANT_COLS} FROM bot_cap_grants
-              WHERE grantee = ?1 AND capability = ?2 AND status = 'issued'
-              ORDER BY issued_at, id LIMIT 1"
+          WHERE grantee = ?1 AND status = 'issued'
+          ORDER BY issued_at, id"
     ))?
-    .query_row(params![grantee, capability], row_to_grant)
-    .optional()?)
+    .query_map(params![grantee], row_to_grant)?
+    .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Whether grant `g`'s parents, up to its root, are each issued and hold
+/// at `now`, on `c`.
+fn chain_holds(c: &Connection, g: &GrantRow, now: chrono::DateTime<chrono::Utc>) -> Result<bool> {
+    let mut seen = BTreeSet::new();
+    let mut at = g.clone();
+    loop {
+        if !at.holds_at(now) || !seen.insert(at.id.clone()) {
+            return Ok(false);
+        }
+        match &at.parent {
+            None => return Ok(true),
+            Some(p) => match grant_in(c, p)? {
+                Some(parent) => at = parent,
+                None => return Ok(false),
+            },
+        }
+    }
+}
+
+/// Whether `granter` conveys as an admin's grant does now, on `c`: the
+/// instance's own acts always, a person while they are the owner or an
+/// admin (spec §4.3).
+fn has_authority(c: &Connection, granter: &str) -> Result<bool> {
+    if granter == GRANTER_MIGRATION || granter == GRANTER_CONFIG {
+        return Ok(true);
+    }
+    Ok(role_in(c, granter)?.is_admin())
+}
+
+/// The issued grant to `grantee` that lists `cap` and has no parent, on
+/// `c`, if any.
+fn root_grant_to(c: &Connection, cap: &str, grantee: &str) -> Result<Option<GrantRow>> {
+    Ok(issued_to(c, grantee)?
+        .into_iter()
+        .find(|g| g.parent.is_none() && g.lists(cap)))
 }
 
 /// Every person key of the instance on `c`: the owner, then each
@@ -234,52 +437,78 @@ pub(crate) fn person_keys_in(c: &Connection) -> Result<Vec<String>> {
     Ok(keys)
 }
 
-/// Inserts a grant row on `c` and returns it.
-#[allow(clippy::too_many_arguments)]
-fn insert_grant(
-    c: &Connection,
-    capability: &str,
-    granter: &str,
-    grantee: &str,
-    parent: Option<&str>,
-    issued_at: &str,
-    issued_by: &str,
-) -> Result<GrantRow> {
-    let id = clax_core::new_ulid();
+/// A grant row to insert ([`insert_grant`]).
+struct NewGrant<'a> {
+    id: Option<String>,
+    access: Vec<Access>,
+    granter: &'a str,
+    grantee: &'a str,
+    parent: Option<&'a str>,
+    conditions: Value,
+    event: &'a str,
+}
+
+/// Inserts `g` on `c`, issued at `at` by `by`, and returns its row.
+fn insert_grant(c: &Connection, g: NewGrant<'_>, at: &str, by: &str) -> Result<GrantRow> {
+    let id = g.id.unwrap_or_else(clax_core::new_ulid);
+    let access = serde_json::to_string(&g.access).expect("access encodes");
     c.execute(
-        "INSERT INTO bot_cap_grants (id, capability, granter, grantee, parent, status, issued_at,
-            issued_by)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'issued', ?6, ?7)",
+        "INSERT INTO bot_cap_grants (id, access_json, granter, grantee, parent, conditions_json,
+            status, version, event, issued_at, issued_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'issued', 1, ?7, ?8, ?9)",
         params![
-            id, capability, granter, grantee, parent, issued_at, issued_by
+            id,
+            access,
+            g.granter,
+            g.grantee,
+            g.parent,
+            g.conditions.to_string(),
+            g.event,
+            at,
+            by
         ],
     )?;
     Ok(GrantRow {
         id,
-        capability: capability.to_string(),
-        granter: granter.to_string(),
-        grantee: grantee.to_string(),
-        parent: parent.map(str::to_string),
+        access: g.access,
+        granter: g.granter.to_string(),
+        grantee: g.grantee.to_string(),
+        parent: g.parent.map(str::to_string),
+        conditions: g.conditions,
         status: "issued".into(),
-        issued_at: issued_at.to_string(),
-        issued_by: issued_by.to_string(),
+        version: 1,
+        event: g.event.to_string(),
+        issued_at: at.to_string(),
+        issued_by: by.to_string(),
         revoked_at: None,
         revoked_by: None,
+        revoke_reason: None,
     })
 }
 
-/// The `bot.grant` record of `g` for `op` (`issue` or `revoke`).
-fn grant_record(g: &GrantRow, op: &str, at: String) -> AuditRecord {
-    let rec = AuditRecord::new(AuditKind::BotGrant, at)
-        .with("grant", g.id.as_str())
-        .with("capability", g.capability.as_str())
+/// The `grant.issue` record of `g`.
+fn issue_record(g: &GrantRow, at: String) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::GrantIssue, at)
+        .with("grant_id", g.id.as_str())
         .with("granter", g.granter.as_str())
         .with("grantee", g.grantee.as_str())
-        .with("op", op);
-    match &g.parent {
-        Some(p) => rec.with("parent", p.as_str()),
-        None => rec,
+        .with("access", serde_json::to_value(&g.access).expect("access encodes"))
+        .with("event", g.event.as_str());
+    if let Some(p) = &g.parent {
+        rec = rec.with("parent", p.as_str());
     }
+    if let Some(t) = g.conditions.get("expires_at") {
+        rec = rec.with("expires_at", t.clone());
+    }
+    rec
+}
+
+/// The `grant.revoke` record of `g`, revoked by `by` for `reason`.
+fn revoke_record(g: &GrantRow, by: &str, reason: RevokeReason, at: String) -> AuditRecord {
+    AuditRecord::new(AuditKind::GrantRevoke, at)
+        .with("grant_id", g.id.as_str())
+        .with("by", by)
+        .with("reason", reason.as_str())
 }
 
 /// The person keys whose web switch was off on main
@@ -291,17 +520,106 @@ fn web_off_people_in(c: &Connection) -> Result<BTreeSet<String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Writes, on `c`, a grant of `cap` from `granter` to everyone: the
+/// selector, its child to each of `people`, and the runs grant of each
+/// who holds no live one and is not in `skip_runs`, issued at `at` by
+/// `by` with `event` (the children `admin` unless `event` is the
+/// migration's or the config's). Returns every row written, the selector
+/// first.
+#[allow(clippy::too_many_arguments)]
+fn write_everyone(
+    c: &Connection,
+    cap: &str,
+    granter: &str,
+    people: &[String],
+    skip_runs: &BTreeSet<String>,
+    event: &str,
+    at: &str,
+    by: &str,
+) -> Result<Vec<GrantRow>> {
+    let access = access_of(cap)?;
+    let child_event = if event == "admin" { "admin" } else { event };
+    let runs_event = if event == "admin" { "bot" } else { event };
+    let root = insert_grant(
+        c,
+        NewGrant {
+            id: None,
+            access: access.clone(),
+            granter,
+            grantee: EVERYONE,
+            parent: None,
+            conditions: json!({}),
+            event,
+        },
+        at,
+        by,
+    )?;
+    let mut out = vec![root.clone()];
+    for person in people {
+        let to = Grantee::Person(person.clone()).as_text();
+        out.push(insert_grant(
+            c,
+            NewGrant {
+                id: None,
+                access: access.clone(),
+                granter,
+                grantee: &to,
+                parent: Some(&root.id),
+                conditions: json!({}),
+                event: child_event,
+            },
+            at,
+            by,
+        )?);
+        if skip_runs.contains(person) {
+            continue;
+        }
+        out.extend(issue_runs_if_none(c, cap, person, runs_event, at, by)?);
+    }
+    Ok(out)
+}
+
+/// The runs grant of `cap` to `person`'s runs, written on `c` unless one
+/// is live, issued at `at` by `by` with `event`.
+fn issue_runs_if_none(
+    c: &Connection,
+    cap: &str,
+    person: &str,
+    event: &str,
+    at: &str,
+    by: &str,
+) -> Result<Option<GrantRow>> {
+    let runs = Grantee::RunsOf(person.to_string()).as_text();
+    if issued_to(c, &runs)?.iter().any(|g| g.lists(cap)) {
+        return Ok(None);
+    }
+    Ok(Some(insert_grant(
+        c,
+        NewGrant {
+            id: None,
+            access: access_of(cap)?,
+            granter: person,
+            grantee: &runs,
+            parent: None,
+            conditions: json!({}),
+            event,
+        },
+        at,
+        by,
+    )?))
+}
+
 /// Migration 67's Rust step, on `tx`: main's web switches as explicit
 /// grants, and each run's capabilities from its shapes.
 ///
-/// For each of `web.search` and `web.fetch` whose `web.<op>.enabled`
-/// setting is stored on, one instance-wide grant (granter
-/// [`GRANTER_MIGRATION`]) and its child to the runs of the owner and of
-/// every person ([`person_keys_in`]), except a person whose
-/// `bot_person_prefs.web` is 0. Nothing for a capability whose switch is
-/// off or unset, and nothing for any `browser.open` kind. Then
-/// `bot_runs.caps` from `bot_runs.web` (`search`, `fetch`)
-/// ([`crate::bot_runs::caps_of_web`]).
+/// For each of `clax-web:search` and `clax-web:fetch` whose
+/// `web.<op>.enabled` setting is stored on, one selector grant to
+/// everyone (granter [`GRANTER_MIGRATION`], event `migration`), its child
+/// to the owner and every person ([`person_keys_in`]), and the runs grant
+/// of each except a person whose `bot_person_prefs.web` is 0. Nothing for
+/// a capability whose switch is off or unset, and nothing of
+/// `clax-browser`. Then `bot_runs.caps` from `bot_runs.web` (`search`,
+/// `fetch`) ([`crate::bot_runs::caps_of_web`]).
 pub(crate) fn grants_from_main(tx: &Transaction<'_>) -> Result<()> {
     let on = |key: &str| -> Result<bool> {
         let v: Option<String> = tx
@@ -329,26 +647,16 @@ pub(crate) fn grants_from_main(tx: &Transaction<'_>) -> Result<()> {
         if !on(key)? {
             continue;
         }
-        let root = insert_grant(
+        write_everyone(
             tx,
             cap,
             GRANTER_MIGRATION,
-            EVERYONE,
-            None,
+            &people,
+            &off_people,
+            "migration",
             &now,
             GRANTER_MIGRATION,
         )?;
-        for person in people.iter().filter(|p| !off_people.contains(*p)) {
-            insert_grant(
-                tx,
-                cap,
-                person,
-                &Grantee::RunsOf(person.clone()).as_text(),
-                Some(&root.id),
-                &now,
-                GRANTER_MIGRATION,
-            )?;
-        }
     }
     let runs: Vec<(String, String)> = tx
         .prepare("SELECT id, web FROM bot_runs")?
@@ -364,42 +672,78 @@ pub(crate) fn grants_from_main(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+/// What `person` holds of each capability on `c`, at `now` ([`PersonCap`]).
+fn person_caps_in(
+    c: &Connection,
+    person: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<BTreeMap<String, PersonCap>> {
+    let mine = issued_to(c, &Grantee::Person(person.to_string()).as_text())?;
+    let runs = issued_to(c, &Grantee::RunsOf(person.to_string()).as_text())?;
+    let mut conveying = Vec::new();
+    for g in mine {
+        if chain_holds(c, &g, now)? && has_authority(c, &g.granter)? {
+            conveying.push(g);
+        }
+    }
+    // A grant to them before a selector's child.
+    conveying.sort_by_key(|g| g.parent.is_some());
+    let mut out = BTreeMap::new();
+    for cap in CAPABILITIES {
+        let granted_by = conveying.iter().find(|g| g.lists(cap)).map(|g| g.id.clone());
+        let runs_grant = runs
+            .iter()
+            .find(|g| g.lists(cap) && g.holds_at(now) && g.granter == person)
+            .map(|g| g.id.clone());
+        out.insert(
+            cap.to_string(),
+            PersonCap {
+                granted_by,
+                runs_grant,
+            },
+        );
+    }
+    Ok(out)
+}
+
 impl Store {
+    /// The store's clock, as a time.
+    fn grants_now(&self) -> chrono::DateTime<chrono::Utc> {
+        self.now_utc()
+    }
+
     /// Issues a grant of `capability` from `granter` to `grantee` (its
-    /// text, [`Grantee::as_text`]) under `parent`, as `ctx`, and returns
-    /// it.
+    /// text, [`Grantee::as_text`]), as `ctx`, and returns it.
     ///
-    /// - To [`EVERYONE`] or a person: `granter` is [`GRANTER_INSTANCE`]
-    ///   (or [`GRANTER_MIGRATION`]) and there is no parent. In the same
-    ///   transaction it issues its child, a grant to the person's runs
-    ///   with the person as granter, to every person it covers
-    ///   ([`person_keys_in`] for everyone) who has no live grant of the
-    ///   capability to their runs: those who revoked an earlier one's
-    ///   included.
-    /// - To a person's runs: `granter` is that person and `parent` a live
-    ///   grant of the same capability to everyone or to them, which they
-    ///   hold.
+    /// - To [`EVERYONE`] or a person: `granter` is the admin who issues it
+    ///   (a person key; [`GRANTER_MIGRATION`] or [`GRANTER_CONFIG`] for the
+    ///   instance's own acts). To everyone it is a selector, which issues
+    ///   each person ([`person_keys_in`]) a child; either way, in the same
+    ///   transaction, each person it covers who holds no live grant of the
+    ///   capability to their runs gets one (granter the person, event
+    ///   `bot`): those who revoked an earlier one's included.
+    /// - To a person's runs: `granter` is that person, and the person
+    ///   holds the capability ([`Store::person_caps`]).
     ///
-    /// Each row issued is recorded as `bot.grant` with `op: "issue"`.
-    /// Whether `ctx`'s actor may issue it (an admin, or the person) is the
-    /// caller's to check.
+    /// Each row issued is recorded as `grant.issue`. Whether `ctx`'s actor
+    /// may ask (an admin, or the person) is the caller's to check.
     ///
     /// # Errors
-    /// `unknown_capability`; `invalid_grantee`; `not_held` when the
-    /// granter does not hold the capability (a person granting to another
-    /// person's runs, or under a parent that is not live, not theirs or of
-    /// another capability; an admin grant from another granter or with a
-    /// parent); `grant_exists` when the grantee already holds a live grant
-    /// of it; the store's.
+    /// `unknown_capability`; `invalid_grantee` (a run or a grant of the
+    /// grant flow: a share's and an export's are their own); `not_held`
+    /// when the granter does not hold the capability to grant it (an
+    /// admin's grant from a person who is not an admin, a person granting
+    /// to another person's runs or what they do not hold); `grant_exists`
+    /// when the grantee already holds a live grant of it from an admin
+    /// (or to their runs); the store's.
     pub fn issue_cap_grant(
         &self,
         ctx: &AuditCtx,
         capability: &str,
         granter: &str,
         grantee: &str,
-        parent: Option<&str>,
     ) -> Result<GrantRow> {
-        check_capability(capability)?;
+        let access = access_of(capability)?;
         let to = Grantee::parse(grantee)?;
         let not_held = |why: &str| {
             CoreError::invalid(
@@ -407,157 +751,163 @@ impl Store {
                 format!("{granter} does not hold {capability} to grant it: {why}"),
             )
         };
+        let exists = || {
+            CoreError::invalid(
+                "grant_exists",
+                format!("{grantee} already holds a live grant of {capability}"),
+            )
+        };
+        let now = self.now();
+        let by = set_by(ctx);
+        let at = self.grants_now();
         self.with_tx(|tx| {
-            if live_grant_to(tx, capability, grantee)?.is_some() {
-                return Err(CoreError::invalid(
-                    "grant_exists",
-                    format!("{grantee} already holds a live grant of {capability}"),
-                ));
-            }
-            let covered = match &to {
+            let written = match &to {
                 Grantee::Everyone | Grantee::Person(_) => {
-                    if parent.is_some() {
-                        return Err(not_held("an admin grant has no parent"));
+                    if !has_authority(tx, granter)? {
+                        return Err(not_held("only an admin grants to people"));
                     }
-                    if ![GRANTER_INSTANCE, GRANTER_MIGRATION, GRANTER_CONFIG].contains(&granter) {
-                        return Err(not_held("only the instance grants to people"));
+                    if root_grant_to(tx, capability, grantee)?.is_some() {
+                        return Err(exists());
                     }
                     match &to {
-                        Grantee::Person(k) => vec![k.clone()],
-                        _ => person_keys_in(tx)?,
+                        Grantee::Everyone => write_everyone(
+                            tx,
+                            capability,
+                            granter,
+                            &person_keys_in(tx)?,
+                            &BTreeSet::new(),
+                            "admin",
+                            &now,
+                            &by,
+                        )?,
+                        Grantee::Person(k) => {
+                            let g = insert_grant(
+                                tx,
+                                NewGrant {
+                                    id: None,
+                                    access,
+                                    granter,
+                                    grantee,
+                                    parent: None,
+                                    conditions: json!({}),
+                                    event: "admin",
+                                },
+                                &now,
+                                &by,
+                            )?;
+                            let mut out = vec![g];
+                            out.extend(issue_runs_if_none(tx, capability, k, "bot", &now, &by)?);
+                            out
+                        }
+                        _ => unreachable!("matched above"),
                     }
                 }
                 Grantee::RunsOf(k) => {
                     if granter != k {
                         return Err(not_held("a person grants only to their own runs"));
                     }
-                    let p = match parent {
-                        Some(p) => grant_in(tx, p)?,
-                        None => None,
-                    };
-                    let holds = p.is_some_and(|p| {
-                        p.live()
-                            && p.capability == capability
-                            && (p.grantee == EVERYONE
-                                || p.grantee == Grantee::Person(k.clone()).as_text())
-                    });
-                    if !holds {
-                        return Err(not_held("no live grant of it to them is its parent"));
+                    if person_caps_in(tx, k, at)?[capability].granted_by.is_none() {
+                        return Err(not_held("no admin's grant gives it to them"));
                     }
-                    Vec::new()
+                    match issue_runs_if_none(tx, capability, k, "bot", &now, &by)? {
+                        Some(g) => vec![g],
+                        None => return Err(exists()),
+                    }
+                }
+                Grantee::Run(_) | Grantee::Grant(_) => {
+                    return Err(CoreError::invalid(
+                        "invalid_grantee",
+                        "a run's and a grant holder's grants are its shares and exports",
+                    ));
                 }
             };
-            let now = self.now();
-            let by = set_by(ctx);
-            let g = insert_grant(tx, capability, granter, grantee, parent, &now, &by)?;
-            self.record_audit(tx, ctx, grant_record(&g, "issue", now.clone()))?;
-            for person in covered {
-                let runs = Grantee::RunsOf(person.clone()).as_text();
-                if live_grant_to(tx, capability, &runs)?.is_some() {
-                    continue;
-                }
-                let child = insert_grant(tx, capability, &person, &runs, Some(&g.id), &now, &by)?;
-                self.record_audit(tx, ctx, grant_record(&child, "issue", now.clone()))?;
+            for g in &written {
+                self.record_audit(tx, ctx, issue_record(g, now.clone()))?;
             }
-            Ok(g)
+            Ok(written.into_iter().next().expect("one row at least"))
         })
     }
 
-    /// Revokes grant `id` and every live grant under it, transitively, as
-    /// `ctx`, each recorded as `bot.grant` with `op: "revoke"`. Returns the
-    /// IDs it ended, `id` first; none when `id` was already revoked.
-    ///
-    /// A person's grant to their runs that ends because an admin grant
-    /// above it ends, while another live admin grant of the capability
-    /// still gives it to them (one to them, else the instance-wide one),
-    /// is issued anew under that grant in the same transaction, with the
-    /// person as granter, recorded as `bot.grant` with `op: "issue"`: the
-    /// person holds the union of their live admin grants and made no
-    /// choice. Revoking a person's own runs grant reissues nothing.
-    /// Whether `ctx`'s actor may revoke it is the caller's to check.
+    /// Revokes grant `id` for `reason` and every issued grant under it,
+    /// transitively (`parent_ended`), as `ctx`, each recorded as
+    /// `grant.revoke`. Returns the IDs it ended, `id` first; none when
+    /// `id` was already revoked. Whether `ctx`'s actor may revoke it is
+    /// the caller's to check.
     ///
     /// # Errors
     /// `NotFound` when no grant has that ID; the store's.
-    pub fn revoke_cap_grant(&self, ctx: &AuditCtx, id: &str) -> Result<Vec<String>> {
-        self.with_tx(|tx| {
-            let g = grant_in(tx, id)?.ok_or(CoreError::NotFound)?;
-            if !g.live() {
-                return Ok(Vec::new());
-            }
-            let ended: Vec<GrantRow> = tx
-                .prepare(&format!(
-                    "WITH RECURSIVE under(id, depth) AS (
-                        SELECT ?1, 0
-                        UNION
-                        SELECT g.id, under.depth + 1 FROM bot_cap_grants g
-                          JOIN under ON g.parent = under.id
-                         WHERE g.status = 'issued'
-                     )
-                     SELECT {GRANT_COLS} FROM bot_cap_grants
-                      WHERE id IN (SELECT id FROM under) AND status = 'issued'
-                      ORDER BY (SELECT MIN(depth) FROM under WHERE under.id = bot_cap_grants.id),
-                               issued_at, id"
-                ))?
-                .query_map(params![id], row_to_grant)?
-                .collect::<rusqlite::Result<_>>()?;
-            let now = self.now();
-            let by = set_by(ctx);
-            for g in &ended {
-                tx.execute(
-                    "UPDATE bot_cap_grants SET status = 'revoked', revoked_at = ?2, revoked_by = ?3
-                      WHERE id = ?1",
-                    params![g.id, now, by],
-                )?;
-                self.record_audit(tx, ctx, grant_record(g, "revoke", now.clone()))?;
-            }
-            // A runs grant ended because an admin grant over it ended (not
-            // the one revoked, which is the person's own choice) is issued
-            // anew under another live admin grant of the person's.
-            for g in ended.iter().skip(1) {
-                let Ok(Grantee::RunsOf(person)) = Grantee::parse(&g.grantee) else {
-                    continue;
-                };
-                if live_grant_to(tx, &g.capability, &g.grantee)?.is_some() {
-                    continue;
-                }
-                let as_person = Grantee::Person(person.clone()).as_text();
-                let other = match live_grant_to(tx, &g.capability, &as_person)? {
-                    Some(o) => Some(o),
-                    None => live_grant_to(tx, &g.capability, EVERYONE)?,
-                };
-                let Some(other) = other else {
-                    continue;
-                };
-                let child = insert_grant(
-                    tx,
-                    &g.capability,
-                    &person,
-                    &g.grantee,
-                    Some(&other.id),
-                    &now,
-                    &by,
-                )?;
-                self.record_audit(tx, ctx, grant_record(&child, "issue", now.clone()))?;
-            }
-            Ok(ended.into_iter().map(|g| g.id).collect())
-        })
+    pub fn revoke_cap_grant(
+        &self,
+        ctx: &AuditCtx,
+        id: &str,
+        reason: RevokeReason,
+    ) -> Result<Vec<String>> {
+        self.with_tx(|tx| self.revoke_grant_in(tx, ctx, id, reason))
     }
 
-    /// The instance-wide grant of each of `web.search` and `web.fetch` that
-    /// the daemon's configuration turns on (its switch an override from
-    /// config.toml or the environment, [`Store::set_bot_overrides`]) and
-    /// that no grant of it has ever been issued, to anyone, live or revoked:
-    /// what migration 67 writes for a switch stored on, which it cannot
-    /// see for one set only in the configuration. An instance whose admin
-    /// has granted the capability to some people keeps the grants the
-    /// admin made. As migration 67
-    /// does, it issues the child to the runs of the owner and of every
-    /// person ([`person_keys_in`]) except a person whose
+    /// [`Store::revoke_cap_grant`] on `tx`.
+    pub(crate) fn revoke_grant_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        id: &str,
+        reason: RevokeReason,
+    ) -> Result<Vec<String>> {
+        let g = grant_in(tx, id)?.ok_or(CoreError::NotFound)?;
+        if !g.live() {
+            return Ok(Vec::new());
+        }
+        let ended: Vec<GrantRow> = tx
+            .prepare(&format!(
+                "WITH RECURSIVE under(id, depth) AS (
+                    SELECT ?1, 0
+                    UNION
+                    SELECT g.id, under.depth + 1 FROM bot_cap_grants g
+                      JOIN under ON g.parent = under.id
+                     WHERE g.status = 'issued'
+                 )
+                 SELECT {GRANT_COLS} FROM bot_cap_grants
+                  WHERE id IN (SELECT id FROM under) AND status = 'issued'
+                  ORDER BY (SELECT MIN(depth) FROM under WHERE under.id = bot_cap_grants.id),
+                           issued_at, id"
+            ))?
+            .query_map(params![id], row_to_grant)?
+            .collect::<rusqlite::Result<_>>()?;
+        let now = self.now();
+        let by = set_by(ctx);
+        for (i, g) in ended.iter().enumerate() {
+            let why = if i == 0 {
+                reason
+            } else {
+                RevokeReason::ParentEnded
+            };
+            tx.execute(
+                "UPDATE bot_cap_grants SET status = 'revoked', revoked_at = ?2, revoked_by = ?3,
+                        revoke_reason = ?4
+                  WHERE id = ?1",
+                params![g.id, now, by, why.as_str()],
+            )?;
+            self.record_audit(tx, ctx, revoke_record(g, &by, why, now.clone()))?;
+        }
+        Ok(ended.into_iter().map(|g| g.id).collect())
+    }
+
+    /// The grants to everyone of each of `clax-web:search` and
+    /// `clax-web:fetch` that the daemon's configuration turns on (its
+    /// switch an override from config.toml or the environment,
+    /// [`Store::set_bot_overrides`]) and that no grant of it has ever been
+    /// issued, to anyone, live or revoked: what migration 67 writes for a
+    /// switch stored on, which it cannot see for one set only in the
+    /// configuration. An instance whose admin has granted the capability to
+    /// some people keeps the grants the admin made. As migration 67 does,
+    /// it issues the selector's child to the owner and every person
+    /// ([`person_keys_in`]), and the runs grant of each but a person whose
     /// `bot_person_prefs.web` is 0. Issued as `ctx` in one transaction,
-    /// granter [`GRANTER_CONFIG`], each row recorded as `bot.grant`. So it
-    /// is written at most once per instance and capability: a restart
-    /// after the admin revokes it writes nothing. No `browser.open` kind
-    /// is ever granted here. Returns the instance-wide grants issued.
+    /// granter [`GRANTER_CONFIG`], event `config`, each row recorded as
+    /// `grant.issue`. So it is written at most once per instance and
+    /// capability: a restart after the admin revokes it writes nothing.
+    /// Nothing of `clax-browser` is ever granted here. Returns the
+    /// selectors issued.
     ///
     /// # Errors
     /// The store's.
@@ -579,40 +929,34 @@ impl Store {
         if caps.is_empty() {
             return Ok(Vec::new());
         }
+        let now = self.now();
+        let by = set_by(ctx);
         self.with_tx(|tx| {
             let off = web_off_people_in(tx)?;
             let people = person_keys_in(tx)?;
-            let now = self.now();
-            let by = set_by(ctx);
+            let all: Vec<GrantRow> = tx
+                .prepare(&format!("SELECT {GRANT_COLS} FROM bot_cap_grants"))?
+                .query_map([], row_to_grant)?
+                .collect::<rusqlite::Result<_>>()?;
             let mut issued = Vec::new();
             for cap in caps {
-                let ever: bool = tx.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM bot_cap_grants WHERE capability = ?1)",
-                    params![cap],
-                    |r| r.get(0),
-                )?;
-                if ever {
+                if all.iter().any(|g| g.lists(cap)) {
                     continue;
                 }
-                let root = insert_grant(tx, cap, GRANTER_CONFIG, EVERYONE, None, &now, &by)?;
-                self.record_audit(tx, ctx, grant_record(&root, "issue", now.clone()))?;
-                for person in people.iter().filter(|p| !off.contains(*p)) {
-                    let runs = Grantee::RunsOf(person.clone()).as_text();
-                    if live_grant_to(tx, cap, &runs)?.is_some() {
-                        continue;
-                    }
-                    let child = insert_grant(tx, cap, person, &runs, Some(&root.id), &now, &by)?;
-                    self.record_audit(tx, ctx, grant_record(&child, "issue", now.clone()))?;
+                let rows =
+                    write_everyone(tx, cap, GRANTER_CONFIG, &people, &off, "config", &now, &by)?;
+                for g in &rows {
+                    self.record_audit(tx, ctx, issue_record(g, now.clone()))?;
                 }
-                issued.push(root.id);
+                issued.push(rows[0].id.clone());
             }
             Ok(issued)
         })
     }
 
     /// Every person key of the instance: the owner, then each connected
-    /// person, revoked ones included, by public ID (whom an instance-wide
-    /// grant covers).
+    /// person, revoked ones included, by public ID (whom a grant to
+    /// everyone covers).
     ///
     /// # Errors
     /// The store's.
@@ -620,67 +964,69 @@ impl Store {
         self.with_read(person_keys_in)
     }
 
+    /// The grant `id`, if any.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn cap_grant(&self, id: &str) -> Result<Option<GrantRow>> {
+        self.with_read(|c| grant_in(c, id))
+    }
+
     /// The grants `filter` selects, oldest first.
     ///
     /// # Errors
     /// The store's.
     pub fn cap_grants(&self, filter: &GrantFilter) -> Result<Vec<GrantRow>> {
-        self.with_read(|c| {
+        let rows: Vec<GrantRow> = self.with_read(|c| {
             Ok(c.prepare_cached(&format!(
                 "SELECT {GRANT_COLS} FROM bot_cap_grants
-                      WHERE (?1 IS NULL OR capability = ?1)
-                        AND (?2 IS NULL OR grantee = ?2)
-                        AND (?3 = 0 OR status = 'issued')
+                      WHERE (?1 IS NULL OR grantee = ?1)
+                        AND (?2 = 0 OR status = 'issued')
                       ORDER BY issued_at, id"
             ))?
-            .query_map(
-                params![filter.capability, filter.grantee, filter.live],
-                row_to_grant,
-            )?
+            .query_map(params![filter.grantee, filter.live], row_to_grant)?
             .collect::<rusqlite::Result<_>>()?)
+        })?;
+        Ok(rows
+            .into_iter()
+            .filter(|g| filter.capability.as_deref().is_none_or(|c| g.lists(c)))
+            .collect())
+    }
+
+    /// Whether grant `g` conveys now: it and every parent are issued and
+    /// hold, and, for an admin's grant (to a person or everyone), its
+    /// granter is the owner or an admin (spec §4.3).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn grant_conveys(&self, g: &GrantRow) -> Result<bool> {
+        let now = self.grants_now();
+        self.with_read(|c| {
+            let admin = matches!(
+                Grantee::parse(&g.grantee),
+                Ok(Grantee::Everyone | Grantee::Person(_))
+            );
+            Ok(chain_holds(c, g, now)? && (!admin || has_authority(c, &g.granter)?))
         })
     }
 
     /// What `person` holds of each capability ([`CAPABILITIES`], every one
-    /// a key): the live admin grant that gives it to them, and their live
-    /// grant of it to their runs.
+    /// a key): a live admin grant to them that conveys it now (its granter
+    /// still an admin), and their live grant of it to their runs.
     ///
     /// # Errors
     /// The store's.
     pub fn person_caps(&self, person: &str) -> Result<BTreeMap<String, PersonCap>> {
-        let as_person = Grantee::Person(person.to_string()).as_text();
-        let runs = Grantee::RunsOf(person.to_string()).as_text();
-        self.with_read(|c| {
-            let mut out = BTreeMap::new();
-            for cap in CAPABILITIES {
-                let runs_grant = live_grant_to(c, cap, &runs)?;
-                let mine = live_grant_to(c, cap, &as_person)?;
-                let all = live_grant_to(c, cap, EVERYONE)?;
-                let parent = runs_grant.as_ref().and_then(|g| g.parent.clone());
-                let held: Vec<String> = [mine, all].into_iter().flatten().map(|g| g.id).collect();
-                // The one the runs grant is under, else theirs, else everyone's.
-                let granted_by = held
-                    .iter()
-                    .find(|id| Some(*id) == parent.as_ref())
-                    .or_else(|| held.first())
-                    .cloned();
-                out.insert(
-                    cap.to_string(),
-                    PersonCap {
-                        granted_by,
-                        runs_grant: runs_grant.map(|g| g.id),
-                    },
-                );
-            }
-            Ok(out)
-        })
+        let now = self.grants_now();
+        self.with_read(|c| person_caps_in(c, person, now))
     }
 
-    /// Issues to `person`, who joined just now, the child of each live
-    /// instance-wide grant they have never held a child of, on `tx`, as
-    /// `ctx`: a person row made or made a person again
-    /// ([`Store::create_invite`], a browser's invite, a GitHub sign-up)
-    /// calls it in its own transaction. A child they revoked stays revoked.
+    /// Issues to `person`, who joined just now, the child of each issued
+    /// selector to everyone they have no child of, and the runs grant of
+    /// each such capability they hold no live one of, on `tx`, as `ctx`: a
+    /// person row made or made a person again ([`Store::create_invite`], a
+    /// browser's invite, a GitHub sign-up) calls it in its own transaction.
+    /// A child they revoked stays revoked.
     ///
     /// # Errors
     /// The store's.
@@ -690,7 +1036,7 @@ impl Store {
         ctx: &AuditCtx,
         person: &str,
     ) -> Result<()> {
-        let runs = Grantee::RunsOf(person.to_string()).as_text();
+        let to = Grantee::Person(person.to_string()).as_text();
         let roots: Vec<GrantRow> = tx
             .prepare_cached(&format!(
                 "SELECT {GRANT_COLS} FROM bot_cap_grants g
@@ -699,24 +1045,31 @@ impl Store {
                                      WHERE c.parent = g.id AND c.grantee = ?2)
                   ORDER BY issued_at, id"
             ))?
-            .query_map(params![EVERYONE, runs], row_to_grant)?
+            .query_map(params![EVERYONE, to], row_to_grant)?
             .collect::<rusqlite::Result<_>>()?;
         let now = self.now();
         let by = set_by(ctx);
         for root in roots {
-            if live_grant_to(tx, &root.capability, &runs)?.is_some() {
-                continue;
-            }
             let child = insert_grant(
                 tx,
-                &root.capability,
-                person,
-                &runs,
-                Some(&root.id),
+                NewGrant {
+                    id: None,
+                    access: root.access.clone(),
+                    granter: &root.granter,
+                    grantee: &to,
+                    parent: Some(&root.id),
+                    conditions: json!({}),
+                    event: "admin",
+                },
                 &now,
                 &by,
             )?;
-            self.record_audit(tx, ctx, grant_record(&child, "issue", now.clone()))?;
+            self.record_audit(tx, ctx, issue_record(&child, now.clone()))?;
+            if let Some(cap) = root.capability()
+                && let Some(runs) = issue_runs_if_none(tx, cap, person, "bot", &now, &by)?
+            {
+                self.record_audit(tx, ctx, issue_record(&runs, now.clone()))?;
+            }
         }
         Ok(())
     }
@@ -730,7 +1083,11 @@ mod tests {
     use crate::test_util::{DAEMON, store};
 
     fn admin_everyone(st: &Store, cap: &str) -> GrantRow {
-        st.issue_cap_grant(DAEMON, cap, GRANTER_INSTANCE, EVERYONE, None)
+        st.issue_cap_grant(DAEMON, cap, OWNER, EVERYONE).unwrap()
+    }
+
+    fn to_person(st: &Store, cap: &str, granter: &str, who: &str) -> GrantRow {
+        st.issue_cap_grant(DAEMON, cap, granter, &Grantee::Person(who.into()).as_text())
             .unwrap()
     }
 
@@ -738,11 +1095,11 @@ mod tests {
         Grantee::RunsOf(person.to_string()).as_text()
     }
 
-    fn grant_events(st: &Store) -> Vec<serde_json::Value> {
+    fn events(st: &Store, kind: &str) -> Vec<serde_json::Value> {
         st.events_after(0, 10_000)
             .unwrap()
             .into_iter()
-            .filter(|e| e.kind == "bot.grant")
+            .filter(|e| e.kind == kind)
             .map(|e| serde_json::from_str(&e.body).unwrap())
             .collect()
     }
@@ -760,41 +1117,104 @@ mod tests {
             Grantee::Everyone,
             Grantee::Person("u_ana".into()),
             Grantee::RunsOf(OWNER.into()),
+            Grantee::Run("r1".into()),
+            Grantee::Grant("g1".into()),
         ] {
             assert_eq!(Grantee::parse(&g.as_text()).unwrap(), g);
         }
-        for bad in ["", "person:", "runs_of", "team:x", "Everyone"] {
+        for bad in ["", "person:", "runs_of", "team:x", "everyone", "people_of:x"] {
             assert!(Grantee::parse(bad).is_err(), "{bad}");
         }
     }
 
+    /// A grant's access is RFC 9635 objects: an open action carries the
+    /// session's actions beside it, and an access without locations
+    /// applies everywhere.
     #[test]
-    fn an_instance_wide_grant_issues_a_child_to_each_person_and_to_a_new_one() {
+    fn a_grant_carries_its_capabilitys_access_objects() {
+        let web = access_of("clax-web:fetch").unwrap();
+        assert_eq!(
+            serde_json::to_value(&web).unwrap(),
+            json!([{"type": "clax-web", "actions": ["fetch"]}])
+        );
+        let url = access_of("clax-browser:open-url").unwrap();
+        assert_eq!(
+            url[0].actions,
+            ["open-url", "read", "act", "navigate", "record", "close"]
+        );
+        assert!(allows(&url, TYPE_BROWSER, "act", Some("https://a.example")));
+        assert!(!allows(&url, TYPE_BROWSER, "open-artifact", None));
+        assert!(!allows(&url, TYPE_WEB, "fetch", None));
+        let bounded = Access {
+            kind: TYPE_BROWSER.into(),
+            actions: vec!["navigate".into()],
+            locations: Some(vec!["https://a.example".into()]),
+        };
+        assert!(bounded.allows(TYPE_BROWSER, "navigate", Some("https://a.example")));
+        assert!(!bounded.allows(TYPE_BROWSER, "navigate", Some("https://b.example")));
+        assert!(bounded.allows(TYPE_BROWSER, "navigate", None));
+        assert_eq!(code(&access_of("clax-web:crawl").unwrap_err()), "unknown_capability");
+    }
+
+    #[test]
+    fn a_grant_to_everyone_is_a_selector_with_a_child_per_person_and_a_new_one() {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
         let root = admin_everyone(&st, "clax-browser:open-content");
+        assert_eq!(root.grantee, EVERYONE);
+        assert_eq!(root.granter, OWNER, "the admin who issued it, not the instance");
+        assert_eq!(root.event, "admin");
         for p in [OWNER, sam.as_str()] {
             let caps = st.person_caps(p).unwrap();
             let c = &caps["clax-browser:open-content"];
-            assert_eq!(c.granted_by.as_deref(), Some(root.id.as_str()), "{p}");
+            let child = st.cap_grant(c.granted_by.as_ref().unwrap()).unwrap().unwrap();
+            assert_eq!(child.parent.as_deref(), Some(root.id.as_str()), "{p}");
+            assert_eq!(child.grantee, Grantee::Person(p.into()).as_text());
             assert!(c.reaches_runs(), "{p}");
             assert!(!caps["clax-browser:open-url"].reaches_runs(), "{p}");
         }
-        let child = st
+        let mine = st
             .cap_grants(&GrantFilter {
                 grantee: Some(runs(&sam)),
                 ..GrantFilter::default()
             })
             .unwrap();
-        assert_eq!(child.len(), 1);
-        assert_eq!(child[0].granter, sam, "the person grants to their runs");
-        assert_eq!(child[0].parent.as_deref(), Some(root.id.as_str()));
-
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].granter, sam, "the person grants to their runs");
+        assert_eq!(mine[0].parent, None, "a runs grant is no child of the admin's");
+        assert_eq!(mine[0].event, "bot");
         let mia = person(&st, "Mia", 2);
         assert!(
             st.person_caps(&mia).unwrap()["clax-browser:open-content"].reaches_runs(),
-            "a person who joins later gets the child"
+            "a person who joins later gets the child and the runs grant"
         );
+    }
+
+    /// An admin's grant conveys while its granter is an admin: removing
+    /// the role stops it at once, with no row changed, and the role coming
+    /// back makes it convey again.
+    #[test]
+    fn an_admin_who_loses_the_role_stops_conveying() {
+        let (_d, st) = store();
+        let ana = person(&st, "Ana", 1);
+        let sam = person(&st, "Sam", 2);
+        st.set_admin(DAEMON, &ana, true).unwrap();
+        let g = to_person(&st, "clax-web:search", &ana, &sam);
+        assert_eq!(g.granter, ana);
+        assert!(st.person_caps(&sam).unwrap()["clax-web:search"].reaches_runs());
+        assert!(st.grant_conveys(&g).unwrap());
+        st.set_admin(DAEMON, &ana, false).unwrap();
+        let held = &st.person_caps(&sam).unwrap()["clax-web:search"];
+        assert_eq!(held.granted_by, None, "no longer conveyed");
+        assert!(held.runs_grant.is_some(), "the person's own grant stands");
+        assert!(!st.grant_conveys(&g).unwrap());
+        assert!(st.cap_grant(&g.id).unwrap().unwrap().live(), "no row changed");
+        let e = st
+            .issue_cap_grant(DAEMON, "clax-web:fetch", &ana, EVERYONE)
+            .unwrap_err();
+        assert_eq!(code(&e), "not_held", "a member grants nothing");
+        st.set_admin(DAEMON, &ana, true).unwrap();
+        assert!(st.person_caps(&sam).unwrap()["clax-web:search"].reaches_runs());
     }
 
     #[test]
@@ -802,28 +1222,30 @@ mod tests {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
         let root = admin_everyone(&st, "clax-web:fetch");
-        let other = admin_everyone(&st, "clax-web:search");
-        let ended = st.revoke_cap_grant(DAEMON, &root.id).unwrap();
-        assert_eq!(ended.len(), 3, "the root and two children: {ended:?}");
+        admin_everyone(&st, "clax-web:search");
+        let ended = st
+            .revoke_cap_grant(DAEMON, &root.id, RevokeReason::Granter)
+            .unwrap();
+        assert_eq!(ended.len(), 3, "the selector and two children: {ended:?}");
         assert_eq!(ended[0], root.id);
         for p in [OWNER, sam.as_str()] {
             let caps = st.person_caps(p).unwrap();
-            assert_eq!(caps["clax-web:fetch"], PersonCap::default(), "{p}");
+            assert_eq!(caps["clax-web:fetch"].granted_by, None, "{p}");
             assert!(caps["clax-web:search"].reaches_runs(), "{p}");
         }
-        assert!(st.revoke_cap_grant(DAEMON, &root.id).unwrap().is_empty());
-        assert!(
-            st.cap_grants(&GrantFilter {
-                capability: Some("clax-web:fetch".into()),
-                live: true,
-                ..GrantFilter::default()
-            })
-            .unwrap()
-            .is_empty()
+        let gone = st.cap_grant(&ended[1]).unwrap().unwrap();
+        assert_eq!(gone.revoke_reason.as_deref(), Some("parent_ended"));
+        assert_eq!(
+            st.cap_grant(&root.id).unwrap().unwrap().revoke_reason.as_deref(),
+            Some("granter")
         );
-        assert!(other.live());
+        assert!(
+            st.revoke_cap_grant(DAEMON, &root.id, RevokeReason::Granter)
+                .unwrap()
+                .is_empty()
+        );
         assert!(matches!(
-            st.revoke_cap_grant(DAEMON, "nope"),
+            st.revoke_cap_grant(DAEMON, "nope", RevokeReason::Owner),
             Err(CoreError::NotFound)
         ));
     }
@@ -832,53 +1254,25 @@ mod tests {
     fn a_person_revokes_and_reissues_only_their_own() {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
-        let root = admin_everyone(&st, "clax-browser:open-artifact");
-        let mine = st.person_caps(&sam).unwrap()["clax-browser:open-artifact"]
-            .runs_grant
-            .clone()
-            .unwrap();
-        assert_eq!(st.revoke_cap_grant(DAEMON, &mine).unwrap(), [mine.as_str()]);
-        assert!(!st.person_caps(&sam).unwrap()["clax-browser:open-artifact"].reaches_runs());
+        admin_everyone(&st, "clax-browser:open-artifact");
+        let cap = "clax-browser:open-artifact";
+        let mine = st.person_caps(&sam).unwrap()[cap].runs_grant.clone().unwrap();
+        assert_eq!(
+            st.revoke_cap_grant(DAEMON, &mine, RevokeReason::Controller)
+                .unwrap(),
+            [mine.as_str()]
+        );
+        assert!(!st.person_caps(&sam).unwrap()[cap].reaches_runs());
         assert!(
-            st.person_caps(OWNER).unwrap()["clax-browser:open-artifact"].reaches_runs(),
+            st.person_caps(OWNER).unwrap()[cap].reaches_runs(),
             "the owner's is their own"
         );
-        assert!(root.live());
-        let again = st
-            .issue_cap_grant(
-                DAEMON,
-                "clax-browser:open-artifact",
-                &sam,
-                &runs(&sam),
-                Some(&root.id),
-            )
-            .unwrap();
+        let again = st.issue_cap_grant(DAEMON, cap, &sam, &runs(&sam)).unwrap();
         assert_eq!(again.granter, sam);
-        assert!(st.person_caps(&sam).unwrap()["clax-browser:open-artifact"].reaches_runs());
-        let e = st
-            .issue_cap_grant(
-                DAEMON,
-                "clax-browser:open-artifact",
-                &sam,
-                &runs(&sam),
-                Some(&root.id),
-            )
-            .unwrap_err();
+        assert!(st.person_caps(&sam).unwrap()[cap].reaches_runs());
+        let e = st.issue_cap_grant(DAEMON, cap, &sam, &runs(&sam)).unwrap_err();
         assert_eq!(code(&e), "grant_exists");
-        let mine = st.person_caps(OWNER).unwrap()["clax-browser:open-artifact"]
-            .runs_grant
-            .clone()
-            .unwrap();
-        st.revoke_cap_grant(DAEMON, &mine).unwrap();
-        let e = st
-            .issue_cap_grant(
-                DAEMON,
-                "clax-browser:open-artifact",
-                &sam,
-                &runs(OWNER),
-                Some(&root.id),
-            )
-            .unwrap_err();
+        let e = st.issue_cap_grant(DAEMON, cap, &sam, &runs(OWNER)).unwrap_err();
         assert_eq!(code(&e), "not_held", "not another person's runs");
     }
 
@@ -886,89 +1280,77 @@ mod tests {
     fn a_person_cannot_issue_what_they_do_not_hold() {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
-        let to_sam = |parent: Option<&str>| {
-            st.issue_cap_grant(DAEMON, "clax-browser:open-url", &sam, &runs(&sam), parent)
-        };
-        assert_eq!(code(&to_sam(None).unwrap_err()), "not_held");
-        let search = admin_everyone(&st, "clax-web:search");
-        assert_eq!(
-            code(&to_sam(Some(&search.id)).unwrap_err()),
-            "not_held",
-            "a parent of another capability"
-        );
+        let cap = "clax-browser:open-url";
+        let e = st.issue_cap_grant(DAEMON, cap, &sam, &runs(&sam)).unwrap_err();
+        assert_eq!(code(&e), "not_held");
         let mia = person(&st, "Mia", 2);
-        let to_mia = st
-            .issue_cap_grant(
-                DAEMON,
-                "clax-browser:open-url",
-                GRANTER_INSTANCE,
-                &Grantee::Person(mia.clone()).as_text(),
-                None,
-            )
+        let to_mia = to_person(&st, cap, OWNER, &mia);
+        assert!(st.person_caps(&mia).unwrap()[cap].reaches_runs());
+        let e = st.issue_cap_grant(DAEMON, cap, &sam, &runs(&sam)).unwrap_err();
+        assert_eq!(code(&e), "not_held", "another person's grant is not theirs");
+        let e = st
+            .issue_cap_grant(DAEMON, cap, OWNER, &Grantee::Person(mia.clone()).as_text())
+            .unwrap_err();
+        assert_eq!(code(&e), "grant_exists");
+        st.revoke_cap_grant(DAEMON, &to_mia.id, RevokeReason::Granter)
             .unwrap();
-        assert_eq!(
-            code(&to_sam(Some(&to_mia.id)).unwrap_err()),
-            "not_held",
-            "another person's grant"
-        );
-        assert!(st.person_caps(&mia).unwrap()["clax-browser:open-url"].reaches_runs());
-        st.revoke_cap_grant(DAEMON, &to_mia.id).unwrap();
+        let held = &st.person_caps(&mia).unwrap()[cap];
+        assert_eq!(held.granted_by, None);
+        let e = st.issue_cap_grant(DAEMON, cap, &sam, EVERYONE).unwrap_err();
+        assert_eq!(code(&e), "not_held", "only an admin grants to people");
         let e = st
-            .issue_cap_grant(
-                DAEMON,
-                "clax-browser:open-url",
-                &mia,
-                &runs(&mia),
-                Some(&to_mia.id),
-            )
-            .unwrap_err();
-        assert_eq!(code(&e), "not_held", "a revoked parent");
-        let e = st
-            .issue_cap_grant(DAEMON, "clax-browser:open-url", &sam, EVERYONE, None)
-            .unwrap_err();
-        assert_eq!(code(&e), "not_held", "only the instance grants to people");
-        let e = st
-            .issue_cap_grant(DAEMON, "web.crawl", GRANTER_INSTANCE, EVERYONE, None)
+            .issue_cap_grant(DAEMON, "clax-web:crawl", OWNER, EVERYONE)
             .unwrap_err();
         assert_eq!(code(&e), "unknown_capability");
+        let e = st.issue_cap_grant(DAEMON, cap, OWNER, "run:r1").unwrap_err();
+        assert_eq!(code(&e), "invalid_grantee");
     }
 
     #[test]
-    fn every_issue_and_revoke_is_one_bot_grant() {
+    fn every_issue_and_revoke_is_one_grant_record() {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
         let root = admin_everyone(&st, "clax-web:search");
-        let events = grant_events(&st);
-        assert_eq!(events.len(), 3, "the root and a child each: {events:?}");
-        assert_eq!(events[0]["op"], "issue");
-        assert_eq!(events[0]["grant"], root.id.as_str());
-        assert_eq!(events[0]["grantee"], EVERYONE);
-        assert_eq!(events[0]["granter"], GRANTER_INSTANCE);
-        assert_eq!(events[0]["capability"], "clax-web:search");
-        assert!(events[0].get("parent").is_none());
-        assert!(
-            events[1..]
-                .iter()
-                .all(|e| e["parent"] == root.id.as_str() && e["op"] == "issue")
+        let issued = events(&st, "grant.issue");
+        // The selector, a child and a runs grant for each of two people.
+        assert_eq!(issued.len(), 5, "{issued:?}");
+        assert_eq!(issued[0]["grant_id"], root.id.as_str());
+        assert_eq!(issued[0]["grantee"], EVERYONE);
+        assert_eq!(issued[0]["granter"], OWNER);
+        assert_eq!(issued[0]["event"], "admin");
+        assert_eq!(
+            issued[0]["access"],
+            json!([{"type": "clax-web", "actions": ["search"]}])
         );
-        assert!(events.iter().any(|e| e["grantee"] == runs(&sam).as_str()));
-        st.revoke_cap_grant(DAEMON, &root.id).unwrap();
-        let events = grant_events(&st);
-        assert_eq!(events.len(), 6);
-        assert!(events[3..].iter().all(|e| e["op"] == "revoke"));
-        assert_eq!(events[3]["grant"], root.id.as_str());
+        assert!(issued[0].get("parent").is_none());
+        assert!(
+            issued
+                .iter()
+                .any(|e| e["grantee"] == runs(&sam).as_str() && e["event"] == "bot")
+        );
+        assert!(
+            issued
+                .iter()
+                .any(|e| e["parent"] == root.id.as_str() && e["event"] == "admin")
+        );
+        st.revoke_cap_grant(DAEMON, &root.id, RevokeReason::Owner)
+            .unwrap();
+        let revoked = events(&st, "grant.revoke");
+        assert_eq!(revoked.len(), 3, "the selector and its two children");
+        assert_eq!(revoked[0]["grant_id"], root.id.as_str());
+        assert_eq!(revoked[0]["reason"], "owner");
+        assert!(revoked[1..].iter().all(|e| e["reason"] == "parent_ended"));
+        assert!(events(&st, "bot.grant").is_empty(), "no kind of its own");
     }
 
     /// A daemon whose web switches are on only in config.toml gets the
-    /// instance-wide grants migration 67 would have written, once: a
-    /// grant the admin revokes is not written again, a stored switch and
-    /// a switch off write none, and no browser kind is ever granted.
+    /// grants to everyone migration 67 would have written, once: a grant
+    /// the admin revokes is not written again, a stored switch and a switch
+    /// off write none, and nothing of the browser is ever granted.
     #[test]
     fn a_config_web_switch_grants_everyone_once() {
         use crate::bot_settings::{Overrides, Setting};
-        use serde_json::json;
         let (_d, st) = store();
-        // Off, or on only in the store: nothing.
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
         st.set_bot_settings(DAEMON, &[(Setting::WebSearchEnabled, Some(json!(true)))])
             .unwrap();
@@ -991,13 +1373,13 @@ mod tests {
             .unwrap();
         assert_eq!(g.len(), 1, "{g:?}");
         assert_eq!(
-            (g[0].capability.as_str(), g[0].granter.as_str()),
-            ("clax-web:fetch", GRANTER_CONFIG)
+            (g[0].capability(), g[0].granter.as_str(), g[0].event.as_str()),
+            (Some("clax-web:fetch"), GRANTER_CONFIG, "config")
         );
         assert!(st.person_caps(OWNER).unwrap()["clax-web:fetch"].reaches_runs());
-        // A restart writes nothing more, and after a revoke nothing again.
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
-        st.revoke_cap_grant(DAEMON, &g[0].id).unwrap();
+        st.revoke_cap_grant(DAEMON, &g[0].id, RevokeReason::Owner)
+            .unwrap();
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
         assert!(!st.person_caps(OWNER).unwrap()["clax-web:fetch"].reaches_runs());
         for cap in BROWSER_CAPABILITIES {
@@ -1016,7 +1398,7 @@ mod tests {
     fn config_turns_fetch_on(st: &Store) {
         use crate::bot_settings::{Overrides, Setting};
         let mut ov = Overrides::default();
-        ov.set(Setting::WebFetchEnabled, &serde_json::json!(true), "file")
+        ov.set(Setting::WebFetchEnabled, &json!(true), "file")
             .unwrap();
         st.set_bot_overrides(ov);
     }
@@ -1049,11 +1431,13 @@ mod tests {
             );
         }
         let mias = st.person_caps(&mia).unwrap()["clax-web:fetch"].clone();
-        assert!(mias.granted_by.is_some(), "the admin grant covers her");
+        assert!(mias.granted_by.is_some(), "the selector's child covers her");
         assert_eq!(mias.runs_grant, None, "her runs are not granted it");
-        let events = grant_events(&st);
-        assert_eq!(events.len(), 3, "the root and two children: {events:?}");
-        assert!(events.iter().all(|e| e["grantee"] != runs(&mia).as_str()));
+        assert!(
+            events(&st, "grant.issue")
+                .iter()
+                .all(|e| e["grantee"] != runs(&mia).as_str())
+        );
     }
 
     /// Any grant of a web capability, to anyone and live or revoked,
@@ -1062,94 +1446,48 @@ mod tests {
     fn a_config_web_grant_is_not_written_where_the_capability_was_ever_granted() {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
-        let to_sam = st
-            .issue_cap_grant(
-                DAEMON,
-                "clax-web:fetch",
-                GRANTER_INSTANCE,
-                &Grantee::Person(sam.clone()).as_text(),
-                None,
-            )
-            .unwrap();
+        let to_sam = to_person(&st, "clax-web:fetch", OWNER, &sam);
         config_turns_fetch_on(&st);
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
-        st.revoke_cap_grant(DAEMON, &to_sam.id).unwrap();
+        st.revoke_cap_grant(DAEMON, &to_sam.id, RevokeReason::Granter)
+            .unwrap();
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
         assert!(!st.person_caps(OWNER).unwrap()["clax-web:fetch"].reaches_runs());
-        assert!(
-            st.cap_grants(&GrantFilter {
-                grantee: Some(EVERYONE.into()),
-                ..GrantFilter::default()
-            })
-            .unwrap()
-            .is_empty()
-        );
     }
 
     /// A person holding a capability from two admin grants keeps it in
-    /// their runs when either is revoked, whichever was issued first: the
-    /// runs grant is issued anew under the other.
+    /// their runs when either is revoked, whichever was issued first: their
+    /// runs grant is no child of either, and conveys what they hold.
     #[test]
     fn revoking_one_of_two_admin_grants_keeps_the_runs_grant() {
+        let cap = "clax-browser:open-url";
         for everyone_first in [true, false] {
             let (_d, st) = store();
             let ben = person(&st, "Ben", 1);
-            let to_ben = || {
-                st.issue_cap_grant(
-                    DAEMON,
-                    "clax-browser:open-url",
-                    GRANTER_INSTANCE,
-                    &Grantee::Person(ben.clone()).as_text(),
-                    None,
-                )
-                .unwrap()
-            };
             let (first, second) = if everyone_first {
-                let e = admin_everyone(&st, "clax-browser:open-url");
-                (e, to_ben())
+                let e = admin_everyone(&st, cap);
+                (e, to_person(&st, cap, OWNER, &ben))
             } else {
-                let p = to_ben();
-                (p, admin_everyone(&st, "clax-browser:open-url"))
+                let p = to_person(&st, cap, OWNER, &ben);
+                (p, admin_everyone(&st, cap))
             };
-            let before = st.person_caps(&ben).unwrap()["clax-browser:open-url"].clone();
+            let before = st.person_caps(&ben).unwrap()[cap].clone();
             assert!(before.reaches_runs());
-            let old_runs = before.runs_grant.clone().unwrap();
-            let n = grant_events(&st).len();
-            st.revoke_cap_grant(DAEMON, &first.id).unwrap();
-            let after = st.person_caps(&ben).unwrap()["clax-browser:open-url"].clone();
-            assert_eq!(
-                after.granted_by.as_deref(),
-                Some(second.id.as_str()),
-                "everyone first: {everyone_first}"
-            );
-            assert!(after.reaches_runs(), "everyone first: {everyone_first}");
-            let new_runs = after.runs_grant.unwrap();
-            assert_ne!(new_runs, old_runs);
-            let g = st
-                .cap_grants(&GrantFilter {
-                    grantee: Some(runs(&ben)),
-                    live: true,
-                    ..GrantFilter::default()
-                })
+            let n = events(&st, "grant.issue").len();
+            st.revoke_cap_grant(DAEMON, &first.id, RevokeReason::Granter)
                 .unwrap();
-            assert_eq!(g.len(), 1);
-            assert_eq!(g[0].parent.as_deref(), Some(second.id.as_str()));
-            assert_eq!(g[0].granter, ben);
-            let events = grant_events(&st);
-            let issued: Vec<_> = events[n..].iter().filter(|e| e["op"] == "issue").collect();
-            assert_eq!(issued.len(), 1, "{events:?}");
-            assert_eq!(issued[0]["grant"], new_runs.as_str());
-            assert_eq!(issued[0]["parent"], second.id.as_str());
+            let after = st.person_caps(&ben).unwrap()[cap].clone();
+            assert!(after.reaches_runs(), "everyone first: {everyone_first}");
+            assert_eq!(after.runs_grant, before.runs_grant, "the same runs grant");
+            let by = st.cap_grant(after.granted_by.as_ref().unwrap()).unwrap().unwrap();
+            assert!(
+                by.id == second.id || by.parent.as_deref() == Some(second.id.as_str()),
+                "conveyed by the other"
+            );
+            assert_eq!(events(&st, "grant.issue").len(), n, "nothing reissued");
             if everyone_first {
-                // The owner held it only from everyone's grant: it ends.
-                assert_eq!(
-                    st.person_caps(OWNER).unwrap()["clax-browser:open-url"],
-                    PersonCap::default()
-                );
+                assert_eq!(st.person_caps(OWNER).unwrap()[cap].granted_by, None);
             }
-            // A person's own revoke is their choice: nothing is reissued.
-            st.revoke_cap_grant(DAEMON, &new_runs).unwrap();
-            assert!(!st.person_caps(&ben).unwrap()["clax-browser:open-url"].reaches_runs());
         }
     }
 }

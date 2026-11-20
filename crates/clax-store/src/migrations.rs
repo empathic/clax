@@ -2516,10 +2516,12 @@ pub const MIGRATIONS: &[&str] = &[
     // (`crate::credits::seed_browser_line`).
     //
     // Capabilities (spec 2026-11-19-claxbot-browser-design §4.3, §11.2):
-    // `bot_cap_grants` holds every grant of a capability, an instance-wide
-    // one (`everyone`), one to a person (`person:<key>`) and a person's to
-    // their own runs (`runs_of:<key>`, the child of one of the others),
-    // written only by `crate::bot_grants`; `bot_runs.caps` is the run's
+    // `bot_cap_grants` holds every grant of a capability as the
+    // zero-capability design's grant row (access objects, conditions,
+    // version, event): an admin's to a person (`person:<key>`) or to
+    // everyone (the selector `people_of:instance`, with a child per
+    // person), a person's to their own runs (`runs_of:<key>`) and a page's
+    // share (`run:<ID>`), written only by `crate::bot_grants`; `bot_runs.caps` is the run's
     // capabilities when it was made, capability IDs sorted and
     // comma-separated. The Rust step ([`BROWSER_MIGRATION`]) writes main's
     // web switches as explicit grants and fills `caps` from `web`
@@ -2562,17 +2564,23 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE bot_runs ADD COLUMN caps TEXT NOT NULL DEFAULT '';
     CREATE TABLE bot_cap_grants (
         id TEXT PRIMARY KEY,
-        capability TEXT NOT NULL,
+        access_json TEXT NOT NULL,
         granter TEXT NOT NULL,
         grantee TEXT NOT NULL,
         parent TEXT REFERENCES bot_cap_grants(id),
+        conditions_json TEXT NOT NULL DEFAULT '{}',
         status TEXT NOT NULL CHECK (status IN ('issued', 'revoked')),
+        version INTEGER NOT NULL DEFAULT 1,
+        event TEXT NOT NULL
+            CHECK (event IN ('admin', 'bot', 'share', 'migration', 'config')),
         issued_at TEXT NOT NULL,
         issued_by TEXT NOT NULL,
         revoked_at TEXT,
-        revoked_by TEXT
+        revoked_by TEXT,
+        revoke_reason TEXT
+            CHECK (revoke_reason IN ('granter', 'controller', 'owner', 'parent_ended'))
     );
-    CREATE INDEX bot_cap_grants_by_grantee ON bot_cap_grants(grantee, capability, status);
+    CREATE INDEX bot_cap_grants_by_grantee ON bot_cap_grants(grantee, status);
     CREATE INDEX bot_cap_grants_by_parent ON bot_cap_grants(parent) WHERE parent IS NOT NULL;
     CREATE TABLE bot_web_pages_new (
         run_id TEXT NOT NULL,
@@ -9604,8 +9612,9 @@ mod tests {
     }
 
     /// Main's web switches on, and a person's choice off, become explicit
-    /// grants: one instance-wide grant per web capability, and its child
-    /// to the runs of every person but the one who chose off.
+    /// grants: one selector grant to everyone per web capability, its child
+    /// to every person, and the grant to the runs of every person but the
+    /// one who chose off.
     #[test]
     fn migration_67_writes_main_web_as_explicit_grants() {
         use crate::bot_grants::{EVERYONE, GRANTER_MIGRATION};
@@ -9628,6 +9637,7 @@ mod tests {
                 (root[0].granter.as_str(), root[0].issued_by.as_str()),
                 (GRANTER_MIGRATION, GRANTER_MIGRATION)
             );
+            assert_eq!(root[0].event, "migration");
             let children: Vec<&str> = grants
                 .iter()
                 .filter(|g| g.parent.as_deref() == Some(root[0].id.as_str()))
@@ -9635,10 +9645,20 @@ mod tests {
                 .collect();
             assert_eq!(
                 children,
+                ["person:*owner", "person:u_ana", "person:u_ben", "person:u_cy"],
+                "{cap}"
+            );
+            let runs: Vec<&str> = grants
+                .iter()
+                .filter(|g| g.grantee.starts_with("runs_of:"))
+                .map(|g| g.grantee.as_str())
+                .collect();
+            assert_eq!(
+                runs,
                 ["runs_of:*owner", "runs_of:u_ben", "runs_of:u_cy"],
                 "{cap}"
             );
-            assert_eq!(grants.len(), 4, "{cap}: nothing else");
+            assert_eq!(grants.len(), 8, "{cap}: nothing else");
         }
         assert!(!st.web_choice("u_ana").unwrap(), "Ana chose off");
         assert!(
@@ -9671,7 +9691,7 @@ mod tests {
             ),
         );
         assert!(grants_of(&st, "clax-web:search").is_empty());
-        assert_eq!(grants_of(&st, "clax-web:fetch").len(), 4);
+        assert_eq!(grants_of(&st, "clax-web:fetch").len(), 8);
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let st = opened_from_66_with(&home, PEOPLE_AT_66);

@@ -294,7 +294,11 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("grant.request", "grant_id" | "flow" | "key_sha256" | "access") => Safe,
         ("grant.approve", "grant_id" | "person" | "access" | "code_checked") => Safe,
         ("grant.deny", "grant_id" | "reason") => Safe,
-        ("grant.revoke", "grant_id" | "by" | "sessions_ended") => Safe,
+        ("grant.revoke", "grant_id" | "by" | "sessions_ended" | "reason") => Safe,
+        (
+            "grant.issue",
+            "grant_id" | "granter" | "grantee" | "access" | "parent" | "event" | "expires_at",
+        ) => Safe,
         ("grant.token", "grant_id" | "op") => Safe,
         ("grant.narrow", "grant_id" | "narrow") => Safe,
         ("person.rights", "person" | "rights") => Safe,
@@ -416,7 +420,6 @@ fn body_class(kind: &str, field: &str) -> Class {
         // A capability grant issued or revoked: IDs, a capability's ID,
         // `instance`, `migration` or a person key, a grantee
         // (`everyone`, `person:<key>`, `runs_of:<key>`) and the op.
-        ("bot.grant", "grant" | "capability" | "granter" | "grantee" | "parent" | "op") => Safe,
         // External artifacts and report queues (spec
         // 2026-10-27-clax-sdk-design §6.6): an app's opaque IDs, titles,
         // revisions and metadata are its users' text; a page URL can carry

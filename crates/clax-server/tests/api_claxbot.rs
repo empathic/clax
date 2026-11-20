@@ -53,20 +53,27 @@ fn code(v: &Value) -> &str {
 /// The instance-wide grant of every capability: none reaches a person
 /// without one (migration 67).
 fn grant_everyone(ts: &TestServer) {
-    use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GRANTER_INSTANCE};
+    use clax_store::bot_grants::{CAPABILITIES, EVERYONE};
     for cap in CAPABILITIES {
         ts.store
-            .issue_cap_grant(&AuditCtx::DAEMON, cap, GRANTER_INSTANCE, EVERYONE, None)
+            .issue_cap_grant(&AuditCtx::DAEMON, cap, clax_store::roles::OWNER, EVERYONE)
             .unwrap();
     }
 }
 
-/// The `op` of each `bot.grant` record of `capability`, in order.
+/// `issue` or `revoke` for each `grant.issue` and `grant.revoke` record
+/// of a grant of `capability`, in order.
 fn grant_ops(ts: &TestServer, capability: &str) -> Vec<String> {
-    events(ts, "bot.grant")
+    ts.store
+        .events_after(0, 10_000)
+        .unwrap()
         .into_iter()
-        .filter(|(_, b)| b["capability"] == capability)
-        .map(|(_, b)| b["op"].as_str().unwrap().to_string())
+        .filter_map(|e| {
+            let op = e.kind.strip_prefix("grant.")?.to_string();
+            let b: Value = serde_json::from_str(&e.body).unwrap();
+            let g = ts.store.cap_grant(b["grant_id"].as_str()?).unwrap()?;
+            (g.capability() == Some(capability)).then_some(op)
+        })
         .collect()
 }
 
@@ -3652,8 +3659,8 @@ async fn admin_web_keeps_its_fields_and_adds_the_cards() {
 }
 
 /// The admin grants a capability to everyone and to one person, lists the
-/// grants (everyone's first) and revokes them, each a `bot.grant`; a
-/// revoked instance-wide grant takes its children with it.
+/// grants (everyone's first) and revokes them, each a `grant.issue` or
+/// `grant.revoke`; a revoked grant to everyone takes its children with it.
 #[tokio::test]
 async fn admin_grants_to_everyone_and_revokes() {
     let p = people_with_driver().await;
@@ -3707,8 +3714,10 @@ async fn admin_grants_to_everyone_and_revokes() {
         ]
     );
     assert!(
-        grants.iter().all(|g| g["granter"] == "instance"),
-        "{grants:?}"
+        grants
+            .iter()
+            .all(|g| g["granter"] == clax_store::roles::OWNER && g["conveys"] == true),
+        "the admin who issued each: {grants:?}"
     );
     // Refusals: a second grant to the same grantee, an unknown capability,
     // a person the instance does not have, not everyone.
@@ -3718,7 +3727,7 @@ async fn admin_grants_to_everyone_and_revokes() {
             "grant_exists",
         ),
         (
-            json!({"capability": "browser.open.everything", "grantee": "everyone"}),
+            json!({"capability": "clax-browser:open-everything", "grantee": "everyone"}),
             "unknown_capability",
         ),
         (

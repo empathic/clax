@@ -20,7 +20,7 @@
 //!   from the store, so a second page of it is refused (`page_exists`).
 
 use super::Store;
-use crate::bot_grants::{Grantee, WEB_CAPABILITIES};
+use crate::bot_grants::{Grantee, RevokeReason, WEB_CAPABILITIES};
 use crate::bot_runs::{
     CALL_COLS, CallEntry, DriverId, Run, call_in, check_claim, insert_call, open_step_in,
     row_to_call, run_in, same_call,
@@ -509,10 +509,12 @@ impl Store {
             let h = &held[*cap];
             match (on, &h.granted_by, &h.runs_grant) {
                 (false, _, Some(g)) => {
-                    changed |= !self.revoke_cap_grant(ctx, g)?.is_empty();
+                    changed |= !self
+                        .revoke_cap_grant(ctx, g, RevokeReason::Controller)?
+                        .is_empty();
                 }
-                (true, Some(parent), None) => {
-                    self.issue_cap_grant(ctx, cap, person, &runs, Some(parent))?;
+                (true, Some(_), None) => {
+                    self.issue_cap_grant(ctx, cap, person, &runs)?;
                     changed = true;
                 }
                 _ => {}
@@ -1370,27 +1372,26 @@ mod tests {
 
     fn everyone(st: &Store, caps: &[&str]) {
         for cap in caps {
-            st.issue_cap_grant(
-                DAEMON,
-                cap,
-                crate::bot_grants::GRANTER_INSTANCE,
-                crate::bot_grants::EVERYONE,
-                None,
-            )
-            .unwrap();
+            st.issue_cap_grant(DAEMON, cap, crate::roles::OWNER, crate::bot_grants::EVERYONE)
+                .unwrap();
         }
     }
 
-    fn grant_ops(st: &Store) -> Vec<(String, String)> {
+    /// Each `grant.issue` and `grant.revoke`, as (kind, the capability of
+    /// its grant, its reason or event).
+    fn grant_ops(st: &Store) -> Vec<(String, String, String)> {
         st.events_after(0, 1000)
             .unwrap()
             .into_iter()
-            .filter(|e| e.kind == "bot.grant")
+            .filter(|e| e.kind.starts_with("grant."))
             .map(|e| {
                 let b: serde_json::Value = serde_json::from_str(&e.body).unwrap();
+                let g = st.cap_grant(b["grant_id"].as_str().unwrap()).unwrap().unwrap();
+                let why = b.get("reason").unwrap_or(&b["event"]);
                 (
-                    b["op"].as_str().unwrap().to_string(),
-                    b["capability"].as_str().unwrap().to_string(),
+                    e.kind.clone(),
+                    g.capability().unwrap_or_default().to_string(),
+                    why.as_str().unwrap().to_string(),
                 )
             })
             .collect()
@@ -1416,8 +1417,16 @@ mod tests {
         assert_eq!(
             grant_ops(&st)[before..],
             [
-                ("revoke".to_string(), "clax-web:search".to_string()),
-                ("revoke".to_string(), "clax-web:fetch".to_string())
+                (
+                    "grant.revoke".to_string(),
+                    "clax-web:search".to_string(),
+                    "controller".to_string()
+                ),
+                (
+                    "grant.revoke".to_string(),
+                    "clax-web:fetch".to_string(),
+                    "controller".to_string()
+                )
             ],
             "each runs grant revoked, recorded once"
         );

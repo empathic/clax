@@ -667,7 +667,7 @@ impl Env {
     /// The instance-wide grant of every capability, once: no capability
     /// reaches a run without one (migration 67).
     pub fn grant_everyone(&self) {
-        use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GRANTER_INSTANCE, GrantFilter};
+        use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GrantFilter};
         let live = self
             .store
             .cap_grants(&GrantFilter {
@@ -677,9 +677,9 @@ impl Env {
             })
             .unwrap();
         for cap in CAPABILITIES {
-            if !live.iter().any(|g| g.capability == cap) {
+            if !live.iter().any(|g| g.lists(cap)) {
                 self.store
-                    .issue_cap_grant(&AuditCtx::DAEMON, cap, GRANTER_INSTANCE, EVERYONE, None)
+                    .issue_cap_grant(&AuditCtx::DAEMON, cap, clax_store::roles::OWNER, EVERYONE)
                     .unwrap();
             }
         }
@@ -934,8 +934,7 @@ impl Env {
             .events_after(0, 10_000)
             .unwrap()
             .into_iter()
-            // A grant (`bot.grant`) is the instance's, not the run's.
-            .filter(|e| e.kind.starts_with("bot.") && e.kind != "bot.grant")
+            .filter(|e| e.kind.starts_with("bot."))
             .map(|e| (e.kind.clone(), serde_json::from_str(&e.body).unwrap()))
             .collect()
     }
