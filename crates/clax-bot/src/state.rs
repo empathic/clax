@@ -129,6 +129,14 @@ pub fn fit(left: Option<StateOut>, stopped: Option<&str>) -> Fitted {
             }),
         };
     };
+    if let Some(why) = out.unread {
+        return Fitted {
+            saved: None,
+            told: Some(json!({"saved": false, "why": format!(
+                "the state the script left could not be read ({why}): the state the last script left stands"
+            )})),
+        };
+    }
     let mut dropped: Vec<Dropped> = out.dropped;
     let mut more = out.more;
     let mut members = match out.value {
@@ -273,6 +281,18 @@ mod tests {
         );
         let stopped = fit(None, Some("the script ran out of memory"));
         assert_eq!(stopped.told.unwrap()["saved"], false);
+        let unread = StateOut {
+            unread: Some("its value is not an object".into()),
+            ..StateOut::default()
+        };
+        let f = fit(Some(unread), None);
+        assert_eq!(f.saved, None);
+        let told = f.told.unwrap();
+        assert_eq!(told["saved"], false);
+        assert!(
+            told["why"].as_str().unwrap().contains("not an object"),
+            "{told}"
+        );
     }
 
     /// Over the cap, the largest members go first, each listed, and a

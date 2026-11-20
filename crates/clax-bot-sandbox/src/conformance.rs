@@ -1461,6 +1461,23 @@ return 1;",
         ),
         kept(
             case(
+                "a_lone_surrogate_in_state_is_kept_well_formed",
+                "state.note = '\\u{1F600}x'.slice(0, 1); state['\\uD800'] = [1, 'a\\uDC00'];
+state['\\uDBFF'] = 2; state.pair = '\\u{1F600}'; return 1;",
+                ok(json!(1)),
+            ),
+            left(
+                json!({"note": "\u{FFFD}", "\u{FFFD}": [1, "a\u{FFFD}"], "pair": "\u{1F600}"}),
+                json!([]),
+                json!([dropped(
+                    "state[\"\u{FFFD}\"]",
+                    "a name that is the same as another's once made well-formed text"
+                )]),
+                0,
+            ),
+        ),
+        kept(
+            case(
                 "a_clax_member_is_not_kept",
                 "state.$clax = 0; state.o = { $clax: 0, k: 3 }; return 0;",
                 ok(json!(0)),

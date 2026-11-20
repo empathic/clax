@@ -187,3 +187,20 @@ async fn a_state_of_many_small_members_keeps_as_many_as_fit() {
     assert_eq!(r[1]["value"][2], "k00000");
     assert_eq!(r[1]["value"][3], format!("k{:05}", kept - 1));
 }
+
+/// A string cut inside a surrogate pair is kept, its lone half as U+FFFD,
+/// with the rest of the state.
+#[tokio::test]
+async fn a_lone_surrogate_in_state_is_kept_well_formed() {
+    let env = Env::new().await;
+    let r = scripts(
+        &env,
+        &[
+            "state.note = '\\u{1F600}x'.slice(0, 1); state.n = 1; return 1;",
+            "return [state.note === '\\uFFFD', state.n];",
+        ],
+    )
+    .await;
+    assert!(r[0].get("state").is_none(), "{}", r[0]);
+    assert_eq!(r[1]["value"], json!([true, 1]));
+}

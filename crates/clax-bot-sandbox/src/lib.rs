@@ -801,6 +801,11 @@ pub struct StateOut {
     pub dropped: Vec<Dropped>,
     #[serde(default)]
     pub more: u64,
+    /// Why the text the prelude gave could not be read as a state, when
+    /// it could not ([`StateOut::read`]): nothing of it is kept, and the
+    /// step says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<String>,
 }
 
 /// A value of `state` that was not kept, and why.
@@ -813,11 +818,19 @@ pub struct Dropped {
 
 impl StateOut {
     /// What the prelude's `done` gave as its third argument, read; `None`
-    /// for none, or for text that is not one.
+    /// for none. Text that is not a state is read as one with only
+    /// [`StateOut::unread`], saying why.
     #[must_use]
     pub fn read(text: Option<&str>) -> Option<StateOut> {
-        let out: StateOut = serde_json::from_str(text?).ok()?;
-        out.value.is_object().then_some(out)
+        let unread = |why: String| StateOut {
+            unread: Some(why),
+            ..StateOut::default()
+        };
+        Some(match serde_json::from_str::<StateOut>(text?) {
+            Ok(out) if out.value.is_object() => out,
+            Ok(_) => unread("its value is not an object".into()),
+            Err(e) => unread(format!("its JSON does not parse: {e}")),
+        })
     }
 
     /// What a later script starts from ([`Script::state`]): `{value,
@@ -909,8 +922,10 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 /// `$clax`, a value nested deeper than 64 levels or one whose reading
 /// throws is left out (an array item becomes `null`) and listed in
 /// [`StateOut::dropped`]; a member that is `undefined` is left out
-/// unlisted, as JSON leaves it. A script stopped before its body settled
-/// writes nothing.
+/// unlisted, as JSON leaves it. A lone surrogate in a string or a member
+/// name is kept as U+FFFD, so the text always reads; a member whose name
+/// is then another's is left out and listed. A script stopped before its
+/// body settled writes nothing.
 ///
 /// # The browser layer
 ///
@@ -1512,6 +1527,19 @@ mod tests {
             serde_json::from_value::<ScriptOutcome>(json).unwrap(),
             outcome
         );
+    }
+
+    /// Text the prelude gave that is not a state is told as such, never
+    /// taken for no state.
+    #[test]
+    fn a_state_text_that_does_not_read_says_why() {
+        assert_eq!(StateOut::read(None), None);
+        let ok = StateOut::read(Some(r#"{"value": {"a": 1}}"#)).unwrap();
+        assert_eq!((ok.value, ok.unread), (serde_json::json!({"a": 1}), None));
+        for text in [r#"{"value": {"a": "\ud83d"}}"#, r#"{"value": 1}"#, "nope"] {
+            let out = StateOut::read(Some(text)).unwrap();
+            assert!(out.unread.is_some(), "{text}");
+        }
     }
 
     #[test]

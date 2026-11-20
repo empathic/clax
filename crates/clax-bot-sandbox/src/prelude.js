@@ -202,13 +202,14 @@
         return;
       }
       const d = create(null);
-      d.path = path;
+      d.path = wellFormed(path);
       d.why = why;
       putIn(dropped, d);
     };
     const enc = (x, path, depth) => {
       const t = typeof x;
-      if (x === null || t === "string" || t === "boolean") return x;
+      if (t === "string") return wellFormed(x);
+      if (x === null || t === "boolean") return x;
       if (t === "number") {
         if (x - x === 0) return x;
         drop(path, "a number JSON cannot hold");
@@ -262,11 +263,14 @@
           out = create(null);
           const k = keys(x);
           for (let i = 0; i < k.length; i++) {
-            const at = apply(regexpTest, segment, [k[i]]) ? path + "." + k[i] : path + "[" + stringify(k[i]) + "]";
-            if (k[i] === "$clax") drop(at, "a member named $clax, which state keeps for handles");
+            // A name with a lone surrogate is kept with it as U+FFFD.
+            const n = wellFormed(k[i]);
+            const at = apply(regexpTest, segment, [n]) ? path + "." + n : path + "[" + stringify(n) + "]";
+            if (n === "$clax") drop(at, "a member named $clax, which state keeps for handles");
+            else if (n in out) drop(at, "a name that is the same as another's once made well-formed text");
             else {
               const v = enc(x[k[i]], at, depth + 1);
-              if (v !== undefined) out[k[i]] = v;
+              if (v !== undefined) out[n] = v;
             }
           }
         }
