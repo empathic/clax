@@ -1395,7 +1395,11 @@ const URL_ATTRS: &[&str] = &[
 /// their content, comments and every inline event handler (an `on…`
 /// attribute) and `javascript:` URL removed, and each URL attribute
 /// (`href`, `src`, `action`, …) made absolute against the document's base
-/// (its first `<base href>`, else `base`). `srcset` is left as it came.
+/// (its first `<base href>`, else `base`) when the absolute URL is at
+/// most [`MAX_URL_CHARS`](super::url::MAX_URL_CHARS) characters, else
+/// left as it came. `srcset` is left as it came. The answer is at most
+/// [`STORE_BYTES`], cut on a character boundary, so it may end inside a
+/// tag.
 ///
 /// A tokenizer pass, linear in `html`'s length, written back token by
 /// token: what it keeps reads as the page wrote it, attribute values and
@@ -1417,6 +1421,9 @@ pub fn clean_html(html: &str, base: &PublicUrl) -> String {
     }
     fn escape_text(s: &str, out: &mut String) {
         for c in s.chars() {
+            if out.len() >= STORE_BYTES {
+                return;
+            }
             match c {
                 '&' => out.push_str("&amp;"),
                 '<' => out.push_str("&lt;"),
@@ -1427,6 +1434,9 @@ pub fn clean_html(html: &str, base: &PublicUrl) -> String {
     }
     fn escape_attr(s: &str, out: &mut String) {
         for c in s.chars() {
+            if out.len() >= STORE_BYTES {
+                return;
+            }
             match c {
                 '&' => out.push_str("&amp;"),
                 '"' => out.push_str("&quot;"),
@@ -1475,6 +1485,7 @@ pub fn clean_html(html: &str, base: &PublicUrl) -> String {
                     if value.len() <= MAX_TARGET_BYTES
                         && !value.trim().starts_with('#')
                         && let Ok(u) = base.join(value.trim())
+                        && u.as_str().chars().count() <= super::url::MAX_URL_CHARS
                     {
                         value = u.to_string();
                     }
@@ -1498,6 +1509,9 @@ pub fn clean_html(html: &str, base: &PublicUrl) -> String {
     impl TokenSink for Cleaner {
         type Handle = ();
         fn process_token(&self, token: Token, _line: u64) -> TokenSinkResult<()> {
+            if self.out.borrow().len() >= STORE_BYTES {
+                return TokenSinkResult::Continue;
+            }
             let skipping = self.skipping.borrow().clone();
             if let Some(open) = skipping {
                 if let Token::TagToken(tag) = &token
@@ -1558,7 +1572,13 @@ pub fn clean_html(html: &str, base: &PublicUrl) -> String {
     );
     let _ = tok.feed(&input);
     tok.end();
-    tok.sink.out.into_inner()
+    let mut out = tok.sink.out.into_inner();
+    let mut end = out.len().min(STORE_BYTES);
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.truncate(end);
+    out
 }
 
 /// The `web_unsupported_content_type` refusal of a body at `url` of type
@@ -1793,6 +1813,33 @@ mod tests {
             ),
             "<base href=\"https://cdn.example/v2/\"><a href=\"https://cdn.example/v2/x\">x</a>"
         );
+    }
+
+    /// `clean_html` answers at most [`STORE_BYTES`], cut on a character
+    /// boundary, and a URL attribute whose joined URL would be longer
+    /// than [`MAX_URL_CHARS`](super::super::url::MAX_URL_CHARS) stays as
+    /// it came: empty `src`s under a long `<base href>` do not each grow
+    /// to the base's length.
+    #[test]
+    fn clean_html_output_is_bounded() {
+        let at = base("https://a.example/");
+        let many = "<b src>".repeat(200_000);
+        let out = clean_html(&many, &at);
+        assert!(out.len() <= STORE_BYTES, "{} bytes", out.len());
+        assert!(out.starts_with("<b src=\"https://a.example/\">"));
+
+        let wide = format!("<p>{}</p>", "\u{e9}".repeat(STORE_BYTES));
+        let out = clean_html(&wide, &at);
+        assert!(out.len() <= STORE_BYTES && out.len() > STORE_BYTES - 4);
+
+        let long = format!(
+            "<base href=\"https://x.example/{}\">{}",
+            "a".repeat(7_900),
+            "<b src>".repeat(1_000)
+        );
+        let out = clean_html(&long, &at);
+        assert!(out.len() < long.len() * 2, "{} bytes", out.len());
+        assert!(out.ends_with("<b src=\"\">"));
     }
 
     #[test]
