@@ -28,7 +28,7 @@ gains the `Page` layer over six flat `browser.*` operations, and
 `browser/layer.rs` is the one table the model's declaration is
 generated from and the prelude's table is checked against. `clax-store` gains
 `bot_cap_grants`, `bot_runs.caps`, `bot_browser_sessions` and the
-per-second line, all in the branch's own migration 67, edited in place.
+per-second line, all in the branch's own migration 68, edited in place.
 
 **Tech Stack:** Rust (clax-bot, clax-store over SQLite, clax-server on
 axum, tokio-tungstenite), TypeScript (`web/bridge`), Svelte 5
@@ -55,7 +55,7 @@ axum, tokio-tungstenite), TypeScript (`web/bridge`), Svelte 5
 - **Every task compiles and passes on its own.** Where an old API has
   callers a later task moves, the task keeps it as a shim over the new
   one; Task 20 removes the shims.
-- **Migration 67 is the branch's own** (unmerged; `AGENTS.md`): edit it
+- **Migration 68 is the branch's own** (unmerged; `AGENTS.md`): edit it
   in place, never add 68. A dev home an earlier build migrated is reset,
   not upgraded. Main's data (`bot_person_prefs.web`, `bot_runs.web`,
   `bot_web_pages`, `web.*` settings, `bot.web` and `me.web` audit rows)
@@ -87,9 +87,9 @@ Inputs the spec implies and no requirement names. Each has a test in the
 task that owns it.
 
 1. **A person who turned main's web switch off** holds no runs grant
-   of either web capability after migration 67, though the instance-wide
+   of either web capability after migration 68, though the instance-wide
    grant exists, and their runs declare neither (Task 1,
-   `migration_67_writes_main_web_as_explicit_grants`).
+   `migration_68_writes_main_web_as_explicit_grants`).
 2. **A journal from main with `format: "auto"`** answers its window from
    the page store as `markdown` (Task 8, `an_auto_fetch_from_main_answers_from_the_store`).
 3. **A session opened in step 1 and clicked in step 3, step 2 a model
@@ -162,7 +162,7 @@ it builds. Open threads on code the plan touches, to account for:
 
 | File | Change |
 |---|---|
-| `crates/clax-store/src/migrations.rs` | Migration 67 in place: `bot_cap_grants`, `bot_runs.caps`, `bot_browser_sessions`, `bot_web_pages` with `format`, `browser_s` |
+| `crates/clax-store/src/migrations.rs` | Migration 68 in place: `bot_cap_grants`, `bot_runs.caps`, `bot_browser_sessions`, `bot_web_pages` with `format`, `browser_s` |
 | `crates/clax-store/src/bot_web.rs` | Person grants per capability; `Spend.session`; session rows; `end_browser_session`, `lose_open_browser_sessions` |
 | `crates/clax-store/src/bot_runs.rs` | `Run::caps`, `NewRun::caps`, `Bindings::clax(artifact, caps)` |
 | `crates/clax-store/src/bot_settings.rs` | Browser settings per capability; `UrlRule` kind gains `sender` |
@@ -193,7 +193,7 @@ it builds. Open threads on code the plan touches, to account for:
 
 ## Phase A: the shared mechanism
 
-### Task 1: Explicit grants and a run's capabilities, in migration 67
+### Task 1: Explicit grants and a run's capabilities, in migration 68
 
 Builds spec decisions `c8a7f9b5` (grants are explicit, none implied:
 the owner's standing rule), `a4d4b502` (grant storage), `df067c3c`
@@ -205,7 +205,7 @@ the owner's standing rule), `a4d4b502` (grant storage), `df067c3c`
 files the audit kind changes.
 
 **Interfaces produced:**
-- Migration 67 adds `bot_cap_grants (id TEXT PRIMARY KEY, capability
+- Migration 68 adds `bot_cap_grants (id TEXT PRIMARY KEY, capability
   TEXT NOT NULL, granter TEXT NOT NULL, grantee TEXT NOT NULL, parent
   TEXT REFERENCES bot_cap_grants(id), status TEXT NOT NULL CHECK (status
   IN ('issued', 'revoked')), issued_at, issued_by, revoked_at,
@@ -237,7 +237,7 @@ files the audit kind changes.
 - `Run::caps: String`, `NewRun::caps`; `Run::web` and `Run::browser`
   derived from `caps` (shims).
 
-- [ ] **Tests first** (in-module): `migration_67_writes_main_web_as_explicit_grants` (a migration-66 database with web on, persons `web = 0`, `web = 1` and no row: the first has no child, the others do), `migration_67_grants_nothing_where_web_was_off`, `migration_67_grants_no_browser_kind`, `an_instance_wide_grant_issues_a_child_to_each_person_and_to_a_new_one`, `revoking_a_grant_ends_its_children_transitively`, `a_person_revokes_and_reissues_only_their_own`, `a_person_cannot_issue_what_they_do_not_hold`, `every_issue_and_revoke_is_one_bot_grant`, `migration_67_fills_run_caps_from_web_and_browser`, `a_run_keeps_its_capabilities`.
+- [ ] **Tests first** (in-module): `migration_68_writes_main_web_as_explicit_grants` (a migration-66 database with web on, persons `web = 0`, `web = 1` and no row: the first has no child, the others do), `migration_68_grants_nothing_where_web_was_off`, `migration_68_grants_no_browser_kind`, `an_instance_wide_grant_issues_a_child_to_each_person_and_to_a_new_one`, `revoking_a_grant_ends_its_children_transitively`, `a_person_revokes_and_reissues_only_their_own`, `a_person_cannot_issue_what_they_do_not_hold`, `every_issue_and_revoke_is_one_bot_grant`, `migration_68_fills_run_caps_from_web_and_browser`, `a_run_keeps_its_capabilities`.
 - [ ] Run `bazel test //crates/clax-store:clax_store_lib_test`; expect failures.
 - [ ] Implement.
 - [ ] Full verification command passes.
@@ -414,7 +414,7 @@ key, each row's format read from its fetch's journal entry,
 `clean_html`), `crates/clax-worker/src/web_source.rs` (`BindingSource`: the same, without
 `toMarkdown`), `clax.d.ts` (`fetch`'s doc and type).
 
-- [ ] **Tests first:** `clean_html_removes_code_and_keeps_structure`, `relative_links_become_absolute`, `html_of_a_non_html_type_is_unsupported`, `an_auto_fetch_from_main_answers_from_the_store`, `two_formats_of_one_page_are_two_requests`, `migration_67_keeps_every_page_with_its_format`; Worker: the html format in its sandbox test.
+- [ ] **Tests first:** `clean_html_removes_code_and_keeps_structure`, `relative_links_become_absolute`, `html_of_a_non_html_type_is_unsupported`, `an_auto_fetch_from_main_answers_from_the_store`, `two_formats_of_one_page_are_two_requests`, `migration_68_keeps_every_page_with_its_format`; Worker: the html format in its sandbox test.
 - [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-store/... //crates/clax-server/... //bazel/wasm:check`.
 - [ ] **Phase B gate:** the full suite, logged to `target/unify-phase-B.log`.
 - [ ] Commit: `feat(bot): fetch a page's HTML`
@@ -725,7 +725,7 @@ step type left from the first version), `crates/clax-server/tests/live_browser_r
 by the heartbeat, driven through a `Page`; still skipped without
 credentials), `justfile` (`browser-live` unchanged in form).
 
-- [ ] **Tests first:** `migration_67_from_main_has_no_branch_columns`.
+- [ ] **Tests first:** `migration_68_from_main_has_no_branch_columns`.
 - [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-store/... //crates/clax-server/... //crates/clax-core/...`.
 - [ ] **Phase D gate:** the full suite, logged to `target/unify-phase-D.log`.
 - [ ] Commit: `refactor(bot): drop the first version's browser grant and shapes`

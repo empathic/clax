@@ -1159,7 +1159,7 @@ async fn two_formats_of_one_page_are_two_requests() {
 }
 
 /// A fetch with main's `format: "auto"` is a Markdown fetch: it answers
-/// from a page the store keeps as `markdown` (as migration 67 keeps
+/// from a page the store keeps as `markdown` (as migration 68 keeps
 /// main's pages), and a Markdown fetch's entry names `markdown`.
 #[tokio::test]
 async fn an_auto_fetch_from_main_answers_from_the_store() {

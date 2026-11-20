@@ -1,4 +1,4 @@
-//! ClaxBot's capability grants (migration 67, spec
+//! ClaxBot's capability grants (migration 68, spec
 //! 2026-11-19-claxbot-browser-design §4.2, §4.3, §11.2, §18.4).
 //!
 //! A run starts with no capability. Every capability it holds traces to
@@ -34,7 +34,7 @@
 //!
 //! Each row issued is recorded as `grant.issue {grant_id, granter,
 //! grantee, access, parent?, event, expires_at?}`, each revoked as
-//! `grant.revoke {grant_id, by, reason}`; migration 67's rows are written
+//! `grant.revoke {grant_id, by, reason}`; migration 68's rows are written
 //! by the migration alone.
 //!
 //! Whether the admin's switch offers an action, and whether the host can
@@ -82,7 +82,7 @@ pub const SESSION_ACTIONS: [&str; 5] = ["read", "act", "navigate", "record", "cl
 /// The grantee of a grant to everyone on the instance: a selector grant.
 pub const EVERYONE: &str = "people_of:instance";
 
-/// The granter of a grant migration 67 wrote from main's web switches.
+/// The granter of a grant migration 68 wrote from main's web switches.
 pub const GRANTER_MIGRATION: &str = "migration";
 
 /// The granter of a grant to everyone a daemon wrote at its start
@@ -515,7 +515,7 @@ fn revoke_record(g: &GrantRow, by: &str, reason: RevokeReason, at: String) -> Au
 }
 
 /// The person keys whose web switch was off on main
-/// (`bot_person_prefs.web` 0), on `c`: whom migration 67 and
+/// (`bot_person_prefs.web` 0), on `c`: whom migration 68 and
 /// [`Store::grant_web_from_config`] give no grant of web to their runs.
 fn web_off_people_in(c: &Connection) -> Result<BTreeSet<String>> {
     let mut q = c.prepare_cached("SELECT person FROM bot_person_prefs WHERE web = 0")?;
@@ -612,7 +612,7 @@ fn issue_runs_if_none(
     )?))
 }
 
-/// Migration 67's Rust step, on `tx`: main's web switches as explicit
+/// Migration 68's Rust step, on `tx`: main's web switches as explicit
 /// grants, and each run's capabilities from its shapes.
 ///
 /// For each of `clax-web:search` and `clax-web:fetch` whose
@@ -902,10 +902,10 @@ impl Store {
     /// `clax-web:fetch` that the daemon's configuration turns on (its
     /// switch an override from config.toml or the environment,
     /// [`Store::set_bot_overrides`]) and that no grant of it has ever been
-    /// issued, to anyone, live or revoked: what migration 67 writes for a
+    /// issued, to anyone, live or revoked: what migration 68 writes for a
     /// switch stored on, which it cannot see for one set only in the
     /// configuration. An instance whose admin has granted the capability to
-    /// some people keeps the grants the admin made. As migration 67 does,
+    /// some people keeps the grants the admin made. As migration 68 does,
     /// it issues the selector's child to the owner and every person
     /// ([`person_keys_in`]), and the runs grant of each but a person whose
     /// `bot_person_prefs.web` is 0. Issued as `ctx` in one transaction,
@@ -1676,7 +1676,7 @@ mod tests {
     }
 
     /// A daemon whose web switches are on only in config.toml gets the
-    /// grants to everyone migration 67 would have written, once: a grant
+    /// grants to everyone migration 68 would have written, once: a grant
     /// the admin revokes is not written again, a stored switch and a switch
     /// off write none, and nothing of the browser is ever granted.
     #[test]
@@ -1740,7 +1740,7 @@ mod tests {
     }
 
     /// The config grant skips a person whose web was off on main, as
-    /// migration 67 does.
+    /// migration 68 does.
     #[test]
     fn a_config_web_grant_skips_a_person_whose_web_was_off() {
         let (_d, st) = store();

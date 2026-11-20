@@ -463,7 +463,7 @@ mod tests {
     }
 
     /// The instance-wide grant of every capability, once: no capability
-    /// reaches a run without one (migration 67).
+    /// reaches a run without one (migration 68).
     fn grant_everyone(st: &Store) {
         use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GrantFilter};
         let live = st

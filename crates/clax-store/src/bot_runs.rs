@@ -1267,8 +1267,8 @@ pub(crate) fn run_in(c: &Connection, id: &str) -> Result<Option<Run>> {
 }
 
 /// [`run_in`] on a database migrated only as far as migrations 63 to 66
-/// leave `bot_runs`, before migration 67 adds `bot_runs.caps`: the run
-/// reads with the capabilities migration 67 gives it from its web shape
+/// leave `bot_runs`, before migration 68 adds `bot_runs.caps`: the run
+/// reads with the capabilities migration 68 gives it from its web shape
 /// ([`caps_of_web`]).
 #[cfg(test)]
 #[warn(clippy::disallowed_methods)]

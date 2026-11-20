@@ -51,7 +51,7 @@ fn code(v: &Value) -> &str {
 
 /// The events of `kind` recorded so far, as (actor, body).
 /// The instance-wide grant of every capability: none reaches a person
-/// without one (migration 67).
+/// without one (migration 68).
 fn grant_everyone(ts: &TestServer) {
     use clax_store::bot_grants::{CAPABILITIES, EVERYONE};
     for cap in CAPABILITIES {

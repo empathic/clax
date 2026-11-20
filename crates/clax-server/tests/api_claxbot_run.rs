@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 const KEY: &str = "sk-ant-api03-FAKEKEYFORTESTS-wxyz";
 
 /// The grant to everyone of every capability: none reaches a run
-/// without one (migration 67). Whether the instance offers each is its
+/// without one (migration 68). Whether the instance offers each is its
 /// settings'.
 fn grant_everyone(ts: &TestServer) {
     use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GrantFilter};
