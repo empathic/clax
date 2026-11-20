@@ -110,17 +110,23 @@ impl ChromeLog {
     }
 
     /// Resolves once `n` commands of `method` have been sent: a test's
-    /// wait for a session's task to act, on a condition, not a time.
+    /// wait for a session's task to act, on a condition, not a time. In
+    /// this crate's own tests the wait carries the hang guard
+    /// (`tests/common`'s `within`), so a command never sent fails the test
+    /// instead of hanging it; an outside test bounds it itself.
     pub async fn wait_sent(&self, method: &str, n: usize) {
-        std::future::poll_fn(|cx| {
+        let sent = std::future::poll_fn(|cx| {
             let mut s = self.lock();
             if s.commands.iter().filter(|c| c["method"] == method).count() >= n {
                 return Poll::Ready(());
             }
             s.watchers.push(cx.waker().clone());
             Poll::Pending
-        })
-        .await;
+        });
+        #[cfg(test)]
+        crate::script_scenarios::common::within(&format!("{n} {method} sent"), sent).await;
+        #[cfg(not(test))]
+        sent.await;
     }
 
     /// Has the browser send `frame` (an event: a crash, a paused request
@@ -1408,5 +1414,21 @@ impl BrowserSource for FakeBrowserSource {
             return Err(format!("{host} resolves to 10.0.0.1, a private address"));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[warn(clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+
+    /// A wait for a command never sent fails the test, past the hang
+    /// guard, instead of hanging it (the paused clock reaches the guard
+    /// at once).
+    #[tokio::test(start_paused = true)]
+    #[should_panic(expected = "hang guard")]
+    async fn a_wait_for_a_command_never_sent_fails() {
+        let log = FakeChrome::page(PageModel::new()).log();
+        log.wait_sent("Page.navigate", 1).await;
     }
 }
