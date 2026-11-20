@@ -51,7 +51,9 @@
 //! the host ended it ([`ClaxSession::charge_ended`], at each call and at
 //! the run's end). A close whose Spend is not written is charged its last
 //! segment all the same, as an end the host made
-//! ([`clax_store::Store::end_bot_browser_session`]). A refusal
+//! ([`clax_store::Store::end_bot_browser_session`]); an open whose Spend
+//! is not written closes its session, `dropped`, and charges its time
+//! ([`ClaxSession::end_unwritten`]). A refusal
 //! `credits_exhausted` closes the session,
 //! `credits`. A test is charged its measured time in milliseconds, at
 //! most its time cap, as one segment of no session; so is an open whose
@@ -720,7 +722,10 @@ impl Performer for Open {
                 let ms = o.at_ms.max(0);
                 let (usage, cost) = match priced.usage(ms) {
                     Ok(x) => x,
-                    Err(e) => return Finish::refused(host_error(&e)),
+                    Err(e) => {
+                        s.end_unwritten(&o.session, kind, o.opened_at).await;
+                        return Finish::refused(host_error(&e));
+                    }
                 };
                 shown["session"] = json!(o.session);
                 shown["ms"] = json!(ms);
@@ -776,6 +781,26 @@ impl Performer for Open {
         };
         s.charge_ended();
         counted_as(f, c)
+    }
+
+    async fn after_write(
+        &self,
+        s: &ClaxSession<'_>,
+        session: Option<&SessionSpend>,
+        written: bool,
+    ) {
+        if let (
+            false,
+            Some(SessionSpend::Open {
+                session,
+                kind,
+                opened_at,
+                ..
+            }),
+        ) = (written, session)
+        {
+            s.end_unwritten(session, *kind, *opened_at).await;
+        }
     }
 }
 
@@ -1348,6 +1373,41 @@ impl ClaxSession<'_> {
                 "this host holds no browser sessions; use clax.browser.test",
             )
         })
+    }
+
+    /// Ends session `session`, of `kind`, opened at `opened_at`, whose
+    /// open was not written: no script holds its handle, so it is closed
+    /// `dropped` and its whole time charged once, its row made closed
+    /// ([`clax_store::Store::end_unwritten_bot_browser_session`]); else it
+    /// would run uncharged and hold one of the run's open sessions.
+    async fn end_unwritten(
+        &self,
+        session: &str,
+        kind: SessionKind,
+        opened_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        let Ok(sessions) = self.sessions() else {
+            return;
+        };
+        // The registry's end finds no row to charge; the store's makes it.
+        let at_ms = sessions
+            .close(&self.run.id, session, SessionEnd::Dropped)
+            .await
+            .unwrap_or(0);
+        self.charge_ended();
+        if let Err(e) = self.store().end_unwritten_bot_browser_session(
+            &self.run.id,
+            session,
+            kind,
+            opened_at,
+            at_ms,
+            SessionEnd::Dropped,
+        ) {
+            tracing::warn!(
+                "clax-bot: run {}: browser session {session}, its open not written, could not be charged: {e}",
+                self.run.id
+            );
+        }
     }
 
     /// Charges the sessions the host ended since the last look (idle,

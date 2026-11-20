@@ -1883,6 +1883,32 @@ async fn a_close_whose_spend_fails_is_charged() {
     assert_eq!(browser_rows(&env).len(), 3, "{:?}", browser_rows(&env));
 }
 
+/// An open whose Spend is not written (its run's claim lost while the
+/// page loaded) closes its session, which no script holds, and charges
+/// its time once: the session's row is made closed, `dropped`.
+#[tokio::test]
+async fn an_open_whose_spend_fails_closes_and_charges_its_session() {
+    let env = Env::new().await;
+    let run = Arc::new(Mutex::new(String::new()));
+    stealing_page(&env, "Page.navigate", 800, run.clone());
+    let id = steal_during(
+        &env,
+        &run,
+        "try { await clax.browser.open({ artifact: 'draft' }); return 'opened'; }
+         catch (e) { return e.code; }",
+    )
+    .await;
+    assert_eq!(env.browser.logs()[0].sent("Browser.close").len(), 1);
+    let rows = env.store.bot_browser_sessions(&id).unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0].reason,
+        Some(clax_store::bot_web::SessionEnd::Dropped)
+    );
+    assert_eq!(browser_rows(&env), [rows[0].charged_ms]);
+    assert!(rows[0].charged_ms >= 800, "{rows:?}");
+}
+
 /// A run holds at most `browser.max_open_per_run` sessions at once (1 by
 /// default): another open answers `browser_cap` until one is closed.
 #[tokio::test]

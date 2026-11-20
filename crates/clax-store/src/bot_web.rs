@@ -685,9 +685,55 @@ impl Store {
         at_ms: i64,
         reason: SessionEnd,
     ) -> Result<i64> {
+        self.end_bot_session_row(run_id, session, at_ms, reason, None)
+    }
+
+    /// [`Store::end_bot_browser_session`] for a session whose open was
+    /// never written (its Spend refused): when run `run_id` has no row for
+    /// `session`, one of `kind` opened at `opened_at` is made first,
+    /// charged through 0, so the end charges its whole time `0..at_ms`,
+    /// once. A row the run has already is ended as
+    /// [`Store::end_bot_browser_session`] ends it.
+    ///
+    /// # Errors
+    /// As [`Store::end_bot_browser_session`].
+    pub fn end_unwritten_bot_browser_session(
+        &self,
+        run_id: &str,
+        session: &str,
+        kind: SessionKind,
+        opened_at: chrono::DateTime<chrono::Utc>,
+        at_ms: i64,
+        reason: SessionEnd,
+    ) -> Result<i64> {
+        self.end_bot_session_row(run_id, session, at_ms, reason, Some((kind, opened_at)))
+    }
+
+    fn end_bot_session_row(
+        &self,
+        run_id: &str,
+        session: &str,
+        at_ms: i64,
+        reason: SessionEnd,
+        unwritten: Option<(SessionKind, chrono::DateTime<chrono::Utc>)>,
+    ) -> Result<i64> {
         let at = self.now_utc();
         let ov = self.bot_overrides();
         self.with_tx(|tx| {
+            if let Some((kind, opened_at)) = unwritten
+                && session_in(tx, run_id, session)?.is_none()
+            {
+                tx.execute(
+                    "INSERT INTO bot_browser_sessions (run_id, session_id, kind, opened_at, charged_ms)
+                     VALUES (?1, ?2, ?3, ?4, 0)",
+                    params![
+                        run_id,
+                        session,
+                        kind.as_str(),
+                        clax_core::time::stamp(opened_at)
+                    ],
+                )?;
+            }
             let Some(row) = session_in(tx, run_id, session)?.filter(SessionRow::is_open) else {
                 return Ok(0);
             };
