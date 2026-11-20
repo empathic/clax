@@ -34,7 +34,7 @@ use crate::registry::CODE_OPS_INVALID;
 use crate::run::Observed;
 use crate::run::{Next, Tick, TickOutcome, Wait, compute_qty, step_usage, watched};
 use crate::surface::{
-    Answer, Binding, Bound, CallNote, CallPlace, Claim, End, FieldClash, Fields, Progress, RunInfo,
+    Answer, Binding, Bound, CallNote, CallPlace, Claim, FieldClash, Fields, Progress, RunInfo,
     StepCx, StepEnd, StepJoin, StepSession, SurfaceProvider, Unjournaled, dispatch, no_place,
     route,
 };

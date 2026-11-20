@@ -29,6 +29,7 @@
   import { type BotRun, type BotStep, type RunEvent, type RunSummary, cancelRun } from "./api";
   import { browserLine, callCost, callName, credits, ended, meter, openByDefault, runCost, runStatus, sessionViews, stepLine, tail, turnActivity, webSource } from "./model";
   import Flipbook from "./Flipbook.svelte";
+  import RunExports from "./RunExports.svelte";
   import { RunFeed } from "./run-feed.svelte";
   import { botView } from "./send.svelte";
   import Meter from "./Meter.svelte";
@@ -143,6 +144,7 @@
           </details></li>
         {/each}
       </ul>
+      {#if mine(run)}<RunExports run={run.id} />{/if}
     {/if}
     <p class="bot-sr" aria-live="polite">{said}</p>
     {#if err}<p class="err" role="alert">{err}</p>{/if}

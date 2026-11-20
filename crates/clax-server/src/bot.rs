@@ -1298,7 +1298,7 @@ fn browser_sessions(
         .kek
         .as_ref()
         .map_or_else(clax_bot::browser::cap::Keys::random, |k| {
-            clax_bot::browser::cap::Keys::new(k.derive(clax_bot::browser::cap::INSTANCE_LABEL))
+            clax_bot::browser::cap::Keys::new(k.instance_key(clax_bot::browser::cap::KEY_PURPOSE))
         });
     let sessions = Arc::new(
         clax_bot::browser::live::BrowserSessions::new(

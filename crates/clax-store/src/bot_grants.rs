@@ -1242,6 +1242,106 @@ impl Store {
     }
 }
 
+/// A page of a run's state the person exports to one of their machine
+/// grants (spec §18.5, option A), as its grant row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportGrant {
+    /// The new capability's ID: its macaroon is the row's token.
+    pub id: String,
+    /// The person who exports it, its granter.
+    pub person: String,
+    /// The machine grant it is to.
+    pub grant: String,
+    /// The page's grant: its share, or the person's runs grant of the
+    /// session's open action.
+    pub parent: String,
+    /// The session actions it conveys.
+    pub actions: Vec<String>,
+    /// When it expires (RFC 3339), if it does.
+    pub expires_at: Option<String>,
+}
+
+impl Store {
+    /// Issues export `e` as `ctx`, recorded as `grant.issue` (event
+    /// `share`): granter the person, grantee `grant:<ID>`, parent the
+    /// page's grant. Whether the machine grant is the person's is the
+    /// caller's to check.
+    ///
+    /// # Errors
+    /// `not_held` when the page's grant is not issued, or is not the
+    /// person's (a share of a run of theirs, or their own runs grant);
+    /// the store's.
+    pub fn issue_export(&self, ctx: &AuditCtx, e: &ExportGrant) -> Result<GrantRow> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            let parent = grant_in(tx, &e.parent)?.filter(GrantRow::live).ok_or_else(|| {
+                CoreError::invalid("not_held", "the page's grant is not issued")
+            })?;
+            let runs = Grantee::RunsOf(e.person.clone()).as_text();
+            let theirs = chain_issued(tx, &parent)? && root_of(tx, &parent)?.grantee == runs;
+            if !theirs {
+                return Err(CoreError::invalid(
+                    "not_held",
+                    "only a page of the person's own runs is exported",
+                ));
+            }
+            let mut conditions = json!({});
+            if let Some(t) = &e.expires_at {
+                conditions["expires_at"] = json!(t);
+            }
+            let to = Grantee::Grant(e.grant.clone()).as_text();
+            let g = insert_grant(
+                tx,
+                NewGrant {
+                    id: Some(e.id.clone()),
+                    access: vec![Access {
+                        kind: TYPE_BROWSER.to_string(),
+                        actions: e.actions.clone(),
+                        locations: None,
+                    }],
+                    granter: &e.person,
+                    grantee: &to,
+                    parent: Some(&e.parent),
+                    conditions,
+                    event: "share",
+                },
+                &now,
+                &set_by(ctx),
+            )?;
+            self.record_audit(tx, ctx, issue_record(&g, now.clone()))?;
+            Ok(g)
+        })
+    }
+
+    /// The issued exports `person` made, oldest first.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn exports_of(&self, person: &str) -> Result<Vec<GrantRow>> {
+        Ok(self
+            .live_share_grants()?
+            .into_iter()
+            .filter(|g| g.granter == person && g.grantee.starts_with("grant:"))
+            .collect())
+    }
+}
+
+/// The root of `g`'s chain, on `c`: the grant with no parent it is under.
+fn root_of(c: &Connection, g: &GrantRow) -> Result<GrantRow> {
+    let mut seen = BTreeSet::new();
+    let mut at = g.clone();
+    while let Some(p) = at.parent.clone() {
+        if !seen.insert(p.clone()) {
+            break;
+        }
+        match grant_in(c, &p)? {
+            Some(parent) => at = parent,
+            None => break,
+        }
+    }
+    Ok(at)
+}
+
 /// Whether `g` and every parent up to its root are issued, on `c`, their
 /// conditions not read.
 fn chain_issued(c: &Connection, g: &GrantRow) -> Result<bool> {
@@ -1740,6 +1840,41 @@ mod tests {
         assert!(issued.iter().any(|e| e["grant_id"] == "s2"
             && e["event"] == "share"
             && e["expires_at"] == "2100-01-01T00:00:00.000Z"));
+    }
+
+
+    /// An export is a grant row from the person to their machine grant,
+    /// under a page of their own runs, listed and revoked like a share.
+    #[test]
+    fn a_person_exports_a_page_of_their_own_runs() {
+        let (_d, st) = store();
+        let sam = person(&st, "Sam", 1);
+        let cap = "clax-browser:open-content";
+        admin_everyone(&st, cap);
+        let mine = st.person_caps(&sam).unwrap()[cap].runs_grant.clone().unwrap();
+        let theirs = st.person_caps(OWNER).unwrap()[cap].runs_grant.clone().unwrap();
+        let export = |id: &str, parent: &str| {
+            st.issue_export(
+                DAEMON,
+                &ExportGrant {
+                    id: id.into(),
+                    person: sam.clone(),
+                    grant: "g_sams".into(),
+                    parent: parent.into(),
+                    actions: vec!["read".into()],
+                    expires_at: Some("2100-01-01T00:00:00.000Z".into()),
+                },
+            )
+        };
+        let g = export("e1", &mine).unwrap();
+        assert_eq!(
+            (g.granter.as_str(), g.grantee.as_str(), g.event.as_str()),
+            (sam.as_str(), "grant:g_sams", "share")
+        );
+        assert_eq!(code(&export("e2", &theirs).unwrap_err()), "not_held");
+        assert_eq!(st.exports_of(&sam).unwrap().len(), 1);
+        st.revoke_cap_grant(DAEMON, "e1", RevokeReason::Granter).unwrap();
+        assert!(st.exports_of(&sam).unwrap().is_empty());
     }
 
 }

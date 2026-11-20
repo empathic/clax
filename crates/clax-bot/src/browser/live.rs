@@ -688,6 +688,25 @@ impl BrowserSessions {
         Ok(self.keys.child(&parent, more))
     }
 
+    /// A capability of the session `handle` (a capability held by run
+    /// `run`) for the grant flow's grant `grant` (spec §18.5): `handle`'s
+    /// caveats, its holder replaced by `holder=grant:<grant>`, and `more`.
+    ///
+    /// # Errors
+    /// As [`BrowserSessions::authorize`] for a call of no class.
+    pub fn export(
+        &self,
+        run: &str,
+        handle: &str,
+        grant: &str,
+        more: &[Caveat],
+    ) -> Result<Cap, BrowserError> {
+        let (_, parent) = self.authorize(run, handle, None, &Nav::None)?;
+        Ok(self
+            .keys
+            .child_for(&parent, &Holder::Grant(grant.to_string()), more))
+    }
+
     /// The capability `handle` a revoke ends, with every capability shared
     /// from it (spec §18.6), for a call of run `run`: the revoke itself is
     /// the store's, its grant rows revoked in the call's Spend.

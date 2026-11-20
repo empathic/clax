@@ -2564,6 +2564,16 @@ async fn open_in_registry(
     rid: &str,
     kind: clax_store::bot_web::SessionKind,
 ) -> String {
+    opened_in_registry(ts, rid, kind).await.session
+}
+
+/// [`open_in_registry`], answering what the open answered, its handle
+/// included.
+async fn opened_in_registry(
+    ts: &TestServer,
+    rid: &str,
+    kind: clax_store::bot_web::SessionKind,
+) -> clax_bot::browser::live::Opened {
     use clax_bot::browser::live::{SessionTimes, new_session_id};
     use clax_bot::browser::serve::{ContentSite, Origin};
     use clax_bot::browser::session::{ContentPolicy, Start};
@@ -2598,7 +2608,7 @@ async fn open_in_registry(
         )
         .await
         .unwrap();
-    opened.session
+    opened
 }
 
 /// What a call of session `session` of run `rid` would meet now: `None`
@@ -2770,4 +2780,79 @@ async fn a_restart_marks_sessions_lost() {
     let row = ts.store.bot_browser_session(&rid, "s1").unwrap().unwrap();
     assert_eq!(row.reason, Some(SessionEnd::Lost));
     assert_eq!(row.charged_ms, 10);
+}
+
+/// The person a run acts for sees the pages of its last committed state
+/// they may export, and their machine grants and exports; exporting to a
+/// grant that is not theirs, or another's run, is 404 (spec §18.5).
+#[tokio::test]
+async fn a_runs_pages_are_listed_for_export_to_the_persons_grants() {
+    use clax_store::bot_runs::{DriverId, StepCommit, StepKind};
+    use clax_store::bot_web::SessionKind;
+    let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
+    source.opens(|| {
+        Ok(clax_bot::browser::FakeChrome::page(
+            clax_bot::browser::PageModel::new(),
+        ))
+    });
+    let ts = registry_daemon(source.clone()).await;
+    let rid = run_with_caps(&ts, "clax-browser:open-content").await;
+    let opened = opened_in_registry(&ts, &rid, SessionKind::Content).await;
+    let d = DriverId::mint();
+    ts.store.claim_run(&rid, &d, 60).unwrap().unwrap();
+    ts.store.begin_step(&rid, &d, 1, StepKind::Script).unwrap();
+    ts.store
+        .commit_bot_step(
+            &clax_bot::run::bot_ctx(clax_store::roles::OWNER),
+            &rid,
+            &d,
+            1,
+            StepCommit {
+                payload: json!({"state": {
+                    "value": {"page": {"$clax": 0}},
+                    "handles": [{"page": opened.handle, "url": "about:blank", "of": "Page"}]
+                }}),
+                usage: vec![],
+                events: vec![],
+                draft: vec![],
+                reason: None,
+                delivered: vec![],
+            },
+        )
+        .unwrap();
+    let url = format!("{}/api/bot/runs/{rid}/exports", ts.base);
+    let v: Value = ts
+        .client
+        .get(&url)
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["pages"], json!([{"path": "state.page"}]), "{v}");
+    assert_eq!(v["exports"], json!([]));
+    assert_eq!(v["released"], false, "no export is released yet");
+    let res = ts
+        .client
+        .post(&url)
+        .header("cookie", ts.owner_cookie())
+        .header("origin", &ts.base)
+        .json(&json!({"path": "state.page", "grant": "g_notmine", "actions": ["read"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    let res = ts
+        .client
+        .post(&url)
+        .header("cookie", ts.owner_cookie())
+        .header("origin", &ts.base)
+        .json(&json!({"path": "state.page", "grant": "g_notmine", "actions": ["write"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert!(ts.store.live_share_grants().unwrap().is_empty(), "nothing written");
 }

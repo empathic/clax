@@ -31,8 +31,9 @@ use std::collections::BTreeSet;
 pub const PREFIX: &str = "cxk_";
 /// The identifier's version.
 const VERSION: &str = "v1";
-/// The label the instance key is derived from the KEK with (§18.2).
-pub const INSTANCE_LABEL: &str = "clax-browser-capabilities/v1";
+/// The purpose of the instance key capabilities are made with
+/// (`clax_store::secrets::Kek::instance_key`, §18.2).
+pub const KEY_PURPOSE: &str = "browser-capabilities";
 
 /// What a call does, as caveats name it (§18.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -508,6 +509,26 @@ impl Keys {
         self.mint(&parent.session, &parent.run, chain, &caveats)
     }
 
+    /// A capability of `parent`'s session under a new ID of its chain for
+    /// another holder (§18.5): `parent`'s caveats but its holder ones,
+    /// `holder`'s, and `more`. Only the host mints one, with the session's
+    /// key: no holder can take a caveat off a macaroon.
+    #[must_use]
+    pub fn child_for(&self, parent: &Cap, holder: &Holder, more: &[Caveat]) -> Cap {
+        let mut chain = parent.chain.clone();
+        chain.push(new_id());
+        let mut caveats: Vec<String> = parent
+            .mac
+            .caveats()
+            .iter()
+            .filter(|c| !matches!(Caveat::parse(c), Some(Caveat::Holder(_))))
+            .cloned()
+            .collect();
+        caveats.push(Caveat::Holder(holder.clone()).render());
+        caveats.extend(more.iter().map(Caveat::render));
+        self.mint(&parent.session, &parent.run, chain, &caveats)
+    }
+
     /// The capability `s` is, when it decodes, names this instance key and
     /// verifies with its session's key; else `None`, with nothing said of
     /// why (a forged one and one of another instance alike).
@@ -815,6 +836,23 @@ mod tests {
         let revoked: BTreeSet<String> = [a.id().to_string()].into();
         assert!(a.revoked_in(&revoked) && b.revoked_in(&revoked));
         assert!(!root.revoked_in(&revoked) && !c.revoked_in(&revoked));
+    }
+
+    /// A mint for another holder keeps every caveat but the holder, which
+    /// it replaces: the run no longer holds it, the grant does, and it is
+    /// no wider than its parent for anyone.
+    #[test]
+    fn a_mint_for_a_new_holder_keeps_every_caveat_but_the_holder() {
+        let k = keys();
+        let parent = k.child(&k.root("sess1", "run-1"), &[ops(&[Class::Read, Class::Act])]);
+        let g = Holder::Grant("g_1".into());
+        let out = k.child_for(&parent, &g, &[Caveat::Expires(10_000)]);
+        assert!(k.verify(&out.encode()).is_some());
+        assert_eq!(out.chain()[..2], parent.chain()[..]);
+        assert!(out.admits(&g) && !out.admits(&run("run-1")));
+        assert_eq!(out.check(&at(&g, Some(Class::Read), Target::None, 0)), Ok(()));
+        assert!(out.check(&at(&g, Some(Class::Navigate), Target::None, 0)).is_err());
+        assert!(out.check(&at(&g, Some(Class::Read), Target::None, 10_000)).is_err());
     }
 
     #[test]

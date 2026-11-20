@@ -2436,3 +2436,237 @@ mod tests {
         assert_eq!(quartiles(vec![40, 10, 30, 20, 50]), Some((20, 40)));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Exports (spec docs/superpowers/specs/2026-11-19-claxbot-browser-design.md
+// §18.5, option A)
+// ---------------------------------------------------------------------------
+
+/// The run `rid` when the caller is the person it acts for; else 404.
+fn own_run(st: &Store, rid: &str, person: &str) -> clax_core::Result<Run> {
+    st.run(rid)?
+        .filter(|r| r.person == person)
+        .ok_or(CoreError::NotFound)
+}
+
+/// The pages of run `run`'s last committed state, by path, with their
+/// capabilities.
+fn run_pages(st: &Store, run: &Run) -> clax_core::Result<Vec<(String, String)>> {
+    let Some((_, steps)) = st.run_with_steps(&run.id)? else {
+        return Ok(Vec::new());
+    };
+    Ok(clax_bot::state::last_committed(&steps)
+        .map(|saved| clax_bot::state::page_paths(&saved))
+        .unwrap_or_default())
+}
+
+/// The person's live machine grants, as `{id, name}`.
+fn machine_grants(st: &Store, person: &str) -> clax_core::Result<Vec<Value>> {
+    Ok(st
+        .list_grants()?
+        .into_iter()
+        .filter(|g| {
+            g.status == "approved"
+                && (if person == clax_store::roles::OWNER {
+                    g.owner
+                } else {
+                    g.person.as_deref() == Some(person) && !g.owner
+                })
+        })
+        .map(|g| json!({"id": g.id, "name": g.client_name}))
+        .collect())
+}
+
+/// `GET /api/bot/runs/<id>/exports`'s answer for `person`.
+fn exports_view(st: &Store, run: &Run, person: &str) -> clax_core::Result<Value> {
+    let pages: Vec<Value> = run_pages(st, run)?
+        .into_iter()
+        .map(|(path, _)| json!({"path": path}))
+        .collect();
+    let exports: Vec<Value> = st
+        .exports_of(person)?
+        .into_iter()
+        .map(|g| {
+            json!({
+                "id": g.id,
+                "grant": g.grantee.strip_prefix("grant:"),
+                "actions": g.access.first().map(|a| a.actions.clone()).unwrap_or_default(),
+                "expires_at": g.conditions.get("expires_at"),
+                "issued_at": g.issued_at,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "pages": pages,
+        "grants": machine_grants(st, person)?,
+        "exports": exports,
+        "released": false,
+    }))
+}
+
+/// `GET /api/bot/runs/<id>/exports`: for the person the run acts for,
+/// the pages of its last committed state they may export (`pages:
+/// [{path}]`), their live machine grants (`grants: [{id, name}]`), their
+/// live exports (`exports: [{id, grant, actions, expires_at,
+/// issued_at}]`), and `released: false`: no export's capability is
+/// released to its holder in this version (spec §18.5). 404 for anyone
+/// else.
+pub async fn exports(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    p: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let (_, person) = me(&s, &d).await?;
+    let rid = path(p)?;
+    Ok(Json(
+        s.store_call(move |st| {
+            let run = own_run(st, &rid, &person)?;
+            exports_view(st, &run, &person)
+        })
+        .await?,
+    ))
+}
+
+/// `POST /api/bot/runs/<id>/exports`'s body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportBody {
+    path: String,
+    grant: String,
+    #[serde(default)]
+    actions: Option<Vec<String>>,
+    #[serde(default)]
+    expires_s: Option<u32>,
+}
+
+/// `POST /api/bot/runs/<id>/exports {path, grant, actions?, expires_s?}`:
+/// the person the run acts for exports the page at `path` of its last
+/// committed state to their machine grant `grant` (spec §18.5): the host
+/// mints the page's capability for `holder=grant:<grant>`, narrowed to
+/// `actions` (of `read`, `act`, `navigate`, `record`, `close`; all five
+/// when absent) and `expires_s` seconds, and writes its grant row (granter
+/// the person, parent the page's grant), recorded as `grant.issue`.
+/// Answers the exports. 404 for another's run, no such page or no such
+/// grant of theirs; 400 `invalid_args` for an action that is none; 503
+/// `browser_unavailable` on a host that holds no browser sessions; the
+/// page's own refusal (`browser_session_lost`, `browser_session_closed`)
+/// when its session is gone.
+pub async fn export(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    p: Result<Path<String>, PathRejection>,
+    req: Result<Json<ExportBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    use clax_bot::browser::cap::{Caveat, Class};
+    let (_, person) = me(&s, &d).await?;
+    let rid = path(p)?;
+    let b = body(req)?;
+    let actions: Vec<Class> = match &b.actions {
+        None => Class::ALL.to_vec(),
+        Some(names) => names
+            .iter()
+            .map(|n| {
+                Class::parse(n).ok_or_else(|| {
+                    ApiError::bad_request(
+                        "invalid_args",
+                        format!("`{n}` is not one of read, act, navigate, record, close"),
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?,
+    };
+    let Some(sessions) = s.bot.browser_sessions.clone() else {
+        return Err(ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "browser_unavailable",
+            "this host holds no browser sessions",
+        ));
+    };
+    let v = s
+        .store_call(move |st| {
+            let run = own_run(st, &rid, &person)?;
+            let handle = run_pages(st, &run)?
+                .into_iter()
+                .find(|(p, _)| *p == b.path)
+                .map(|(_, h)| h)
+                .ok_or(CoreError::NotFound)?;
+            if !machine_grants(st, &person)?
+                .iter()
+                .any(|g| g["id"] == b.grant.as_str())
+            {
+                return Err(CoreError::NotFound);
+            }
+            let mut more = vec![Caveat::Actions(actions.iter().copied().collect())];
+            let expires_ms = b.expires_s.map(|secs| {
+                sessions
+                    .now_ms()
+                    .saturating_add(i64::from(secs.max(1)) * 1000)
+            });
+            if let Some(ms) = expires_ms {
+                more.push(Caveat::Expires(ms));
+            }
+            let cap = sessions
+                .export(&run.id, &handle, &b.grant, &more)
+                .map_err(|e| CoreError::invalid(e.code, e.message))?;
+            let page_id = cap.chain()[cap.chain().len() - 2].clone();
+            let parent = if cap.chain().len() == 2 {
+                let kind = sessions
+                    .open_sessions(&run.id)
+                    .into_iter()
+                    .find(|(id, _)| id == cap.session())
+                    .map(|(_, kind)| kind)
+                    .ok_or(CoreError::NotFound)?;
+                st.person_caps(&person)?
+                    .get(kind.capability())
+                    .and_then(|h| h.runs_grant.clone())
+                    .ok_or_else(|| CoreError::invalid("not_held", "the page's grant is not live"))?
+            } else {
+                page_id
+            };
+            let ctx = audit.resolve(st)?;
+            st.issue_export(
+                &ctx,
+                &clax_store::bot_grants::ExportGrant {
+                    id: cap.id().to_string(),
+                    person: person.clone(),
+                    grant: b.grant.clone(),
+                    parent,
+                    actions: actions.iter().map(|c| c.as_str().to_string()).collect(),
+                    expires_at: expires_ms
+                        .and_then(chrono::DateTime::from_timestamp_millis)
+                        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+                },
+            )?;
+            exports_view(st, &run, &person)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `DELETE /api/bot/runs/<id>/exports/<eid>`: the person who exported
+/// `eid` revokes it and every grant under it (reason `granter`); answers
+/// the exports. 404 for an export that is not theirs.
+pub async fn unexport(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let (_, person) = me(&s, &d).await?;
+    let (rid, eid) = path(p)?;
+    let v = s
+        .store_call(move |st| {
+            let run = own_run(st, &rid, &person)?;
+            if !st.exports_of(&person)?.iter().any(|g| g.id == eid) {
+                return Err(CoreError::NotFound);
+            }
+            let ctx = audit.resolve(st)?;
+            st.revoke_cap_grant(&ctx, &eid, clax_store::bot_grants::RevokeReason::Granter)?;
+            exports_view(st, &run, &person)
+        })
+        .await?;
+    Ok(Json(v))
+}

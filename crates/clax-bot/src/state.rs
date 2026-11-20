@@ -236,6 +236,42 @@ pub fn pages(saved: &Value) -> Vec<String> {
     out
 }
 
+/// Each `Page` of a stored state with its path (`state.page`,
+/// `state.pages[1]`), in the order the value holds them, and its
+/// capability: what a person may export (spec §18.5).
+#[must_use]
+pub fn page_paths(saved: &Value) -> Vec<(String, String)> {
+    fn walk(v: &Value, at: &str, handles: &[Value], out: &mut Vec<(String, String)>) {
+        if let Some(i) = v.get("$clax").and_then(Value::as_u64) {
+            let h = usize::try_from(i).ok().and_then(|i| handles.get(i));
+            if let Some(h) = h
+                && h["of"] == "Page"
+                && let Some(page) = h["page"].as_str()
+            {
+                out.push((at.to_string(), page.to_string()));
+            }
+            return;
+        }
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    walk(x, &format!("{at}.{k}"), handles, out);
+                }
+            }
+            Value::Array(a) => {
+                for (i, x) in a.iter().enumerate() {
+                    walk(x, &format!("{at}[{i}]"), handles, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let handles = saved["handles"].as_array().cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    walk(&saved["value"], "state", &handles, &mut out);
+    out
+}
+
 /// A stored state as people are shown it: its value, each handle as
 /// `"<browser page>"`, `"<browser locator>"` and the like, and nothing of
 /// its handle entries.
@@ -333,5 +369,26 @@ mod tests {
             json!({"p": "<browser page>", "l": ["<browser locator>"], "n": 1})
         );
         assert!(!s.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn a_states_pages_are_listed_by_path() {
+        let saved = json!({
+            "value": {"page": {"$clax": 0}, "list": [1, {"$clax": 1}], "loc": {"$clax": 2}},
+            "handles": [
+                {"page": "cxk_a", "of": "Page"},
+                {"page": "cxk_b", "of": "Page"},
+                {"page": "cxk_a", "of": "Locator"}
+            ]
+        });
+        let mut got = page_paths(&saved);
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                ("state.list[1]".to_string(), "cxk_b".to_string()),
+                ("state.page".to_string(), "cxk_a".to_string())
+            ]
+        );
     }
 }
