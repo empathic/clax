@@ -650,7 +650,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    caps: clax_store::bot_runs::caps_of_shapes(shape.as_str(), ""),
+                    caps: clax_store::bot_runs::caps_of_web(shape.as_str()),
                 },
             )
             .unwrap();

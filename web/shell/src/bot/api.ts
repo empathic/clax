@@ -64,7 +64,6 @@ export type MeBot = {
   can_export?: boolean;
   provider_host?: string | null;
   web?: MeWeb;
-  browser?: MeBrowser;
   capabilities?: MeCapability[];
 };
 /** The five capabilities, each granted, priced and turned off on its own (spec 2026-11-19-claxbot-browser §4.2). */
@@ -83,15 +82,6 @@ export type MeWeb = {
   on: boolean; offered: boolean; operations: { search: boolean; fetch: boolean }; why_off: "admin_off" | "not_granted" | "person_off" | "not_configured" | null;
   /** Milli-credits one request costs them: a search on the active provider's line, a fetch (null for a line that does not exist). */
   prices: { search_milli: number | null; fetch_milli: number | null };
-};
-
-/** Whether ClaxBot may test pages in a browser for this person (`GET
- * /api/me/bot`): `on` their own choice (on by default), `offered` whether
- * the admin turned browser testing on and the host can open browsers,
- * `why_off` why their runs cannot now, else `null`, and what a minute of
- * browser time costs them, in milli-credits (null without the line). */
-export type MeBrowser = {
-  on: boolean; offered: boolean; why_off: "admin_off" | "not_granted" | "person_off" | "not_configured" | null; price_milli_per_minute: number | null;
 };
 
 /** A line of usage: a cost line's ID, its label and unit, and the quantity and credits (§7.3). */
@@ -389,8 +379,6 @@ export const clearOwnKey = () => call<MeBot>("/api/me/bot/key", "DELETE");
 export const useOwnKey = (use_own: boolean) => call<MeBot>("/api/me/bot", "PUT", { use_own });
 /** Lets ClaxBot's runs for this person search and read the web, or not. */
 export const setWebChoice = (web: boolean) => call<MeBot>("/api/me/bot", "PUT", { web });
-/** Lets ClaxBot's runs for this person test pages in a browser, or not. */
-export const setBrowserChoice = (browser: boolean) => call<MeBot>("/api/me/bot", "PUT", { browser });
 /** Turns the person's grant of one capability to their runs on or off. */
 export const setCapabilityChoice = (id: CapabilityId, on: boolean) => call<MeBot>("/api/me/bot", "PUT", { capabilities: { [id]: on } });
 export const meUsage = (week?: string) => call<MeUsage>(`/api/me/usage${query({ week })}`);

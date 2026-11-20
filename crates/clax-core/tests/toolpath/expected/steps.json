@@ -6260,89 +6260,6 @@
   },
   {
     "change": {
-      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u/u_77c0zz": {
-        "structural": {
-          "person": "u_77c0zz",
-          "type": "clax.me.browser",
-          "value": false
-        }
-      }
-    },
-    "meta": {
-      "clax": {
-        "backfilled": false,
-        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
-        "clax_version": "0.3.1",
-        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-        "kind": "me.browser",
-        "seq": 128,
-        "v": 1,
-        "via": "shell"
-      },
-      "description": "Turned browser use off for person u_77c0zz"
-    },
-    "step": {
-      "actor": "human:clax-person/u_77c0zz",
-      "id": "e000000000128",
-      "parents": [
-        "e000000000127"
-      ],
-      "timestamp": "2026-10-06T14:09:37.128Z"
-    }
-  },
-  {
-    "change": {
-      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/run/01JBCB0T000000000000000R01": {
-        "structural": {
-          "credits_milli": 1,
-          "ms": 4200,
-          "op": "browser.test",
-          "passed": true,
-          "path": "index.html",
-          "run": "01JBCB0T000000000000000R01",
-          "session": "br-5d1e8a40",
-          "step": 3,
-          "type": "clax.bot.browser",
-          "viewport": "phone"
-        }
-      }
-    },
-    "meta": {
-      "clax": {
-        "artifact_id": "k3m9q2w8x1ab",
-        "backfilled": false,
-        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
-        "clax_version": "0.3.1",
-        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-        "kind": "bot.browser",
-        "seq": 129,
-        "url": "http://localhost:7480/a/k3m9q2w8x1ab",
-        "v": 1,
-        "via": "daemon"
-      },
-      "description": "ClaxBot run 01JBCB0T000000000000000R01 tested the draft (index.html) at phone, passed (step 3, 0.001 credits)",
-      "refs": [
-        {
-          "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
-          "rel": "artifact"
-        },
-        {
-          "href": "http://localhost:7480/a/k3m9q2w8x1ab",
-          "rel": "view"
-        }
-      ]
-    },
-    "step": {
-      "actor": "agent:claxbot/u_77c0zz",
-      "id": "e000000000129",
-      "parents": [
-        "e000000000128"
-      ],
-      "timestamp": "2026-10-06T14:09:38.129Z"
-    }
-  },
-  {
-    "change": {
       "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
         "structural": {
           "capability": "browser.open.content",
@@ -6362,7 +6279,7 @@
         "clax_version": "0.3.1",
         "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
         "kind": "bot.grant",
-        "seq": 130,
+        "seq": 128,
         "v": 1,
         "via": "shell"
       },
@@ -6370,11 +6287,11 @@
     },
     "step": {
       "actor": "human:clax-owner",
-      "id": "e000000000130",
+      "id": "e000000000128",
       "parents": [
-        "e000000000129"
+        "e000000000127"
       ],
-      "timestamp": "2026-10-06T14:09:39.130Z"
+      "timestamp": "2026-10-06T14:09:37.128Z"
     }
   },
   {
@@ -6402,7 +6319,7 @@
         "clax_version": "0.3.1",
         "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
         "kind": "bot.spend",
-        "seq": 131,
+        "seq": 129,
         "url": "http://localhost:7480/a/k3m9q2w8x1ab",
         "v": 1,
         "via": "daemon"
@@ -6421,11 +6338,11 @@
     },
     "step": {
       "actor": "agent:claxbot/u_77c0zz",
-      "id": "e000000000131",
+      "id": "e000000000129",
       "parents": [
-        "e000000000130"
+        "e000000000128"
       ],
-      "timestamp": "2026-10-06T14:09:40.131Z"
+      "timestamp": "2026-10-06T14:09:38.129Z"
     }
   }
 ]

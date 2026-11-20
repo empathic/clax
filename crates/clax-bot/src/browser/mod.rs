@@ -1,30 +1,31 @@
 //! ClaxBot in a browser (spec
 //! `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md`): the
-//! values `clax.browser.test` and `clax.browser.browse` are made of, and
-//! [`BrowserSource`], where browsers come from.
+//! sessions `clax.browser.open` holds across a run's steps
+//! ([`live`]), the one-call `clax.browser.test`, and [`BrowserSource`],
+//! where browsers come from.
 //!
 //! # One driver, any host
 //!
 //! Everything about browser use lives in this crate (spec §4.4): the
 //! Chrome DevTools Protocol session, the request policy that serves a
-//! clax from its synthetic origin, steps, caps, the result's shape and
-//! metering. A host provides only a [`BrowserSource`]: a [`CdpTransport`]
+//! clax or supplied content from its synthetic origin, locators and
+//! actions ([`locate`], [`act`]), caps, the answers' shapes and metering. A host provides only a [`BrowserSource`]: a [`CdpTransport`]
 //! to a browser (a WebSocket to Cloudflare Browser Run on the daemon),
 //! its timer, Clax's own UI files, the site's response headers and a
-//! read-only `GET` of the page runtime's API. It is its own operation
-//! family, built on none of the web tools' internals (spec §4.1).
+//! read-only `GET` of the page runtime's API. Its calls are charged
+//! through the one Spend path every capability shares
+//! (`crate::clax`'s `spend`, spec §4.6).
 //!
 //! [`cdp`] is one CDP connection over any transport; [`fake`] is a
 //! browser in memory for tests ([`FakeChrome`], [`FakeBrowserSource`]).
 //!
 //! # Who may use it
 //!
-//! [`BrowserAccess`] (in [`access`]) is what a run may do in a browser
-//! now: off, and why, or the operations the admin turned on with their
-//! settings. A run's [`BrowserShape`], which operations it declares, is
-//! fixed when the run is made and kept on it
-//! ([`clax_store::bot_runs::Run::browser`]); what changes later is checked
-//! at each call.
+//! A run may use a browser by its capabilities
+//! ([`crate::capability::Capabilities::now`]): the `browser.open` kinds it
+//! held when it was made are kept on it
+//! ([`clax_store::bot_runs::Run::caps`]) and declare its operations; what
+//! changes later is checked at each call.
 //!
 //! # Errors
 //!
@@ -35,7 +36,6 @@
 //! Arguments that fail their check are
 //! [`api::CODE_BAD_ARGS`](crate::api::CODE_BAD_ARGS).
 
-pub mod access;
 pub mod act;
 pub mod browse;
 pub mod cdp;
@@ -48,7 +48,6 @@ pub mod record;
 pub mod serve;
 pub mod session;
 
-pub use access::{BrowseGrant, BrowserAccess, BrowserGrant, BrowserOff, BrowserShape, TestGrant};
 pub use cdp::{Cdp, CdpEvent, CdpFail};
 pub use fake::{ChromeLog, FakeBrowserSource, FakeChrome, PageModel};
 
@@ -170,7 +169,8 @@ pub trait BrowserSource: MaybeSendSync {
     /// Whether the source can open browsers now (credentials present). A
     /// host whose credentials can be removed while runs are going answers
     /// false once they are, and a run's calls are then refused
-    /// `browser_disabled` ([`BrowserAccess::now`], not configured).
+    /// `browser_disabled` (`not_configured`,
+    /// [`crate::capability::Capabilities::now`]).
     fn configured(&self) -> bool;
     /// A future that resolves at `at` (the host's timer; tests drive it).
     fn deadline(&self, at: DateTime<Utc>) -> Deadline;

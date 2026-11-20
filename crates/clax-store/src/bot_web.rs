@@ -5,9 +5,9 @@
 //!   capability to their runs (migration 67, spec
 //!   2026-11-19-claxbot-browser-design §11.2, [`crate::bot_grants`]):
 //!   [`Store::web_choice`] and [`Store::set_web_choice`] read and set both
-//!   web capabilities' at once, [`Store::browser_choice`] and
-//!   [`Store::set_browser_choice`] the three `browser.open` kinds'.
-//!   `bot_person_prefs` is no longer read.
+//!   web capabilities' at once, for the Me route's `web` field, and
+//!   [`Store::set_cap_choice`] one capability's. `bot_person_prefs` is no
+//!   longer read.
 //! - The Spend transaction (§4.2, §7.2): a web call's journal entry, its
 //!   usage row and (for a fetch) its page commit together, before the
 //!   script sees the answer ([`Store::spend_journaled`]). The usage row is
@@ -20,7 +20,7 @@
 //!   from the store, so a second page of it is refused (`page_exists`).
 
 use super::Store;
-use crate::bot_grants::{BROWSER_CAPABILITIES, Grantee, WEB_CAPABILITIES};
+use crate::bot_grants::{Grantee, WEB_CAPABILITIES};
 use crate::bot_runs::{
     CALL_COLS, CallEntry, DriverId, Run, call_in, check_claim, insert_call, open_step_in,
     row_to_call, run_in, same_call,
@@ -443,24 +443,6 @@ impl Store {
     /// The store's.
     pub fn set_web_choice(&self, ctx: &AuditCtx, person: &str, on: bool) -> Result<bool> {
         self.set_family_choice(ctx, person, &WEB_CAPABILITIES, on)
-    }
-
-    /// Whether every `browser.open` kind reaches `person`'s runs.
-    ///
-    /// # Errors
-    /// The store's.
-    pub fn browser_choice(&self, person: &str) -> Result<bool> {
-        self.family_reaches_runs(person, &BROWSER_CAPABILITIES)
-    }
-
-    /// Turns `person`'s grants of the three `browser.open` kinds to their
-    /// runs on or off, as `ctx` ([`Store::set_family_choice`]). Returns
-    /// whether any grant changed.
-    ///
-    /// # Errors
-    /// The store's.
-    pub fn set_browser_choice(&self, ctx: &AuditCtx, person: &str, on: bool) -> Result<bool> {
-        self.set_family_choice(ctx, person, &BROWSER_CAPABILITIES, on)
     }
 
     /// Turns `person`'s grant of capability `cap` to their runs on or off,
@@ -1362,29 +1344,6 @@ mod tests {
         assert!(st.set_web_choice(DAEMON, OWNER, true).unwrap());
         assert!(st.web_choice(OWNER).unwrap());
         assert!(!st.web_choice("someone-else").unwrap(), "not a person");
-    }
-
-    #[test]
-    fn a_person_turns_the_browser_off_and_back() {
-        let (_d, st) = store();
-        everyone(&st, &crate::bot_grants::CAPABILITIES);
-        assert!(st.browser_choice(OWNER).unwrap());
-        assert!(!st.set_browser_choice(DAEMON, OWNER, true).unwrap());
-        assert!(st.set_browser_choice(DAEMON, OWNER, false).unwrap());
-        assert!(!st.browser_choice(OWNER).unwrap());
-        assert!(st.web_choice(OWNER).unwrap(), "the web choice is its own");
-        assert!(!st.set_browser_choice(DAEMON, OWNER, false).unwrap());
-        assert!(st.set_web_choice(DAEMON, OWNER, false).unwrap());
-        assert!(
-            !st.browser_choice(OWNER).unwrap(),
-            "the web choice keeps it"
-        );
-        assert!(st.set_browser_choice(DAEMON, OWNER, true).unwrap());
-        assert!(st.browser_choice(OWNER).unwrap());
-        assert!(
-            !st.web_choice(OWNER).unwrap(),
-            "the browser choice keeps it"
-        );
     }
 
     /// A browser session call of `run` at `(step, seq)`: `s` with its

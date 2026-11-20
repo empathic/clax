@@ -367,17 +367,6 @@ fn body_class(kind: &str, field: &str) -> Class {
             | "code" | "stored",
         ) => Safe,
         ("bot.web", "query" | "url" | "response") => Text,
-        // A browser call (spec 2026-11-19-claxbot-browser §11): the version
-        // and path of the artifact it loaded, the viewport (a preset's name
-        // or `<w>x<h>`), its time, outcome, Browser Run's session ID, its
-        // charge and error code are codes and numbers; a browsed URL is the
-        // model's or a page's text.
-        (
-            "bot.browser",
-            "run" | "step" | "op" | "version" | "path" | "viewport" | "ms" | "passed" | "session"
-            | "credits_milli" | "ok" | "code",
-        ) => Safe,
-        ("bot.browser", "url") => Text,
         // A call of any capability (spec 2026-11-19-claxbot-browser-design
         // §4.8): the capability, op, outcome, charge, the source kind, a
         // session's ID, its viewport, version, path and time, a host end's

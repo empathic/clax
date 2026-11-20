@@ -7,12 +7,16 @@
 //! at once and passes, so CI runs it as a no-op.
 //!
 //! With them, a scratch daemon (the testkit's own home) whose model is a
-//! scripted Messages API runs one `clax.browser.test()` of a two-file
+//! scripted Messages API opens one browser session on a two-file
 //! artifact through the daemon's own `DaemonBrowser`, sending to
-//! Cloudflare's API: the page's title, one screenshot and the stylesheet
-//! served, and `Browser.close` answered on the socket. This is where the
-//! path's spelling (`/browser-run/devtools/browser`) is checked against
-//! the real service. No assertion is about how long anything took.
+//! Cloudflare's API, in one script step, and uses it through a `Page` in
+//! the next, after a model turn longer than the socket's `keep_alive`
+//! (60 s): the heartbeat kept the browser, so the second step's calls
+//! reach the same page over the same socket, its title, one screenshot
+//! and the stylesheet served, and `Browser.close` answered on it. This is
+//! where the path's spelling (`/browser-run/devtools/browser`) and the
+//! keep-alive are checked against the real service. No assertion is about
+//! how long anything took.
 
 use clax_bot::browser::{BrowserError, BrowserSource, CdpTransport, Deadline, Served};
 use clax_bot_sandbox::CancelToken;
@@ -129,8 +133,30 @@ async fn until_the_end(ts: &TestServer, rid: &str) {
     .await;
 }
 
+/// What a script returned between `<sid>` and `</sid>` in the requests
+/// the model was sent (its code writes neither whole): the session an
+/// earlier step opened.
+fn session_in(requests: &[Value]) -> String {
+    let sent = serde_json::to_string(requests).unwrap();
+    let from = sent.find("<sid>").expect("a step answered its session") + 5;
+    let to = from + sent[from..].find("</sid>").unwrap();
+    sent[from..to].to_string()
+}
+
+/// The model thinking for longer than Browser Run's `keep_alive`, between
+/// the step that opened the session and the one that uses it.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the live test's subject is a real pause longer than Browser Run's keep_alive"
+)]
+fn think_past_keep_alive() {
+    std::thread::sleep(std::time::Duration::from_secs(
+        u64::from(clax_server::browser_source::KEEP_ALIVE_MS) / 1000 + 10,
+    ));
+}
+
 #[tokio::test]
-async fn a_browser_test_runs_in_real_browser_run() {
+async fn a_session_outlives_keep_alive_in_real_browser_run() {
     let Some((account, token)) = credentials() else {
         eprintln!(
             "live_browser_run: skipped (set CLAX_LIVE_BROWSER_RUN_ACCOUNT and \
@@ -141,15 +167,23 @@ async fn a_browser_test_runs_in_real_browser_run() {
     let fake = FakeMessages::start(vec![
         Turn::script(
             "tu_1",
-            "Test the page in a browser",
-            "const r = await clax.browser.test(null, {viewport: 'phone', steps: [
-               {expect: {selector: 'h1', text: 'Hello from Browser Run'}},
-               {screenshot: {}},
-             ]});
-             return {passed: r.passed, title: r.title, shots: r.screenshots.length,
-                     failed: r.requests.failed, blocked: r.requests.blocked,
-                     errors: r.errors, steps: r.steps};",
+            "Open the page in a browser",
+            "const page = await clax.browser.open({ artifact: 'draft' }, { viewport: 'phone' });
+             await expect(page.getByText('Hello from Browser Run')).toBeVisible();
+             return '<' + 'sid>' + JSON.parse(JSON.stringify(page)).session + '</' + 'sid>';",
         ),
+        Turn::script_from("tu_2", "Look at it again", |requests| {
+            think_past_keep_alive();
+            format!(
+                "const page = clax.browser.session('{}');
+                 const title = await page.title();
+                 const shot = await page.screenshot();
+                 const requests = await page.failedRequests();
+                 const closed = await page.close();
+                 return {{ title, shot: typeof shot, failed: requests.failed, closed: closed.ms > 0 }};",
+                session_in(requests)
+            )
+        }),
         Turn::finish("The page loads in a browser."),
     ])
     .await;
@@ -174,6 +208,17 @@ async fn a_browser_test_runs_in_real_browser_run() {
             ],
         )
         .unwrap();
+    for cap in clax_store::bot_grants::CAPABILITIES {
+        ts.store
+            .issue_cap_grant(
+                &AuditCtx::DAEMON,
+                cap,
+                clax_store::bot_grants::GRANTER_INSTANCE,
+                clax_store::bot_grants::EVERYONE,
+                None,
+            )
+            .unwrap();
+    }
     put(&ts, "/api/admin/provider/key", json!({"key": KEY})).await;
     put(
         &ts,
@@ -224,18 +269,17 @@ async fn a_browser_test_runs_in_real_browser_run() {
         .to_string();
     until_the_end(&ts, &rid).await;
 
-    // What the script returned is the second request's tool result.
+    // What the second step returned is the third request's tool result.
     let sent = serde_json::to_string(&fake.requests()).unwrap();
     for want in [
         r#"\"title\":\"Live browser test\""#,
-        r#"\"shots\":1"#,
-        r#"\"passed\":true"#,
+        r#"\"shot\":\"object\""#,
         r#"\"failed\":[]"#,
+        r#"\"closed\":true"#,
     ] {
         assert!(sent.contains(want), "{want} in {sent}");
     }
-    // The stylesheet was asked for and served from the synthetic origin:
-    // the request Chrome paused for style.css was fulfilled with a 200.
+    assert!(!sent.contains("browser_session_lost"), "{sent}");
     let frames = frames.lock().unwrap().clone();
     let parsed = |out: bool| {
         frames
@@ -243,6 +287,13 @@ async fn a_browser_test_runs_in_real_browser_run() {
             .filter(move |(o, _)| *o == out)
             .filter_map(|(_, f)| serde_json::from_str::<Value>(f).ok())
     };
+    // The heartbeat went out while the model thought.
+    assert!(
+        parsed(true).filter(|v| v["method"] == "Browser.getVersion").count() >= 2,
+        "the heartbeat was sent"
+    );
+    // The stylesheet was asked for and served from the synthetic origin:
+    // the request Chrome paused for style.css was fulfilled with a 200.
     let paused = parsed(false)
         .find(|v| {
             v["method"] == "Fetch.requestPaused"
@@ -258,26 +309,30 @@ async fn a_browser_test_runs_in_real_browser_run() {
             && v["params"]["responseCode"] == 200
     });
     assert!(served, "the stylesheet's request was fulfilled with a 200");
-    // Browser.close was sent and answered.
-    let close_id = frames
-        .iter()
-        .filter(|(out, _)| *out)
-        .filter_map(|(_, f)| serde_json::from_str::<Value>(f).ok())
-        .find(|v| v["method"] == "Browser.close")
-        .and_then(|v| v["id"].as_i64())
-        .expect("Browser.close was sent");
-    let answered = frames
-        .iter()
-        .filter(|(out, _)| !*out)
-        .filter_map(|(_, f)| serde_json::from_str::<Value>(f).ok())
-        .any(|v| v["id"].as_i64() == Some(close_id));
-    assert!(answered, "Browser.close was answered");
-    // Charged its browser time.
-    let charged = ts
+    // Browser.close was sent and answered, once.
+    let closes: Vec<i64> = parsed(true)
+        .filter(|v| v["method"] == "Browser.close")
+        .filter_map(|v| v["id"].as_i64())
+        .collect();
+    assert_eq!(closes.len(), 1, "one browser, closed once");
+    assert!(
+        parsed(false).any(|v| v["id"].as_i64() == Some(closes[0])),
+        "Browser.close was answered"
+    );
+    // Its time was charged, once, as the session's segments.
+    let row = ts
+        .store
+        .bot_browser_session(&rid, &session_in(&fake.requests()))
+        .unwrap()
+        .expect("the session's row");
+    let charged: i64 = ts
         .store
         .usage_of_run(&rid)
         .unwrap()
         .into_iter()
-        .any(|r| r.line == clax_store::credits::LINE_BROWSER_TIME && r.credits_milli > 0);
-    assert!(charged, "browser time was charged");
+        .filter(|r| r.line == clax_store::credits::LINE_BROWSER_TIME)
+        .map(|r| r.qty)
+        .sum();
+    assert_eq!(charged, row.charged_ms);
+    assert!(row.charged_ms > 0);
 }

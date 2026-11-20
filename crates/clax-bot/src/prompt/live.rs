@@ -6,7 +6,7 @@
 
 use super::tests::host_surface;
 use super::*;
-use crate::capability::{CapSet, Capability};
+use crate::capability::CapSet;
 use crate::golden::golden;
 use clax_surface::RunScope;
 

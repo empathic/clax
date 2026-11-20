@@ -1079,21 +1079,22 @@ interface Done {
         the_system_prompts_are_pinned(RequestKind::Thread, "thread");
     }
 
-    /// The system prompt of a thread request with browser testing, and
-    /// with testing and browsing, without web, against their goldens.
+    /// The system prompt of a thread request holding
+    /// `browser.open.artifact`, and holding it and `browser.open.url`,
+    /// without web, against their goldens.
     #[test]
     fn the_system_prompt_with_the_browser_is_pinned() {
         expect_none(
             [
                 (
                     caps(&[C::OpenArtifact]),
-                    "browser-test",
-                    "with browser testing",
+                    "browser-artifact",
+                    "with the browser on its clax",
                 ),
                 (
                     caps(&[C::OpenArtifact, C::OpenUrl]),
-                    "browser-test-browse",
-                    "with browser testing and browsing",
+                    "browser-artifact-url",
+                    "with the browser on its clax and on URLs",
                 ),
             ]
             .map(|(shape, file, what)| {

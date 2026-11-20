@@ -2513,10 +2513,7 @@ pub const MIGRATIONS: &[&str] = &[
     // in milliseconds, so `cost_lines` is rebuilt with the one CHECK widened
     // and its rows copied, as migration 63 did for `kreq`; the Rust step
     // ([`BROWSER_MIGRATION`]) seeds the `browser.time` line
-    // (`crate::credits::seed_browser_line`). `bot_person_prefs.browser` is
-    // each person's own choice of browser use (§10.2), on unless they turn
-    // it off; `bot_runs.browser` is the browser grant's shape when the run
-    // was made (§4.5): `""`, `"test"`, `"browse"` or `"test,browse"`.
+    // (`crate::credits::seed_browser_line`).
     //
     // Capabilities (spec 2026-11-19-claxbot-browser-design §4.3, §11.2):
     // `bot_cap_grants` holds every grant of a capability, an instance-wide
@@ -2525,9 +2522,8 @@ pub const MIGRATIONS: &[&str] = &[
     // written only by `crate::bot_grants`; `bot_runs.caps` is the run's
     // capabilities when it was made, capability IDs sorted and
     // comma-separated. The Rust step ([`BROWSER_MIGRATION`]) writes main's
-    // web switches as explicit grants and fills `caps` from `web` and
-    // `browser` (`crate::bot_grants::grants_from_main`).
-    // `bot_runs.browser` is the migration's mark (`MARKS_AFTER_APP`).
+    // web switches as explicit grants and fills `caps` from `web`
+    // (`crate::bot_grants::grants_from_main`).
     //
     // The page store keeps a page per URL and format (spec
     // 2026-11-19-claxbot-browser-design §5.2): `bot_web_pages` is rebuilt
@@ -2541,6 +2537,7 @@ pub const MIGRATIONS: &[&str] = &[
     // since the open), and when and why it closed, written only by
     // `crate::bot_web` (`Store::spend_journaled`'s `SessionSpend`,
     // `Store::end_bot_browser_session`, `Store::lose_open_bot_browser_sessions`).
+    // `bot_browser_sessions` is the migration's mark (`MARKS_AFTER_APP`).
     "CREATE TABLE cost_lines_new (
         id TEXT PRIMARY KEY,
         label TEXT NOT NULL,
@@ -2562,8 +2559,6 @@ pub const MIGRATIONS: &[&str] = &[
         FROM cost_lines;
     DROP TABLE cost_lines;
     ALTER TABLE cost_lines_new RENAME TO cost_lines;
-    ALTER TABLE bot_person_prefs ADD COLUMN browser INTEGER NOT NULL DEFAULT 1;
-    ALTER TABLE bot_runs ADD COLUMN browser TEXT NOT NULL DEFAULT '';
     ALTER TABLE bot_runs ADD COLUMN caps TEXT NOT NULL DEFAULT '';
     CREATE TABLE bot_cap_grants (
         id TEXT PRIMARY KEY,
@@ -2708,11 +2703,10 @@ pub const CONTENT_SECURITY_POLICY_MIGRATION: u32 = KEY_PROBLEM_MIGRATION + 1;
 pub const ANALYTICS_MIGRATION: u32 = CONTENT_SECURITY_POLICY_MIGRATION + 1;
 
 /// The migration that lets a cost line count browser seconds (`browser_s`),
-/// seeds the `browser.time` line, keeps a person's browser choice
-/// (`bot_person_prefs.browser`) and a run's browser shape
-/// (`bot_runs.browser`), and adds capability grants (`bot_cap_grants`) and
-/// a run's capabilities (`bot_runs.caps`), as a schema version, and this
-/// build's last.
+/// seeds the `browser.time` line, adds capability grants (`bot_cap_grants`),
+/// a run's capabilities (`bot_runs.caps`), the page store's format and
+/// browser sessions (`bot_browser_sessions`), as a schema version, and
+/// this build's last.
 pub const BROWSER_MIGRATION: u32 = ANALYTICS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
@@ -2897,7 +2891,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 20] = [
     Mark::Column("sealed_secrets", "last_problem_json"),
     Mark::Column("artifacts", "content_security_policy"),
     Mark::Table("analytics_days"),
-    Mark::Column("bot_runs", "browser"),
+    Mark::Table("bot_browser_sessions"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5974,7 +5968,7 @@ mod tests {
         );
         assert!(MIGRATIONS[first + 26].contains("CREATE TABLE analytics_days ("));
         assert_eq!(super::BROWSER_MIGRATION, super::ANALYTICS_MIGRATION + 1);
-        assert!(MIGRATIONS[first + 27].contains("ALTER TABLE bot_runs ADD COLUMN browser"));
+        assert!(MIGRATIONS[first + 27].contains("CREATE TABLE bot_browser_sessions ("));
         assert_eq!(MIGRATIONS.len() as u32, super::BROWSER_MIGRATION);
     }
 
@@ -6103,7 +6097,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_67_keeps_every_artifact_to_self_and_takes_unrestricted_alone() {
+    fn migration_68_keeps_every_artifact_to_self_and_takes_unrestricted_alone() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -8600,7 +8594,7 @@ mod tests {
             let (web, threads) = (o.web, &o.thread_ids_json);
             // Its web reads as the parts it names (migration 67 keeps them
             // as capabilities, `bot_runs.caps`).
-            let named = crate::bot_runs::web_shape(&crate::bot_runs::caps_of_shapes(web, ""));
+            let named = crate::bot_runs::web_shape(&crate::bot_runs::caps_of_web(web));
             assert_eq!(
                 (run.web.as_str(), &run.thread_ids),
                 (named.as_str(), &o.thread_ids),
@@ -9470,10 +9464,10 @@ mod tests {
     }
 
     /// Migration 68 keeps every cost line and every run, reads each run as
-    /// made with no browser grant, turns browser use on for a person who
-    /// chose about the web alone, and seeds the browser line.
+    /// made with no browser capability, grants a person who chose about the
+    /// web alone no browser capability, and seeds the browser line.
     #[test]
-    fn migration_68_keeps_every_line_and_run_and_defaults_the_browser() {
+    fn migration_68_keeps_every_line_and_run_and_grants_no_browser() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let (lines, runs) = {
@@ -9521,16 +9515,26 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(line.unit, crate::credits::Unit::BrowserSecond);
-        let shapes: Vec<String> = c
-            .prepare("SELECT browser FROM bot_runs")
+        let caps: Vec<String> = c
+            .prepare("SELECT caps FROM bot_runs")
             .unwrap()
             .query_map([], |r| r.get(0))
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(shapes.len() as i64, runs);
-        assert!(shapes.iter().all(String::is_empty), "{shapes:?}");
-        assert!(!st.browser_choice("u_mia").unwrap(), "no grant is implied");
+        assert_eq!(caps.len() as i64, runs);
+        assert!(
+            caps.iter().all(|c| !c.contains("browser")),
+            "no run holds a browser capability: {caps:?}"
+        );
+        let held = st.person_caps("u_mia").unwrap();
+        for cap in crate::bot_grants::BROWSER_CAPABILITIES {
+            assert!(
+                held.get(cap)
+                    .is_none_or(|p| p.granted_by.is_none() && p.runs_grant.is_none()),
+                "no grant of {cap} is implied"
+            );
+        }
         assert!(!st.web_choice("u_mia").unwrap());
         assert!(
             c.execute(
@@ -9540,6 +9544,28 @@ mod tests {
             .is_err(),
             "the unit is one of the CHECK's"
         );
+    }
+
+    /// A database from main (at 66) opened by this build has none of the
+    /// first version's columns, a person's browser choice
+    /// (`bot_person_prefs.browser`) or a run's browser shape
+    /// (`bot_runs.browser`), and its runs read as main made them: their
+    /// capabilities from their web shape alone.
+    #[test]
+    fn migration_67_from_main_has_no_branch_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let st = opened_from_66_with(&home, "UPDATE bot_runs SET web = 'search,fetch'");
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(user_version(&c), super::BROWSER_MIGRATION);
+        assert!(!super::has_column(&c, "bot_person_prefs", "browser").unwrap());
+        assert!(!super::has_column(&c, "bot_runs", "browser").unwrap());
+        assert!(super::has_column(&c, "bot_runs", "caps").unwrap());
+        let id: String = c
+            .query_row("SELECT id FROM bot_runs LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let run = st.run(&id).unwrap().unwrap();
+        assert_eq!((run.caps.as_str(), run.web.as_str()), ("web.fetch,web.search", "search,fetch"));
     }
 
     /// A database at 66, as main leaves it, from [`at_64_with_runs`], with
@@ -9674,14 +9700,12 @@ mod tests {
         for cap in crate::bot_grants::BROWSER_CAPABILITIES {
             assert!(grants_of(&st, cap).is_empty(), "{cap}");
         }
-        assert!(!st.browser_choice(crate::roles::OWNER).unwrap());
     }
 
-    /// Each run's capabilities come from its web shape (main's) and its
-    /// browser shape (the first version's), each part as `Bindings::clax`
-    /// reads it, and the run reads as it read before.
+    /// Each run's capabilities come from its web shape (main's), each part
+    /// as `Bindings::clax` reads it, and the run reads as it read before.
     #[test]
-    fn migration_67_fills_run_caps_from_web_and_browser() {
+    fn migration_67_fills_run_caps_from_web() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let mut c = at_64_with_runs(&home);
@@ -9715,19 +9739,13 @@ mod tests {
         assert_eq!(caps, ["web.fetch,web.search", "web.fetch", "", ""]);
         let run = st.run(&ids[0]).unwrap().unwrap();
         assert_eq!(run.web, "search,fetch", "read as it was");
-        // A first-version home's browser shape reads the same way
-        // (`bot_runs.browser` exists only from 67).
-        assert_eq!(
-            crate::bot_runs::caps_of_shapes("search", "test,browse"),
-            "browser.open.artifact,browser.open.url,web.search"
-        );
     }
 
     /// Migration 67 keeps every page of main's page store, each with the
     /// format its fetch's journal entry names: `raw` as `raw`, main's
     /// `auto`, none and an entry that is missing as `markdown`.
     #[test]
-    fn migration_67_keeps_every_page_with_its_format() {
+    fn migration_68_keeps_every_page_with_its_format() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let mut c = at_64_with_runs(&home);

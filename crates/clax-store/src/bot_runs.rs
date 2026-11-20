@@ -249,15 +249,10 @@ pub struct Run {
     /// comma-separated, `""` for none. Written when the run is made and
     /// never changed.
     pub caps: String,
-    /// The web operations its capabilities allow, as the run's web shape
-    /// was spelled: `""`, `"search"`, `"fetch"` or `"search,fetch"`
-    /// ([`web_shape`] of [`Run::caps`]).
+    /// The web operations its capabilities allow, as main spelled a run's
+    /// web shape: `""`, `"search"`, `"fetch"` or `"search,fetch"`
+    /// ([`web_shape`] of [`Run::caps`]), for the run's JSON's `web` field.
     pub web: String,
-    /// The first version's browser operations its capabilities allow:
-    /// `""`, `"test"` (`browser.open.artifact`), `"browse"`
-    /// (`browser.open.url`) or `"test,browse"` ([`browser_shape`] of
-    /// [`Run::caps`]).
-    pub browser: String,
 }
 
 /// The browser's source capabilities: each opens a session of its kind.
@@ -279,11 +274,11 @@ pub const CLAX_GRANTED: [(&str, &[&str]); 8] = [
     ("browser.test", &["browser.open.artifact"]),
 ];
 
-/// The capabilities text (`bot_runs.caps`) of a run whose web shape is
-/// `web` (`search`, `fetch`) and whose browser shape is `browser`
-/// (`test` for `browser.open.artifact`, `browse` for `browser.open.url`),
-/// each comma-separated; any other part names nothing. Sorted, each once.
-pub fn caps_of_shapes(web: &str, browser: &str) -> String {
+/// The capabilities text (`bot_runs.caps`) of a run whose web shape (main's
+/// `bot_runs.web`) is `web`: `search` for `web.search`, `fetch` for
+/// `web.fetch`, comma-separated; any other part names nothing. Sorted,
+/// each once.
+pub fn caps_of_web(web: &str) -> String {
     let mut caps: Vec<&str> = web
         .split(',')
         .filter_map(|p| match p {
@@ -291,11 +286,6 @@ pub fn caps_of_shapes(web: &str, browser: &str) -> String {
             "fetch" => Some("web.fetch"),
             _ => None,
         })
-        .chain(browser.split(',').filter_map(|p| match p {
-            "test" => Some("browser.open.artifact"),
-            "browse" => Some("browser.open.url"),
-            _ => None,
-        }))
         .collect();
     caps.sort_unstable();
     caps.dedup();
@@ -324,22 +314,6 @@ pub fn web_shape(caps: &str) -> String {
         .map(|(_, s)| s)
         .collect::<Vec<_>>()
         .join(",")
-}
-
-/// The first version's browser shape of capabilities text `caps`: `test`
-/// for `browser.open.artifact`, `browse` for `browser.open.url`, in that
-/// order.
-pub fn browser_shape(caps: &str) -> String {
-    let has = |c: &str| caps.split(',').any(|p| p == c);
-    [
-        ("browser.open.artifact", "test"),
-        ("browser.open.url", "browse"),
-    ]
-    .into_iter()
-    .filter(|(c, _)| has(c))
-    .map(|(_, s)| s)
-    .collect::<Vec<_>>()
-    .join(",")
 }
 
 /// What `bot_runs` keeps of a run's parking, beside [`Run`]
@@ -1196,7 +1170,6 @@ fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
         agent_grant: r.get(16)?,
         due_at: r.get(17)?,
         web: web_shape(&s(18)?),
-        browser: browser_shape(&s(18)?),
         caps: s(18)?,
     })
 }
@@ -1292,7 +1265,7 @@ pub(crate) fn run_in(c: &Connection, id: &str) -> Result<Option<Run>> {
 /// [`run_in`] on a database migrated only as far as migrations 63 to 66
 /// leave `bot_runs`, before migration 67 adds `bot_runs.caps`: the run
 /// reads with the capabilities migration 67 gives it from its web shape
-/// ([`caps_of_shapes`]).
+/// ([`caps_of_web`]).
 #[cfg(test)]
 #[warn(clippy::disallowed_methods)]
 pub(crate) fn run_before_browser_in(c: &Connection, id: &str) -> Result<Option<Run>> {
@@ -1302,10 +1275,9 @@ pub(crate) fn run_before_browser_in(c: &Connection, id: &str) -> Result<Option<R
             .query_row(params![id], row_to_run)
             .optional()?
             .map(|run| {
-                let caps = caps_of_shapes(&run.caps, "");
+                let caps = caps_of_web(&run.caps);
                 Run {
                     web: web_shape(&caps),
-                    browser: browser_shape(&caps),
                     caps,
                     ..run
                 }
@@ -1924,9 +1896,9 @@ impl Store {
             tx.execute(
                 "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
                     model, key_source, base_version, created_at, updated_at, agent_grant, web,
-                    kind, bindings_json, request_json, browser, caps)
+                    kind, bindings_json, request_json, caps)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?9, ?10, ?11,
-                    ?12, ?13, ?14, ?15, ?16)",
+                    ?12, ?13, ?14, ?15)",
                 params![
                     id,
                     new.artifact_id,
@@ -1942,7 +1914,6 @@ impl Store {
                     new.kind(),
                     bindings.map_or_else(|| new.bindings().to_json(), Bindings::to_json),
                     serde_json::to_string(&new.clax_request()).expect("serialisable IDs"),
-                    browser_shape(&new.caps),
                     caps_text(new.caps.split(','))
                 ],
             )?;
@@ -3919,21 +3890,14 @@ mod tests {
             run.caps, "browser.open.artifact,browser.open.content",
             "known capabilities, sorted, each once"
         );
-        assert_eq!((run.web.as_str(), run.browser.as_str()), ("", "test"));
+        assert_eq!(run.web, "");
         assert_eq!(st.run(&run.id).unwrap().unwrap().caps, run.caps);
-        assert_eq!(
-            caps_of_shapes("fetch,search,search", "browse,test,x"),
-            "browser.open.artifact,browser.open.url,web.fetch,web.search"
-        );
-        assert_eq!(caps_of_shapes(" search", "Test"), "");
+        assert_eq!(caps_of_web("fetch,search,search,x"), "web.fetch,web.search");
+        assert_eq!(caps_of_web(" search"), "");
         assert_eq!(
             web_shape("web.fetch,web.search"),
             "search,fetch",
             "in main's order"
-        );
-        assert_eq!(
-            browser_shape("browser.open.url,browser.open.artifact"),
-            "test,browse"
         );
         let bindings = as_made.bindings().unwrap();
         assert_eq!(
@@ -3994,7 +3958,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    caps: caps_of_shapes(web, ""),
+                    caps: caps_of_web(web),
                 },
             )
             .unwrap()
@@ -6436,7 +6400,6 @@ mod tests {
                 agent_grant: None,
                 caps: String::new(),
                 web: String::new(),
-                browser: String::new(),
             }
         );
         assert_eq!(run.artifact(), None);

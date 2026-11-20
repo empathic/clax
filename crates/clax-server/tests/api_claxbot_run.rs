@@ -1988,7 +1988,7 @@ async fn a_run_started_with_browser_on_declares_it() {
     // The daemon's own bot, whose driver gave its runs a browser source.
     let run = start(&ts.state.bot, &threads[0]);
     assert!(ts.state.bot.browser);
-    assert_eq!(run.browser, "test");
+    assert_eq!(run.caps, "browser.open.artifact");
     let (_, as_made) = ts.store.run_as_made(&run.id).unwrap().unwrap();
     let granted = as_made.bindings().unwrap().all()[0].granted().to_vec();
     assert!(granted.iter().any(|o| o == "browser.test"), "{granted:?}");
@@ -2002,14 +2002,14 @@ async fn a_run_started_with_browser_on_declares_it() {
         ..Default::default()
     };
     assert!(!no_source.browser);
-    assert_eq!(start(&no_source, &threads[1]).browser, "");
-    // A person who turned the browser off gets a run without it.
+    assert_eq!(start(&no_source, &threads[1]).caps, "");
+    // A person who turned the capability off gets a run without it.
     ts.store
-        .set_browser_choice(&AuditCtx::DAEMON, OWNER, false)
+        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "browser.open.artifact", false)
         .unwrap();
-    assert_eq!(start(&ts.state.bot, &threads[2]).browser, "");
+    assert_eq!(start(&ts.state.bot, &threads[2]).caps, "");
     ts.store
-        .set_browser_choice(&AuditCtx::DAEMON, OWNER, true)
+        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "browser.open.artifact", true)
         .unwrap();
     // Without the Cloudflare token, not configured.
     let res = ts
@@ -2020,11 +2020,11 @@ async fn a_run_started_with_browser_on_declares_it() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    assert_eq!(start(&ts.state.bot, &threads[3]).browser, "");
+    assert_eq!(start(&ts.state.bot, &threads[3]).caps, "");
 }
 
 #[tokio::test]
-async fn a_browse_run_with_the_switch_on_declares_browse() {
+async fn a_run_made_with_the_url_switch_on_holds_browser_open_url() {
     use clax_core::ArtifactId;
     use clax_server::routes::bot::{Sender, start_run};
     use clax_store::bot_runs::RequestKind;
@@ -2068,7 +2068,7 @@ async fn a_browse_run_with_the_switch_on_declares_browse() {
         .unwrap();
     assert_eq!(res.status(), 200);
     let run = start(&threads[0]);
-    assert_eq!(run.browser, "test,browse");
+    assert_eq!(run.caps, "browser.open.artifact,browser.open.url");
     let (_, as_made) = ts.store.run_as_made(&run.id).unwrap().unwrap();
     let granted = as_made.bindings().unwrap().all()[0].granted().to_vec();
     assert!(granted.iter().any(|o| o == "browser.open"), "{granted:?}");
@@ -2078,7 +2078,6 @@ async fn a_browse_run_with_the_switch_on_declares_browse() {
         .set_web_choice(&AuditCtx::DAEMON, OWNER, false)
         .unwrap();
     let both = start(&threads[1]);
-    assert_eq!(both.browser, "test,browse");
     assert_eq!(both.caps, "browser.open.artifact,browser.open.url");
     // Testing off, browsing on: a run that browses alone.
     ts.store
@@ -2087,7 +2086,7 @@ async fn a_browse_run_with_the_switch_on_declares_browse() {
             &[(Setting::BrowserOpenArtifactEnabled, Some(json!(false)))],
         )
         .unwrap();
-    assert_eq!(start(&threads[2]).browser, "browse");
+    assert_eq!(start(&threads[2]).caps, "browser.open.url");
 }
 
 /// A fake Browser Run on 127.0.0.1: each WebSocket it accepts is a
@@ -2248,7 +2247,7 @@ async fn a_whole_browser_test_through_the_daemon() {
         .as_str()
         .unwrap()
         .to_string();
-    assert_eq!(ts.store.run(&rid).unwrap().unwrap().browser, "test");
+    assert_eq!(ts.store.run(&rid).unwrap().unwrap().caps, "browser.open.artifact");
     let all = events(&ts, &rid, None).await;
     assert_eq!(all.last().map(|(_, e, _)| e.as_str()), Some("run_end"));
     // The prompt declared the browser, and the script's answer reached

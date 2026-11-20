@@ -3373,95 +3373,33 @@ async fn admin_browser_round_trips_each_capability() {
     assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
 }
 
+/// The first version's browser switch is gone from the Me route: a
+/// person's browser use is each `browser.open` capability's own switch
+/// (`capabilities`), and a `browser` field is refused as any unknown one.
 #[tokio::test]
-async fn me_bot_shows_the_browser_switch() {
+async fn me_bot_has_no_browser_switch_of_its_own() {
     let p = people_with_driver().await;
     let ts = &p.ts;
     let sam = Who::Person(p.sam.0.clone());
-    let owner = Who::OwnerBrowser;
     grant_everyone(ts);
     let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(s, 200, "{v}");
-    // A minute of the browser.time line, as a test is charged for it.
-    let rate = ts
-        .store
-        .rate_of(clax_store::credits::LINE_BROWSER_TIME)
+    assert!(v.get("browser").is_none(), "{v}");
+    let ids: Vec<&str> = v["capabilities"]
+        .as_array()
         .unwrap()
-        .unwrap();
-    let want = clax_store::credits::row_credits_milli(
-        60_000,
-        rate.cost_micro_usd,
-        rate.margin_bp,
-        rate.fixed_credits_milli,
-        rate.credit_price_micro_usd,
-        rate.unit.base(),
-    )
-    .unwrap();
-    assert!(want > 0);
-    assert_eq!(
-        v["browser"],
-        json!({"on": true, "offered": false, "why_off": "admin_off",
-               "price_milli_per_minute": want}),
-        "{v}"
-    );
-    let (s, v) = call(
-        ts,
-        &owner,
-        Method::PUT,
-        "/api/admin/browser",
-        json!({"artifact": {"enabled": true}}),
-    )
-    .await;
-    assert_eq!(s, 200, "{v}");
-    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
-    assert_eq!(
-        (&v["browser"]["offered"], &v["browser"]["why_off"]),
-        (&json!(false), &json!("not_configured")),
-        "no Cloudflare account yet: {v}"
-    );
-    for (path, body) in [
-        (
-            "/api/admin/web",
-            json!({"cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"}}),
-        ),
-        ("/api/admin/web/token", json!({"token": CF_TOKEN})),
-    ] {
-        let (s, v) = call(ts, &owner, Method::PUT, path, body).await;
-        assert_eq!(s, 200, "{path}: {v}");
-    }
-    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
-    assert_eq!(
-        (
-            &v["browser"]["on"],
-            &v["browser"]["offered"],
-            &v["browser"]["why_off"]
-        ),
-        (&json!(true), &json!(true), &Value::Null),
-        "{v}"
-    );
-    let (s, v) = call(
-        ts,
-        &sam,
-        Method::PUT,
-        "/api/me/bot",
-        json!({"browser": false}),
-    )
-    .await;
-    assert_eq!(s, 200, "{v}");
-    assert_eq!(
-        (&v["browser"]["on"], &v["browser"]["why_off"]),
-        (&json!(false), &json!("person_off"))
-    );
+        .iter()
+        .filter_map(|c| c["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"browser.open.artifact"), "{v}");
+    let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"browser": false})).await;
+    assert_eq!(s, 400, "{v}");
     for cap in clax_store::bot_grants::BROWSER_CAPABILITIES {
-        assert_eq!(
-            grant_ops(ts, cap).iter().filter(|o| *o == "revoke").count(),
-            1,
-            "{cap}: Sam's runs grant revoked, once"
+        assert!(
+            !grant_ops(ts, cap).iter().any(|o| o == "revoke"),
+            "{cap}: nothing revoked"
         );
     }
-    // The choice is the person's own.
-    let (_, v) = call(ts, &owner, Method::GET, "/api/me/bot", Value::Null).await;
-    assert_eq!(v["browser"]["on"], true);
 }
 
 /// A 2x1 PNG: the signature and a whole IHDR chunk with its CRC.

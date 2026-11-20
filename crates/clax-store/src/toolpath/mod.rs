@@ -768,7 +768,6 @@ impl Event<'_> {
                 | K::BotScript
                 | K::BotCall
                 | K::BotWeb
-                | K::BotBrowser
                 | K::BotSpend
                 | K::BotRunEnd
                 | K::BotCancel
@@ -786,8 +785,7 @@ impl Event<'_> {
                 | K::AdminFlag
                 | K::AdminCredits
                 | K::BotRefused
-                | K::MeWeb
-                | K::MeBrowser,
+                | K::MeWeb,
             ) => self.str("person").map(Obj::Person),
             Some(K::BotSurfaceRegistered) => self.str("registered_by").map(Obj::Person),
             Some(K::AdminKey) => Some(self.str("person").map_or(Obj::Install, Obj::Person)),
@@ -1492,34 +1490,6 @@ impl Event<'_> {
                 self.show("step"),
                 credits(self.body.get("credits_milli"))
             ),
-            Some(K::BotBrowser) => format!(
-                "ClaxBot run {} {} (step {}, {} credits)",
-                self.show("run"),
-                match (self.str("op"), self.str("url")) {
-                    _ if self.body.get("ok") == Some(&Value::Bool(false)) =>
-                        format!("was refused {} ({})", self.show("op"), self.show("code")),
-                    (Some("browser.browse"), Some(u)) => format!("browsed {u}"),
-                    (Some("browser.test"), _) => format!(
-                        "tested {}{} at {}, {}",
-                        match self.body.get("version").and_then(Value::as_u64) {
-                            Some(v) => format!("version {v}"),
-                            None => "the draft".to_string(),
-                        },
-                        self.str("path")
-                            .map(|p| format!(" ({p})"))
-                            .unwrap_or_default(),
-                        self.show("viewport"),
-                        if self.body.get("passed") == Some(&Value::Bool(true)) {
-                            "passed"
-                        } else {
-                            "failed"
-                        }
-                    ),
-                    _ => format!("called {}", self.show("op")),
-                },
-                self.show("step"),
-                credits(self.body.get("credits_milli"))
-            ),
             Some(K::BotRunEnd) => format!(
                 "Ended ClaxBot run {}: {}{} ({} credits)",
                 self.show("run"),
@@ -1622,15 +1592,6 @@ impl Event<'_> {
                 self.str("parent")
                     .map(|p| format!(", under grant {p}"))
                     .unwrap_or_default()
-            ),
-            Some(K::MeBrowser) => format!(
-                "Turned browser use {} for person {}",
-                if self.body.get("value").and_then(Value::as_bool) == Some(true) {
-                    "on"
-                } else {
-                    "off"
-                },
-                self.show("person")
             ),
             Some(K::AdminKey) => format!(
                 "{} the {}{}",

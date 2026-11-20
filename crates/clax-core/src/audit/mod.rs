@@ -117,7 +117,6 @@ kinds! {
     BotScript = "bot.script",
     BotCall = "bot.call",
     BotWeb = "bot.web",
-    BotBrowser = "bot.browser",
     BotGrant = "bot.grant",
     BotSpend = "bot.spend",
     BotRunEnd = "bot.run_end",
@@ -136,7 +135,6 @@ kinds! {
     AdminCostLine = "admin.cost_line",
     AdminSettings = "admin.settings",
     MeWeb = "me.web",
-    MeBrowser = "me.browser",
     ExternalCreate = "external.create",
     ExternalUpdate = "external.update",
     ExternalDelete = "external.delete",
@@ -842,7 +840,6 @@ mod tests {
             "bot.script",
             "bot.call",
             "bot.web",
-            "bot.browser",
             "bot.grant",
             "bot.spend",
             "bot.run_end",
@@ -861,7 +858,6 @@ mod tests {
             "admin.cost_line",
             "admin.settings",
             "me.web",
-            "me.browser",
             "external.create",
             "external.update",
             "external.delete",
@@ -1042,7 +1038,7 @@ mod tests {
             in_group(KindGroup::Views),
             ["view.run", "view.admin", "view.audit", "view.usage"]
         );
-        assert_eq!(in_group(KindGroup::Bot).len(), 12);
+        assert_eq!(in_group(KindGroup::Bot).len(), 11);
         assert_eq!(in_group(KindGroup::Admin).len(), 7);
         assert_eq!(
             in_group(KindGroup::Credits),

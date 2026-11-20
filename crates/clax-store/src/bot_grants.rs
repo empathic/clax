@@ -289,8 +289,8 @@ fn grant_record(g: &GrantRow, op: &str, at: String) -> AuditRecord {
 /// every person ([`person_keys_in`]), except a person whose
 /// `bot_person_prefs.web` is 0. Nothing for a capability whose switch is
 /// off or unset, and nothing for any `browser.open` kind. Then
-/// `bot_runs.caps` from `bot_runs.web` (`search`, `fetch`) and
-/// `bot_runs.browser` (`test`, `browse`) ([`crate::bot_runs::caps_of_shapes`]).
+/// `bot_runs.caps` from `bot_runs.web` (`search`, `fetch`)
+/// ([`crate::bot_runs::caps_of_web`]).
 pub(crate) fn grants_from_main(tx: &Transaction<'_>) -> Result<()> {
     let on = |key: &str| -> Result<bool> {
         let v: Option<String> = tx
@@ -345,13 +345,13 @@ pub(crate) fn grants_from_main(tx: &Transaction<'_>) -> Result<()> {
             )?;
         }
     }
-    let runs: Vec<(String, String, String)> = tx
-        .prepare("SELECT id, web, browser FROM bot_runs")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+    let runs: Vec<(String, String)> = tx
+        .prepare("SELECT id, web FROM bot_runs")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut set = tx.prepare("UPDATE bot_runs SET caps = ?2 WHERE id = ?1")?;
-    for (id, web, browser) in runs {
-        let caps = crate::bot_runs::caps_of_shapes(&web, &browser);
+    for (id, web) in runs {
+        let caps = crate::bot_runs::caps_of_web(&web);
         if !caps.is_empty() {
             set.execute(params![id, caps])?;
         }

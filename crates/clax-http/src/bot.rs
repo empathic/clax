@@ -129,7 +129,7 @@ pub struct Bot {
     /// token, read at each call: `clax_server::bot::browser_configured`).
     /// False (the default, the Worker's and every host without one):
     /// every run's browser use is off, not configured, and no run is made
-    /// with the browser shape (`clax_bot::browser::BrowserAccess::now`).
+    /// with a browser capability (`clax_bot::capability::Capabilities::now`).
     pub browser: bool,
     /// The host's browser sessions (`clax_bot::browser::live`), which
     /// its runs share and its grant routes re-evaluate before they answer

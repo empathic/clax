@@ -188,37 +188,6 @@ fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
     }))
 }
 
-/// `GET /api/me/bot`'s `browser`: `on` is the person's own choice;
-/// `offered` when the admin turned browser testing on and the host can
-/// open browsers ([`crate::bot::browser_configured`]); `why_off` names why
-/// browser use is off for them now (`admin_off`, `person_off`,
-/// `not_configured`) or is null; `price_milli_per_minute` is what a
-/// minute of browser time costs them at their key source, in
-/// milli-credits (null without the `browser.time` line).
-fn browser_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
-    use clax_bot::browser::BrowserAccess;
-    let configured = crate::bot::browser_configured(st, bot)?;
-    let enabled = st
-        .bot_setting(Setting::BrowserOpenArtifactEnabled)?
-        .as_bool()
-        == Some(true);
-    let why_off = match BrowserAccess::now(st, person, configured)? {
-        BrowserAccess::Off(why) => json!(why.as_str()),
-        BrowserAccess::On(_) => Value::Null,
-    };
-    let source = key_source(st, bot, person)?.unwrap_or(KeySource::Instance);
-    let price = match minute_milli(st, source)? {
-        Some(milli) => json!(milli),
-        None => Value::Null,
-    };
-    Ok(json!({
-        "on": st.browser_choice(person)?,
-        "offered": enabled && configured,
-        "why_off": why_off,
-        "price_milli_per_minute": price,
-    }))
-}
-
 /// `GET /api/me/bot`'s `capabilities`: each of the five, in the order
 /// they are shown, as `{id, offered, granted, on, why_off, price_milli,
 /// per}`: `offered` when the admin's switch is on and the host can
@@ -335,7 +304,6 @@ pub fn me_view(
         },
         "week": st.week_usage_now(person)?,
         "web": web_view(st, bot, person)?,
-        "browser": browser_view(st, bot, person)?,
         "capabilities": capabilities_view(st, bot, person)?,
     });
     if let Some(code) = refused {
@@ -386,18 +354,16 @@ pub struct MeBody {
     #[serde(default)]
     web: Option<bool>,
     #[serde(default)]
-    browser: Option<bool>,
-    #[serde(default)]
     capabilities: Option<std::collections::BTreeMap<String, bool>>,
 }
 
-/// `PUT /api/me/bot {use_own?, web?, browser?, capabilities?}`, at least
+/// `PUT /api/me/bot {use_own?, web?, capabilities?}`, at least
 /// one (else 400 `empty_request`): whether the caller's runs use their own
 /// key (404 when they have none); `capabilities` `{<id>: bool}` turns the
 /// caller's grant of each named capability to their runs on or off (one
 /// they do not hold left as it is; 400 `unknown_capability` for a name
 /// that is none, before anything is written); `web` sets both web
-/// capabilities, and `browser` the three `browser.open` kinds. A browser
+/// capabilities. A browser
 /// session the caller's runs no longer hold the capability for is closed,
 /// `revoked`, before it answers ([`crate::bot::reevaluate_browser`]).
 pub async fn me_put(
@@ -411,10 +377,10 @@ pub async fn me_put(
     d.refuse_agents()?;
     let (caller, person) = me(&s, &d).await?;
     let b = body(req)?;
-    if b.use_own.is_none() && b.web.is_none() && b.browser.is_none() && b.capabilities.is_none() {
+    if b.use_own.is_none() && b.web.is_none() && b.capabilities.is_none() {
         return Err(ApiError::bad_request(
             "empty_request",
-            "give use_own, web, browser or capabilities",
+            "give use_own, web or capabilities",
         ));
     }
     if let Some(unknown) = b
@@ -443,9 +409,6 @@ pub async fn me_put(
             }
             if let Some(on) = b.web {
                 st.set_web_choice(&ctx, &person, on)?;
-            }
-            if let Some(on) = b.browser {
-                st.set_browser_choice(&ctx, &person, on)?;
             }
             for (id, on) in b.capabilities.iter().flatten() {
                 st.set_cap_choice(&ctx, &person, id, *on)?;

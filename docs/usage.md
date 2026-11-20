@@ -750,8 +750,10 @@ uninstall` takes it away again.
   daemon: run it after changing the protocol's routes, its hub or
   `fake_host`.
 - `just browser-live` (`crates/clax-server/tests/live_browser_run.rs`,
-  gating nothing, billing a few seconds of browser time) runs one ClaxBot
-  browser test against real Cloudflare Browser Run, with
+  gating nothing, billing about a minute of browser time) opens one
+  ClaxBot browser session against real Cloudflare Browser Run and uses
+  it again in a later step, after a pause longer than its `keep_alive`,
+  with
   `CLAX_LIVE_BROWSER_RUN_ACCOUNT` and `CLAX_LIVE_BROWSER_RUN_TOKEN` (a
   token with Browser Rendering – Edit) from the environment: run it after
   changing `DaemonBrowser` or the CDP session. Without both variables the

@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-use clax_bot::browser::{BrowserShape, FakeBrowserSource};
+use clax_bot::browser::FakeBrowserSource;
 use clax_bot::host::{ArtifactMeta, CommentMeta, FakeBotHost, RequestContext, ThreadMeta};
 use clax_bot::run::{Deps, Keys, RunSettings, SettingsSource};
 use clax_bot::web::{FakeWebSource, WebShape};
@@ -699,9 +699,10 @@ impl Env {
         )
     }
 
-    /// A thread run that declares the browser operations of `shape`
-    /// (`"test"`, `"browse"` or `"test,browse"`), with those operations
-    /// turned on by the admin.
+    /// A thread run holding the browser capabilities `shape` names
+    /// (`"test"` for `browser.open.artifact`, `"browse"` for
+    /// `browser.open.url`, or both, comma-separated), the admin offering
+    /// them.
     pub fn run_with_browser(&self, shape: &str) -> String {
         self.run_shaped(
             RequestKind::Thread,
@@ -777,7 +778,7 @@ impl Env {
         threads: Vec<String>,
     ) -> String {
         let shape = WebShape::parse(web);
-        let browser = BrowserShape::parse(browser);
+        let has = |part: &str| browser.split(',').any(|p| p.trim() == part);
         let mut on = Vec::new();
         if shape.search {
             on.push((Setting::WebSearchEnabled, json!(true)));
@@ -785,10 +786,10 @@ impl Env {
         if shape.fetch {
             on.push((Setting::WebFetchEnabled, json!(true)));
         }
-        if browser.test {
+        if has("test") {
             on.push((Setting::BrowserOpenArtifactEnabled, json!(true)));
         }
-        if browser.browse {
+        if has("browse") {
             on.push((Setting::BrowserOpenUrlEnabled, json!(true)));
         }
         if !on.is_empty() {
@@ -806,7 +807,12 @@ impl Env {
                     key_source,
                     base_version: 1,
                     agent_grant: None,
-                    caps: clax_store::bot_runs::caps_of_shapes(shape.as_str(), browser.as_str()),
+                    caps: clax_store::bot_runs::caps_text(
+                        clax_store::bot_runs::caps_of_web(shape.as_str())
+                            .split(',')
+                            .chain(has("test").then_some("browser.open.artifact"))
+                            .chain(has("browse").then_some("browser.open.url")),
+                    ),
                 },
             )
             .unwrap()

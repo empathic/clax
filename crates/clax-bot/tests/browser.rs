@@ -16,7 +16,6 @@ use clax_bot::browser::{
 };
 use clax_bot::host::CommentMeta;
 use clax_bot::run::CrashPoint;
-use clax_bot::web::OwnHosts;
 use clax_core::audit::AuditCtx;
 use clax_store::bot_runs::{DriverId, RunStatus, StepKind};
 use clax_store::bot_settings::Setting;
@@ -103,7 +102,7 @@ fn served(log: &ChromeLog) -> Vec<String> {
         .collect()
 }
 
-/// The bodies of the `bot.browser` audit records, in order.
+/// The bodies of the `bot.spend` audit records, in order.
 fn browser_events(env: &Env) -> Vec<Value> {
     env.bot_events()
         .into_iter()
@@ -434,7 +433,7 @@ async fn a_mid_run_opt_out_answers_browser_disabled() {
     let d = DriverId::mint();
     assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
     env.store
-        .set_browser_choice(&AuditCtx::DAEMON, OWNER, false)
+        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "browser.open.artifact", false)
         .unwrap();
     env.drive(&deps, &run, &d).await;
     assert_eq!(script_result(&env, &run, 0)["value"], "browser_disabled");
@@ -941,7 +940,7 @@ async fn every_call_writes_one_bot_spend() {
     assert!(
         !env.bot_events()
             .iter()
-            .any(|(k, _)| k == "bot.web" || k == "bot.browser")
+            .any(|(k, _)| k == "bot.web")
     );
 }
 
