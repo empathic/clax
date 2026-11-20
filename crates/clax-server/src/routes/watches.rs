@@ -226,7 +226,7 @@ pub async fn live_put(
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(p)?;
     let b = body(b)?;
-    let pu = page_url(&s, &b.url)?;
+    let pu = page_url(&b.url)?;
     let ctx = s.feedback_ctx();
     let events = s.events.clone();
     let live_ids = s.live_ids.clone();
@@ -302,7 +302,7 @@ pub async fn live_delete(
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(p)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let pu = page_url(&s, &q.url)?;
+    let pu = page_url(&q.url)?;
     let page = pu.key.page_url();
     let removed = s
         .store_call(move |st| {

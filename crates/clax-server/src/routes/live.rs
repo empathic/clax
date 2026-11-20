@@ -37,48 +37,16 @@ pub const MAX_SNAPSHOT: usize = 8 * 1024 * 1024;
 /// The longest page title kept, in characters: an artifact title's bound.
 pub const MAX_TITLE: usize = clax_core::publish::MAX_TITLE_CHARS;
 
-/// Host names that always name this machine.
-const LOCAL_NAMES: [&str; 3] = ["localhost", "127.0.0.1", "[::1]"];
-
-/// `raw` split into its live-page key and route (spec §7), refusing the
-/// daemon's own pages with `own_origin`: a URL on the daemon's port whose
-/// host is a local name (`localhost`, any `*.localhost`), a loopback or
-/// unspecified IP address (`127.0.0.0/8`, `::1`, `0.0.0.0`, `::`), or the
-/// host the daemon is reached at.
+/// `raw` split into its live-page key and route (spec §7). Any `http` or
+/// `https` page is one, the daemon's own pages among them: the shell's
+/// screens have no comment mode of their own, and commenting on an
+/// artifact's view through the extension files its threads on the view's
+/// live page, beside the artifact's own.
 ///
 /// # Errors
-/// `parse_page_url`'s, and `own_origin`.
-pub(crate) fn page_url(s: &AppState, raw: &str) -> Result<PageUrl, ApiError> {
-    let p = parse_page_url(raw)?;
-    let origin = url::Url::parse(&p.key.origin)
-        .map_err(|e| ApiError::bad_request("invalid_url", e.to_string()))?;
-    let host = origin.host_str().unwrap_or("");
-    let own: Vec<url::Url> = [&s.self_base, &s.browser_base]
-        .into_iter()
-        .filter_map(|b| url::Url::parse(b).ok())
-        .collect();
-    let ip = match origin.host() {
-        Some(url::Host::Ipv4(a)) => Some(std::net::IpAddr::V4(a)),
-        Some(url::Host::Ipv6(a)) => Some(std::net::IpAddr::V6(a)),
-        _ => None,
-    };
-    let ours = LOCAL_NAMES.contains(&host)
-        || host.ends_with(".localhost")
-        || ip.is_some_and(|ip| {
-            let ip = ip.to_canonical();
-            ip.is_loopback() || ip.is_unspecified()
-        })
-        || own.iter().any(|u| u.host_str() == Some(host));
-    let on_our_port = own
-        .iter()
-        .any(|u| u.port_or_known_default() == origin.port_or_known_default());
-    if ours && on_our_port {
-        return Err(ApiError::bad_request(
-            "own_origin",
-            "Clax's own pages have their own comment mode",
-        ));
-    }
-    Ok(p)
+/// `parse_page_url`'s.
+pub(crate) fn page_url(raw: &str) -> Result<PageUrl, ApiError> {
+    Ok(parse_page_url(raw)?)
 }
 
 /// A title as a page gave it, fit to store (spec §8.3): whitespace
@@ -173,7 +141,7 @@ pub async fn page(
     q: Result<Query<PageQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let pu = page_url(&s, &q.url)?;
+    let pu = page_url(&q.url)?;
     let key = pu.key.clone();
     let live_ids = s.live_ids.clone();
     let (found, rule) = s
@@ -374,7 +342,6 @@ pub async fn thread(
     let mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let f = read_fields(mp).await?;
     let pu = page_url(
-        &s,
         f.url
             .as_deref()
             .ok_or_else(|| ApiError::bad_request("invalid_args", "field 'url' is required"))?,
@@ -590,7 +557,7 @@ pub async fn snapshot(
 ) -> Result<Json<Value>, ApiError> {
     let mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let f = read_snapshot_fields(mp).await?;
-    let pu = page_url(&s, &f.url)?;
+    let pu = page_url(&f.url)?;
     let title = clean_title(f.title.as_deref().unwrap_or(""), &pu.key.page_url());
     let ctx = s.feedback_ctx();
     let events = s.events.clone();
@@ -679,9 +646,9 @@ pub(crate) fn owner_reads(who: &Identity) -> Result<(), ApiError> {
 }
 
 /// The origin a `site` or `rules` request names: the origin of `raw`, a
-/// page URL or an origin, refusing the daemon's own ([`page_url`]).
-pub(crate) fn origin_of(s: &AppState, raw: &str) -> Result<String, ApiError> {
-    Ok(page_url(s, raw)?.key.origin)
+/// page URL or an origin ([`page_url`]).
+pub(crate) fn origin_of(raw: &str) -> Result<String, ApiError> {
+    Ok(page_url(raw)?.key.origin)
 }
 
 #[derive(Deserialize)]
@@ -743,7 +710,7 @@ pub async fn site(
     d.refuse_agents()?;
     owner_reads(&who)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let origin = origin_of(&s, &q.origin)?;
+    let origin = origin_of(&q.origin)?;
     let with_path = d.holds_token();
     let codex = s.feedback_ctx().codex_push();
     let o = origin.clone();
@@ -984,7 +951,7 @@ pub async fn move_thread(
     d.refuse_agents()?;
     let tid = super::artifacts::path(p)?;
     let b = super::artifacts::body(body)?;
-    let pu = page_url(&s, &b.page_url)?;
+    let pu = page_url(&b.page_url)?;
     let rc = RefileCtx::of(&s, audit);
     let with_path = who.token;
     let (view, page, artifact, rule, moved) = s
@@ -1049,7 +1016,7 @@ pub async fn rules(
 ) -> Result<Json<Value>, ApiError> {
     owner_reads(&who)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let origin = origin_of(&s, &q.origin)?;
+    let origin = origin_of(&q.origin)?;
     let o = origin.clone();
     let rules = s.store_call(move |st| st.live_rules(&o)).await?;
     Ok(Json(json!({
@@ -1076,7 +1043,7 @@ pub struct RuleBody {
 /// when it does not exist; `moved`: the re-filed thread IDs; `remaining`:
 /// threads left for the next request); `200` for a rule the origin already
 /// has, applied again (to the remaining threads). 400 `invalid_pattern`,
-/// `own_origin`, `too_many_rules`.
+/// `too_many_rules`.
 pub async fn add_rule(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
@@ -1087,8 +1054,8 @@ pub async fn add_rule(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let b = super::artifacts::body(body)?;
     let pattern = PathPattern::parse(&b.pattern)?;
-    let origin = origin_of(&s, &b.origin)?;
-    let canonical = page_url(&s, &format!("{origin}{}", pattern.as_str()))?;
+    let origin = origin_of(&b.origin)?;
+    let canonical = page_url(&format!("{origin}{}", pattern.as_str()))?;
     if canonical.key.path != pattern.as_str() || canonical.route.is_some() {
         return Err(ApiError::bad_request(
             "invalid_pattern",
