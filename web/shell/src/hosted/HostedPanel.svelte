@@ -6,7 +6,8 @@
   // as, a one-use sign-in link for another device, sign out), the person's
   // devices (the Clax app signed in as them, which may manage the sharing
   // of their apps; listed and revoked), agent tokens for remote agents (made with the `claude mcp add` command and Codex's
-  // config, shown this once; listed and revoked), and pages shared by link
+  // config, shown this once; listed and revoked; each with its Queues control, the report queue access granted on
+  // it, none until granted, set in the Create token form too), and pages shared by link
   // (anyone with the link may view, or comment once they give a name), each
   // marked Public when the public gallery lists it. Only the owner and a
   // page's maker share it; the daemon says so otherwise. Changing a link's
@@ -19,6 +20,8 @@
   import { holdReveal } from "../settings/first-data";
   import { forgetThenSignOut } from "./signout";
   import { refusal } from "../people/refusal";
+  import QueueAccess from "./QueueAccess.svelte";
+  import { fromAccess, NO_ACCESS, sameChoice, summary, toAccess, type QueueChoice } from "./queue-access";
 
   type Shown = "me" | "devices" | "tokens" | "links";
   let { me, parts = ["me", "devices", "tokens", "links"] }: { me: api.HostedMe; parts?: Shown[] } = $props();
@@ -31,6 +34,8 @@
   let label = $state("");
   let minted = $state<api.NewAgentToken | null>(null);
   let tokens = $state<api.AgentToken[]>([]);
+  let queues = $state<api.QueueChoiceRow[]>([]);
+  let draft = $state<QueueChoice>(NO_ACCESS);
   let shared = $state<api.SharedLink[]>([]);
   let pages = $state<{ id: string; title: string }[]>([]);
   let pick = $state("");
@@ -43,6 +48,8 @@
   const LEVELS = Object.keys(ACCESS) as api.LinkAccess[];
 
   async function load() {
+    // The queues a token may be granted; without them the control says there is nothing to grant.
+    if (has("tokens")) void api.myQueues().then(q => { queues = q.queues.map(x => ({ id: x.id, name: x.name })); }, () => { queues = []; });
     try {
       const [t, l, a] = await Promise.all([api.tokens(), api.links(), listArtifacts()]);
       tokens = t.tokens; shared = l.links; pages = a.map(x => ({ id: x.id, title: x.title }));
@@ -56,7 +63,28 @@
   const copy = (what: string, text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
   const makeLink = () => act("me", async () => { link = await api.signinLink(); });
   const signOut = () => act("me", async () => { await forgetThenSignOut(api.signOut); location.assign("/signin"); });
-  const mint = (e: Event) => { e.preventDefault(); void act("tokens", async () => { minted = await api.mintToken(label.trim()); label = ""; }); };
+  const mint = (e: Event) => {
+    e.preventDefault();
+    void act("tokens", async () => {
+      minted = await api.mintToken(label.trim());
+      label = "";
+      const access = toAccess(draft);
+      draft = NO_ACCESS;
+      if (access) await api.grantQueues(minted.id, access);
+    });
+  };
+  // The signed-in person's own grant on a token, and every other granter's.
+  const mine = (g: api.Granter) => (person?.owner ? g.owner : g.public_id === person?.public_id);
+  const ownChoice = (t: api.AgentToken) => fromAccess(t.grants?.raises.find(r => mine(r.granter))?.access ?? null);
+  const others = (t: api.AgentToken) => (t.grants?.raises ?? []).filter(r => !mine(r.granter));
+  const queueNames = $derived(Object.fromEntries(queues.map(q => [q.id, q.name])));
+  // A change applies at once: the new grant, or none when nothing is chosen.
+  const setQueues = (t: api.AgentToken, c: QueueChoice) => {
+    const before = ownChoice(t);
+    if (sameChoice(before, c)) return;
+    const access = toAccess(c);
+    void act("tokens", () => (access ? api.grantQueues(t.id, access) : api.ungrantQueues(t.id)));
+  };
   const share = (e: Event) => { e.preventDefault(); if (pick) void act("links", () => api.setLink(pick, pickAccess)); };
   const minutes = (iso: string) => Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60000));
   const day = (iso: string | null) => (iso ? iso.slice(0, 10) : "never");
@@ -86,6 +114,15 @@
 {#snippet tokenLine(t: api.AgentToken, at: Part)}
   <div class="line tok"><span class="mname">{t.label}</span><span class="meta">made {day(t.created_at)} · last used {day(t.last_used_at)}{t.status !== "approved" ? ` · ${t.status}` : ""}</span><span class="sp"></span>
     {#if t.status === "approved"}<button type="button" class="ghost danger" aria-label="Revoke the token for {t.label}" onclick={() => act(at, () => api.revokeToken(t.id))}>Revoke</button>{/if}</div>
+  {#if at === "tokens" && t.status === "approved"}
+    <div class="tok-queues">
+      <QueueAccess label={t.label} {queues} choice={ownChoice(t)} onchange={c => setQueues(t, c)} />
+      {#each others(t) as r (r.version)}
+        <div class="granted"><span class="meta">{r.granter.name} grants {summary(fromAccess(r.access), queueNames)}</span>
+          <button type="button" class="ghost" aria-label="Remove {r.granter.name}'s queue access on {t.label}" onclick={() => act("tokens", () => api.ungrantQueues(t.id, r.granter.public_id ?? "owner"))}>Remove</button></div>
+      {/each}
+    </div>
+  {/if}
 {/snippet}
 
 {#if has("devices") && devices.length}
@@ -100,10 +137,11 @@
 {#if has("tokens")}
 <section class="pcard hosted-tokens" aria-labelledby="ht-h">
   <h3 id="ht-h">Agent tokens</h3>
-  <p class="note">An agent on any machine connects to this Clax as you, with your rights, by its token. Make one per machine.</p>
+  <p class="note">An agent on any machine connects to this Clax as you, with your rights, by its token. Make one per machine. A token has no access to your report queues until you grant it under Queues; a change applies at its next call.</p>
   <form class="mint" onsubmit={mint}>
     <label class="field">Machine <input name="label" autocomplete="off" maxlength="64" placeholder="laptop" value={label} oninput={e => { label = e.currentTarget.value; }} /></label>
     <button class="primary" type="submit">Create token</button>
+    <div class="mint-queues"><QueueAccess label="the new token" {queues} choice={draft} onchange={c => { draft = c; }} /></div>
   </form>
   {#if minted}
     <div class="minted" role="status">
@@ -164,7 +202,10 @@
     .ppl .mint .field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
     .ppl .mint input { width: 220px; max-width: 100%; }
     .ppl .share { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
-    .ppl .tok + .tok { border-top: 1px dashed var(--border); }
+    .ppl .tok + .tok, .ppl .tok-queues + .tok { border-top: 1px dashed var(--border); }
+    .ppl .tok-queues { padding: 0 0 8px; }
+    .ppl .tok-queues .granted { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+    .ppl .mint-queues { flex: 1 1 100%; }
     .ppl .hosted-links a.mname { color: var(--fg); }
     @media (max-width: 520px) {
       .ppl .cmd { flex-direction: column; }

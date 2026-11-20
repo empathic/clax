@@ -6870,13 +6870,55 @@
             ],
             "timestamp": "2026-10-06T14:09:36.127Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+              "structural": {
+                "access": {
+                  "redacted": "unclassified",
+                  "sha256": "sha256:6e64c085c0e199e5c68c059c6cb7548c7186d7020e79239de247806a09df9c02"
+                },
+                "grant_id": {
+                  "redacted": "unclassified",
+                  "sha256": "sha256:fa3aa1277a6b206335ef2e61344b5b06096211008b1a54a79929b7f0d517dc79"
+                },
+                "granter": {
+                  "redacted": "unclassified",
+                  "sha256": "sha256:d2d2061356f2fabdcd97b5a5faf65c635a81a516cc82d8d5a6ea9528e4494ab5"
+                },
+                "type": "clax.grant.elevate"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "grant.elevate",
+              "seq": 128,
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "the owner granted access on grant unknown"
+          },
+          "step": {
+            "actor": "human:clax-person/u_5am7q2",
+            "id": "e000000000128",
+            "parents": [
+              "e000000000127"
+            ],
+            "timestamp": "2026-10-06T14:09:43.128Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000127",
+        "head": "e000000000128",
         "id": "clax-install-6a1f0c3e"
       },
       "meta": {
@@ -7064,7 +7106,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 127,
+      "last_seq": 128,
       "redaction": [
         "no-text"
       ],

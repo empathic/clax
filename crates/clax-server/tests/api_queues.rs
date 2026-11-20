@@ -266,7 +266,24 @@ async fn members_hold_the_role_an_admin_gives_them() {
     let (s, v) = browser(&w.ts, &w.sam, Method::GET, &members, None).await;
     assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
 
-    // Sam's agent lists the queues Sam is a member of.
+    // Sam's agent lists the queues Sam is a member of that its token may
+    // read: none until Sam grants it.
+    let (s, v) = json_of(w.sam_client.agent("GET", "/api/queues", None, None).await).await;
+    assert_eq!((s, v["queues"].clone()), (200, json!([])), "{v}");
+    let read = clax_core::rights::Rights::parse(
+        &json!([{"type": "clax-queues", "actions": ["read"], "locations": ["*"]}]),
+    )
+    .unwrap();
+    w.ts.store
+        .raise_grant(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &w.sam_client.grant_id(),
+            Some(&w.sam_public),
+            Some(read),
+            None,
+            None,
+        )
+        .unwrap();
     let (s, v) = json_of(w.sam_client.agent("GET", "/api/queues", None, None).await).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["queues"][0]["role"], "triage");

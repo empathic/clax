@@ -93,7 +93,9 @@ async fn admin_of(s: &AppState, qid: &str, person: Option<String>) -> Result<(),
 /// member of, oldest first, each `{id, name, origins, reporters_see,
 /// created_at, role}`. The owner and the owner's agents read the owner's;
 /// a connected person and their agents read theirs; a viewer who is no
-/// connected person reads none. 401 without a credential.
+/// connected person reads none. An agent of a grant (an agent token, or a
+/// connected machine) reads only those its `clax-queues` rights hold `read`
+/// at. 401 without a credential.
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<QueuesList>,
@@ -109,9 +111,21 @@ pub async fn list(
         Caller::Viewer { .. } => return Ok(Json(json!({"queues": []}))),
         Caller::Anonymous => return Err(ApiError::unauthorized()),
     };
-    let queues = s
+    let mut queues = s
         .store_call(move |st| st.queues_of(person.as_deref()))
         .await?;
+    // An agent of a grant lists only the queues its token may read: the
+    // others are not there for it (`queue_agent::queue_right`).
+    if let Caller::PersonAgent { rights, .. } = &a.caller {
+        queues.retain(|q| {
+            rights.allows(
+                clax_core::rights::RightType::Queues,
+                "read",
+                Some(&q.id),
+                &|_| false,
+            )
+        });
+    }
     Ok(Json(json!({ "queues": queues })))
 }
 

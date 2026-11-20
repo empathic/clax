@@ -258,7 +258,9 @@ pub struct GrantCaller {
     /// grant's.
     pub session: Option<String>,
     /// `person ∩ grant narrowing`, and with a session `∩ its narrowing ∪
-    /// its elevation` (the elevation only while the session is live, M2).
+    /// its elevation` (the elevation only while the session is live, M2);
+    /// with, whatever the session, the union of the grants on the token
+    /// of the zero-default types ([`super::grant_raises`]).
     pub rights: Rights,
 }
 
@@ -2737,15 +2739,21 @@ pub(crate) fn grant_caller_in(
             )
         }
     };
+    // The zero-default types (`clax-queues`) are the union of the grants
+    // on the token, each within what its granter may give now.
+    let granted = super::grant_raises::given_in(c, gid)?;
     Ok(GrantCaller {
         grant_id: gid.to_string(),
         person: (!owner).then_some(public_id),
         session: session.map(str::to_string),
-        rights: clax_core::rights::effective(
-            &person_rights,
-            grant_narrow.as_ref(),
-            session_narrow.as_ref(),
-            elevate.as_ref(),
+        rights: clax_core::rights::with_grants(
+            &clax_core::rights::effective(
+                &person_rights,
+                grant_narrow.as_ref(),
+                session_narrow.as_ref(),
+                elevate.as_ref(),
+            ),
+            &granted,
         ),
     })
 }

@@ -364,21 +364,53 @@ fn role_in(c: &Connection, q: &QueueRow, person: Option<&str>) -> Result<Option<
 }
 
 /// Whether live session `sid` acts for a member of live queue `qid` (its
-/// person, or the owner, has a role there, the maker's being admin).
+/// person, or the owner, has a role there, the maker's being admin) and,
+/// for a session of a grant (an agent token or a connected machine), the
+/// grants on its token give it `read` there now ([`session_may_in`]): what
+/// a wake or a reporter's comment needs to reach it.
 pub(crate) fn session_is_member_in(c: &Connection, qid: &str, sid: &str) -> Result<bool> {
     let Some(q) = queue_in(c, qid)? else {
         return Ok(false);
     };
-    let person: Option<Option<String>> = c
+    let row: Option<(Option<String>, Option<String>)> = c
         .query_row(
-            "SELECT person FROM sessions WHERE id = ?1 AND ended_at IS NULL",
+            "SELECT person, grant_id FROM sessions WHERE id = ?1 AND ended_at IS NULL",
             params![sid],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    match person {
-        Some(p) => Ok(role_in(c, &q, p.as_deref())?.is_some()),
-        None => Ok(false),
+    let Some((person, grant)) = row else {
+        return Ok(false);
+    };
+    if role_in(c, &q, person.as_deref())?.is_none() {
+        return Ok(false);
+    }
+    match grant {
+        Some(g) => session_may_in(c, &g, sid, qid, "read"),
+        None => Ok(true),
+    }
+}
+
+/// Whether session `sid` of grant `gid` may do `clax-queues` `action` at
+/// queue `qid` now, as its rights say at its next request
+/// ([`super::people::grant_caller_in`]); false once the grant or session
+/// has ended.
+pub(crate) fn session_may_in(
+    c: &Connection,
+    gid: &str,
+    sid: &str,
+    qid: &str,
+    action: &str,
+) -> Result<bool> {
+    match super::people::grant_caller_in(c, gid, Some(sid)) {
+        Ok(gc) => Ok(gc.rights.allows(
+            clax_core::rights::RightType::Queues,
+            action,
+            Some(qid),
+            &|_| false,
+        )),
+        Err(CoreError::Invalid { .. }) => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -1189,8 +1221,92 @@ impl Store {
                     params![qid, person],
                 )?;
             }
+            // Membership is what grants on tokens rest on: whatever the
+            // person granted from it, and what it let their tokens hold,
+            // is read again and revisited.
+            self.visibility_changed();
+            self.revisit_queue_rights_in(tx, ctx)?;
             Ok(())
         })
+    }
+
+    /// Revisits the state agents' sessions of grants hold under their
+    /// `clax-queues` rights, in `tx`, after a change that can take one away
+    /// (a grant on a token changed or removed, a granter left a queue or
+    /// was revoked): each live lease whose session may no longer `claim` on
+    /// its queue ends at once, unreleased, as a person's release ends one
+    /// (its holder's next renew, write or fix is `lease_lost`), recorded as
+    /// `queue.release {queue_id, thread_id, session, lease_id, reason:
+    /// "rights_revoked"}`; each queue watch whose session may no longer
+    /// `read` there stops. Sessions of the daemon token hold no grant and
+    /// are left as they are.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub(crate) fn revisit_queue_rights_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+    ) -> Result<()> {
+        let now = self.now();
+        type Held = (String, String, String, String, String, String);
+        let held: Vec<Held> = tx
+            .prepare(
+                "SELECT c.queue_id, c.thread_id, c.session_id, c.lease_id, s.grant_id, t.artifact_id
+                 FROM queue_claims c JOIN sessions s ON s.id = c.session_id
+                 JOIN threads t ON t.id = c.thread_id
+                 WHERE NOT c.released AND c.expires_at > ?1 AND s.ended_at IS NULL
+                   AND s.grant_id IS NOT NULL
+                 ORDER BY c.thread_id, c.session_id",
+            )?
+            .query_map(params![now], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut ended = false;
+        for (qid, tid, sid, lease_id, gid, aid) in &held {
+            if session_may_in(tx, gid, sid, qid, "claim")? {
+                continue;
+            }
+            tx.execute(
+                "UPDATE queue_claims SET expires_at = ?3 WHERE thread_id = ?1 AND session_id = ?2",
+                params![tid, sid, now],
+            )?;
+            tx.execute(
+                "UPDATE threads SET target_session_id = NULL WHERE id = ?1 AND target_session_id = ?2",
+                params![tid, sid],
+            )?;
+            let mut rec = queue_record(AuditKind::QueueRelease, &now, qid)
+                .with("thread_id", tid.as_str())
+                .with("session", sid.as_str())
+                .with("lease_id", lease_id.as_str())
+                .with("reason", "rights_revoked");
+            rec.ids.artifact = Some(aid.clone());
+            rec.ids.thread = Some(tid.clone());
+            rec.ids.session = Some(sid.clone());
+            self.record_audit(tx, ctx, rec)?;
+            ended = true;
+        }
+        if ended {
+            self.agents_pinged();
+        }
+        let watches: Vec<(String, String, String)> = tx
+            .prepare(
+                "SELECT w.queue_id, w.session_id, s.grant_id FROM queue_watches w
+                   JOIN sessions s ON s.id = w.session_id
+                 WHERE s.grant_id IS NOT NULL AND s.ended_at IS NULL",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (qid, sid, gid) in &watches {
+            if !session_may_in(tx, gid, sid, qid, "read")? {
+                tx.execute(
+                    "DELETE FROM queue_watches WHERE queue_id = ?1 AND session_id = ?2",
+                    params![qid, sid],
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// Releases every unreleased lease the sessions of `person` hold on

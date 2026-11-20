@@ -3,7 +3,8 @@
 //! /api/agents/<handle>` renames one; People's reads (`GET /api/people`,
 //! `GET /api/people/me`), and the changes to who may do what: a person's
 //! rights and revocation, a machine's or one agent's narrowing, one
-//! agent's elevation, and ending one agent.
+//! agent's elevation, a grant on a token (`clax-queues`), and ending one
+//! agent.
 //!
 //! Every change is made in a browser on a same-origin request (M20):
 //! `Caller::browser()` and `SameOrigin`, 403 `browser_required` for the
@@ -433,12 +434,80 @@ fn browser_person(caller: &Caller, what: &str) -> Result<Option<String>, ApiErro
 }
 
 /// The rights an `{access}` or `{rights}` value names: `null` is none (no
-/// narrowing, no elevation, the default rights).
+/// narrowing, no elevation, the default rights). A type that is zero by
+/// default (`clax-queues`) is no part of a person's rights, a narrowing or
+/// an agent's raise: 400 `invalid_rights`, naming where it is granted.
 fn rights_of(v: &Value) -> Result<Option<Rights>, ApiError> {
     if v.is_null() {
         return Ok(None);
     }
-    Ok(Some(Rights::parse(v)?))
+    let r = Rights::parse(v)?;
+    if r.has_zero_default() {
+        return Err(ApiError::bad_request(
+            "invalid_rights",
+            "clax-queues is granted on a token (PUT /api/people/grants/<gid>/elevate), not in a person's rights, a narrowing or an agent's raise",
+        ));
+    }
+    Ok(Some(r))
+}
+
+/// Whether grant `g` is the caller's own (`me`; `None` the owner): the
+/// owner's machines and tokens for the owner, a person's for them.
+fn grant_is_mine(g: &Grant, me: &Option<String>) -> bool {
+    match me {
+        None => g.owner,
+        Some(p) => !g.owner && g.person.as_deref() == Some(p),
+    }
+}
+
+/// The grants on token `g` as `who` (`None`: the owner) reads them: its
+/// person and the owner read every granter's, with what they give now
+/// (`queues`, the token's `clax-queues` rights whatever session it acts
+/// from); anyone else, their own grant alone. `{grant_id, label, person,
+/// raises: [{granter: {public_id, name, owner}, access, version,
+/// created_at}], queues?}`.
+pub(crate) fn grant_raises_view(
+    st: &Store,
+    g: &Grant,
+    who: Option<&str>,
+) -> clax_core::Result<Value> {
+    let whole = who.is_none() || grant_is_mine(g, &who.map(str::to_string));
+    let raises = st
+        .grant_raises(&g.id)?
+        .into_iter()
+        .filter(|r| whole || r.granter.as_deref() == who)
+        .map(|r| {
+            Ok(json!({
+                "granter": granter_view(st, r.granter.as_deref())?,
+                "access": r.access.to_json(),
+                "version": r.version,
+                "created_at": r.created_at,
+            }))
+        })
+        .collect::<clax_core::Result<Vec<Value>>>()?;
+    let mut v = json!({
+        "grant_id": g.id,
+        "label": g.client_name,
+        "person": g.person.as_ref().map(|p| json!({"public_id": p, "display_name": g.person_name})),
+        "owner": g.owner,
+        "raises": raises,
+    });
+    if whole {
+        v["queues"] = st.granted_on(&g.id)?.to_json();
+    }
+    Ok(v)
+}
+
+/// The rights a grant on a token names: an access array of zero-default
+/// types (`clax-queues`); 400 `invalid_rights` for `null` or another type.
+fn grant_access_of(v: &Value) -> Result<Rights, ApiError> {
+    if v.is_null() {
+        return Err(ApiError::bad_request(
+            "invalid_rights",
+            "name the access to grant; DELETE removes a grant",
+        ));
+    }
+    Ok(Rights::parse(v)?)
 }
 
 /// `{public_id, name, owner}` of granter `g` (`None`: the owner); names
@@ -1182,6 +1251,8 @@ fn granter_answer(
 pub struct RaisesQuery {
     #[serde(default)]
     artifact: Option<String>,
+    #[serde(default)]
+    queue: Option<String>,
 }
 
 /// `GET /api/people/me/raises?artifact=<aid>` (the owner's or a connected
@@ -1192,7 +1263,15 @@ pub struct RaisesQuery {
 /// give there (`holds`: every action there within their rights there, or
 /// null), and the handles of its live participant agents of connected
 /// machines, which a raise reaches (`raisable`, empty unless `creator`);
-/// without, all three null. 403 for agents, the token alone, a LAN viewer.
+/// without, all three null. `grant_raises` lists the caller's own grants
+/// on tokens (`[{grant_id, label, person, access, version}]`, live tokens
+/// only, oldest first). With `queue`: `queue_holds`, what the caller may
+/// grant there (every `clax-queues` action when they are a member, else
+/// null), and `queue_raisable`, the live tokens of the queue's members a
+/// grant there reaches (`[{grant_id, label, person: {public_id,
+/// display_name} | null, owner, raise: {access, version} | null}]`, the
+/// caller's own grant on each), empty unless they are a member; null
+/// without. 403 for agents, the token alone, a LAN viewer.
 pub async fn raises(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -1244,15 +1323,210 @@ pub async fn raises(
                     })
                 })
                 .collect();
+            let mine = st.grant_raises_by(me.as_deref())?;
+            let mut grant_raises = Vec::with_capacity(mine.len());
+            for r in &mine {
+                let g = st.grant(&r.grant_id)?;
+                grant_raises.push(json!({
+                    "grant_id": r.grant_id,
+                    "label": g.client_name,
+                    "person": g.person.as_ref().map(|p| json!({"public_id": p, "display_name": g.person_name})),
+                    "access": r.access.to_json(),
+                    "version": r.version,
+                }));
+            }
+            let (queue_holds, queue_raisable) = match &q.queue {
+                None => (Value::Null, Value::Null),
+                Some(qid) => {
+                    let member = st.queue_role(qid, me.as_deref())?.is_some();
+                    let mut out = Vec::new();
+                    if member {
+                        for g in st.list_grants()?.into_iter().filter(|g| g.status == "approved") {
+                            let person = if g.owner { None } else { g.person.clone() };
+                            if st.queue_role(qid, person.as_deref())?.is_none() {
+                                continue;
+                            }
+                            let raise = st
+                                .grant_raises(&g.id)?
+                                .into_iter()
+                                .find(|r| r.granter == me)
+                                .map(|r| json!({"access": r.access.to_json(), "version": r.version}));
+                            out.push(json!({
+                                "grant_id": g.id,
+                                "label": g.client_name,
+                                "person": g.person.as_ref().map(|p| json!({"public_id": p, "display_name": g.person_name})),
+                                "owner": g.owner,
+                                "raise": raise,
+                            }));
+                        }
+                    }
+                    let holds = member.then(|| {
+                        Rights::every_action_at(
+                            clax_core::rights::RightType::Queues,
+                            [qid.clone()],
+                        )
+                        .to_json()
+                    });
+                    (json!(holds), json!(out))
+                }
+            };
             Ok(json!({
                 "creator": aid.as_ref().map(|_| holds.is_some()),
                 "holds": holds.as_ref().map(Rights::to_json),
                 "raisable": aid.as_ref().map(|_| raisable),
                 "raises": raises,
+                "grant_raises": grant_raises,
+                "queue_holds": queue_holds,
+                "queue_raisable": queue_raisable,
             }))
         })
         .await?;
     Ok(Json(v))
+}
+
+/// `PUT /api/people/grants/<gid>/elevate` `{access, if_version?}` (a
+/// browser: the owner, or a connected person) → `{grant}`, the grants on
+/// that token as the caller reads them ([`grant_raises_view`]): sets the
+/// caller's own grant on an approved grant (an agent token, or a connected
+/// machine), theirs or another person's, of `clax-queues` access alone
+/// (the type that is zero by default). Every session of that token may do
+/// what it gives from its next request on, within what the granter and
+/// the token's person may give then: a queue's members hold every queue
+/// action there, the owner at the queues the owner made; `*` stands for
+/// every queue they hold, read at each check. Recorded as `grant.elevate`.
+/// With `if_version`, a grant changed since is 409 `conflict` with
+/// `raise: {access, version} | null`. 400 `invalid_rights` (an empty
+/// access, or another type); 403 `beyond_your_rights` for an action at a
+/// queue the caller does not hold; 404 for a grant that is not approved.
+pub async fn elevate_grant(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    caller: Caller,
+    audit: DeferredAudit,
+    gid: Result<Path<String>, PathRejection>,
+    req: Result<Json<RaiseBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let granter = browser_person(&caller, "granting a token queue access")?;
+    let gid = path(gid)?;
+    let b = body(req)?;
+    let access = grant_access_of(&b.access)?;
+    let state = s.clone();
+    let answer = s
+        .store_call(move |st| {
+            let if_version = b.if_version.as_ref().map(|v| v.as_deref());
+            match st.raise_grant(
+                &audit.resolve(st)?,
+                &gid,
+                granter.as_deref(),
+                Some(access),
+                if_version,
+                None,
+            ) {
+                Ok(_) => {
+                    let g = st.grant(&gid)?;
+                    announce(
+                        &state,
+                        json!({"what": "grant_raised", "grant": grant_raises_view(st, &g, None)?}),
+                    );
+                    Ok(Ok(grant_raises_view(st, &g, granter.as_deref())?))
+                }
+                Err(CoreError::Invalid {
+                    code: "raise_changed",
+                    message,
+                }) => {
+                    let current = st
+                        .grant_raises(&gid)?
+                        .into_iter()
+                        .find(|r| r.granter == granter)
+                        .map(|r| json!({"access": r.access.to_json(), "version": r.version}));
+                    Ok(Err((message, current)))
+                }
+                Err(e) => Err(e),
+            }
+        })
+        .await?;
+    match answer {
+        Ok(grant) => Ok(Json(json!({"grant": grant}))),
+        Err((message, current)) => {
+            let mut e = ApiError::new(axum::http::StatusCode::CONFLICT, "conflict", message);
+            e.extra
+                .insert("raise".into(), current.unwrap_or(Value::Null));
+            Err(e)
+        }
+    }
+}
+
+/// `DELETE /api/people/grants/<gid>/elevate[?granter=<public_id>|owner]`
+/// (a browser) → `{grant}`, as `PUT` answers: removes one granter's grant
+/// on that token, the caller's own when `granter` is absent, from its next
+/// request on; other granters' stay, and what they still prove stays. The
+/// granter removes their own; the token's person, and the owner, remove
+/// any granter's (recorded with `reason` `removed_by_person` or
+/// `removed_by_owner`). Recorded as `grant.elevate` with `access` null.
+/// What the token's sessions held under it is revisited at once: a claim
+/// whose `claim` is gone ends (the holder's next renew, write or fix is
+/// 409 `lease_lost`), a watch whose `read` is gone stops. 404 `not_raised`,
+/// recording nothing, when that granter has no grant on it or the caller
+/// may not remove it, alike.
+pub async fn unelevate_grant(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    caller: Caller,
+    audit: DeferredAudit,
+    gid: Result<Path<String>, PathRejection>,
+    q: Result<axum::extract::Query<UnraiseQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let me = browser_person(&caller, "removing a grant on a token")?;
+    let gid = path(gid)?;
+    let q = q
+        .map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?
+        .0;
+    let target = match q.granter {
+        None => me.clone(),
+        Some(g) if g == "owner" => None,
+        Some(g) => Some(g),
+    };
+    let state = s.clone();
+    let grant = s
+        .store_call(move |st| {
+            let g = st.grant(&gid).map_err(|e| match e {
+                CoreError::NotFound => clax_store::elevations::not_raised(),
+                e => e,
+            })?;
+            let reason = if target == me {
+                None
+            } else if me.is_none() {
+                Some("removed_by_owner")
+            } else if grant_is_mine(&g, &me) {
+                Some("removed_by_person")
+            } else {
+                // Not theirs to remove: answered as a grant that is not there.
+                return Err(clax_store::elevations::not_raised());
+            };
+            st.raise_grant(
+                &audit.resolve(st)?,
+                &gid,
+                target.as_deref(),
+                None,
+                None,
+                reason,
+            )
+            .map_err(|e| match e {
+                CoreError::NotFound => clax_store::elevations::not_raised(),
+                e => e,
+            })?;
+            announce(
+                &state,
+                json!({"what": "grant_raised", "grant": grant_raises_view(st, &g, None)?}),
+            );
+            grant_raises_view(st, &g, me.as_deref())
+        })
+        .await?;
+    Ok(Json(json!({"grant": grant})))
 }
 
 /// `DELETE /api/agents/<handle>` (the owner's browser for any agent, a
