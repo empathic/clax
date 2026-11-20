@@ -124,7 +124,7 @@ export type BrowserSummary = {
   action?: string; locator?: unknown[] | null; ok?: boolean; clip?: string;
 };
 /** How a browser session ended: `page.close()`, or an end the host made. */
-export type SessionEnd = "closed" | "idle" | "lifetime" | "revoked" | "credits" | "run_ended" | "lost";
+export type SessionEnd = "closed" | "idle" | "lifetime" | "revoked" | "credits" | "run_ended" | "dropped" | "lost";
 /** A browser session of a run as the store keeps it: its kind, when it opened, the time charged so far, and when and why it ended (null while open). */
 export type BrowserSessionRow = { session: string; kind: "url" | "artifact" | "content"; opened_at: string; charged_ms: number; closed_at: string | null; reason: SessionEnd | null };
 export type StepKind = "turn" | "script" | "finish" | "give_up" | "stopped" | "failed";

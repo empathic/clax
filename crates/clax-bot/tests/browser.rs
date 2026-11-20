@@ -1111,6 +1111,101 @@ async fn an_open_answers_a_handle_no_record_names() {
     assert_eq!(p["state"]["handles"][0]["page"], handle);
 }
 
+/// A page only in the returned value, held by no `state`, closes
+/// `dropped` once its step commits (spec §17.4), and its time is charged
+/// once: the open's segment and the tail.
+#[tokio::test]
+async fn a_page_only_returned_closes_dropped_when_its_step_commits() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let (run, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "const page = await clax.browser.open({ artifact: 'draft' }); return page;",
+    )
+    .await;
+    assert_eq!(v, "<browser page>");
+    let row = session_row(&env, &run, &only_session(&env, &run));
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Dropped));
+    assert_eq!(env.browser.logs()[0].sent("Browser.close").len(), 1);
+    assert_eq!(browser_rows(&env).iter().sum::<i64>(), row.charged_ms);
+}
+
+/// A page `state` holds lives into the next script; once a script lets
+/// it go, it closes `dropped` when that script's step commits.
+#[tokio::test]
+async fn a_page_in_state_lives_into_the_next_script() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let run = env.run_with_caps("browser.open.artifact");
+    let deps = env.deps();
+    let d = DriverId::mint();
+    next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_1",
+        "state.page = await clax.browser.open({ artifact: 'draft' }); return 1;",
+    )
+    .await;
+    let session = only_session(&env, &run);
+    assert!(session_row(&env, &run, &session).is_open());
+    let r = next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_2",
+        "const t = await state.page.title(); state.n = 1; return t;",
+    )
+    .await;
+    assert_eq!(r["value"], "Hello", "{r}");
+    assert!(session_row(&env, &run, &session).is_open());
+    next_script(&env, &deps, &run, &d, "tu_3", "delete state.page; return 1;").await;
+    let row = session_row(&env, &run, &session);
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Dropped));
+    assert_eq!(browser_rows(&env).iter().sum::<i64>(), row.charged_ms);
+}
+
+/// A step executed again after a crash before its commit answers its
+/// open from the journal and, its state the same, closes the same
+/// session `dropped` when it commits: one browser, charged once.
+#[tokio::test]
+async fn a_replayed_step_drops_the_same_sessions() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Look",
+        "const page = await clax.browser.open({ artifact: 'draft' }); return await page.title();",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_caps("browser.open.artifact");
+    let mut a = env.deps();
+    crash_once(
+        &mut a,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    let out = env.drive(&a, &run, &DriverId::mint()).await;
+    assert_eq!(
+        out.last().unwrap().next,
+        Next::Waiting(clax_bot::Wait::Crashed)
+    );
+    let session = only_session(&env, &run);
+    assert!(session_row(&env, &run, &session).is_open(), "nothing committed yet");
+    env.clock.advance(61);
+    let out = env.drive(&a, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(env.browser.opened(), 1);
+    let row = session_row(&env, &run, &session);
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Dropped));
+    assert_eq!(browser_rows(&env).iter().sum::<i64>(), row.charged_ms);
+}
+
 /// The run's session row of `id`.
 fn session_row(env: &Env, run: &str, id: &str) -> clax_store::bot_web::SessionRow {
     env.store.bot_browser_session(run, id).unwrap().unwrap()

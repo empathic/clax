@@ -732,11 +732,15 @@ impl Tick<'_> {
             core.insert("images".into(), images.kept());
         }
         // Kept when it changed: the last state kept stands otherwise.
-        if let Some(saved) = state.saved
-            && saved != before.unwrap_or_else(crate::state::empty)
-        {
-            core.insert("state".into(), saved);
-        }
+        let start = before.unwrap_or_else(crate::state::empty);
+        let committed = match state.saved {
+            Some(saved) if saved != start => {
+                core.insert("state".into(), saved.clone());
+                saved
+            }
+            _ => start,
+        };
+        let held = crate::state::pages(&committed);
         core.insert("tool_use_id".into(), json!(tool_use_id));
         core.insert("outcome".into(), json!(outcome));
         core.insert(
@@ -758,6 +762,16 @@ impl Tick<'_> {
             join.commit(payload, usage, events),
             Observed::default(),
         )?;
+        // What the committed state no longer holds ends now (spec
+        // 2026-11-19-claxbot-browser §17.4).
+        if c.is_ok() {
+            for surface in &surfaces {
+                surface
+                    .provider
+                    .state_committed(info, self.n, &held)
+                    .await;
+            }
+        }
         Ok(self.outcome(StepKind::Script, c))
     }
 

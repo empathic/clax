@@ -189,7 +189,8 @@ function sessionTime(ms: number): string {
 /** How a session ended, in words; a host's end says why. */
 const SESSION_ENDS: Record<SessionEnd, string> = {
   closed: "closed", idle: "closed: idle for too long", lifetime: "closed: open for too long", revoked: "closed: its capability was revoked",
-  credits: "closed: out of credits", run_ended: "closed at the run's end", lost: "lost: its browser is gone",
+  credits: "closed: out of credits", run_ended: "closed at the run's end",
+  dropped: "closed: no script's state held its page", lost: "lost: its browser is gone",
 };
 
 /** One browser session of a run as the run panel shows it: its line, its calls in order across the run's steps, and how it ended (null while open). */

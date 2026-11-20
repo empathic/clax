@@ -444,6 +444,16 @@ impl BrowserSessions {
         lock(&self.reg).sessions.retain(|_, e| e.run != run);
     }
 
+    /// Closes, `dropped`, every open session of run `run` whose handle is
+    /// not among `held`, each closed before this answers (spec §17.4).
+    pub async fn close_unheld(&self, run: &str, held: &[String]) {
+        for (session, handle) in self.open_handles(run) {
+            if !held.contains(&handle) {
+                let _ = self.close(run, &session, SessionEnd::Dropped).await;
+            }
+        }
+    }
+
     /// Closes, `revoked`, every open session whose run no longer holds
     /// its kind's capability (`holds` false), each closed before this
     /// answers (spec §4.4).
@@ -1741,6 +1751,33 @@ mod tests {
         }
         let (other, _) = w.open(TIMES).await;
         assert_ne!(other.handle, o.handle);
+    }
+
+    /// A session whose handle is held stays; one whose is not closes,
+    /// `dropped`, queued for the store.
+    #[tokio::test]
+    async fn a_session_not_held_closes_dropped() {
+        let w = World::new();
+        let (o, log) = w.open(TIMES).await;
+        w.sessions.close_unheld("run-1", &[o.handle.clone()]).await;
+        assert!(w.sessions.ended().is_empty());
+        w.clock.advance(3);
+        w.sessions.close_unheld("run-2", &[]).await;
+        assert!(w.sessions.ended().is_empty(), "another run's call ends nothing");
+        w.sessions.close_unheld("run-1", &[]).await;
+        assert_eq!(
+            w.sessions
+                .ended()
+                .iter()
+                .map(|e| (e.reason, e.at_ms))
+                .collect::<Vec<_>>(),
+            [(SessionEnd::Dropped, 3_000)]
+        );
+        assert_eq!(log.sent("Browser.close").len(), 1);
+        assert_eq!(
+            code(w.page("title", json!({})).await),
+            CODE_BROWSER_SESSION_CLOSED
+        );
     }
 
     #[tokio::test]

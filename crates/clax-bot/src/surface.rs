@@ -2467,6 +2467,15 @@ pub trait SurfaceProvider: MaybeSendSync {
     /// provider says otherwise.
     fn progress(&self, _run: &RunInfo, _progress: &Progress<'_>) {}
 
+    /// The handles of the run's state as script step `step` committed it
+    /// (`crate::state::pages`): told to every binding's provider after the
+    /// step's commit, so a provider ends what no handle of the committed
+    /// state holds (for `clax`, the run's browser sessions, spec
+    /// 2026-11-19-claxbot-browser §17.4). Reachability is the committed
+    /// state's alone, so a step executed again decides the same. Nothing,
+    /// unless the provider says otherwise.
+    async fn state_committed(&self, _run: &RunInfo, _step: i64, _held: &[String]) {}
+
     /// Opens the session of the attempt `cx` describes, for a step that
     /// runs a script. A provider loads here what the step works on, as
     /// the committed steps left it ([`StepCx::history`]).

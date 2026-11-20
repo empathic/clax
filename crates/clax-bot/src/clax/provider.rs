@@ -272,6 +272,16 @@ impl SurfaceProvider for ClaxProvider {
         self.run_ending(cx, end, result).await
     }
 
+    /// Closes, `dropped`, every open browser session of the run whose
+    /// handle the committed state does not hold, and charges each one's
+    /// tail (spec 2026-11-19-claxbot-browser §17.4).
+    async fn state_committed(&self, run: &RunInfo, _step: i64, held: &[String]) {
+        if let Some(sessions) = &self.sessions {
+            sessions.close_unheld(&run.id, held).await;
+            super::browser::charge_ended(&self.store, sessions);
+        }
+    }
+
     /// Closes the run's browser sessions (`run_ended`) and charges each
     /// one's tail, then does what the run's end leaves to the surface.
     async fn ended(

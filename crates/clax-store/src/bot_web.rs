@@ -130,6 +130,9 @@ pub enum SessionEnd {
     Credits,
     /// The run ended.
     RunEnded,
+    /// Its page was not in the run's `state` when a script step
+    /// committed: nothing held it any more.
+    Dropped,
     /// Its browser is gone: the daemon restarted, the socket dropped, the
     /// page crashed or detached.
     Lost,
@@ -137,18 +140,19 @@ pub enum SessionEnd {
 
 impl SessionEnd {
     /// Every reason.
-    pub const ALL: [SessionEnd; 7] = [
+    pub const ALL: [SessionEnd; 8] = [
         SessionEnd::Closed,
         SessionEnd::Idle,
         SessionEnd::Lifetime,
         SessionEnd::Revoked,
         SessionEnd::Credits,
         SessionEnd::RunEnded,
+        SessionEnd::Dropped,
         SessionEnd::Lost,
     ];
 
     /// Its name: `closed`, `idle`, `lifetime`, `revoked`, `credits`,
-    /// `run_ended`, `lost`.
+    /// `run_ended`, `dropped`, `lost`.
     pub fn as_str(self) -> &'static str {
         match self {
             SessionEnd::Closed => "closed",
@@ -157,6 +161,7 @@ impl SessionEnd {
             SessionEnd::Revoked => "revoked",
             SessionEnd::Credits => "credits",
             SessionEnd::RunEnded => "run_ended",
+            SessionEnd::Dropped => "dropped",
             SessionEnd::Lost => "lost",
         }
     }
