@@ -1327,6 +1327,10 @@ fn expire_waits(store: &Store, run_id: &str, now: chrono::DateTime<chrono::Utc>)
 /// The reason of a run stopped because it was cancelled.
 pub(crate) const CANCELLED: &str = "cancelled";
 
+/// The reason of a run stopped because a grant it needed was revoked
+/// (spec 2026-11-19-claxbot-browser-design §4.4).
+pub const GRANT_REVOKED: &str = "grant_revoked";
+
 /// The stop of a run that reached a cap: `limit` is the cap with its
 /// value, as the run's policy states it (`40 steps`, `200 credits`,
 /// `30 minutes`).
@@ -1395,6 +1399,20 @@ enum Answer {
 }
 
 impl Tick<'_> {
+    /// Why a run asked to stop stops: the reason the stop was asked with
+    /// ([`clax_store::Store::cancel_run_for`], kept in its row's `reason`
+    /// while it is `stopping`, read again now), else [`CANCELLED`].
+    pub(crate) fn stopped_end(&self) -> End {
+        let asked = self
+            .store
+            .run(&self.run.id)
+            .ok()
+            .flatten()
+            .filter(|r| r.status == RunStatus::Stopping)
+            .and_then(|r| r.reason);
+        End::stopped(asked.as_deref().unwrap_or(CANCELLED))
+    }
+
     pub(crate) fn emit(&self, attempt: i64, e: Event) {
         self.opts.events.emit(&self.run.id, self.n, attempt, e);
     }
@@ -1705,7 +1723,7 @@ impl Tick<'_> {
     /// Why the run must stop before a turn or a script, if it must.
     fn must_stop(&self) -> Result<Option<End>> {
         if self.run.status == RunStatus::Stopping || self.opts.cancel.is_cancelled() {
-            return Ok(Some(End::stopped(CANCELLED)));
+            return Ok(Some(self.stopped_end()));
         }
         if let Some(r) = refusal(
             self.store,
@@ -1791,7 +1809,7 @@ impl Tick<'_> {
         // (`Store::begin_step` refuses any other).
         if self.run.status == RunStatus::Stopping {
             self.resumed();
-            return self.stop_plain(End::stopped(CANCELLED)).await;
+            return self.stop_plain(self.stopped_end()).await;
         }
         // A run this build cannot read as it was made, or whose own
         // rows do not read, takes no step but its last: it ends
@@ -2392,7 +2410,7 @@ impl Tick<'_> {
                             charge: Some(s.attempt),
                             ..Observed::default()
                         },
-                        ..Ending::stopped(End::stopped(CANCELLED))
+                        ..Ending::stopped(self.stopped_end())
                     })
                     .await;
             };
@@ -2432,7 +2450,7 @@ impl Tick<'_> {
                             ));
                         }
                         if !waited {
-                            return self.stop_plain(End::stopped(CANCELLED)).await;
+                            return self.stop_plain(self.stopped_end()).await;
                         }
                         s = self.begin_on(StepKind::Turn, ks)?;
                     }

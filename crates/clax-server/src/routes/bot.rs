@@ -419,6 +419,7 @@ pub async fn me_put(
             me_view(st, &bot, &who, &caller, &person)
         })
         .await?;
+    crate::bot::stop_revoked_runs(&s).await?;
     crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }

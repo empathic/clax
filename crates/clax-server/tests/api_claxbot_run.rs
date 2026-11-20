@@ -2646,6 +2646,24 @@ async fn a_revoke_closes_the_session_before_it_answers() {
         "its own capability stays"
     );
     assert_eq!(source.logs()[0].sent("Browser.close").len(), 1);
+    // The run lost a capability it declared: it is asked to stop, for the
+    // grant revoked (spec §4.4).
+    let run = ts.store.run(&rid).unwrap().unwrap();
+    assert_eq!(
+        (run.status, run.reason.as_deref()),
+        (
+            clax_store::bot_runs::RunStatus::Stopping,
+            Some(clax_bot::run::GRANT_REVOKED)
+        )
+    );
+    let cancel = ts
+        .store
+        .events_after(0, 10_000)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "bot.cancel")
+        .expect("a bot.cancel");
+    assert!(cancel.body.contains("grant_revoked"), "{}", cancel.body);
 }
 
 /// The admin turning a kind's switch off closes every session of that
@@ -2684,6 +2702,13 @@ async fn an_admin_switch_off_closes_every_session_of_its_kind() {
         assert!(message.contains("revoked"), "{message}");
     }
     assert_eq!(session_state(&ts, &two, &a2), None);
+    // A switch is the instance's terms, not a grant: no run is stopped.
+    for rid in [&one, &two] {
+        assert_ne!(
+            ts.store.run(rid).unwrap().unwrap().status,
+            clax_store::bot_runs::RunStatus::Stopping
+        );
+    }
 }
 
 /// A daemon starting marks every session the store still holds open

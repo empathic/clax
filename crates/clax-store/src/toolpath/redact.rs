@@ -386,7 +386,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("bot.spend", "query" | "url" | "response") => Text,
         ("bot.run_end", "run" | "outcome" | "credits_milli") => Safe,
         ("bot.run_end", "reason") => Text,
-        ("bot.cancel", "run" | "by") => Safe,
+        ("bot.cancel", "run" | "by" | "reason") => Safe,
         // A refusal before any model call: who, why (a code) and where.
         ("bot.refused", "person" | "reason" | "artifact") => Safe,
         // A registered surface: its name is one word of the host's, its

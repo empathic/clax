@@ -2683,15 +2683,27 @@ impl Store {
     /// # Errors
     /// `NotFound`; the store's.
     pub fn cancel_run(&self, ctx: &AuditCtx, id: &str) -> Result<Run> {
+        self.cancel_run_for(ctx, id, None)
+    }
+
+    /// [`Store::cancel_run`] for `reason`: the run, asked to stop, keeps
+    /// it in its `reason` while it is `stopping`, its driver ends it
+    /// `stopped` with it, and the `bot.cancel` record names it (spec
+    /// 2026-11-19-claxbot-browser-design §4.4: `grant_revoked`). `None`
+    /// is a cancel's, ended `cancelled`.
+    ///
+    /// # Errors
+    /// As [`Store::cancel_run`].
+    pub fn cancel_run_for(&self, ctx: &AuditCtx, id: &str, reason: Option<&str>) -> Result<Run> {
         self.with_tx(|tx| {
             let now = self.now();
             // A parked run is queued again, unclaimed, before it is asked
             // to stop.
             unpark_in(tx, id, &now)?;
             let changed = tx.execute(
-                "UPDATE bot_runs SET status = 'stopping', updated_at = ?2
+                "UPDATE bot_runs SET status = 'stopping', updated_at = ?2, reason = ?3
                   WHERE id = ?1 AND status IN ('queued', 'running')",
-                params![id, now],
+                params![id, now, reason],
             )?;
             let run = run_in(tx, id)?.ok_or(CoreError::NotFound)?;
             if changed > 0 {
@@ -2703,6 +2715,9 @@ impl Store {
                 let mut rec = AuditRecord::new(AuditKind::BotCancel, now)
                     .with("run", id)
                     .with("by", set_by(ctx));
+                if let Some(r) = reason {
+                    rec = rec.with("reason", r);
+                }
                 rec.ids.artifact = run.artifact().map(str::to_string);
                 self.record_audit(tx, ctx, rec)?;
             }

@@ -1314,6 +1314,41 @@ fn browser_sessions(
     sessions
 }
 
+/// Asks every run not yet ended whose person no longer holds, by grants,
+/// a capability it declared (`bot_runs.caps`) to stop, with the reason
+/// `grant_revoked` ([`clax_store::Store::cancel_run_for`]), before the
+/// caller answers (spec docs/superpowers/specs/2026-11-19-claxbot-browser-design.md
+/// §4.4): what a grant revoked, a parent's end or an admin's role removed
+/// does to the runs acting for the holder. A switch turned off or
+/// credentials removed are not grants, and stop nothing. Answers the runs
+/// asked to stop.
+///
+/// # Errors
+/// The store's.
+pub async fn stop_revoked_runs(s: &AppState) -> Result<Vec<String>, clax_http::error::ApiError> {
+    Ok(s.store_call(|st| {
+        let ctx = clax_core::audit::AuditCtx::DAEMON;
+        let mut stopped = Vec::new();
+        for run in st.live_runs()? {
+            if run.status == clax_store::bot_runs::RunStatus::Stopping {
+                continue;
+            }
+            let held = st.person_caps(&run.person)?;
+            let lost = run
+                .caps
+                .split(',')
+                .filter(|c| !c.is_empty())
+                .any(|c| !held.get(c).is_some_and(|h| h.reaches_runs()));
+            if lost {
+                st.cancel_run_for(&ctx, &run.id, Some(clax_bot::run::GRANT_REVOKED))?;
+                stopped.push(run.id);
+            }
+        }
+        Ok(stopped)
+    })
+    .await?)
+}
+
 /// [`reevaluate_browser`] on wasm32 (the Worker), which holds no browser
 /// session: nothing.
 ///

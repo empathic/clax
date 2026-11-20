@@ -32,7 +32,7 @@ use crate::events::Event;
 use crate::host::args_hash;
 use crate::registry::CODE_OPS_INVALID;
 use crate::run::Observed;
-use crate::run::{CANCELLED, Next, Tick, TickOutcome, Wait, compute_qty, step_usage, watched};
+use crate::run::{Next, Tick, TickOutcome, Wait, compute_qty, step_usage, watched};
 use crate::surface::{
     Answer, Binding, Bound, CallNote, CallPlace, Claim, End, FieldClash, Fields, Progress, RunInfo,
     StepCx, StepEnd, StepJoin, StepSession, SurfaceProvider, Unjournaled, dispatch, no_place,
@@ -687,7 +687,7 @@ impl Tick<'_> {
             // The sessions' fields go to the stop as they were joined,
             // for the bindings' `ending` fields to join.
             core.insert("outcome".into(), json!(outcome));
-            let mut stop = Ending::stopped(End::stopped(CANCELLED));
+            let mut stop = Ending::stopped(self.stopped_end());
             stop.core.extend(core);
             return self
                 .end(Ending {

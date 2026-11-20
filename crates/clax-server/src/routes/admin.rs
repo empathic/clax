@@ -289,6 +289,9 @@ pub async fn set_role(
             person_view(st, &bot, &person)
         })
         .await?;
+    // A grant an admin issued conveys only while they are one.
+    crate::bot::stop_revoked_runs(&s).await?;
+    crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
 
@@ -1116,6 +1119,7 @@ pub async fn revoke_grant(
             grants_view(st)
         })
         .await?;
+    crate::bot::stop_revoked_runs(&s).await?;
     crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
