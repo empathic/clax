@@ -131,6 +131,13 @@ pub struct Bot {
     /// every run's browser use is off, not configured, and no run is made
     /// with the browser shape (`clax_bot::browser::BrowserAccess::now`).
     pub browser: bool,
+    /// The host's browser sessions (`clax_bot::browser::live`), which
+    /// its runs share and its grant routes re-evaluate before they answer
+    /// (`clax_server::bot::reevaluate_browser`, spec
+    /// docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §4.4).
+    /// `None` (the default, the Worker's and every host without a browser
+    /// source): no session is ever open.
+    pub browser_sessions: Option<Arc<clax_bot::browser::live::BrowserSessions>>,
 }
 
 /// The host's check of its web source for the admin's view of the web
@@ -174,6 +181,7 @@ impl Default for Bot {
             admin_web_check: None,
             joins: None,
             browser: false,
+            browser_sessions: None,
         }
     }
 }

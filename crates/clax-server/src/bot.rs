@@ -1192,6 +1192,7 @@ pub fn driver_with_sources(
     let host = ServerHost::new(state.clone());
     let wake = host.wake.clone();
     let host: Arc<dyn BotHost> = Arc::new(host);
+    let sessions = browser_sessions(state, browser.clone());
     let deps = clax_bot::Deps::new(
         state.store.clone(),
         crate::routes::admin::messages_client(&state.store),
@@ -1212,6 +1213,7 @@ pub fn driver_with_sources(
     )
     .with_web(web)
     .with_browser(browser)
+    .with_browser_sessions(sessions.clone())
     .with_content_limits(state.bot_surfaces.limits().content_limits());
     // A run bound to a surface a host registered calls its host through
     // the daemon's broker, which the host's routes serve
@@ -1263,8 +1265,83 @@ pub fn driver_with_sources(
             hub
         }),
         browser: true,
+        browser_sessions: Some(sessions),
     });
     driver
+}
+
+/// The daemon's one registry of browser sessions over `browser`, which
+/// every run shares (spec
+/// docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §7.4). A
+/// new registry holds no session, so every session the store still holds
+/// open is marked lost first (§6.4: a daemon starting holds none of the
+/// previous process's). Each end the registry makes is charged as it is
+/// made ([`clax_bot::clax::charge`]), so an idle end while the model
+/// thinks is charged then, not at the run's next call.
+#[cfg(not(target_arch = "wasm32"))]
+fn browser_sessions(
+    state: &AppState,
+    browser: Arc<dyn clax_bot::browser::BrowserSource>,
+) -> Arc<clax_bot::browser::live::BrowserSessions> {
+    let store = state.store.clone();
+    match store.lose_open_bot_browser_sessions(store.now_utc()) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(count = n, "marked the browser sessions left open lost"),
+        Err(e) => tracing::warn!(error = %e, "could not mark the browser sessions left open lost"),
+    }
+    let sessions = Arc::new(clax_bot::browser::live::BrowserSessions::new(
+        browser,
+        Arc::new(StoreClock(store.clone())),
+        clax_bot::browser::session::SessionLimits {
+            image_side: clax_bot::policy::DEFAULT_IMAGE_SIDE,
+        },
+    ));
+    sessions.charge_with(Arc::new(move |ended| clax_bot::clax::charge(&store, ended)));
+    sessions
+}
+
+/// Closes, `revoked`, every open browser session whose run no longer
+/// holds its kind's capability now, each one's tail charged by the
+/// registry's charger (`browser_sessions`), before the caller answers (spec
+/// docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §4.4): a
+/// grant revoked, a switch turned off, the credentials removed. A run
+/// holds a kind while it declared it (`bot_runs.caps`) and
+/// [`crate::routes::bot::run_caps`] still gives it to the run's person.
+///
+/// # Errors
+/// The store's, before any session is closed.
+pub async fn reevaluate_browser(s: &AppState) -> Result<(), clax_http::error::ApiError> {
+    use clax_bot::capability::{CapSet, Capability};
+    let Some(sessions) = s.bot.browser_sessions.clone() else {
+        return Ok(());
+    };
+    let runs = sessions.open_runs();
+    if runs.is_empty() {
+        return Ok(());
+    }
+    let bot = s.bot.clone();
+    let held: std::collections::BTreeMap<String, CapSet> = s
+        .store_call(move |st| {
+            let mut held = std::collections::BTreeMap::new();
+            for id in runs {
+                let Some(run) = st.run(&id)? else { continue };
+                let live = crate::routes::bot::run_caps(st, &bot, &run.person)?;
+                let caps: CapSet = CapSet::parse(&run.caps)
+                    .iter()
+                    .filter(|c| live.has(*c))
+                    .collect();
+                held.insert(id, caps);
+            }
+            Ok(held)
+        })
+        .await?;
+    sessions
+        .reevaluate(&|run, kind| {
+            Capability::parse(kind.capability())
+                .is_some_and(|c| held.get(run).is_some_and(|caps| caps.has(c)))
+        })
+        .await;
+    Ok(())
 }
 
 /// Which of ClaxBot's web operations are configured on this host now:

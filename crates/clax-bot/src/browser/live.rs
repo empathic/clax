@@ -241,7 +241,13 @@ struct Entry {
 struct Registry {
     sessions: BTreeMap<String, Entry>,
     ended: Vec<Ended>,
+    /// What charges each end as it is made, when the host gave one
+    /// ([`BrowserSessions::charge_with`]); else ends wait in `ended`.
+    charger: Option<Charger>,
 }
+
+/// What a host charges the ends its registry makes with.
+pub type Charger = Arc<dyn Fn(Vec<Ended>) + Send + Sync>;
 
 /// The host's browser sessions (see the module docs).
 pub struct BrowserSessions {
@@ -483,6 +489,38 @@ impl BrowserSessions {
         std::mem::take(&mut lock(&self.reg).ended)
     }
 
+    /// Has `charge` charge each end the host makes from now on as it is
+    /// made, in the session's own task before anything waiting on the end
+    /// is answered ([`BrowserSessions::reevaluate`] included), instead of
+    /// queueing it for [`BrowserSessions::ended`]: so an end no call of its
+    /// run will come to see (an idle end while the model thinks, a lost
+    /// page) is charged then. Ends queued before are handed over first.
+    pub fn charge_with(&self, charge: Charger) {
+        let queued = {
+            let mut reg = lock(&self.reg);
+            reg.charger = Some(charge.clone());
+            std::mem::take(&mut reg.ended)
+        };
+        if !queued.is_empty() {
+            charge(queued);
+        }
+    }
+
+    /// The runs with a session open now, each once.
+    #[must_use]
+    pub fn open_runs(&self) -> Vec<String> {
+        let reg = lock(&self.reg);
+        let mut runs: Vec<String> = reg
+            .sessions
+            .values()
+            .filter(|e| e.ended.is_none())
+            .map(|e| e.run.clone())
+            .collect();
+        runs.sort();
+        runs.dedup();
+        runs
+    }
+
     fn open_of(&self, pick: impl Fn(&str, SessionKind) -> bool) -> Vec<String> {
         let reg = lock(&self.reg);
         reg.sessions
@@ -620,6 +658,11 @@ impl Task {
                 at_ms,
                 reason,
             });
+            if let Some(charge) = reg.charger.clone() {
+                let ended = std::mem::take(&mut reg.ended);
+                drop(reg);
+                charge(ended);
+            }
         }
     }
 
@@ -1333,6 +1376,32 @@ mod tests {
         assert_eq!(log.sent("Target.disposeBrowserContext").len(), 1);
         assert!(w.sessions.open_sessions("run-1").is_empty());
         assert!(w.sessions.ended().is_empty(), "drained");
+    }
+
+    /// A host's charger is handed each host end before the call that made
+    /// it answers, and nothing is left queued; a close the script asked
+    /// for is charged by its call and handed over to none.
+    #[tokio::test]
+    async fn a_host_end_is_handed_to_the_charger() {
+        let w = World::new();
+        let charged = Arc::new(Mutex::new(Vec::<Ended>::new()));
+        let into = charged.clone();
+        w.sessions
+            .charge_with(Arc::new(move |e| into.lock().unwrap().extend(e)));
+        let (opened, _log) = w.open(TIMES).await;
+        assert_eq!(w.sessions.open_runs(), ["run-1"]);
+        w.sessions.reevaluate(&|_, _| false).await;
+        assert_eq!(
+            charged
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|e| (e.session.clone(), e.reason))
+                .collect::<Vec<_>>(),
+            [(opened.session.clone(), SessionEnd::Revoked)]
+        );
+        assert!(w.sessions.ended().is_empty());
+        assert!(w.sessions.open_runs().is_empty());
     }
 
     #[tokio::test]

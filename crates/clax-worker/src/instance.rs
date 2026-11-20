@@ -750,6 +750,7 @@ fn worker_bot(
         // The Worker opens no browser (its content store keeps no
         // screenshots): its runs never have the browser shape.
         browser: false,
+        browser_sessions: None,
     });
     (bot, web)
 }

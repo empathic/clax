@@ -1170,9 +1170,18 @@ impl ClaxSession<'_> {
     }
 }
 
-/// Charges, in `store`, the ends `sessions` made since the last look.
-pub(crate) fn charge_ended(store: &clax_store::Store, sessions: &BrowserSessions) {
-    for e in sessions.ended() {
+/// Charges, in `store`, the ends `sessions` made since the last look
+/// ([`charge`]).
+pub fn charge_ended(store: &clax_store::Store, sessions: &BrowserSessions) {
+    charge(store, sessions.ended());
+}
+
+/// Charges, in `store`, each of `ended`, ends a host's registry made: its
+/// tail on its run's open step or on none, once
+/// (`clax_store::Store::end_bot_browser_session`). A host hands it to its
+/// registry ([`BrowserSessions::charge_with`]).
+pub fn charge(store: &clax_store::Store, ended: Vec<crate::browser::live::Ended>) {
+    for e in ended {
         if let Err(err) = store.end_bot_browser_session(&e.run, &e.session, e.at_ms, e.reason) {
             tracing::warn!(
                 "clax-bot: run {}: browser session {} ended ({}) and could not be charged: {err}",

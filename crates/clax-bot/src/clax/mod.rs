@@ -31,6 +31,7 @@ mod spend;
 mod tally;
 mod web;
 
+pub use browser::{charge, charge_ended};
 pub use provider::ClaxProvider;
 #[cfg(test)]
 pub(crate) use tally::Tally;

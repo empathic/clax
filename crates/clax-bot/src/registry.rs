@@ -234,6 +234,20 @@ impl Providers {
         }
     }
 
+    /// Has Clax's own provider hold its browser sessions in `sessions`.
+    /// Nothing changes when no provider of Clax's is registered so, as
+    /// for [`Providers::set_clax_web`].
+    pub(crate) fn set_clax_browser_sessions(
+        &mut self,
+        sessions: Arc<crate::browser::live::BrowserSessions>,
+    ) {
+        if let Some(clax) = self.clax.take() {
+            let clax = Arc::new(clax.with_browser_sessions(sessions));
+            self.register(CLAX_SURFACE, clax.clone());
+            self.clax = Some(clax);
+        }
+    }
+
     /// Has Clax's own provider keep a browser test's screenshots under
     /// `limits`.
     pub(crate) fn set_clax_content_limits(

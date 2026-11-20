@@ -4,7 +4,7 @@
 //! session on Cloudflare Browser Run over one WebSocket,
 //!
 //! ```text
-//! wss://api.cloudflare.com/client/v4/accounts/{account}/browser-run/devtools/browser?keep_alive=10000
+//! wss://api.cloudflare.com/client/v4/accounts/{account}/browser-run/devtools/browser?keep_alive=60000
 //! Authorization: Bearer <token>
 //! ```
 //!
@@ -72,10 +72,14 @@ use url::Url;
 /// which one Browser Run answers.
 pub const BROWSER_RUN_PATH: &str = "browser-run";
 
-/// How long Browser Run keeps a browser after its socket drops, in
-/// milliseconds: its minimum. A session ends its browser itself
-/// (`Browser.close`), so a longer value only bills an orphan longer.
-pub const KEEP_ALIVE_MS: u32 = 10_000;
+/// How long Browser Run keeps a browser that receives no DevTools
+/// command, in milliseconds (spec
+/// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §7.2): a
+/// minute, so a browser a crashed daemon orphaned bills at most a minute.
+/// An open session sends a command at least every
+/// `clax_bot::browser::live::HEARTBEAT_AFTER_MS` (the heartbeat), so a
+/// model turn longer than this keeps its browser.
+pub const KEEP_ALIVE_MS: u32 = 60_000;
 
 /// `filter` with tungstenite's client handshake log turned off, whatever
 /// `filter` asked for: at trace it prints the whole upgrade request, the
@@ -787,7 +791,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_sends_the_path_keep_alive_and_token() {
+    async fn open_sends_keep_alive_60000() {
         let run = FakeRun::start(Answer::Accept).await;
         let (_d, b) = browser(&run).await;
         assert!(b.configured());
@@ -797,7 +801,7 @@ mod tests {
         assert_eq!(seen.len(), 1);
         assert_eq!(
             seen[0].path_and_query,
-            format!("/client/v4/accounts/{ACCOUNT}/browser-run/devtools/browser?keep_alive=10000")
+            format!("/client/v4/accounts/{ACCOUNT}/browser-run/devtools/browser?keep_alive=60000")
         );
         assert_eq!(seen[0].authorization, format!("Bearer {TOKEN}"));
         // Cloudflare's own URL, as the daemon builds it.
@@ -805,7 +809,7 @@ mod tests {
         assert_eq!(
             real.session_url(ACCOUNT).unwrap().as_str(),
             format!(
-                "wss://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/browser-run/devtools/browser?keep_alive=10000"
+                "wss://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/browser-run/devtools/browser?keep_alive=60000"
             )
         );
     }

@@ -2104,7 +2104,18 @@ struct FakeBrowserRun {
 
 impl FakeBrowserRun {
     async fn start() -> FakeBrowserRun {
-        use clax_bot::browser::{CdpTransport, FakeChrome, PageModel};
+        FakeBrowserRun::start_with(|bridge| {
+            clax_bot::browser::PageModel::new().requests(&[(bridge, "Script")])
+        })
+        .await
+    }
+
+    /// A fake Browser Run whose every browser shows `model(bridge)`, the
+    /// bridge's URL for the artifact [`FakeBrowserRun::artifact`] names.
+    async fn start_with(
+        model: impl Fn(&str) -> clax_bot::browser::PageModel + Send + Sync + 'static,
+    ) -> FakeBrowserRun {
+        use clax_bot::browser::{CdpTransport, FakeChrome};
         use futures::{FutureExt, SinkExt};
         use tokio_tungstenite::tungstenite::Message;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2113,9 +2124,10 @@ impl FakeBrowserRun {
         let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let artifact = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let (u, l, a) = (upgrades.clone(), logs.clone(), artifact.clone());
+        let model = std::sync::Arc::new(model);
         tokio::spawn(async move {
             while let Ok((sock, _)) = listener.accept().await {
-                let (u, l, a) = (u.clone(), l.clone(), a.clone());
+                let (u, l, a, model) = (u.clone(), l.clone(), a.clone(), model.clone());
                 tokio::spawn(async move {
                     #[expect(
                         clippy::result_large_err,
@@ -2141,8 +2153,7 @@ impl FakeBrowserRun {
                         "https://{}.clax-test.invalid/_clax/bridge.js",
                         a.lock().unwrap()
                     );
-                    let mut chrome =
-                        FakeChrome::page(PageModel::new().requests(&[(&bridge, "Script")]));
+                    let mut chrome = FakeChrome::page(model(&bridge));
                     l.lock().unwrap().push(chrome.log());
                     while let Some(Ok(m)) = ws.next().await {
                         let Message::Text(t) = m else { continue };
@@ -2253,7 +2264,7 @@ async fn a_whole_browser_test_through_the_daemon() {
     assert_eq!(
         upgrades,
         [(
-            "/client/v4/accounts/0123456789abcdef0123456789abcdef/browser-run/devtools/browser?keep_alive=10000".to_string(),
+            "/client/v4/accounts/0123456789abcdef0123456789abcdef/browser-run/devtools/browser?keep_alive=60000".to_string(),
             "Bearer cf-token-for-tests-1234".to_string()
         )]
     );
@@ -2285,4 +2296,407 @@ async fn a_whole_browser_test_through_the_daemon() {
         .collect();
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert!(rows[0].credits_milli > 0, "{rows:?}");
+}
+
+/// A page of one button, Book, titled "Hello".
+fn booking_page(bridge: &str) -> clax_bot::browser::PageModel {
+    use clax_bot::browser::fake::{Dom, el, value};
+    clax_bot::browser::PageModel::new()
+        .requests(&[(bridge, "Script")])
+        .dom(Dom::new(vec![
+            el("button")
+                .text("Book")
+                .rect(0.0, 0.0, 100.0, 40.0)
+                .role("button", "Book"),
+        ]))
+        .evaluate(|p| {
+            if p["expression"] == "document.title" {
+                value(json!("Hello"))
+            } else {
+                value(json!(true))
+            }
+        })
+}
+
+/// A daemon driving runs against `fake`, its browsers opened on `run`,
+/// its instance key set, the browser configured, every capability granted
+/// to everyone and the three `browser.open` kinds offered.
+async fn browser_daemon(fake: &FakeMessages, run: &FakeBrowserRun) -> TestServer {
+    let base = run.base.clone();
+    let ts = TestServer::spawn_with(move |s| {
+        let browser =
+            std::sync::Arc::new(clax_server::browser_source::DaemonBrowser::of(s).sending_to(base));
+        let web = std::sync::Arc::new(clax_bot::web::FakeWebSource::new());
+        let d = clax_server::bot::driver_with_sources(s, web, browser);
+        clax_server::bot::start_driver(&d);
+    })
+    .await;
+    ts.store
+        .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
+        .unwrap();
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/provider/key", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"key": KEY}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    browser_on(&ts).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/browser", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"content": {"enabled": true}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    ts
+}
+
+/// Sends a thread on a new artifact to ClaxBot on `ts`, and answers the
+/// run's ID once it ended, and the artifact's.
+async fn browser_run(ts: &TestServer, run: &FakeBrowserRun) -> (String, String) {
+    let aid = ts.publish("Page", &[("index.html", "<p>hi there</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    *run.artifact.lock().unwrap() = aid.clone();
+    let tid = ts.thread(&aid, 1, "Does it book?").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .client
+        .post(format!("{}/api/bot/runs", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"thread_ids": [tid], "artifact_id": aid}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let rid = res.json::<Value>().await.unwrap()["run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let all = events(ts, &rid, None).await;
+    assert_eq!(all.last().map(|(_, e, _)| e.as_str()), Some("run_end"));
+    (rid, aid)
+}
+
+/// The milliseconds of each browser time row charged to run `rid`.
+fn browser_rows(ts: &TestServer, rid: &str) -> Vec<i64> {
+    ts.store
+        .usage_of_run(rid)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.line == clax_store::credits::LINE_BROWSER_TIME)
+        .map(|r| r.qty)
+        .collect()
+}
+
+/// What a script returned between `<sid>` and `</sid>` in the requests
+/// the model was sent (its code writes neither whole): the browser session
+/// an earlier step opened.
+fn session_in(requests: &[Value]) -> String {
+    let sent = serde_json::to_string(requests).unwrap();
+    let from = sent.find("<sid>").expect("a step answered its session") + 5;
+    let to = from + sent[from..].find("</sid>").unwrap();
+    sent[from..to].to_string()
+}
+
+/// A session opened in one step on the daemon and clicked through a
+/// `Page` in the next, by the same browser over the same socket: the
+/// daemon's one registry holds it between the steps, and its time is
+/// charged once.
+#[tokio::test]
+async fn a_session_across_two_steps_through_the_daemon() {
+    let fake = FakeMessages::start(vec![
+        Turn::script(
+            "tu_1",
+            "Open the page",
+            "const page = await clax.browser.open({ artifact: 'draft' });
+             return '<' + 'sid>' + JSON.parse(JSON.stringify(page)).session + '</' + 'sid>';",
+        ),
+        Turn::script_from("tu_2", "Book", |requests| {
+            format!(
+                "const page = clax.browser.session('{}');
+                 await page.getByRole('button', {{ name: 'Book' }}).click();
+                 return await page.close();",
+                session_in(requests)
+            )
+        }),
+        Turn::finish("Booked."),
+    ])
+    .await;
+    let run = FakeBrowserRun::start_with(booking_page).await;
+    let ts = browser_daemon(&fake, &run).await;
+    let (rid, _) = browser_run(&ts, &run).await;
+    let sent = serde_json::to_string(&fake.requests()).unwrap();
+    assert!(sent.contains(r#"\"ms\":"#), "the close answered: {sent}");
+    assert!(!sent.contains("browser_session_lost"), "{sent}");
+    let session = session_in(&fake.requests());
+    let row = ts.store.bot_browser_session(&rid, &session).unwrap().unwrap();
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Closed));
+    // One browser, one socket, three mouse events for the click.
+    assert_eq!(run.upgrades.lock().unwrap().len(), 1);
+    let log = run.logs.lock().unwrap()[0].clone();
+    assert_eq!(log.sent("Input.dispatchMouseEvent").len(), 3);
+    assert_eq!(log.sent("Browser.close").len(), 1);
+    let rows = browser_rows(&ts, &rid);
+    assert_eq!(rows.len(), 3, "open, click and close: {rows:?}");
+    assert_eq!(rows.iter().sum::<i64>(), row.charged_ms);
+}
+
+/// A run that ends with a session open has it closed, `run_ended`, and
+/// its last segment charged.
+#[tokio::test]
+async fn the_run_end_closes_and_charges() {
+    let fake = FakeMessages::start(vec![
+        Turn::script(
+            "tu_1",
+            "Render",
+            "const page = await clax.browser.open({ html: '<h1>Two directions</h1>' });
+             return '<' + 'sid>' + JSON.parse(JSON.stringify(page)).session + '</' + 'sid>';",
+        ),
+        Turn::finish("Rendered."),
+    ])
+    .await;
+    let run = FakeBrowserRun::start().await;
+    let ts = browser_daemon(&fake, &run).await;
+    let (rid, _) = browser_run(&ts, &run).await;
+    let session = session_in(&fake.requests());
+    // The run's surfaces are told it ended once its end is committed, after
+    // `run_end` is sent.
+    let row = clax_testkit::until("the session closed at the run's end", || async {
+        ts.store
+            .bot_browser_session(&rid, &session)
+            .unwrap()
+            .filter(|r| !r.is_open())
+    })
+    .await;
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::RunEnded));
+    assert_eq!(run.logs.lock().unwrap()[0].sent("Browser.close").len(), 1);
+    let rows = browser_rows(&ts, &rid);
+    assert_eq!(rows.len(), 2, "the open and the end: {rows:?}");
+    assert_eq!(rows.iter().sum::<i64>(), row.charged_ms);
+}
+
+/// A daemon whose browsers come from `source`, its driver not started
+/// (the tests open sessions in its registry themselves), the browser
+/// configured and offered, every capability granted to everyone.
+async fn registry_daemon(source: std::sync::Arc<clax_bot::browser::FakeBrowserSource>) -> TestServer {
+    let ts = TestServer::spawn_with(move |s| {
+        let web = std::sync::Arc::new(clax_bot::web::FakeWebSource::new());
+        let _ = clax_server::bot::driver_with_sources(s, web, source);
+    })
+    .await;
+    browser_on(&ts).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/browser", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"content": {"enabled": true}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    ts
+}
+
+/// A run of the owner's on a new artifact, made with `caps`, not driven.
+async fn run_with_caps(ts: &TestServer, caps: &str) -> String {
+    use clax_store::bot_runs::{NewRun, RequestKind};
+    use clax_store::credits::KeySource;
+    let aid = ts.publish("Page", &[("index.html", "<p>hi</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.store
+        .create_run(
+            &AuditCtx::DAEMON,
+            NewRun {
+                artifact_id: aid,
+                person: clax_store::roles::OWNER.into(),
+                request: RequestKind::Thread,
+                thread_ids: vec!["t1".into()],
+                model: "claude-sonnet-5-5".into(),
+                key_source: KeySource::Instance,
+                base_version: 1,
+                agent_grant: None,
+                caps: caps.into(),
+            },
+        )
+        .unwrap()
+        .id
+}
+
+/// Opens a session of `kind` for run `rid` in `ts`'s registry, on content
+/// for a content session and on the run's clax otherwise.
+async fn open_in_registry(
+    ts: &TestServer,
+    rid: &str,
+    kind: clax_store::bot_web::SessionKind,
+) -> String {
+    use clax_bot::browser::live::{SessionTimes, new_session_id};
+    use clax_bot::browser::serve::{ContentSite, Origin};
+    use clax_bot::browser::session::{ContentPolicy, Start};
+    use clax_store::bot_web::SessionKind;
+    let sessions = ts.state.bot.browser_sessions.clone().unwrap();
+    let id = new_session_id();
+    let site = ContentSite::new(&id, b"<p>hi</p>".to_vec(), Default::default());
+    let start = match kind {
+        SessionKind::Content => Start::Content {
+            host: format!("{id}.clax-content.invalid"),
+        },
+        _ => Start::Test {
+            origin: Origin::new(&clax_core::ArtifactId::parse("abcdefghjkmn").unwrap()),
+            path: "index.html".into(),
+        },
+    };
+    let opened = sessions
+        .open(
+            rid,
+            id,
+            kind,
+            start,
+            std::sync::Arc::new(ContentPolicy(site)),
+            clax_bot::browser::opts::Viewport::desktop(),
+            SessionTimes {
+                call_seconds: 60,
+                idle_seconds: 300,
+                max_seconds: 1_800,
+            },
+            ts.store.now_utc() + chrono::Duration::seconds(60),
+            &clax_bot_sandbox::CancelToken::new(),
+        )
+        .await
+        .unwrap();
+    opened.session
+}
+
+/// What a call of session `session` of run `rid` would meet now: `None`
+/// while it is open, else the error's code and message.
+fn session_state(ts: &TestServer, rid: &str, session: &str) -> Option<(String, String)> {
+    let sessions = ts.state.bot.browser_sessions.clone().unwrap();
+    sessions
+        .check(rid, session)
+        .err()
+        .map(|e| (e.code.to_string(), e.message.clone()))
+}
+
+/// The person turning `browser.open.content` off on the Me page closes
+/// their runs' content sessions before `PUT /api/me/bot` answers; their
+/// next call meets `browser_session_closed`, `revoked`.
+#[tokio::test]
+async fn a_revoke_closes_the_session_before_it_answers() {
+    use clax_store::bot_web::SessionKind;
+    let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
+    source.opens(|| Ok(clax_bot::browser::FakeChrome::page(clax_bot::browser::PageModel::new())));
+    let ts = registry_daemon(source.clone()).await;
+    let rid = run_with_caps(&ts, "browser.open.artifact,browser.open.content").await;
+    let content = open_in_registry(&ts, &rid, SessionKind::Content).await;
+    let artifact = open_in_registry(&ts, &rid, SessionKind::Artifact).await;
+    assert_eq!(session_state(&ts, &rid, &content), None);
+    let res = ts
+        .client
+        .put(format!("{}/api/me/bot", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"capabilities": {"browser.open.content": false}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let (code, message) = session_state(&ts, &rid, &content).expect("closed");
+    assert_eq!(code, "browser_session_closed");
+    assert!(message.contains("revoked"), "{message}");
+    assert_eq!(session_state(&ts, &rid, &artifact), None, "its own capability stays");
+    assert_eq!(source.logs()[0].sent("Browser.close").len(), 1);
+}
+
+/// The admin turning a kind's switch off closes every session of that
+/// kind, every run's, before `PUT /api/admin/browser` answers; another
+/// kind's stay open.
+#[tokio::test]
+async fn an_admin_switch_off_closes_every_session_of_its_kind() {
+    use clax_store::bot_web::SessionKind;
+    let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
+    source.opens(|| Ok(clax_bot::browser::FakeChrome::page(clax_bot::browser::PageModel::new())));
+    let ts = registry_daemon(source.clone()).await;
+    let caps = "browser.open.artifact,browser.open.content";
+    let (one, two) = (run_with_caps(&ts, caps).await, run_with_caps(&ts, caps).await);
+    let c1 = open_in_registry(&ts, &one, SessionKind::Content).await;
+    let c2 = open_in_registry(&ts, &two, SessionKind::Content).await;
+    let a2 = open_in_registry(&ts, &two, SessionKind::Artifact).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/browser", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"content": {"enabled": false}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    for (rid, s) in [(&one, &c1), (&two, &c2)] {
+        let (code, message) = session_state(&ts, rid, s).expect("closed");
+        assert_eq!(code, "browser_session_closed");
+        assert!(message.contains("revoked"), "{message}");
+    }
+    assert_eq!(session_state(&ts, &two, &a2), None);
+}
+
+/// A daemon starting marks every session the store still holds open
+/// lost: the new process's registry holds none of them.
+#[tokio::test]
+async fn a_restart_marks_sessions_lost() {
+    use clax_store::bot_runs::DriverId;
+    use clax_store::bot_web::{SessionEnd, SessionKind, SessionSpend, Spend};
+    use clax_store::credits::{KeySource, LINE_BROWSER_TIME, Metered};
+    let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
+    let ts = registry_daemon(source.clone()).await;
+    let rid = run_with_caps(&ts, "browser.open.content").await;
+    let d = DriverId::mint();
+    ts.store.claim_run(&rid, &d, 60).unwrap().unwrap();
+    ts.store
+        .begin_step(&rid, &d, 1, clax_store::bot_runs::StepKind::Script)
+        .unwrap();
+    let run = ts.store.run(&rid).unwrap().unwrap();
+    let entry = ts
+        .store
+        .call_entry(&rid, &d, 1, 1, 0, "browser.open", "h")
+        .unwrap()
+        .answered(true, json!({"value": {"session": "s1"}}));
+    ts.store
+        .spend_journaled(
+            &run,
+            &d,
+            Spend {
+                entry,
+                usage: Some(Metered::new(LINE_BROWSER_TIME, 10, KeySource::Instance)),
+                page: None,
+                session: Some(SessionSpend::Open {
+                    session: "s1".into(),
+                    kind: SessionKind::Content,
+                    opened_at: ts.store.now_utc(),
+                    through_ms: 10,
+                }),
+                audit: clax_core::audit::AuditRecord::new(
+                    clax_core::audit::AuditKind::BotSpend,
+                    ts.store.now(),
+                )
+                .with("capability", "browser.open.content")
+                .with("op", "browser.open"),
+            },
+        )
+        .unwrap();
+    assert!(ts.store.bot_browser_session(&rid, "s1").unwrap().unwrap().is_open());
+    // The daemon starts again on the same store.
+    let mut again = ts.state.clone();
+    let web = std::sync::Arc::new(clax_bot::web::FakeWebSource::new());
+    let _ = clax_server::bot::driver_with_sources(&mut again, web, source);
+    let row = ts.store.bot_browser_session(&rid, "s1").unwrap().unwrap();
+    assert_eq!(row.reason, Some(SessionEnd::Lost));
+    assert_eq!(row.charged_ms, 10);
 }

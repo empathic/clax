@@ -22,6 +22,19 @@ pub struct Turn {
     /// A refusal in place of a turn: its status, error type, message and
     /// `request-id` header.
     refusal: Option<(u16, String, String, String)>,
+    /// The script's code, written from the requests so far when the turn
+    /// is answered ([`Turn::script_from`]).
+    code_from: Option<CodeFrom>,
+}
+
+/// What writes a turn's script from the requests the fake has seen.
+#[derive(Clone)]
+struct CodeFrom(Arc<dyn Fn(&[Value]) -> String + Send + Sync>);
+
+impl std::fmt::Debug for CodeFrom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CodeFrom")
+    }
 }
 
 impl Turn {
@@ -31,6 +44,7 @@ impl Turn {
             blocks: vec![json!({"type": "text", "text": text})],
             stop: "end_turn",
             refusal: None,
+            code_from: None,
         }
     }
 
@@ -44,6 +58,7 @@ impl Turn {
             ],
             stop: "tool_use",
             refusal: None,
+            code_from: None,
         }
     }
 
@@ -56,6 +71,7 @@ impl Turn {
             ],
             stop: "tool_use",
             refusal: None,
+            code_from: None,
         }
     }
 
@@ -68,6 +84,7 @@ impl Turn {
             ],
             stop: "tool_use",
             refusal: None,
+            code_from: None,
         }
     }
 
@@ -78,6 +95,22 @@ impl Turn {
             blocks: Vec::new(),
             stop: "",
             refusal: Some((status, kind.into(), message.into(), request_id.into())),
+            code_from: None,
+        }
+    }
+
+    /// A turn that narrates, then calls `run_script {title, code}`, its
+    /// code written by `code` from every request the fake has seen, this
+    /// one last: a script that names what an earlier step answered (a
+    /// browser session's ID, say).
+    pub fn script_from(
+        id: &str,
+        title: &str,
+        code: impl Fn(&[Value]) -> String + Send + Sync + 'static,
+    ) -> Turn {
+        Turn {
+            code_from: Some(CodeFrom(Arc::new(code))),
+            ..Turn::script(id, title, "")
         }
     }
 
@@ -168,7 +201,18 @@ async fn messages(State(i): State<Arc<Inner>>, body: axum::Json<Value>) -> Respo
             axum::Json(json!({"type": "error", "error": {"type": kind, "message": message}})),
         )
             .into_response(),
-        Some(t) => ([("content-type", "text/event-stream")], t.sse()).into_response(),
+        Some(mut t) => {
+            if let Some(CodeFrom(code)) = t.code_from.take() {
+                let seen = i.seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let code = code(&seen);
+                for b in &mut t.blocks {
+                    if b["type"] == "tool_use" {
+                        b["input"]["code"] = Value::String(code.clone());
+                    }
+                }
+            }
+            ([("content-type", "text/event-stream")], t.sse()).into_response()
+        }
         None => (
             axum::http::StatusCode::BAD_REQUEST,
             axum::Json(

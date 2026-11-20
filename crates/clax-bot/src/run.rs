@@ -357,6 +357,21 @@ impl Deps {
         self
     }
 
+    /// These deps, holding the browser sessions of Clax's own surface in
+    /// `sessions`, the host's one registry (the registry's
+    /// `set_clax_browser_sessions`): the host keeps it too, to close the
+    /// sessions a revoke no longer covers and to charge the ends it makes.
+    /// Given after [`Deps::with_browser`], which makes a registry of its
+    /// own otherwise.
+    #[must_use]
+    pub fn with_browser_sessions(
+        mut self,
+        sessions: Arc<crate::browser::live::BrowserSessions>,
+    ) -> Deps {
+        self.providers.set_clax_browser_sessions(sessions);
+        self
+    }
+
     /// These deps, keeping a browser test's screenshots under `limits`,
     /// the host's content limits (the registry's
     /// `set_clax_content_limits`); [`ContentLimits::default`] otherwise.

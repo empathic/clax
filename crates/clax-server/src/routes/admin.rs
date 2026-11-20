@@ -82,6 +82,11 @@
 //! page); every change by the store's own kinds (`admin.flag`,
 //! `admin.role`, `admin.credits`, `admin.provider`, `admin.key`,
 //! `admin.cost_line`).
+//!
+//! A change that can take a browser capability from a run (`PUT
+//! /api/admin/web` and `/browser`, `DELETE /api/admin/web/token`, a grant
+//! issued or revoked) closes, `revoked`, every browser session whose run no
+//! longer holds it before it answers ([`crate::bot::reevaluate_browser`]).
 
 use super::artifacts::{body, path};
 use super::bot::{line_labels, line_total, week_at, week_of};
@@ -682,6 +687,7 @@ pub async fn set_web(
             web_view(st, &bot)
         })
         .await?;
+    crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
 
@@ -733,6 +739,7 @@ pub async fn clear_web_token(
             web_view(st, &bot)
         })
         .await?;
+    crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
 
@@ -914,6 +921,7 @@ pub async fn set_browser(
             browser_view(st, &bot)
         })
         .await?;
+    crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
 
@@ -1028,6 +1036,7 @@ pub async fn grant(
             grants_view(st)
         })
         .await?;
+    crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
 
@@ -1059,6 +1068,7 @@ pub async fn revoke_grant(
             grants_view(st)
         })
         .await?;
+    crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
 

@@ -397,7 +397,9 @@ pub struct MeBody {
 /// caller's grant of each named capability to their runs on or off (one
 /// they do not hold left as it is; 400 `unknown_capability` for a name
 /// that is none, before anything is written); `web` sets both web
-/// capabilities, and `browser` the three `browser.open` kinds.
+/// capabilities, and `browser` the three `browser.open` kinds. A browser
+/// session the caller's runs no longer hold the capability for is closed,
+/// `revoked`, before it answers ([`crate::bot::reevaluate_browser`]).
 pub async fn me_put(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -451,6 +453,7 @@ pub async fn me_put(
             me_view(st, &bot, &who, &caller, &person)
         })
         .await?;
+    crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
 
@@ -1098,7 +1101,7 @@ pub fn admit_run(
 /// ([`clax_bot::capability::Capabilities::now`]): those the admin offers
 /// and grants, the person grants to their runs, and the host's sources
 /// can perform now.
-fn run_caps(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<CapSet> {
+pub(crate) fn run_caps(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<CapSet> {
     use clax_bot::capability::{Capabilities, Capability, Family};
     let web = crate::bot::web_configured(st, bot)?;
     let browser = crate::bot::browser_configured(st, bot)?;
