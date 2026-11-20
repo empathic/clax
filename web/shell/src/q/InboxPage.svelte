@@ -192,8 +192,13 @@
     asCard = [...asCard, ...items.filter(i => i.kind === "question" && i.question && qview(i).status === "open" && !asCard.includes(i.id)).map(i => i.id)];
   };
 
-  // Each fetch is for the search at its start: an answer for an older one is dropped.
+  // Each fetch is for the search at its start: an answer for an older one is
+  // dropped. `gen` counts the loads (each a new list), `refreshes` the
+  // refreshes of one list, which leave a Show more on its way alone;
+  // `loading` is the load on its way, with whether it keeps the cards closed.
   let gen = 0;
+  let refreshes = 0;
+  let loading: { keep: boolean } | null = null;
   /** The unread items shown as cards: open questions and decisions. */
   const fetchCards = async (): Promise<InboxItem[]> => {
     const kind = filter.kind?.length ? CARD_KINDS.filter(k => filter.kind!.includes(k)) : CARD_KINDS;
@@ -225,6 +230,7 @@
    * `keep` keeps the cards closed here, for the same search. */
   async function load(keep = true): Promise<void> {
     const g = ++gen;
+    loading = { keep };
     const stripped = loadStrip();
     try {
       const [c, l] = await Promise.all([fetchCards(), fetchGroups()]);
@@ -240,6 +246,7 @@
     } catch (e) {
       if (g === gen) loadFailed(e);
     } finally {
+      if (g === gen) loading = null;
       void stripped.then(() => { loadedOnce?.(); loadedOnce = null; });
     }
   }
@@ -250,12 +257,16 @@
    * and a live change refresh; a new search loads. */
   async function refresh(): Promise<void> {
     if (!list) return load();
-    const g = ++gen;
+    // A load still on its way replaces the list: merging into the list it
+    // replaces would keep the groups the new search leaves out.
+    if (loading) return load(loading.keep);
+    const g = gen;
+    const r = ++refreshes;
     void loadStrip();
     try {
       const shown = list.groups.length;
       const [c, l] = await Promise.all([fetchCards(), fetchGroups(null, Math.min(MAX_GROUP_PAGE, Math.max(GROUP_PAGE, shown)))]);
-      if (g !== gen || !list) return;
+      if (g !== gen || r !== refreshes || !list) return;
       error = null;
       cardItems = keepCards(c, true);
       // Under the Unread filter a group read since drops out of the fetch:
@@ -264,7 +275,7 @@
       list = { groups: mergeGroups(list.groups, l.groups, gone), next: list.next ?? l.next };
       opening(l.groups, false);
     } catch (e) {
-      if (g === gen) loadFailed(e);
+      if (g === gen && r === refreshes) loadFailed(e);
     }
   }
 

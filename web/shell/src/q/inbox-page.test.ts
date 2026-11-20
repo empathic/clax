@@ -157,6 +157,43 @@ describe("InboxPage", () => {
     expect(g.querySelector(".gmore")).toBeNull();
   });
 
+  /** Holds every request whose URL `held` matches until the result is called. */
+  function hold(held: (url: string) => boolean): () => void {
+    const inner = fetch as unknown as (url: string, init?: RequestInit) => Promise<Response>;
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => { if (held(url)) await gate; return inner(url, init); }));
+    return release;
+  }
+
+  it("appends a Show more's rows though the list was refreshed while they were on their way", async () => {
+    const unread = [12, 11, 10, 9].map(n => item("reply", { id: `U${n}`, seq: n }));
+    stubRoutes({ "": unread }, []);
+    const release = hold(u => u.includes("before="));
+    const { m, inbox } = page();
+    await settle();
+    click(groupEl(m.root, "7q3k9mzx2b4t").querySelector(".gmore")!);
+    tell(inbox, { refetch: true });
+    await pastDebounce();
+    release();
+    await settle();
+    expect(rowIds(groupEl(m.root, "7q3k9mzx2b4t"))).toEqual(["U12", "U11", "U10", "U9"]);
+  });
+
+  it("shows a new search's list alone though a refresh came while it was on its way", async () => {
+    stubRoutes();
+    const release = hold(u => u.includes("read=unread&group=artifact"));
+    const { m, inbox } = page();
+    await settle();
+    expect(m.root.querySelectorAll(".igroup").length).toBeGreaterThan(1);
+    click([...m.root.querySelectorAll<HTMLButtonElement>(".kind")].find(b => b.textContent === "Unread")!);
+    tell(inbox, { refetch: true });
+    await pastDebounce();
+    release();
+    await settle();
+    expect([...m.root.querySelectorAll(".igroup .gtitle")].map(t => t.textContent)).toEqual(["Quarterly Review"]);
+  });
+
   it("narrows the list to groups with something new with the Unread chip, kept in the URL", async () => {
     const calls = stubRoutes();
     const { m } = page();
