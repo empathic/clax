@@ -248,8 +248,8 @@ access object's locations are origins (`scheme://host[:port]`, where a
 (what `open-artifact` may open); a `clax-web` object's are hosts. An
 object without locations applies everywhere. In this version only a
 page's share carries locations (its origins, §18.4); a grant the admin or
-the person issues carries none, and is refused at issue with any
-(`unsupported_location`), so no row holds a location no check reads.
+the person issues carries none, and no route takes one, so no row holds
+a location no check reads.
 Expiry is a condition of a grant (`conditions.expires_at`, gnap "The
 evaluation rule"), never an access field.
 
@@ -1486,8 +1486,9 @@ Written only by `crate::bot_grants` (`Store::issue_cap_grant`,
   button, and a way to grant to everyone or to a person. A grant whose
   granter is no longer an admin is shown "conveys nothing: <name> is no
   longer an admin". Under the browser it lists the live **shared pages**
-  (§18.4) and **exports** (§18.5): the run, the session, the actions,
-  the expiry, with a Revoke button each.
+  (§18.4) and **exports** (§18.5): the run it is shared within, or the
+  agent's grant it is exported to, the actions, the expiry, with a Revoke
+  button each.
 - **The Me page** shows one switch per action in `caps(person)`, with
   its price: on while the person's grant to their runs conveys it.
   Turning it off revokes that grant (reason `controller`); on issues a
@@ -2075,7 +2076,8 @@ capability is never read as wider than its caveats.
   parent the page's grant (its share row, or the run's `runs_of` grant),
   `event` `share`, `access` the actions, `conditions` the expiry
   (`POST /api/bot/runs/<id>/exports {path, grant, actions?,
-  expires_s?}`; `GET` lists the run's live exports; `DELETE
+  expires_s?}`; `GET` lists the run's pages, the person's machine grants
+  and their live exports; `DELETE
   /api/bot/runs/<id>/exports/<eid>` revokes one, reason `granter`). The
   grant conveys `conv(g) ∩ caps(person)`. The model never sees it, and
   `page.share` cannot make one.
