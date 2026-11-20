@@ -84,7 +84,7 @@ async function totals(owner: Page, aid: string): Promise<Totals> {
 }
 
 /** The owner's browser, set up with the secret, its User-Agent `OWNER`. */
-async function owner(browser: Browser, origin: string): Promise<Page> {
+async function ownerBrowser(browser: Browser, origin: string): Promise<Page> {
   const p = await (await browser.newContext({ userAgent: OWNER })).newPage();
   await p.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
   await p.getByLabel("Your name").fill("Ada");
@@ -114,7 +114,7 @@ test("on a hosted Clax a visitor's page views are counted, shown to the administ
     const aid = artifact.id;
     await api(h.base, h.token, `/api/artifacts/${aid}`, { method: "PATCH", body: JSON.stringify({ site_access: "world" }) });
     const site = `http://${aid}.localhost:${new URL(origin).port}/`;
-    const ada = await owner(browser, origin);
+    const ada = await ownerBrowser(browser, origin);
     const got = await ada.evaluate(async id => (await (await fetch(`/api/artifacts/${id}`)).json()).artifact.analytics, aid);
     expect(got).toBe("on");
 
