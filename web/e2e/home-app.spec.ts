@@ -36,6 +36,13 @@ function homeFiles(): Record<string, string> {
   return files;
 }
 
+/** The longest a test of a run and the whole run may take: the harness's
+ * most (web/bridge/src/harness.ts), the whole run's as long as this test's
+ * own hang guard (HANG_MS, web/playwright.config.ts). Neither is a budget
+ * a loaded machine fails on before the test's own guards end it. */
+const TEST_MAX_MS = 30_000;
+const TOTAL_MAX_MS = 120_000;
+
 test.describe("its tests in the inspect view", () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { width: 412, height: 915 } });
 
@@ -48,7 +55,7 @@ test.describe("its tests in the inspect view", () => {
     await contentFrame(page, id, 1);
     await initHost(page);
     await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
-    await host(page, `runTests({ files: ["tests/home.test.js"], testMs: 10000, totalMs: 60000 })`);
+    await host(page, `runTests({ files: ["tests/home.test.js"], testMs: ${TEST_MAX_MS}, totalMs: ${TOTAL_MAX_MS} })`);
     await expect.poll(async () => (await ofType(page, "tests")).length).toBeGreaterThan(0);
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
