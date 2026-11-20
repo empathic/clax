@@ -379,7 +379,33 @@ impl BrowserSessions {
         deadline: DateTime<Utc>,
         cancel: &CancelToken,
     ) -> Result<Opened, BrowserError> {
-        let transport = self.source.open(cancel).await?;
+        self.open_timed(
+            run, id, kind, start, policy, viewport, times, deadline, cancel,
+        )
+        .await
+        .0
+    }
+
+    /// [`BrowserSessions::open`], with when its browser opened (the
+    /// WebSocket's upgrade), `None` when none did: what a failed open's
+    /// time is measured from.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_timed(
+        &self,
+        run: &str,
+        id: String,
+        kind: SessionKind,
+        start: Start,
+        policy: Arc<dyn RequestPolicy>,
+        viewport: Viewport,
+        times: SessionTimes,
+        deadline: DateTime<Utc>,
+        cancel: &CancelToken,
+    ) -> (Result<Opened, BrowserError>, Option<DateTime<Utc>>) {
+        let transport = match self.source.open(cancel).await {
+            Ok(t) => t,
+            Err(e) => return (Err(e), None),
+        };
         let opened_at = self.clock.now();
         let lifetime = opened_at + Duration::seconds(i64::from(times.max_seconds));
         let cdp = Cdp::new(
@@ -418,10 +444,11 @@ impl BrowserSessions {
         drop(clax_rt::spawn(
             task.run(cdp, start, viewport, policy, open_tx, rx),
         ));
-        match open_rx.await {
+        let opened = match open_rx.await {
             Ok(r) => r.map(|o| Opened { handle, ..o }),
             Err(_) => Err(lost(&id, "its task ended before the page opened").opened(true)),
-        }
+        };
+        (opened, Some(opened_at))
     }
 
     /// Performs `call` on session `session` of run `run`, within `ctx`

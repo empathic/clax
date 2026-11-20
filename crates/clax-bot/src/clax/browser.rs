@@ -50,8 +50,10 @@
 //! `browser_session_lost`) uncharged, its tail charged by the store when
 //! the host ended it ([`ClaxSession::charge_ended`], at each call and at
 //! the run's end). A refusal `credits_exhausted` closes the session,
-//! `credits`. A test is charged its measured time, rounded up to the
-//! second, as one segment of no session.
+//! `credits`. A test is charged its measured time in milliseconds, at
+//! most its time cap, as one segment of no session; so is an open whose
+//! browser opened and failed before its page loaded, from the
+//! WebSocket's upgrade. Nothing is rounded up per call.
 //!
 //! Each screenshot is kept just before as an item of the run's content
 //! (surface `clax`, then noted with the call's operation and key) and
@@ -113,11 +115,6 @@ fn from_browser(e: &BrowserError) -> HostError {
 /// `invalid_args` saying `what`.
 fn bad(what: impl Into<String>) -> HostError {
     HostError::new(crate::api::CODE_BAD_ARGS, what)
-}
-
-/// `ms` rounded up to the whole second, in milliseconds.
-fn whole_seconds(ms: i64) -> i64 {
-    (ms.max(0) + 999) / 1000 * 1000
 }
 
 /// The capability that opens a session of `kind`.
@@ -699,10 +696,10 @@ impl Performer for Open {
                 )
             }
         };
-        let began = s.provider.clock.now();
-        let deadline = began + chrono::Duration::seconds(i64::from(args.terms.call_seconds));
-        let opened = sessions
-            .open(
+        let deadline =
+            s.provider.clock.now() + chrono::Duration::seconds(i64::from(args.terms.call_seconds));
+        let (opened, browser_at) = sessions
+            .open_timed(
                 &s.run.id,
                 id,
                 kind,
@@ -757,12 +754,15 @@ impl Performer for Open {
                 // browser that opened and failed before its page loaded
                 // is charged its time, as no session's.
                 let counted = e.code != CODE_BROWSER_BUSY && e.code != CODE_CANCELLED;
-                let usage = if e.opened {
-                    let ms = (s.provider.clock.now() - began).num_milliseconds();
-                    let cap = i64::from(args.terms.call_seconds) * 1000;
-                    priced.usage(whole_seconds(ms).min(cap)).ok()
-                } else {
-                    None
+                // From the WebSocket's upgrade, in milliseconds (spec
+                // §10.3).
+                let usage = match browser_at {
+                    Some(at) if e.opened => {
+                        let ms = (s.provider.clock.now() - at).num_milliseconds().max(0);
+                        let cap = i64::from(args.terms.call_seconds) * 1000;
+                        priced.usage(ms.min(cap)).ok()
+                    }
+                    _ => None,
                 };
                 Finish {
                     usage,
@@ -1607,7 +1607,7 @@ impl ClaxSession<'_> {
         let ms = (self.provider.clock.now() - opened_at)
             .num_milliseconds()
             .max(0);
-        let qty = whole_seconds(ms).min(i64::from(options.timeout_s) * 1000);
+        let qty = ms.min(i64::from(options.timeout_s) * 1000);
         let usage = match cx.priced.usage(qty) {
             Ok(usage) => Some(usage),
             Err(e) => {
@@ -1674,8 +1674,8 @@ impl ClaxSession<'_> {
         Ok(Pages::Version(artifact.clone(), n))
     }
 
-    /// How a test whose browser opened ends: charged its time, rounded
-    /// up to the second and at most the call's time cap (what the credits
+    /// How a test whose browser opened ends: charged its time in
+    /// milliseconds, at most the call's time cap (what the credits
     /// check priced), and counted; its result completed (spec §6.8: no
     /// steps, screenshots, `html` or `text`; `cost` and `left` added); and
     /// the `bot.spend` record's `ms` and `passed`.
@@ -1690,7 +1690,7 @@ impl ClaxSession<'_> {
         let ms = (tested.closed_at - tested.opened_at)
             .num_milliseconds()
             .max(0);
-        let qty = whole_seconds(ms).min(i64::from(options.timeout_s) * 1000);
+        let qty = ms.min(i64::from(options.timeout_s) * 1000);
         let (usage, cost) = match cx.priced.usage(qty) {
             Ok(x) => x,
             Err(e) => return Finish::refused(host_error(&e)),
@@ -1777,15 +1777,6 @@ fn summarize(shown: &mut Value, v: &Value) {
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn time_is_charged_by_the_whole_second() {
-        assert_eq!(whole_seconds(0), 0);
-        assert_eq!(whole_seconds(1), 1_000);
-        assert_eq!(whole_seconds(4_200), 5_000);
-        assert_eq!(whole_seconds(5_000), 5_000);
-        assert_eq!(whole_seconds(-3), 0);
-    }
 
     #[test]
     fn a_summary_counts_what_the_panel_shows() {

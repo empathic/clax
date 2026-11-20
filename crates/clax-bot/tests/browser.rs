@@ -137,8 +137,8 @@ async fn a_test_answers_and_is_charged_its_measured_time() {
     assert_eq!(v["left"]["artifact"], 9);
     assert_eq!(v["left"]["url"], 0);
     assert!(v["cost"].as_f64().unwrap() > 0.0, "{v}");
-    // Charged 9 s: the measured time rounded up to the second.
-    assert_eq!(browser_rows(&env), [9_000]);
+    // Charged its measured time, in milliseconds.
+    assert_eq!(browser_rows(&env), [8_400]);
     let rows = env.store.usage_of_run(&run).unwrap();
     let row = rows.iter().find(|r| r.line == LINE_BROWSER_TIME).unwrap();
     assert_eq!(row.step_n, Some(2));
@@ -659,7 +659,8 @@ async fn a_run_cancelled_while_the_browser_is_open_is_charged_its_time() {
     cancel.cancel();
     within("the cancelled tick ends", task).await.unwrap();
     assert_eq!(env.browser.opened(), 1);
-    assert_eq!(browser_rows(&env), [3_000]);
+    // Its time in milliseconds, not rounded up.
+    assert_eq!(browser_rows(&env), [2_500]);
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
     assert_eq!(
         counted.get("browser.open.artifact"),
@@ -1786,6 +1787,38 @@ async fn a_goto_out_counts_against_the_url_cap() {
     assert_eq!(v, json!(["went", "browser_cap", "browser_cap"]));
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
     assert_eq!(counted.get("browser.open.url"), Some(&1), "{counted:?}");
+}
+
+/// An open whose browser opened and failed before its page loaded is
+/// charged its time in milliseconds (spec §10.3: nothing is rounded up),
+/// from when the browser opened: the connect before it is not charged.
+#[tokio::test]
+async fn a_failed_open_is_charged_its_milliseconds_from_the_browsers_open() {
+    let env = Env::new().await;
+    let clock = env.clock.clone();
+    let source = env.browser.clone();
+    env.browser.opens(move || {
+        // Connecting takes 700 ms, before the browser is open.
+        clock.advance_millis(700);
+        let clock = clock.clone();
+        let source = source.clone();
+        Ok(FakeChrome::page(PageModel::new().on(move |cmd: &Value| {
+            (cmd["method"] == "Page.navigate").then(|| {
+                clock.advance_millis(1_234);
+                source.fire_deadline();
+                vec![]
+            })
+        })))
+    });
+    let (_, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "try { await clax.browser.open({ artifact: 'draft' }); return 'opened'; }
+         catch (e) { return e.code; }",
+    )
+    .await;
+    assert_eq!(v, "browser_timeout");
+    assert_eq!(browser_rows(&env), [1_234]);
 }
 
 /// A run holds at most `browser.max_open_per_run` sessions at once (1 by
