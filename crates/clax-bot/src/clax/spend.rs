@@ -314,6 +314,18 @@ pub(super) trait Performer: Sync {
     /// What follows a refusal `credits_exhausted` of `call`, before it is
     /// written: a browser session's call closes its session (spec §6.3).
     async fn out_of_credits(&self, _s: &ClaxSession<'_>, _call: &Call<'_>) {}
+
+    /// What follows step 10 for `call`, whose finish did `session` to its
+    /// browser session's row, when nothing was written (`written` false):
+    /// the time a browser call leaves uncharged is charged, each
+    /// millisecond once (spec §10.3).
+    async fn after_write(
+        &self,
+        _s: &ClaxSession<'_>,
+        _session: Option<&SessionSpend>,
+        _written: bool,
+    ) {
+    }
 }
 
 /// What the run shows of a call of `family` beside its answer: its
@@ -410,7 +422,10 @@ pub(super) async fn run<P: Performer>(s: &ClaxSession<'_>, call: &Call<'_>, p: &
     {
         p.out_of_credits(s, call).await;
     }
-    write(s, call, c, p.audit_shown(), shown, f)
+    let session = f.session.clone();
+    let (answer, written) = write_with(s, call, c, p.audit_shown(), shown, f);
+    p.after_write(s, session.as_ref(), written).await;
+    answer
 }
 
 /// Steps 3 to 9 of a call not in the journal.
@@ -558,15 +573,28 @@ pub(super) fn write(
     c: Capability,
     audit_shown: bool,
     shown: Value,
-    mut f: Finish,
+    f: Finish,
 ) -> Answer {
+    write_with(s, call, c, audit_shown, shown, f).0
+}
+
+/// [`write`], and whether it wrote: false for an answer
+/// [`Answer::unwritten`].
+fn write_with(
+    s: &ClaxSession<'_>,
+    call: &Call<'_>,
+    c: Capability,
+    audit_shown: bool,
+    shown: Value,
+    mut f: Finish,
+) -> (Answer, bool) {
     let store = s.store();
     let family = c.family();
     f.res = f.res.map_err(|e| e.with_capability(c.id()));
     let cost = f.usage.as_ref().map_or(0, |(_, credits)| *credits);
     let entry = match s.cx.claim.entry(call.place, call.op, call.raw) {
         Ok(e) => e.answered(f.res.is_ok(), entry_result(family, &f, cost, &shown)),
-        Err(e) => return unwritten(c, e, shown),
+        Err(e) => return (unwritten(c, e, shown), false),
     };
     let mut audit = AuditRecord::new(AuditKind::BotSpend, store.now())
         .with("capability", c.id())
@@ -594,9 +622,9 @@ pub(super) fn write(
         Ok(spent) => {
             // Charged at the rate checked, the charge is its price.
             debug_assert!(spent.replayed || spent.credits_milli == cost);
-            from_entry(family, &spent.entry, shown)
+            (from_entry(family, &spent.entry, shown), true)
         }
-        Err(e) => unwritten(c, host_error(&e), shown),
+        Err(e) => (unwritten(c, host_error(&e), shown), false),
     }
 }
 

@@ -49,7 +49,10 @@
 //! a session that ended answers `browser_session_closed` (or
 //! `browser_session_lost`) uncharged, its tail charged by the store when
 //! the host ended it ([`ClaxSession::charge_ended`], at each call and at
-//! the run's end). A refusal `credits_exhausted` closes the session,
+//! the run's end). A close whose Spend is not written is charged its last
+//! segment all the same, as an end the host made
+//! ([`clax_store::Store::end_bot_browser_session`]). A refusal
+//! `credits_exhausted` closes the session,
 //! `credits`. A test is charged its measured time in milliseconds, at
 //! most its time cap, as one segment of no session; so is an open whose
 //! browser opened and failed before its page loaded, from the
@@ -1229,6 +1232,35 @@ impl Performer for SessionOp {
             .close(&s.run.id, session, SessionEnd::Credits)
             .await;
         s.charge_ended();
+    }
+
+    async fn after_write(
+        &self,
+        s: &ClaxSession<'_>,
+        session: Option<&SessionSpend>,
+        written: bool,
+    ) {
+        // A close whose Spend was not written has ended the session in the
+        // registry, which charges a script's close to the close's own
+        // Spend: its last segment is charged here, once (the store charges
+        // only while the row is open).
+        if let (
+            false,
+            Some(SessionSpend::Close {
+                session,
+                through_ms,
+                reason,
+            }),
+        ) = (written, session)
+            && let Err(e) =
+                s.store()
+                    .end_bot_browser_session(&s.run.id, session, *through_ms, *reason)
+        {
+            tracing::warn!(
+                "clax-bot: run {}: browser session {session} closed and could not be charged: {e}",
+                s.run.id
+            );
+        }
     }
 }
 

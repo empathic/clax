@@ -1821,6 +1821,68 @@ async fn a_failed_open_is_charged_its_milliseconds_from_the_browsers_open() {
     assert_eq!(browser_rows(&env), [1_234]);
 }
 
+/// A page with one button that, at its first `method` command, moves the
+/// clock on by `ms` and has another driver take run `run`'s claim: what
+/// makes the step's next write fail (`run_not_claimed`).
+fn stealing_page(env: &Env, method: &'static str, ms: i64, run: Arc<Mutex<String>>) {
+    let clock = env.clock.clone();
+    let store = env.store.clone();
+    env.browser.opens(move || {
+        let (clock, store, run) = (clock.clone(), store.clone(), run.clone());
+        let mut done = false;
+        Ok(FakeChrome::page(page_of(buttons()).on(
+            move |cmd: &Value| {
+                if cmd["method"] == method && !done {
+                    done = true;
+                    clock.advance_millis(ms);
+                    let id = run.lock().unwrap().clone();
+                    store.claim_run(&id, &DriverId::mint(), 0).unwrap();
+                }
+                None
+            },
+        )))
+    });
+}
+
+/// Ticks run `run` (made with `browser.open.artifact`) through its turn,
+/// then its script `code`, whose writes may be refused.
+async fn steal_during(env: &Env, run: &Arc<Mutex<String>>, code: &str) -> String {
+    env.api.push(env.script_turn("tu_1", "Step", code));
+    let id = env.run_with_caps("browser.open.artifact");
+    *run.lock().unwrap() = id.clone();
+    let deps = env.deps();
+    let d = DriverId::mint();
+    assert_eq!(env.tick(&deps, &id, &d).await.kind, Some(StepKind::Turn));
+    let _ = env.try_tick(&deps, &id, &d, None).await;
+    id
+}
+
+/// A `browser.close` whose Spend is not written (its run's claim lost) is
+/// charged all the same: its last segment, the session's row closed.
+#[tokio::test]
+async fn a_close_whose_spend_fails_is_charged() {
+    let env = Env::new().await;
+    let run = Arc::new(Mutex::new(String::new()));
+    stealing_page(&env, "Browser.close", 1_500, run.clone());
+    let id = steal_during(
+        &env,
+        &run,
+        "const p = await clax.browser.open({ artifact: 'draft' });
+         await p.title();
+         try { await p.close(); return 'closed'; } catch (e) { return e.code; }",
+    )
+    .await;
+    let rows = env.store.bot_browser_sessions(&id).unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0].reason,
+        Some(clax_store::bot_web::SessionEnd::Closed)
+    );
+    let charged: i64 = browser_rows(&env).iter().sum();
+    assert_eq!(charged, rows[0].charged_ms);
+    assert_eq!(browser_rows(&env).len(), 3, "{:?}", browser_rows(&env));
+}
+
 /// A run holds at most `browser.max_open_per_run` sessions at once (1 by
 /// default): another open answers `browser_cap` until one is closed.
 #[tokio::test]
