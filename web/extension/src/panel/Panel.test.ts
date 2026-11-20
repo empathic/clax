@@ -1010,12 +1010,12 @@ describe("Panel: the Sites tab", () => {
   const NOW = new Date("2026-10-07T10:00:00.000Z");
   type Step = { moved: number; remaining: number };
   const choice = (key: string, origins: string[], over: Partial<SiteChoice> = {}): SiteChoice => ({ key, name: origins[0], origins, pages: 2, threads: 3, joining: 0, ...over });
-  /** The owner's panel on a tab Clax is off in, whose worker answers each request with the next of `steps`. */
+  /** The owner's panel on a tab showing no live page, whose worker answers each request with the next of `steps`. */
   function sitesLink(steps: Step[] = []) {
     const l = {
-      ...link(state({ enabled: false, page: null, threads: [], url: "https://example.com/" })),
+      ...link(state({ page: null, threads: [], url: "https://example.com/" })),
       inbox: { owner: true, unread: 0 }, questions: null as unknown as PanelQuestions, ask: async () => ({}), onItem: () => () => {},
-      sites: null as SiteChoice[] | null, asked: [] as unknown[],
+      sites: null as SiteChoice[] | null, sitesFailed: null as { code: string; message: string } | null, site: null as SiteView | null, asked: [] as unknown[],
       request: async (m: unknown) => { l.asked.push(m); const r = steps.shift(); if (!r) throw new Error("No such site."); return r; },
     };
     l.questions = new PanelQuestions(l as never);
@@ -1031,7 +1031,7 @@ describe("Panel: the Sites tab", () => {
     return r;
   }
 
-  it("shows for the owner beside Page and Inbox, by click and by arrow keys, and lists every site with Clax off in the tab", async () => {
+  it("shows for the owner beside Page and Inbox, by click and by arrow keys, and lists every site whichever page the tab shows", async () => {
     const l = sitesLink();
     render(Panel, { props: { link: l as never, now: NOW } });
     const sites = screen.getByRole("tab", { name: "Sites" });
@@ -1054,6 +1054,36 @@ describe("Panel: the Sites tab", () => {
     expect(panel.textContent).toContain("1 page · 1 thread");
     // Only a joined site's addresses split off.
     expect(screen.queryByRole("button", { name: "Split localhost:3000 off" })).toBeNull();
+  });
+
+  it("says why the list could not be read, with Retry, and lists the sites again when the tab's own site changes", async () => {
+    const l = sitesLink();
+    const r = render(Panel, { props: { link: l as never, now: NOW } });
+    await fireEvent.click(screen.getByRole("tab", { name: "Sites" }));
+    await vi.waitFor(() => expect(l.sent).toContainEqual({ t: "list-sites" }));
+    l.sitesFailed = { code: "http_401", message: "Clax does not know this browser." };
+    await r.rerender({ link: { ...l } as never, now: NOW });
+    const alert = await vi.waitFor(() => screen.getByRole("alert"));
+    expect(alert.textContent).toContain("Clax could not list the sites: Clax does not know this browser.");
+    expect(screen.queryByText("Loading…")).toBeNull();
+    const lists = () => l.sent.filter(m => m.t === "list-sites").length;
+    await fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(lists()).toBe(2);
+    // The tab's own site joins another origin: the list is read again; a change of its threads alone does not.
+    const own = (origins: string[]): SiteView => ({ origin: O, site: { key: O, name: O, joined: origins.length > 1, origins: origins.map(o => ({ origin: o, joined_at: null, last_used_at: null })) }, rules: [], pages: [] });
+    l.sitesFailed = null;
+    l.site = own([O]);
+    await r.rerender({ link: { ...l } as never, now: NOW });
+    await settled();
+    const before = lists();
+    l.site = { ...own([O]), pages: [] };
+    await r.rerender({ link: { ...l } as never, now: NOW });
+    await settled();
+    expect(lists()).toBe(before);
+    l.site = own([O, A]);
+    await r.rerender({ link: { ...l } as never, now: NOW });
+    await settled();
+    expect(lists()).toBe(before + 1);
   });
 
   it("splits an address off its site, and asks for the list again", async () => {

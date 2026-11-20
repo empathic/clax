@@ -76,12 +76,12 @@ export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelTo
     const f = failed(e);
     // Only a tab's own action leaves its error on the tab (the Page view's notice).
     if (tabId !== null && RETRYABLE.has(f.code) && !INBOX_ACTIONS.has(m.t)) d.tabs.fail(tabId, e);
-    reply("req" in m ? { ...f, req: m.req } : f);
+    reply("req" in m ? { ...f, req: m.req } : m.t === "list-sites" ? { ...f, of: "list-sites" } : f);
   }
 }
 
-/** The question and inbox requests, and the Sites tab's, which act on no tab. */
-const INBOX_ACTIONS = new Set<PanelToWorker["t"]>(["q-answer", "q-decline", "q-release", "q-pull", "inbox-page", "inbox-mark", "inbox-mark-all", "open-url", "open-clax", "site-join", "site-split"]);
+/** The question and inbox requests, and the list of sites and the Sites tab's actions, which act on no tab. */
+const INBOX_ACTIONS = new Set<PanelToWorker["t"]>(["q-answer", "q-decline", "q-release", "q-pull", "inbox-page", "inbox-mark", "inbox-mark-all", "open-url", "open-clax", "list-sites", "site-join", "site-split"]);
 const LIVE_ITEM = /^\/a\/([0-9a-hjkmnp-tv-z]{12})(?:[/?#]|$)/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 

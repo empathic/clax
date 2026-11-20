@@ -17,8 +17,8 @@
   // For the owner (the daemon takes the extension as the owner), three tabs
   // (spec 2026-10-06-agent-questions-and-inbox §9.6): **Page**, with the open
   // questions about the live page above its threads, **Inbox** with the
-  // unread count, and **Sites**, every joined site's addresses to join and
-  // split whatever the tab shows.
+  // unread count, and **Sites**, every site's addresses to join and split,
+  // whichever page the tab shows.
   import Sidebar from "../../../shell/src/ui/Sidebar.svelte";
   import type { Thread } from "../../../shell/src/threads";
   import { agentName } from "../../../shell/src/view/history-model";
@@ -46,7 +46,7 @@
     clip?(threadId: string): Promise<string | null>;
     farPage?(threadId: string): Promise<FarPage | null>;
     firsts?(threadIds: string[]): Promise<(string | null)[] | null>;
-    suggestion?: { origin: string; suggestion: Suggestion | null } | null; sites?: SiteChoice[] | null;
+    suggestion?: { origin: string; suggestion: Suggestion | null } | null; sites?: SiteChoice[] | null; sitesFailed?: { code: string; message: string } | null;
   } & Partial<Pick<PanelLink, "inbox" | "questions" | "ask" | "onItem">>;
   type Area = Parameters<typeof loadPrefs>[0];
   const local = (): Area => { try { return chrome.storage.local; } catch { return undefined; } };
@@ -236,6 +236,8 @@
   const sitesTab = $derived(owner && tab === "sites");
   const pageTab = $derived(!inboxTab && !sitesTab);
   const unreadCount = $derived(link.inbox?.unread ?? 0);
+  /** The tab's own site's origins: the Sites tab lists the sites again when they change. */
+  const siteOrigins = $derived((site?.site?.origins ?? []).map(o => o.origin).join(" "));
   // Arrows move between the tabs, as a tab list's do.
   function tabKey(e: KeyboardEvent): void {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "Home" && e.key !== "End") return;
@@ -301,9 +303,9 @@
       </div>
     {:else if sitesTab}
       <div class="tabpanel" role="tabpanel" id="ptab-sites-panel" aria-labelledby="ptab-sites">
-        <!-- Whatever the tab shows, Clax on or off in it; loaded when first opened. -->
+        <!-- Whichever page the tab shows; loaded when first opened. -->
         {#await import("./SitesTab.svelte") then { default: SitesTab }}
-          <SitesTab sites={link.sites ?? null} request={ask} {permit} list={() => link.post({ t: "list-sites" })} />
+          <SitesTab sites={link.sites ?? null} failed={link.sitesFailed ?? null} {siteOrigins} request={ask} {permit} list={() => link.post({ t: "list-sites" })} />
         {/await}
       </div>
     {:else}

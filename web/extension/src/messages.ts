@@ -163,8 +163,8 @@ export type PanelState = {
 };
 export type WorkerToPanel =
   | { t: "tab"; state: PanelState }
-  /** `req`: the request (`rule`, `unrule`) that failed. */
-  | { t: "failed"; code: string; message: string; req?: number }
+  /** `req`: the request (`rule`, `unrule`) that failed; `of: "list-sites"`: the list of sites could not be read (the Sites tab says so, not the tab). */
+  | { t: "failed"; code: string; message: string; req?: number; of?: "list-sites" }
   /** Whether the worker's event stream is up (told on `watch-tab` and on every change). */
   | { t: "stream-status"; up: boolean }
   /** Every thread of the tab's site (told on `watch-tab` and on every change); null until it is loaded. */
@@ -420,7 +420,8 @@ export function isToPanel(m: unknown): m is WorkerToPanel {
   const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   switch (m.t) {
     case "tab": return has("state") && obj(m.state);
-    case "failed": return shape(m, ["t", "code", "message"], ["req"]) && str(m.code, 64) && str(m.message, MAX_BODY) && (m.req === undefined || count(m.req));
+    case "failed": return shape(m, ["t", "code", "message"], ["req", "of"]) && str(m.code, 64) && str(m.message, MAX_BODY) && (m.req === undefined || count(m.req))
+      && (m.of === undefined || m.of === "list-sites");
     case "stream-status": return has("up") && bool(m.up);
     case "site": return has("site") && (m.site === null || obj(m.site));
     case "step": return has("req", "moved", "remaining") && count(m.req) && count(m.moved) && count(m.remaining);

@@ -819,7 +819,7 @@ Found by this test and fixed, each with a regression test:
   A page merged away by a join keeps its `/a/<id>` link and snapshots and
   is gone from the gallery.
 - The panel's Sites tab (the owner's, beside Page and Inbox) by hand: on a
-  tab Clax is off in, and on one showing neither dev server, it lists
+  tab showing neither dev server, it lists
   every site Clax has live pages of, the most recently active first, each
   with its addresses and its page and thread counts. "Split off" on an
   address of a joined site splits it off; "Join with…" and Join join the

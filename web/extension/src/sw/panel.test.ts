@@ -238,14 +238,21 @@ describe("panelAction on the tab's site", () => {
     const off = setup({ page: null });
     await off.run({ t: "suggest" }, null);
     expect(off.calls).toEqual([]);
-    // The list of sites is told whatever the tab shows (the Sites tab's).
+    // The list of sites is told whichever page the tab shows, and with no tab (the Sites tab's).
     await off.run({ t: "list-sites" });
     await off.run({ t: "list-sites" }, null);
     expect(off.calls).toEqual(["sites ", "sites "]);
     expect(off.out.map(o => o.t)).toEqual(["sites", "sites"]);
   });
 
-  it("joins and splits any site for the Sites tab, with Clax off in the tab or no tab, the given origins reaching the daemon", async () => {
+  it("tells a failed list of sites as the list's, never as the tab's error", async () => {
+    const s = setup({ fail: "sites", failCode: "http_401" });
+    await s.run({ t: "list-sites" });
+    expect(s.calls).toEqual(["sites "]);
+    expect(s.out).toEqual([{ t: "failed", code: "http_401", message: "No such thread.", of: "list-sites" }]);
+  });
+
+  it("joins and splits any site for the Sites tab, for a tab on no site or no tab, the given origins reaching the daemon", async () => {
     const off = setup({ page: null, remaining: 2 });
     await off.run({ t: "site-join", req: 3, origin: "http://localhost:3000", with: "http://localhost:7702" });
     await off.run({ t: "site-split", req: 4, origin: "http://localhost:3000" }, null);

@@ -1,20 +1,27 @@
 <script lang="ts">
   // The side panel's Sites tab, the owner's (spec 2026-10-05 §7.2): every
-  // site Clax has live pages of, the most recently active first, whatever
-  // the tab shows and whether Clax is on in it. Each site shows its name,
+  // site Clax has live pages of, the most recently active first, whichever
+  // page the tab shows, of a site or not. Each site shows its name,
   // its addresses, and how many pages and threads it has. Each address of a
   // joined site can be split off; "Join with…" joins another site, picked
   // from the list, into this one, in batches as SiteTools' join does,
   // asking Chrome first (under the click) for every origin of the site the
   // join makes; a site with a join not finished offers to continue it.
-  // After every change the list is asked for again.
-  import { onMount } from "svelte";
+  // The list is asked for again after every change, and when the origins of
+  // the tab's own site change (a join or split made elsewhere of another
+  // site shows only when the tab is opened again). A list that could not be
+  // read says why, with Retry.
+  import { untrack } from "svelte";
   import type { SiteChoice } from "../messages";
   import { type Step, host, plural, runJoin } from "./site-actions";
 
   type Ask = { t: "site-join"; origin: string; with: string } | { t: "site-split"; origin: string };
-  let { sites, request, list, permit }: {
+  let { sites, failed = null, siteOrigins = "", request, list, permit }: {
     sites: SiteChoice[] | null;
+    /** Why the list could not be read; null while it could. */
+    failed?: { code: string; message: string } | null;
+    /** The origins of the tab's own site, as one string. */
+    siteOrigins?: string;
     request(m: Ask): Promise<Step>; list(): void;
     /** Asks Chrome for `origins` (under the person's click): whether it allowed them. */
     permit(origins: string[]): Promise<boolean>;
@@ -25,7 +32,8 @@
   let note = $state<{ text: string; bad: boolean } | null>(null);
   let alive = true;
   $effect(() => () => { alive = false; });
-  onMount(() => list());
+  // On first showing, and whenever the tab's own site changes.
+  $effect(() => { void siteOrigins; untrack(() => list()); });
 
   /** Joins `other` into `site`; without `other`, finishes the join `site` has not finished, which needs no permission. */
   async function join(site: SiteChoice, other: SiteChoice | null): Promise<void> {
@@ -73,8 +81,11 @@
 <section class="sites" aria-label="Sites">
   <p class="hint">Addresses that are one site share their pages and comments. Join a dev server on another port to the site it serves, or split an address off.</p>
   {#if busy}<p class="small" role="status">{busy}…</p>{:else if note}<p class={note.bad ? "err" : "small"} role="status">{note.text}</p>{/if}
+  {#if failed}
+    <div class="failed" role="alert"><p>Clax could not list the sites: {failed.message}</p><button type="button" onclick={() => list()}>Retry</button></div>
+  {/if}
   {#if sites === null}
-    <p class="hint">Loading…</p>
+    {#if !failed}<p class="hint">Loading…</p>{/if}
   {:else if !sites.length}
     <p class="hint">No site has live pages yet.</p>
   {:else}
@@ -118,6 +129,8 @@
   .sites { padding: 4px var(--gutter) 14px; }
   .hint, .small { margin: 8px 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
   .err { margin: 8px 0; font-size: 12.5px; color: var(--danger); overflow-wrap: anywhere; }
+  .failed { display: flex; gap: 10px; align-items: center; margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--danger-tint); }
+  .failed p { flex: 1; margin: 0; font-size: 12.5px; overflow-wrap: anywhere; }
   .list { margin: 0; padding: 0; list-style: none; }
   .site { padding: 10px 0; border-top: 1px solid var(--border); }
   .site h2 { margin: 0; font: 600 13.5px/1.3 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
