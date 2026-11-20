@@ -1025,6 +1025,7 @@ impl Task {
                     // What the call may not do here, answered before it
                     // reaches the page.
                     let mut converted = None;
+                    let mut left_host = String::new();
                     if let SessionCall::Page { action, args } = &call {
                         if let Some(why) = self.refused_nav(&ctx, &d.url, action, args) {
                             let _ = reply.send(Err(why));
@@ -1051,6 +1052,7 @@ impl Task {
                                     last_call = self.clock.now();
                                     continue;
                                 };
+                                left_host.clone_from(&host);
                                 policy.replace(Arc::new(Left { host, then: leave }));
                                 synthetic = None;
                                 converted = Some(SessionKind::Url);
@@ -1071,9 +1073,14 @@ impl Task {
                         times: self.times,
                         limits: self.limits,
                     };
-                    let r = match converted {
-                        Some(_) => match d.become_browse().await {
-                            Ok(()) => perform(&mut d, &call, &timing).await,
+                    let r = match &converted {
+                        Some(_) => match d.become_browse(&left_host).await {
+                            // Once out, the synthetic origin's documents
+                            // are no history entry of the page.
+                            Ok(()) => match perform(&mut d, &call, &timing).await {
+                                Ok(a) => d.reset_history().await.map(|()| a),
+                                other => other,
+                            },
                             Err(e) => Err(e),
                         },
                         None => perform(&mut d, &call, &timing).await,
@@ -2302,6 +2309,41 @@ mod tests {
         }
         assert_eq!(log.sent("Page.navigate").len(), navigated);
         assert!(log.sent("Page.reload").is_empty());
+    }
+
+    /// After a goto out, no history entry leads back to the synthetic
+    /// origin: the history is reset at the conversion, and a `goBack` to
+    /// an entry on the origin the session left (the browser kept it) is
+    /// refused, not navigated to.
+    #[tokio::test]
+    async fn a_go_back_after_a_goto_out_does_not_reach_the_synthetic_origin() {
+        for keeps in [false, true] {
+            let w = World::new();
+            w.src.opens(move || {
+                let m = model().on(move |cmd| {
+                    (keeps && cmd["method"] == "Page.resetNavigationHistory")
+                        .then(|| vec![crate::browser::fake::answer(cmd, json!({}))])
+                });
+                Ok(FakeChrome::page(m))
+            });
+            let (_, log) = w.open(TIMES).await;
+            let out = "https://example.com/page";
+            let g = w
+                .call_with("goto", json!({"url": out}), None, Some(Arc::new(Web)))
+                .await
+                .unwrap();
+            assert!(g.ok, "{g:?}");
+            assert_eq!(log.sent("Page.resetNavigationHistory").len(), 1);
+            let back = w.page("goBack", json!({})).await.unwrap();
+            assert!(
+                log.sent("Page.navigateToHistoryEntry").is_empty(),
+                "{keeps}"
+            );
+            assert_eq!(back.url, out, "{keeps}");
+            if keeps {
+                assert!(!back.ok, "{back:?}");
+            }
+        }
     }
 
     #[tokio::test]

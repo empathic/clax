@@ -373,13 +373,19 @@ fn plain(status: u16, content_type: &str, body: Vec<u8>) -> Served {
 }
 
 /// `own` with the site's `headers` after its own, but for a header it
-/// already has.
+/// already has, and kept by no cache (`Cache-Control: no-store`, whatever
+/// `own` said): no document of a synthetic origin is restored from the
+/// browser's back/forward cache once the session left it.
 fn with_site_headers(mut own: Served, headers: Vec<(String, String)>) -> Served {
     for (k, v) in headers {
         if !own.headers.iter().any(|(o, _)| o.eq_ignore_ascii_case(&k)) {
             own.headers.push((k, v));
         }
     }
+    own.headers
+        .retain(|(k, _)| !k.eq_ignore_ascii_case("cache-control"));
+    own.headers
+        .push(("Cache-Control".into(), "no-store".into()));
     own
 }
 
@@ -970,6 +976,7 @@ mod tests {
         ];
         for req in &reqs {
             let s = served(site.answer(req, &src, &st, "p").await);
+            assert_eq!(header(&s, "cache-control"), Some("no-store"), "{}", req.url);
             assert_eq!(
                 header(&s, "content-security-policy"),
                 Some("default-src 'self'; connect-src 'self'"),
@@ -1093,6 +1100,7 @@ mod tests {
             Some("default-src 'self' data: blob:; connect-src 'self'")
         );
         assert_eq!(header(&root, "x-content-type-options"), Some("nosniff"));
+        assert_eq!(header(&root, "cache-control"), Some("no-store"));
         let css = fulfilled(c.answer(&paused(
             "https://s0123456789a.clax-content.invalid/style.css?v=1",
         )));
@@ -1108,6 +1116,7 @@ mod tests {
             fulfilled(c.answer(&paused("https://s0123456789a.clax-content.invalid/nope.js")));
         assert_eq!(missing.status, 404);
         assert!(header(&missing, "content-security-policy").is_some());
+        assert_eq!(header(&missing, "cache-control"), Some("no-store"));
     }
 
     #[test]

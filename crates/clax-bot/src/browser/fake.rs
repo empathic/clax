@@ -490,6 +490,12 @@ impl PageModel {
                     json!({"currentIndex": self.at, "entries": entries}),
                 )]
             }
+            "Page.resetNavigationHistory" => {
+                let current = self.history.get(self.at).cloned();
+                self.history = current.into_iter().collect();
+                self.at = 0;
+                vec![answer(cmd, json!({}))]
+            }
             "Page.navigate" | "Page.reload" | "Page.navigateToHistoryEntry" => {
                 let url = match (params["url"].as_str(), params["entryId"].as_u64()) {
                     (Some(u), _) => {

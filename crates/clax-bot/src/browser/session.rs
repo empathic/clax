@@ -474,6 +474,9 @@ pub(super) struct Driver<'a> {
     pub(super) status: u16,
     /// Whether this is a browse, whose requests go to the network.
     browse: bool,
+    /// The synthetic origin's host the page left, once it did: no history
+    /// entry on it is gone back to.
+    left: Option<String>,
     /// The URLs of the network's requests, to name a failed load.
     network_urls: BTreeMap<String, String>,
     pub(super) shots: Vec<Vec<u8>>,
@@ -586,6 +589,7 @@ impl<'a> Driver<'a> {
             awaiting_document: false,
             status: 0,
             browse: mode == Mode::Browse,
+            left: None,
             network_urls: BTreeMap::new(),
             shots: Vec::new(),
             url: String::new(),
@@ -596,9 +600,12 @@ impl<'a> Driver<'a> {
     }
 
     /// Makes the page a URL session's from its next document on (spec
-    /// §8.5): the browse preamble in place of the test's, and the
-    /// network's answers read as a browse's.
-    pub(super) async fn become_browse(&mut self) -> Result<(), CdpFail> {
+    /// §8.5), leaving the synthetic origin at `left`: the browse preamble
+    /// in place of the test's, the network's answers read as a browse's,
+    /// and no history entry on `left` gone back to
+    /// ([`Driver::history`]).
+    pub(super) async fn become_browse(&mut self, left: &str) -> Result<(), CdpFail> {
+        self.left = Some(left.to_string());
         if let Some(id) = self.preamble.take() {
             self.page_call(
                 "Page.removeScriptToEvaluateOnNewDocument",
@@ -1024,12 +1031,32 @@ impl<'a> Driver<'a> {
         Ok(())
     }
 
-    /// Goes to history entry `id` (at `url`) and waits for its load.
+    /// Forgets the page's history but its current entry: what the page
+    /// was before it left its synthetic origin is not gone back to, nor
+    /// restored from the browser's back/forward cache.
+    pub(super) async fn reset_history(&mut self) -> Result<(), CdpFail> {
+        self.page_call("Page.resetNavigationHistory", json!({}))
+            .await
+            .map(|_| ())
+    }
+
+    /// Goes to history entry `id` (at `url`) and waits for its load: `Err`
+    /// for an entry on the synthetic origin the page left, not navigated
+    /// to (spec §8.5).
     pub(super) async fn history(
         &mut self,
         id: i64,
         url: &str,
     ) -> Result<Result<(), String>, CdpFail> {
+        if let Some(left) = &self.left
+            && url::Url::parse(url)
+                .ok()
+                .is_some_and(|u| u.host_str() == Some(left.as_str()))
+        {
+            return Ok(Err(
+                "that page is on the origin this session left; it is not gone back to".into(),
+            ));
+        }
         self.navigation(
             "Page.navigateToHistoryEntry",
             json!({"entryId": id}),
