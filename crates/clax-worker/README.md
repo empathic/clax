@@ -144,8 +144,12 @@ conversion included; `User-Agent: Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Ge
 compatible; ClaxBot/1.0; +<PUBLIC_ORIGIN>)`, without the `; +<PUBLIC_ORIGIN>`
 when it has none), with HTML, PDF and Office documents
 converted by `env.AI.toMarkdown()` by the rules every source shares
-(`clax_bot::web::page::handling`). With the binding the instance's web use is
-configured; the admin still turns each tool on. Searches are billed to the
+(`clax_bot::web::page::handling`). A fetch with `format: "html"` answers
+an HTML page's markup cleaned in Rust (`clax_bot::web::page::clean_html`:
+scripts, styles, comments and inline event handlers removed, links made
+absolute), which `toMarkdown()` is then not asked to convert; `raw`
+answers a textual body as it came. With the binding the instance's web use
+is configured; the admin still offers each capability and grants it. Searches are billed to the
 account through its AI Gateway credits, or to a provider key stored on the
 gateway (`search.byok_alias`), so a deploy with search on needs one of
 them; conversions are free for these formats. Web search on the binding
@@ -164,14 +168,16 @@ fetches through it, across the restart, and a fetch of a page that
 redirects to itself; `smoke-remote.mjs` makes one real search and one real
 fetch when the deployed instance has web search on.
 
-ClaxBot's browser testing (`clax.browser.test`, spec
-`docs/superpowers/specs/2026-11-19-claxbot-browser-design.md`) is not
-configured on the Worker: it has no browser source, so a run never
+ClaxBot's browser capabilities (`browser.open.url`, `browser.open.artifact`
+and `browser.open.content`: `clax.browser.open` and `clax.browser.test`,
+spec `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md`) are
+not configured on the Worker: it has no browser source, so a run never
 declares `clax.browser`, `GET /api/admin/browser` answers `configured:
-false` with the reason in `unavailable`, and Your ClaxBot shows the
-switch as not configured. Its content store keeps no blobs, so a test's
-screenshots could not be kept, and an outbound WebSocket to Browser Run
-(or the `BROWSER` binding) is a change of its own.
+false` with the reason in `unavailable`, and Your ClaxBot shows each
+browser capability as not configured. Its content store keeps no blobs,
+so a session's screenshots and recordings could not be kept, and an
+outbound WebSocket to Browser Run (or the `BROWSER` binding) is a change
+of its own.
 
 ## Deploy to Cloudflare
 
