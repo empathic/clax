@@ -2404,14 +2404,11 @@ fn browser_rows(ts: &TestServer, rid: &str) -> Vec<i64> {
         .collect()
 }
 
-/// What a script returned between `<sid>` and `</sid>` in the requests
-/// the model was sent (its code writes neither whole): the browser session
-/// an earlier step opened.
-fn session_in(requests: &[Value]) -> String {
-    let sent = serde_json::to_string(requests).unwrap();
-    let from = sent.find("<sid>").expect("a step answered its session") + 5;
-    let to = from + sent[from..].find("</sid>").unwrap();
-    sent[from..to].to_string()
+/// The ID of run `rid`'s one browser session, as the store keeps it.
+fn only_session(store: &clax_store::Store, rid: &str) -> String {
+    let rows = store.bot_browser_sessions(rid).unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    rows[0].session_id.clone()
 }
 
 /// A session opened in one step on the daemon and clicked through a
@@ -2425,16 +2422,16 @@ async fn a_session_across_two_steps_through_the_daemon() {
             "tu_1",
             "Open the page",
             "const page = await clax.browser.open({ artifact: 'draft' });
-             return '<' + 'sid>' + JSON.parse(JSON.stringify(page)).session + '</' + 'sid>';",
+             state.page = page;
+             return 1;",
         ),
-        Turn::script_from("tu_2", "Book", |requests| {
-            format!(
-                "const page = clax.browser.session('{}');
-                 await page.getByRole('button', {{ name: 'Book' }}).click();
-                 return await page.close();",
-                session_in(requests)
-            )
-        }),
+        Turn::script(
+            "tu_2",
+            "Book",
+            "const page = state.page;
+             await page.getByRole('button', { name: 'Book' }).click();
+             return await page.close();",
+        ),
         Turn::finish("Booked."),
     ])
     .await;
@@ -2444,7 +2441,7 @@ async fn a_session_across_two_steps_through_the_daemon() {
     let sent = serde_json::to_string(&fake.requests()).unwrap();
     assert!(sent.contains(r#"\"ms\":"#), "the close answered: {sent}");
     assert!(!sent.contains("browser_session_lost"), "{sent}");
-    let session = session_in(&fake.requests());
+    let session = only_session(&ts.store, &rid);
     let row = ts
         .store
         .bot_browser_session(&rid, &session)
@@ -2470,7 +2467,8 @@ async fn the_run_end_closes_and_charges() {
             "tu_1",
             "Render",
             "const page = await clax.browser.open({ html: '<h1>Two directions</h1>' });
-             return '<' + 'sid>' + JSON.parse(JSON.stringify(page)).session + '</' + 'sid>';",
+             state.page = page;
+             return 1;",
         ),
         Turn::finish("Rendered."),
     ])
@@ -2478,7 +2476,7 @@ async fn the_run_end_closes_and_charges() {
     let run = FakeBrowserRun::start().await;
     let ts = browser_daemon(&fake, &run).await;
     let (rid, _) = browser_run(&ts, &run).await;
-    let session = session_in(&fake.requests());
+    let session = only_session(&ts.store, &rid);
     // The run's surfaces are told it ended once its end is committed, after
     // `run_end` is sent.
     let row = clax_testkit::until("the session closed at the run's end", || async {

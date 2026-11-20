@@ -150,7 +150,8 @@ interface BrowserResult {
   left: BrowserLeft;
 }
 interface BrowserOpened {
-  session: string;
+  /** The page's capability: the prelude's `Page` holds it, and no script reads it. */
+  page: string;
   kind: "url" | "artifact" | "content";
   url: string;
   title: string;
@@ -247,13 +248,13 @@ declare const clax: {
     /** Opens a browser session on a public URL the instance's rule admits (`{url}`), the run's clax (`{artifact: "draft" | version, path?}`, at an origin of its own) or HTML and files you supply (`{html, files?}`, at an origin of their own, reaching nothing else). It lasts across your scripts until closed, idle or its lifetime ends, and costs by the second while open. @spend @throws browser_disabled @throws browser_cap @throws credits_exhausted @throws url_not_allowed @throws url_not_in_prior_context @throws browser_target_not_found @throws browser_busy @throws browser_unavailable @throws browser_timeout */
     open(source: { url?: string; artifact?: "draft" | Int; path?: string; html?: string; files?: Record<string, unknown> }, opts?: BrowserOpenOpts): Promise<BrowserOpened>;
     /** One page action of an open session. A failure on the page is an answer (`ok: false`), charged as any. @spend @throws browser_disabled @throws credits_exhausted @throws browser_session_lost @throws browser_session_closed @throws url_not_allowed @throws url_not_in_prior_context */
-    page(session: string, action: "goto" | "reload" | "goBack" | "goForward" | "title" | "content" | "setViewportSize" | "waitForLoadState" | "waitForURL" | "evaluate" | "screenshot" | "consoleMessages" | "pageErrors" | "failedRequests" | "record" | "runTests" | "keyboard.down" | "keyboard.up" | "keyboard.press" | "keyboard.type" | "keyboard.insertText" | "mouse.move" | "mouse.down" | "mouse.up" | "mouse.click" | "mouse.dblclick" | "mouse.wheel", args?: Record<string, unknown>): Promise<BrowserAnswer>;
+    page(page: string, action: "goto" | "reload" | "goBack" | "goForward" | "title" | "content" | "setViewportSize" | "waitForLoadState" | "waitForURL" | "evaluate" | "screenshot" | "consoleMessages" | "pageErrors" | "failedRequests" | "record" | "runTests" | "keyboard.down" | "keyboard.up" | "keyboard.press" | "keyboard.type" | "keyboard.insertText" | "mouse.move" | "mouse.down" | "mouse.up" | "mouse.click" | "mouse.dblclick" | "mouse.wheel", args?: Record<string, unknown>): Promise<BrowserAnswer>;
     /** One action of a locator, its steps resolved in the page at this call; it waits until exactly one element matches and is actionable. @spend @throws browser_disabled @throws credits_exhausted @throws browser_session_lost @throws browser_session_closed */
-    act(session: string, locator: Record<string, unknown>[], action: "click" | "dblclick" | "fill" | "press" | "pressSequentially" | "hover" | "focus" | "check" | "uncheck" | "selectOption" | "textContent" | "innerText" | "inputValue" | "getAttribute" | "allTextContents" | "isVisible" | "isHidden" | "isEnabled" | "isChecked" | "count" | "waitFor" | "scrollIntoViewIfNeeded" | "screenshot", args?: Record<string, unknown>): Promise<BrowserAnswer>;
+    act(page: string, locator: Record<string, unknown>[], action: "click" | "dblclick" | "fill" | "press" | "pressSequentially" | "hover" | "focus" | "check" | "uncheck" | "selectOption" | "textContent" | "innerText" | "inputValue" | "getAttribute" | "allTextContents" | "isVisible" | "isHidden" | "isEnabled" | "isChecked" | "count" | "waitFor" | "scrollIntoViewIfNeeded" | "screenshot", args?: Record<string, unknown>): Promise<BrowserAnswer>;
     /** One matcher on a locator, or on the page (`locator` empty), retried in the browser until it holds or its time passes. @spend @throws browser_disabled @throws credits_exhausted @throws browser_session_lost @throws browser_session_closed */
-    expect(session: string, locator: Record<string, unknown>[], matcher: "toBeVisible" | "toBeHidden" | "toBeEnabled" | "toBeDisabled" | "toBeChecked" | "toBeFocused" | "toHaveText" | "toContainText" | "toHaveValue" | "toHaveAttribute" | "toHaveCount" | "toHaveURL" | "toHaveTitle", args?: Record<string, unknown>): Promise<BrowserAnswer>;
+    expect(page: string, locator: Record<string, unknown>[], matcher: "toBeVisible" | "toBeHidden" | "toBeEnabled" | "toBeDisabled" | "toBeChecked" | "toBeFocused" | "toHaveText" | "toContainText" | "toHaveValue" | "toHaveAttribute" | "toHaveCount" | "toHaveURL" | "toHaveTitle", args?: Record<string, unknown>): Promise<BrowserAnswer>;
     /** Closes a session: `ms` it was open, `cost` of its last segment. @spend @throws browser_disabled @throws credits_exhausted @throws browser_session_lost @throws browser_session_closed */
-    close(session: string): Promise<{ ms: Int; cost: number }>;
+    close(page: string): Promise<{ ms: Int; cost: number }>;
     /** Runs the run's clax's saved tests (`tests/<name>.test.js`, all of them or `opts.tests`) in a fresh browser on the draft (its edits not yet published too) or a version, and answers what failed, the console, errors and requests, in one call: no session to close. A test that fails is an answer (`passed: false`), not an error. Charged by browser time. @spend @throws browser_disabled @throws browser_cap @throws credits_exhausted @throws browser_target_not_found @throws browser_busy @throws browser_unavailable @throws browser_timeout */
     test(source?: { artifact: "draft" | Int; path?: string }, opts?: BrowserTestOpts): Promise<BrowserResult>;
   };

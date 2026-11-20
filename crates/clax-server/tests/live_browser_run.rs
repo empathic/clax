@@ -133,14 +133,11 @@ async fn until_the_end(ts: &TestServer, rid: &str) {
     .await;
 }
 
-/// What a script returned between `<sid>` and `</sid>` in the requests
-/// the model was sent (its code writes neither whole): the session an
-/// earlier step opened.
-fn session_in(requests: &[Value]) -> String {
-    let sent = serde_json::to_string(requests).unwrap();
-    let from = sent.find("<sid>").expect("a step answered its session") + 5;
-    let to = from + sent[from..].find("</sid>").unwrap();
-    sent[from..to].to_string()
+/// The ID of run `rid`'s one browser session, as the store keeps it.
+fn only_session(store: &clax_store::Store, rid: &str) -> String {
+    let rows = store.bot_browser_sessions(rid).unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    rows[0].session_id.clone()
 }
 
 /// The model thinking for longer than Browser Run's `keep_alive`, between
@@ -170,19 +167,18 @@ async fn a_session_outlives_keep_alive_in_real_browser_run() {
             "Open the page in a browser",
             "const page = await clax.browser.open({ artifact: 'draft' }, { viewport: 'phone' });
              await expect(page.getByText('Hello from Browser Run')).toBeVisible();
-             return '<' + 'sid>' + JSON.parse(JSON.stringify(page)).session + '</' + 'sid>';",
+             state.page = page;
+             return 1;",
         ),
-        Turn::script_from("tu_2", "Look at it again", |requests| {
+        Turn::script_from("tu_2", "Look at it again", |_| {
             think_past_keep_alive();
-            format!(
-                "const page = clax.browser.session('{}');
-                 const title = await page.title();
-                 const shot = await page.screenshot();
-                 const requests = await page.failedRequests();
-                 const closed = await page.close();
-                 return {{ title, shot: typeof shot, failed: requests.failed, closed: closed.ms > 0 }};",
-                session_in(requests)
-            )
+            "const page = state.page;
+             const title = await page.title();
+             const shot = await page.screenshot();
+             const requests = await page.failedRequests();
+             const closed = await page.close();
+             return { title, shot: typeof shot, failed: requests.failed, closed: closed.ms > 0 };"
+                .to_string()
         }),
         Turn::finish("The page loads in a browser."),
     ])
@@ -325,7 +321,7 @@ async fn a_session_outlives_keep_alive_in_real_browser_run() {
     // Its time was charged, once, as the session's segments.
     let row = ts
         .store
-        .bot_browser_session(&rid, &session_in(&fake.requests()))
+        .bot_browser_session(&rid, &only_session(&ts.store, &rid))
         .unwrap()
         .expect("the session's row");
     let charged: i64 = ts

@@ -927,11 +927,11 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 /// `page.close()` one of `browser.close`. Those four leave
 /// `clax.browser`, so a script reaches them only through a `Page`;
 /// `browser.test` and any other listed browser operation stay. A `Page`
-/// names its session by what `browser.open` answered, which no script
-/// reads: a `Page` returned or logged shows `"<browser page>"`, a
-/// `Locator` `"<browser locator>"`. `clax.browser.session(id)` makes,
-/// with no call, the `Page` of session `id` in a later script (its
-/// `url()` empty until its first call). Without the layer, or without all five operations, neither
+/// names its session by the capability `browser.open` answered
+/// (`page`), which no script reads: a `Page` returned or logged shows
+/// `"<browser page>"`, a `Locator` `"<browser locator>"`, and no `Page` is
+/// made from a string. A later script reaches a session only through
+/// `state` (see "State"). Without the layer, or without all five operations, neither
 /// the layer nor `expect` exists.
 ///
 /// The methods are built from one table, a JSON array between the lines

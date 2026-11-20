@@ -1520,13 +1520,13 @@ fn answered(value: Value) -> Value {
     json!({"ok": true, "value": value, "url": PAGE_URL, "ms": 1, "cost": 0})
 }
 
-/// The `browser.open` call of `source` (and `opts`), answered as session
-/// `s1` at `url`.
+/// The `browser.open` call of `source` (and `opts`), answered as the
+/// page whose capability is `s1`, at `url`.
 fn opens(args: Value, url: &str) -> Exchange {
     call(
         "browser.open",
         args,
-        json!({"session": "s1", "kind": "url", "url": url, "title": "", "status": 200,
+        json!({"page": "s1", "kind": "url", "url": url, "title": "", "status": 200,
                "viewport": {"width": 1280, "height": 800}}),
     )
 }
@@ -2118,7 +2118,7 @@ return 'done';",
             "return [typeof expect, Object.keys(clax.browser).sort(), typeof clax.browser.page, typeof clax.browser.act];",
             ok(json!([
                 "function",
-                ["open", "session", "test"],
+                ["open", "test"],
                 "undefined",
                 "undefined"
             ])),
@@ -2158,6 +2158,11 @@ return [page, l, JSON.stringify({ page }), String(JSON.stringify(page.keyboard))
                 },
             )
         }),
+        layered(case(
+            "there_is_no_session_from_a_string",
+            "return [typeof clax.browser.session, Object.keys(clax.browser).sort()];",
+            ok(json!(["undefined", ["open", "test"]])),
+        )),
         // The flat operations listed, the layer not asked for: a run
         // without a browser capability. `clax.browser.open` is the plain
         // operation, and nothing else of the layer exists.

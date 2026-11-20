@@ -1067,6 +1067,50 @@ fn only_session(env: &Env, run: &str) -> String {
     rows[0].session_id.clone()
 }
 
+/// A session's handle reaches the prelude alone: the open's answer in the
+/// journal holds it, and no event, record, step payload field the run
+/// panel reads, log or result names it; they name the session's ID.
+#[tokio::test]
+async fn an_open_answers_a_handle_no_record_names() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let (run, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "state.page = await clax.browser.open({ artifact: 'draft' });
+         console.log(state.page);
+         await state.page.title();
+         return [state.page, String(state.page.toJSON())];",
+    )
+    .await;
+    assert_eq!(v, json!(["<browser page>", "<browser page>"]));
+    let session = only_session(&env, &run);
+    let journal = env.store.bot_calls(&run, 2).unwrap();
+    let open = journal
+        .iter()
+        .find(|c| c.op() == "browser.open")
+        .expect("the open's entry");
+    let handle = open.result()["value"]["page"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no handle in {}", open.result()))
+        .to_string();
+    assert_eq!(handle.len(), 64, "{handle}");
+    let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
+    let script = steps.iter().find(|s| s.kind == StepKind::Script).unwrap();
+    let p = script.payload.as_ref().unwrap();
+    for (what, text) in [
+        ("events", serde_json::to_string(&env.bot_events()).unwrap()),
+        ("calls", p["calls"].to_string()),
+        ("result", p["result"].to_string()),
+        ("outcome", p["outcome"].to_string()),
+    ] {
+        assert!(!text.contains(&handle), "{what} names the handle: {text}");
+    }
+    assert!(p["calls"].to_string().contains(&session), "{}", p["calls"]);
+    // The state the step kept holds it, for the next script.
+    assert_eq!(p["state"]["handles"][0]["page"], handle);
+}
+
 /// The run's session row of `id`.
 fn session_row(env: &Env, run: &str, id: &str) -> clax_store::bot_web::SessionRow {
     env.store.bot_browser_session(run, id).unwrap().unwrap()
@@ -1089,7 +1133,7 @@ async fn a_session_lives_across_steps_and_its_time_is_charged_once() {
         &run,
         &d,
         "tu_1",
-        "const page = await clax.browser.open({ artifact: 'draft' }); return page;",
+        "state.page = await clax.browser.open({ artifact: 'draft' }); return state.page;",
     )
     .await;
     assert_eq!(r["value"], "<browser page>");
@@ -1107,11 +1151,9 @@ async fn a_session_lives_across_steps_and_its_time_is_charged_once() {
         &run,
         &d,
         "tu_2",
-        &format!(
-            "const page = clax.browser.session('{session}');
-             await page.getByRole('button', {{ name: 'Book' }}).click();
-             return await page.close();"
-        ),
+        "const page = state.page;
+         await page.getByRole('button', { name: 'Book' }).click();
+         return await page.close();",
     )
     .await;
     assert!(r.get("error").is_none(), "{r}");
@@ -1250,13 +1292,13 @@ async fn an_idle_session_answers_closed_idle() {
     let run = env.run_with_caps("browser.open.artifact");
     let deps = env.deps();
     let d = DriverId::mint();
-    let r = next_script(
+    next_script(
         &env,
         &deps,
         &run,
         &d,
         "tu_1",
-        "return await clax.browser.open({ artifact: 'draft' });",
+        "state.page = await clax.browser.open({ artifact: 'draft' }); return 1;",
     )
     .await;
     let session = only_session(&env, &run);
@@ -1270,10 +1312,8 @@ async fn an_idle_session_answers_closed_idle() {
         &run,
         &d,
         "tu_2",
-        &format!(
-            "try {{ await clax.browser.session('{session}').title(); return 'answered'; }}
-             catch (e) {{ return [e.name, e.code, e.message]; }}"
-        ),
+        "try { await state.page.title(); return 'answered'; }
+         catch (e) { return [e.name, e.code, e.message]; }",
     )
     .await;
     assert_eq!(r["value"][0], "HostError");
@@ -1441,13 +1481,13 @@ async fn credits_running_out_close_the_session() {
     let run = env.run_with_caps("browser.open.artifact");
     let deps = env.deps();
     let d = DriverId::mint();
-    let r = next_script(
+    next_script(
         &env,
         &deps,
         &run,
         &d,
         "tu_1",
-        "return await clax.browser.open({ artifact: 'draft' });",
+        "state.page = await clax.browser.open({ artifact: 'draft' }); return 1;",
     )
     .await;
     let session = only_session(&env, &run);
@@ -1468,14 +1508,12 @@ async fn credits_running_out_close_the_session() {
         &run,
         &d,
         "tu_2",
-        &format!(
-            "const page = clax.browser.session('{session}');
-             const codes = [];
-             for (let i = 0; i < 2; i++) {{
-               try {{ await page.title(); codes.push('ok'); }} catch (e) {{ codes.push(e.code); }}
-             }}
-             return codes;"
-        ),
+        "const page = state.page;
+         const codes = [];
+         for (let i = 0; i < 2; i++) {
+           try { await page.title(); codes.push('ok'); } catch (e) { codes.push(e.code); }
+         }
+         return codes;",
     )
     .await;
     assert_eq!(
@@ -1495,7 +1533,7 @@ async fn the_run_end_closes_its_sessions() {
     let (run, v) = one_script_with(
         &env,
         "browser.open.artifact",
-        "return await clax.browser.open({ artifact: 'draft' });",
+        "state.page = await clax.browser.open({ artifact: 'draft' }); return state.page;",
     )
     .await;
     assert_eq!(v, "<browser page>");

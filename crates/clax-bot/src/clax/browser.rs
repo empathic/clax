@@ -18,8 +18,9 @@
 //! - **Admission** (step 5). An open: the run has fewer sessions open
 //!   than `browser.max_open_per_run`, else `browser_cap`; a URL passes the
 //!   admin's URL rule; a clax target exists; each `Image` of supplied
-//!   files is an item of the run's content. A session call: its session
-//!   is open in this process (else `browser_session_closed` or
+//!   files is an item of the run's content. A session call: its handle,
+//!   the capability its `Page` holds (spec §17.3), names a session of this
+//!   run that is open in this process (else `browser_session_closed` or
 //!   `browser_session_lost`, uncharged); `runTests` only on a session of
 //!   the run's clax.
 //! - **Cap** (step 7): an open, and a test, are counted against their
@@ -52,8 +53,9 @@
 //! answered as its `Image` handle; one that cannot be kept fails the
 //! call's answer (`ok: false`), or a test's (`passed: false`).
 //!
-//! Each entry keeps under `browser` what the run panel shows of the call
-//! (an open's `kind`, `viewport`, `session` and `ms`; a session call's
+//! Each entry keeps under `browser` what the run panel shows of the call,
+//! naming a session by its ID and never by its handle (an open's `kind`,
+//! `viewport`, `session` and `ms`; a session call's
 //! `session`, `action` and `locator`, then `ok` and `ms`; a test's
 //! `target`, `path`, `viewport`, then `ms`, `passed`, `tests` and the
 //! counts of `errors`, `console` and `blocked`). A script's error carries
@@ -199,6 +201,9 @@ pub(super) struct SessionOp {
     /// The capability the call needs: its session's kind's.
     cap: Capability,
     kind: Option<SessionKind>,
+    /// The ID of the session the call's handle is the capability of, when
+    /// this process holds one for the run (spec §17.3).
+    session: Option<String>,
 }
 
 /// A test's arguments, and what its admission found.
@@ -626,8 +631,10 @@ impl Performer for Open {
                 };
                 shown["session"] = json!(o.session);
                 shown["ms"] = json!(ms);
+                // The page's capability goes to the prelude alone (spec
+                // §17.3): what the run shows and records names the session.
                 let mut v = json!({
-                    "session": o.session,
+                    "page": o.handle,
                     "kind": kind.as_str(),
                     "url": o.url,
                     "title": o.title,
@@ -681,11 +688,13 @@ impl SessionOp {
     /// names, of that session's kind (see the module docs).
     pub(super) fn of(s: &ClaxSession<'_>, call: &Call<'_>) -> SessionOp {
         let mut p = SessionOp::unbound(call.op);
-        let kind = call
+        p.session = call
             .args
             .first()
             .and_then(Value::as_str)
-            .and_then(|id| s.session_kind(id));
+            .zip(s.provider.sessions.as_ref())
+            .and_then(|(handle, sessions)| sessions.resolve(&s.run.id, handle).ok());
+        let kind = p.session.as_deref().and_then(|id| s.session_kind(id));
         match kind {
             Some(k) => {
                 p.kind = Some(k);
@@ -722,6 +731,7 @@ impl SessionOp {
             op,
             cap: Capability::OpenUrl,
             kind: None,
+            session: None,
         }
     }
 }
@@ -751,8 +761,7 @@ impl Performer for SessionOp {
     }
 
     fn shown(&self, args: &[Value]) -> Value {
-        let mut v =
-            json!({"session": args.first().cloned().unwrap_or(Value::Null), "op": self.op.name()});
+        let mut v = json!({"session": self.session, "op": self.op.name()});
         if let Some(kind) = self.kind {
             v["kind"] = json!(kind.as_str());
         }
@@ -781,11 +790,12 @@ impl Performer for SessionOp {
     ) -> Result<CallArgs, HostError> {
         let terms = terms_of(browser)?;
         let a = call.args;
-        let session = a
-            .first()
-            .and_then(Value::as_str)
-            .ok_or_else(|| bad("session: must be a string"))?
-            .to_string();
+        if !a.first().is_some_and(Value::is_string) {
+            return Err(bad("page: must be a string"));
+        }
+        // The session the handle names, by its ID; a handle no session of
+        // this run has is refused at admission.
+        let session = self.session.clone().unwrap_or_default();
         let checked = |row: &'static layer::Row, v: Option<&Value>| -> Result<Value, HostError> {
             let args = args_of(v);
             if v.is_some_and(|v| !v.is_null() && !v.is_object()) {
@@ -873,7 +883,7 @@ impl Performer for SessionOp {
     }
 
     fn noted(&self, args: &CallArgs) -> (Vec<(&'static str, Value)>, Vec<(&'static str, Value)>) {
-        let mut audit = vec![("session", json!(args.session))];
+        let mut audit = vec![("session", json!(self.session))];
         if let Some(row) = args.row
             && let Some(action) = row.action
         {
@@ -885,7 +895,7 @@ impl Performer for SessionOp {
     async fn admit(
         &self,
         s: &ClaxSession<'_>,
-        _call: &Call<'_>,
+        call: &Call<'_>,
         args: &mut CallArgs,
         _shown: &mut Value,
     ) -> Result<(), HostError> {
@@ -893,8 +903,11 @@ impl Performer for SessionOp {
         // refused here, before its price is checked; the ends the host
         // made are charged first.
         s.charge_ended();
-        s.sessions()?
-            .check(&s.run.id, &args.session)
+        let sessions = s.sessions()?;
+        let handle = call.args.first().and_then(Value::as_str).unwrap_or_default();
+        sessions
+            .resolve(&s.run.id, handle)
+            .and_then(|id| sessions.check(&s.run.id, &id))
             .map_err(|e| from_browser(&e))?;
         if let Some(c) = args.row.and_then(|r| r.needs)
             && self.kind.is_some_and(|k| cap_of(k) != c)
@@ -1058,10 +1071,8 @@ impl Performer for SessionOp {
         }
     }
 
-    async fn out_of_credits(&self, s: &ClaxSession<'_>, call: &Call<'_>) {
-        let (Ok(sessions), Some(session)) =
-            (s.sessions(), call.args.first().and_then(Value::as_str))
-        else {
+    async fn out_of_credits(&self, s: &ClaxSession<'_>, _call: &Call<'_>) {
+        let (Ok(sessions), Some(session)) = (s.sessions(), self.session.as_deref()) else {
             return;
         };
         let _ = sessions

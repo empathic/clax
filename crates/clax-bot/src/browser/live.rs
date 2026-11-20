@@ -56,11 +56,15 @@
 //!
 //! # Who may reach a session
 //!
-//! A session is reachable only through calls of the run that opened it:
-//! a handle of another run, or one this process does not hold (the daemon
-//! restarted), answers `browser_session_lost`; a session that ended
-//! answers `browser_session_closed` with its reason (or
-//! `browser_session_lost`, for a lost one).
+//! A session's handle is its capability (spec §17.3): 256 bits from the
+//! operating system, drawn at the open ([`Opened::handle`]), bound to the
+//! run that opened it. Holding it is the authority to drive the session
+//! ([`BrowserSessions::resolve`]): a handle of another run, an unknown
+//! one, or one this process does not hold (the daemon restarted), answers
+//! `browser_session_lost`, whose message never repeats it; a session that
+//! ended answers `browser_session_closed` with its reason (or
+//! `browser_session_lost`, for a lost one). Everything else, events,
+//! records and messages, names a session by its ID.
 
 use super::cdp::{Cdp, CdpFail};
 use super::opts::Tests;
@@ -186,6 +190,9 @@ impl CallCtx {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Opened {
     pub session: String,
+    /// The session's capability: 64 hex digits, shown nowhere but to the
+    /// prelude that holds it in its `Page` (see the module docs).
+    pub handle: String,
     pub kind: SessionKind,
     pub url: String,
     pub title: String,
@@ -227,6 +234,8 @@ enum Msg {
 /// A session the registry holds.
 struct Entry {
     run: String,
+    /// The session's capability ([`Opened::handle`]).
+    handle: String,
     kind: SessionKind,
     /// `None` while open; why it ended once it did.
     ended: Option<SessionEnd>,
@@ -342,6 +351,10 @@ impl BrowserSessions {
         let (tx, rx) = mpsc::unbounded();
         let (open_tx, open_rx) = oneshot::channel();
         let synthetic = start.synthetic_host();
+        let handle: String = clax_core::secret::random_bytes::<32>()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         let task = Task {
             run: run.to_string(),
             id: id.clone(),
@@ -358,6 +371,7 @@ impl BrowserSessions {
             id.clone(),
             Entry {
                 run: run.to_string(),
+                handle: handle.clone(),
                 kind,
                 ended: None,
                 tx,
@@ -369,7 +383,7 @@ impl BrowserSessions {
             task.run(cdp, start, viewport, policy, open_tx, rx),
         ));
         match open_rx.await {
-            Ok(r) => r,
+            Ok(r) => r.map(|o| Opened { handle, ..o }),
             Err(_) => Err(lost(&id, "its task ended before the page opened").opened(true)),
         }
     }
@@ -469,6 +483,39 @@ impl BrowserSessions {
                 resolve_url(&e.url, url).as_deref().and_then(host_of) != Some(host.as_str())
             }
         })
+    }
+
+    /// The ID of the session `handle` is the capability of, for run `run`,
+    /// open or ended (see the module docs).
+    ///
+    /// # Errors
+    /// `browser_session_lost` for a handle this process holds for no
+    /// session of `run`; its message does not repeat the handle.
+    pub fn resolve(&self, run: &str, handle: &str) -> Result<String, BrowserError> {
+        let reg = lock(&self.reg);
+        reg.sessions
+            .iter()
+            .find(|(_, e)| e.run == run && !handle.is_empty() && e.handle == handle)
+            .map(|(id, _)| id.clone())
+            .ok_or_else(|| {
+                BrowserError::new(
+                    CODE_BROWSER_SESSION_LOST,
+                    "this browser page's session is lost: this process holds no session of \
+                     this run for it (the host may have restarted); open a new one",
+                    false,
+                )
+            })
+    }
+
+    /// The capability of each session of run `run` open now, with its ID.
+    #[must_use]
+    pub fn open_handles(&self, run: &str) -> Vec<(String, String)> {
+        let reg = lock(&self.reg);
+        reg.sessions
+            .iter()
+            .filter(|(_, e)| e.run == run && e.ended.is_none())
+            .map(|(id, e)| (id.clone(), e.handle.clone()))
+            .collect()
     }
 
     /// Whether session `session` of run `run` is open in this process.
@@ -977,6 +1024,8 @@ impl Task {
         };
         Ok(Opened {
             session: self.id.clone(),
+            // The registry gives the open its handle once the task answers.
+            handle: String::new(),
             kind: self.kind,
             url: d.url.clone(),
             title: title.chars().take(1_000).collect(),
@@ -1663,6 +1712,35 @@ mod tests {
             "nothing resumed the popup or the service worker"
         );
         assert_eq!((WHY_POPUP, WHY_TARGET), ("popup", "target"));
+    }
+
+    /// A session's handle is 256 random bits, mapped to the session for
+    /// the run that opened it alone; another run's, an unknown one and
+    /// one from no open are lost, and the message repeats none of them.
+    #[tokio::test]
+    async fn a_handle_reaches_its_session_for_its_run_alone() {
+        let w = World::new();
+        let (o, _) = w.open(TIMES).await;
+        assert_eq!(o.handle.len(), 64);
+        assert!(o.handle.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(o.handle, o.session);
+        assert_eq!(w.sessions.resolve("run-1", &o.handle).unwrap(), o.session);
+        assert_eq!(
+            w.sessions.open_handles("run-1"),
+            [(o.session.clone(), o.handle.clone())]
+        );
+        for (run, handle) in [
+            ("run-2", o.handle.as_str()),
+            ("run-1", "00".repeat(32).as_str()),
+            ("run-1", o.session.as_str()),
+            ("run-1", ""),
+        ] {
+            let e = w.sessions.resolve(run, handle).unwrap_err();
+            assert_eq!(e.code, CODE_BROWSER_SESSION_LOST);
+            assert!(!e.message.contains(&o.handle), "{}", e.message);
+        }
+        let (other, _) = w.open(TIMES).await;
+        assert_ne!(other.handle, o.handle);
     }
 
     #[tokio::test]

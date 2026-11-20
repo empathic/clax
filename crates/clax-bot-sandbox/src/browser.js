@@ -284,7 +284,7 @@
   };
   const open = async (source, opts) => {
     const r = await (opts === undefined ? flat.open(source) : flat.open(source, opts));
-    return pageOf(r.session, r.url);
+    return pageOf(r.page, r.url);
   };
   for (const c of ["LocatorAssertions", "PageAssertions"]) {
     defineProperty(P[c], "not", {
@@ -367,6 +367,5 @@
       delete B[n];
     }
     B.open = open;
-    B.session = (id) => pageOf(toText(id), "");
     defineProperty(globalThis, "expect", { value: expect, writable: true, configurable: true });
   }
