@@ -75,10 +75,7 @@
   ;
   const flatNames = ["open", "page", "act", "expect", "close"];
   const B = clax.browser;
-  const keys = Object.keys;
-  const isArray = Array.isArray;
   const is = Object.is;
-  const ObjectProto = Object.prototype;
   const hasOwn = ObjectProto.hasOwnProperty;
   const fnSource = Function.prototype.toString;
   const RegExpCtor = RegExp;
@@ -248,6 +245,43 @@
   // Shown opaque: a returned or logged Page never shows its capability.
   P.Page.toJSON = () => "<browser page>";
   P.Locator.toJSON = () => "<browser locator>";
+  // In state (spec §17.2): each object of the layer's classes as a handle
+  // entry {page, url, of, steps?, not?, timeout?}, restored live, one Page
+  // per handle.
+  const classes = ["Page", "Locator", "Keyboard", "Mouse", "LocatorAssertions", "PageAssertions"];
+  stateHooks.encode = (o) => {
+    const s = S(o);
+    if (s === undefined) return undefined;
+    let of;
+    for (let i = 0; i < classes.length; i++) if (P[classes[i]] === getPrototypeOf(o)) of = classes[i];
+    if (of === undefined) return undefined;
+    const h = create(null);
+    h.page = s.p.session;
+    h.url = s.p.url;
+    h.of = of;
+    if (s.steps !== undefined && s.p !== s) h.steps = s.steps;
+    if (s.not === true) h.not = true;
+    if (s.p.timeout !== undefined) h.timeout = s.p.timeout;
+    return h;
+  };
+  const revived = create(null);
+  stateHooks.revive = (h) => {
+    if (typeof h.page !== "string") return null;
+    let page = revived[h.page];
+    if (page === undefined) {
+      page = pageOf(h.page, typeof h.url === "string" ? h.url : "");
+      if (typeof h.timeout === "number") S(page).timeout = h.timeout;
+      revived[h.page] = page;
+    }
+    if (h.of === "Page") return page;
+    if (h.of === "Keyboard" || h.of === "Mouse") return page[h.of === "Keyboard" ? "keyboard" : "mouse"];
+    if (h.of !== "Locator" && h.of !== "LocatorAssertions" && h.of !== "PageAssertions") return null;
+    const n = create(null);
+    n.p = S(page);
+    if (isArray(h.steps)) n.steps = h.steps;
+    if (h.not === true) n.not = true;
+    return make(P[h.of], n);
+  };
   const open = async (source, opts) => {
     const r = await (opts === undefined ? flat.open(source) : flat.open(source, opts));
     return pageOf(r.session, r.url);

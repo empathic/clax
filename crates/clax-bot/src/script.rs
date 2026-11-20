@@ -559,6 +559,9 @@ impl Tick<'_> {
             drop(sessions);
             return self.park(waited).await;
         }
+        // The state the script left is the run's, not the outcome's: it is
+        // kept apart from what the step stores of the outcome.
+        let _left = outcome.state.take();
         let StepHost { calls, journal, .. } = host;
         let mut calls = calls.into_inner().unwrap_or_else(|e| e.into_inner());
         // A script that waited for a call and, run again with its

@@ -74,6 +74,9 @@ pub struct Expect {
     pub logs: Option<Vec<String>>,
     /// The error's kind and a text its message contains.
     pub error: Option<(ErrorKind, &'static str)>,
+    /// The `state` the script leaves, as the JSON of
+    /// [`ScriptOutcome::state`] (`null` for none), when it is checked.
+    pub state: Option<Value>,
 }
 
 /// One script, the calls it must make, and what it must end with.
@@ -94,6 +97,8 @@ pub struct Case {
     pub ops: Option<Vec<String>>,
     /// Whether the script asks for the browser layer ([`Script::browser`]).
     pub browser: bool,
+    /// The `state` the script starts from ([`Script::state`]).
+    pub state: Option<Value>,
     pub calls: Vec<Exchange>,
     pub records: Records,
     pub expect: Expect,
@@ -109,6 +114,7 @@ impl Case {
             determinism: self.determinism,
             ops: self.ops.clone(),
             browser: self.browser,
+            state: self.state.clone(),
         }
     }
 }
@@ -126,6 +132,7 @@ fn ok(value: Value) -> Expect {
         value: Some(value),
         logs: None,
         error: None,
+        state: None,
     }
 }
 
@@ -134,6 +141,7 @@ fn none() -> Expect {
         value: None,
         logs: None,
         error: None,
+        state: None,
     }
 }
 
@@ -142,6 +150,7 @@ fn fails(kind: ErrorKind, contains: &'static str) -> Expect {
         value: None,
         logs: None,
         error: Some((kind, contains)),
+        state: None,
     }
 }
 
@@ -155,6 +164,7 @@ fn case(name: &'static str, code: &'static str, expect: Expect) -> Case {
         determinism: None,
         ops: None,
         browser: false,
+        state: None,
         calls: Vec::new(),
         records: Records::FromCalls,
         expect,
@@ -263,6 +273,7 @@ pub fn cases() -> Vec<Case> {
     all.extend(script_ops());
     all.extend(refused_ops());
     all.extend(parking());
+    all.extend(state());
     all.extend(browser_layer());
     all
 }
@@ -1351,6 +1362,148 @@ return [out, (() => {}) instanceof Function]"#,
     ]
 }
 
+/// What a script leaves in `state`, `{value, handles, dropped, more}`.
+fn left(value: Value, handles: Value, dropped: Value, more: u64) -> Value {
+    json!({"value": value, "handles": handles, "dropped": dropped, "more": more})
+}
+
+/// A dropped value of `state`: its path and why.
+fn dropped(path: &str, why: &str) -> Value {
+    json!({"path": path, "why": why})
+}
+
+/// `state`, the one global that outlives a script (spec
+/// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §17.1).
+fn state() -> Vec<Case> {
+    let kept = |c: Case, state: Value| Case {
+        expect: Expect {
+            state: Some(state),
+            ..c.expect.clone()
+        },
+        ..c
+    };
+    // A value nested 70 levels under `state.deep`: kept to 63 levels.
+    let mut deep = json!({});
+    for _ in 0..62 {
+        deep = json!({"x": deep});
+    }
+    let deep_path = format!("state.deep{}", ".x".repeat(63));
+    vec![
+        kept(
+            case(
+                "state_starts_empty_and_comes_back_as_left",
+                "const before = JSON.stringify(state);
+state.n = 1; state.list = [1, 'a', null]; state.o = { x: true }; state.u = undefined;
+return before;",
+                ok(json!("{}")),
+            ),
+            left(json!({"n": 1, "list": [1, "a", null], "o": {"x": true}}), json!([]), json!([]), 0),
+        ),
+        kept(
+            Case {
+                state: Some(json!({"value": {"n": 1, "keep": [true]}, "handles": []})),
+                ..case(
+                    "state_is_restored_before_the_script",
+                    "state.n += 1; return [state.n, state.keep];",
+                    ok(json!([2, [true]])),
+                )
+            },
+            left(json!({"n": 2, "keep": [true]}), json!([]), json!([]), 0),
+        ),
+        kept(
+            case(
+                "state_is_kept_after_a_throw",
+                "state.a = 1; throw new Error('x');",
+                fails(ErrorKind::Thrown, "x"),
+            ),
+            left(json!({"a": 1}), json!([]), json!([]), 0),
+        ),
+        kept(
+            case(
+                "state_is_replaced_by_an_object_and_refuses_anything_else",
+                "state.old = 1; state = { fresh: true };
+const out = [];
+for (const v of [5, null, [1], new Date(0), 'x']) { try { state = v; out.push('took'); } catch (e) { out.push(e.name); } }
+return out;",
+                ok(json!(["TypeError", "TypeError", "TypeError", "TypeError", "TypeError"])),
+            ),
+            left(json!({"fresh": true}), json!([]), json!([]), 0),
+        ),
+        kept(
+            case(
+                "what_state_cannot_keep_is_listed_with_its_path",
+                "const cyc = { k: 1 }; cyc.self = cyc;
+state.f = () => 1; state.s = Symbol('x'); state.b = 10n; state.nan = NaN; state.c = cyc;
+state.d = new Date(0); state.m = new Map(); state.arr = [1, () => 2]; state['a b'] = function () {};
+let deep = {}; state.deep = deep; for (let i = 0; i < 70; i++) { deep.x = {}; deep = deep.x; }
+state.g = { get boom() { throw new Error('no'); } };
+return 1;",
+                ok(json!(1)),
+            ),
+            left(
+                json!({"c": {"k": 1}, "arr": [1, null], "deep": deep}),
+                json!([]),
+                json!([
+                    dropped("state.f", "a function"),
+                    dropped("state.s", "a symbol"),
+                    dropped("state.b", "a bigint"),
+                    dropped("state.nan", "a number JSON cannot hold"),
+                    dropped("state.c.self", "a cycle"),
+                    dropped("state.d", "not plain data: [object Date]"),
+                    dropped("state.m", "not plain data: [object Map]"),
+                    dropped("state.arr[1]", "a function"),
+                    dropped("state[\"a b\"]", "a function"),
+                    dropped(&deep_path, "nested deeper than 64 levels"),
+                    dropped("state.g", "reading it threw"),
+                ]),
+                0,
+            ),
+        ),
+        kept(
+            case(
+                "a_clax_member_is_not_kept",
+                "state.$clax = 0; state.o = { $clax: 0, k: 3 }; return 0;",
+                ok(json!(0)),
+            ),
+            left(
+                json!({"o": {"k": 3}}),
+                json!([]),
+                json!([
+                    dropped("state.$clax", "a member named $clax, which state keeps for handles"),
+                    dropped("state.o.$clax", "a member named $clax, which state keeps for handles"),
+                ]),
+                0,
+            ),
+        ),
+        kept(
+            case(
+                "twenty_drops_are_listed_and_the_rest_counted",
+                "for (let i = 0; i < 25; i++) state['f' + i] = () => i; return 0;",
+                ok(json!(0)),
+            ),
+            left(
+                json!({}),
+                json!([]),
+                Value::Array((0..20).map(|i| dropped(&format!("state.f{i}"), "a function")).collect()),
+                5,
+            ),
+        ),
+        kept(
+            Case {
+                cancel_in_call: true,
+                calls: vec![call("echo", json!([1]), json!(1))],
+                records: Records::Exactly(vec![("echo", false, Some(CODE_CANCELLED))]),
+                ..case(
+                    "a_stopped_script_writes_no_state",
+                    "state.a = 1; await clax.echo(1); return 1",
+                    fails(ErrorKind::Cancelled, ""),
+                )
+            },
+            Value::Null,
+        ),
+    ]
+}
+
 /// The operations of the browser layer's cases: the five that install it
 /// ([`crate::BROWSER_SESSION_OPS`]) and `browser.test`.
 fn browser_ops() -> Option<Vec<String>> {
@@ -2027,6 +2180,54 @@ return [typeof expect, Object.keys(clax.browser).sort(), r];",
             )
         },
         layered(Case {
+            state: Some(json!({
+                "value": {"page": {"$clax": 0}, "btn": {"$clax": 1}, "same": {"$clax": 0}},
+                "handles": [
+                    {"page": "s1", "url": "https://x.test/a", "of": "Page", "timeout": 500},
+                    {"page": "s1", "url": "https://x.test/a", "of": "Locator",
+                     "steps": [{"role": "button", "name": "Save"}], "timeout": 500}
+                ]
+            })),
+            calls: vec![call(
+                "browser.act",
+                json!(["s1", [{"role": "button", "name": "Save"}], "click", {"timeout": 500}]),
+                answered(Value::Null),
+            )],
+            expect: Expect {
+                state: Some(left(
+                    // Members in the order the restored object holds them,
+                    // which is the saved JSON's (sorted, as serde_json's
+                    // map writes it).
+                    json!({"btn": {"$clax": 0}, "page": {"$clax": 1}, "same": {"$clax": 1},
+                           "l2": {"$clax": 2}, "kb": {"$clax": 3}, "not": {"$clax": 4}}),
+                    json!([
+                        {"page": "s1", "url": PAGE_URL, "of": "Locator",
+                         "steps": [{"role": "button", "name": "Save"}], "timeout": 500},
+                        {"page": "s1", "url": PAGE_URL, "of": "Page", "timeout": 500},
+                        {"page": "s1", "url": PAGE_URL, "of": "Locator", "steps": [{"text": "x"}], "timeout": 500},
+                        {"page": "s1", "url": PAGE_URL, "of": "Keyboard", "timeout": 500},
+                        {"page": "s1", "url": PAGE_URL, "of": "LocatorAssertions",
+                         "steps": [{"text": "x"}], "not": true, "timeout": 500}
+                    ]),
+                    json!([]),
+                    0,
+                )),
+                ..ok(json!([true, true, "https://x.test/a", PAGE_URL, "\"<browser page>\""]))
+            },
+            ..case(
+                "a_page_and_its_locator_in_state_restore_live_as_one_page",
+                "const same = state.page === state.same;
+const kb = state.page.keyboard === state.page.keyboard;
+const u = state.page.url();
+await state.btn.click();
+state.l2 = state.page.getByText('x');
+state.kb = state.page.keyboard;
+state.not = expect(state.l2).not;
+return [same, kb, u, state.page.url(), JSON.stringify(state.page)];",
+                none(),
+            )
+        }),
+        layered(Case {
             calls: vec![
                 open(),
                 call(
@@ -2200,6 +2401,12 @@ pub async fn check(sandbox: &dyn Sandbox, case: &Case) -> Result<ScriptOutcome, 
         && &outcome.logs != logs
     {
         problems.push(format!("logs {:?}, expected {logs:?}", outcome.logs));
+    }
+    if let Some(want) = &case.expect.state {
+        let got = serde_json::to_value(&outcome.state).unwrap_or_default();
+        if &got != want {
+            problems.push(format!("state {got}, expected {want}"));
+        }
     }
     let made: Vec<(&str, bool, Option<&str>)> = outcome
         .calls

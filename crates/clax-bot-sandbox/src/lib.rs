@@ -179,6 +179,12 @@ pub struct Script {
     /// the JSON when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub browser: bool,
+    /// The run's `state` this script starts from: `{value, handles}`, as
+    /// an earlier script of the run left it ([`StateOut::saved`]); `None`
+    /// for `{}`. See [`PRELUDE`], "State". Left out of the JSON when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<Value>,
 }
 
 /// What a script's clock and random numbers are, so a script run again
@@ -200,6 +206,17 @@ impl Script {
             determinism: None,
             ops: None,
             browser: false,
+            state: None,
+        }
+    }
+
+    /// The same script, starting from the run's `state` as `saved`
+    /// (`{value, handles}`, [`Script::state`]).
+    #[must_use]
+    pub fn with_state(self, saved: Value) -> Self {
+        Script {
+            state: Some(saved),
+            ..self
         }
     }
 
@@ -764,6 +781,51 @@ pub struct ScriptOutcome {
     pub mem_peak_bytes: u64,
     /// Wall time of the whole run, host calls included, in microseconds.
     pub wall_us: u64,
+    /// The `state` the script left, as the prelude wrote it when the
+    /// script's body settled; `None` when it did not get to (a limit, a
+    /// cancel or a park stopped it first). See [`PRELUDE`], "State".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<StateOut>,
+}
+
+/// The `state` a script left ([`ScriptOutcome::state`]): its value, each
+/// of Clax's handles in it as `{"$clax": i}`, an index into `handles`;
+/// and what could not be kept, at most 20 with their paths and how many
+/// more.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct StateOut {
+    pub value: Value,
+    #[serde(default)]
+    pub handles: Vec<Value>,
+    #[serde(default)]
+    pub dropped: Vec<Dropped>,
+    #[serde(default)]
+    pub more: u64,
+}
+
+/// A value of `state` that was not kept, and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dropped {
+    /// Where it was: `state.a.b[2]`.
+    pub path: String,
+    pub why: String,
+}
+
+impl StateOut {
+    /// What the prelude's `done` gave as its third argument, read; `None`
+    /// for none, or for text that is not one.
+    #[must_use]
+    pub fn read(text: Option<&str>) -> Option<StateOut> {
+        let out: StateOut = serde_json::from_str(text?).ok()?;
+        out.value.is_object().then_some(out)
+    }
+
+    /// What a later script starts from ([`Script::state`]): `{value,
+    /// handles}`.
+    #[must_use]
+    pub fn saved(&self) -> Value {
+        serde_json::json!({"value": self.value, "handles": self.handles})
+    }
 }
 
 impl ScriptOutcome {
@@ -799,13 +861,16 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 ///   characters, its length (a number); or `undefined` when they have no
 ///   JSON (`JSON.stringify` threw or gave nothing);
 /// - `log(line)`: the native function that keeps one log line;
-/// - `done(ok, payload)`: the native function told how the script ended:
-///   `done(true, json)` with the returned value's JSON (or `undefined`
-///   when there is none), or `done(false, errorJson)` with the JSON of
-///   [`Thrown`] for what it threw;
-/// - `options`: `{maxCallArgsBytes}`, from [`Limits`], and `nowMs` and
+/// - `done(ok, payload, state)`: the native function told how the script
+///   ended: `done(true, json, state)` with the returned value's JSON (or
+///   `undefined` when there is none), or `done(false, errorJson, state)`
+///   with the JSON of [`Thrown`] for what it threw; `state` is the JSON of
+///   [`StateOut`] ([`StateOut::read`]), or `undefined` when it could not
+///   be written;
+/// - `options`: `{maxCallArgsBytes}`, from [`Limits`]; `nowMs` and
 ///   `seed` from the script's [`Determinism`] when it has one (else left
-///   out: the engine's own clock and random numbers).
+///   out: the engine's own clock and random numbers); and `state`, the
+///   JSON text of [`Script::state`] when it has one.
 ///
 /// It defines the globals `clax` and `console` and returns an object of
 /// four functions, which capture every built-in they use before the
@@ -828,6 +893,24 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 /// - `settle(id, ok, json)` settles a host call: `ok` true with the
 ///   result's JSON, false with a [`HostError`]'s
 ///   [`HostError::reply_json`], `{code, message, retryable}`.
+///
+/// # State
+///
+/// The global `state` is the one value that outlives a script (spec
+/// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §17.1):
+/// a plain object, `options.state`'s value with each handle revived, or
+/// `{}`. Assigning it anything but a plain object throws a `TypeError`.
+/// When the script's body settles, returned or thrown, the prelude writes
+/// it out ([`StateOut`]) with the built-ins it captured: JSON values, and
+/// each object of the browser layer as a handle entry `{page, url, of,
+/// steps?, not?, timeout?}`, restored live in the next script, one `Page`
+/// per handle. A function, a symbol, a `bigint`, a number JSON cannot
+/// hold, a cycle, an object that is not plain data, a member named
+/// `$clax`, a value nested deeper than 64 levels or one whose reading
+/// throws is left out (an array item becomes `null`) and listed in
+/// [`StateOut::dropped`]; a member that is `undefined` is left out
+/// unlisted, as JSON leaves it. A script stopped before its body settled
+/// writes nothing.
 ///
 /// # The browser layer
 ///
@@ -1407,6 +1490,14 @@ mod tests {
             busy_us: 5,
             mem_peak_bytes: 2,
             wall_us: 4,
+            state: Some(StateOut {
+                value: serde_json::json!({"a": 1}),
+                dropped: vec![Dropped {
+                    path: "state.f".into(),
+                    why: "a function".into(),
+                }],
+                ..StateOut::default()
+            }),
         };
         let json = serde_json::to_value(&outcome).unwrap();
         assert_eq!(json["error"]["kind"], "invalid_limits");

@@ -131,7 +131,7 @@ pub(super) async fn run(
     let returned = worker_code(script, limits, &name).and_then(|code| {
         let stub = call(binding, "load", &[code.into()])?;
         let entrypoint = call(&stub, "getEntrypoint", &[JsValue::from_str("Run")])?;
-        let job = job_json(ops, limits, &name, script.determinism);
+        let job = job_json(ops, limits, &name, script.determinism, script.state.as_ref());
         call(
             &entrypoint,
             "run",

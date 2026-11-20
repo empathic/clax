@@ -32,6 +32,11 @@
   const imul = Math.imul;
   const RealDate = Date;
   const dateToString = Date.prototype.toString;
+  const isArray = Array.isArray;
+  const keys = Object.keys;
+  const ObjectProto = Object.prototype;
+  const setPrototypeOf = Object.setPrototypeOf;
+  const objectTag = Object.prototype.toString;
   const maxArgs = options.maxCallArgsBytes;
 
   // The sandbox's own host errors, by identity: what they carry is read from
@@ -149,7 +154,139 @@
   };
   defineProperty(globalThis, "console", { value: consoleObject, writable: true, configurable: true });
 
+  // What the browser layer gives state (spec §17.2): encode(x), a handle
+  // entry for an object of its own, and revive(entry), the object again.
+  const stateHooks = create(null);
   // browser-layer
+
+  // state (spec §17.1): the one global that outlives a script, restored
+  // from options.state ({value, handles}, handles as {"$clax": i}).
+  let current = {};
+  if (typeof options.state === "string") {
+    const saved = parse(options.state);
+    const handles = isArray(saved.handles) ? saved.handles : [];
+    const back = (v) => {
+      if (v === null || typeof v !== "object") return v;
+      const k = keys(v);
+      if (!isArray(v) && k.length === 1 && k[0] === "$clax") {
+        const h = handles[v.$clax];
+        return h !== undefined && stateHooks.revive !== undefined ? stateHooks.revive(h) : null;
+      }
+      for (let i = 0; i < k.length; i++) v[k[i]] = back(v[k[i]]);
+      return v;
+    };
+    if (saved.value !== null && typeof saved.value === "object" && !isArray(saved.value)) current = back(saved.value);
+  }
+  defineProperty(globalThis, "state", {
+    get: () => current,
+    set: (v) => {
+      const pr = v !== null && typeof v === "object" && !isArray(v) ? getPrototypeOf(v) : undefined;
+      if (pr !== ObjectProto && pr !== null) throw new TypeErrorCtor("state must be a plain object");
+      current = v;
+    },
+    configurable: false,
+  });
+  // What the script left in state, as {value, handles, dropped, more}: what
+  // cannot be kept is left out and listed with its path, never silently.
+  const plain = () => setPrototypeOf([], null);
+  const putIn = (a, v) => defineProperty(a, a.length, { value: v, writable: true, enumerable: true, configurable: true });
+  const saveState = () => {
+    const handles = plain();
+    const made = plain();
+    const dropped = plain();
+    const stack = plain();
+    let more = 0;
+    const drop = (path, why) => {
+      if (dropped.length >= 20) {
+        more++;
+        return;
+      }
+      const d = create(null);
+      d.path = path;
+      d.why = why;
+      putIn(dropped, d);
+    };
+    const enc = (x, path, depth) => {
+      const t = typeof x;
+      if (x === null || t === "string" || t === "boolean") return x;
+      if (t === "number") {
+        if (x - x === 0) return x;
+        drop(path, "a number JSON cannot hold");
+        return undefined;
+      }
+      if (t === "undefined") return undefined;
+      if (t !== "object") {
+        drop(path, t === "function" ? "a function" : "a " + t);
+        return undefined;
+      }
+      for (let i = 0; i < made.length; i++) {
+        if (made[i] === x) {
+          const m = create(null);
+          m.$clax = i;
+          return m;
+        }
+      }
+      const h = stateHooks.encode === undefined ? undefined : stateHooks.encode(x);
+      if (h !== undefined) {
+        putIn(made, x);
+        putIn(handles, h);
+        const m = create(null);
+        m.$clax = made.length - 1;
+        return m;
+      }
+      for (let i = 0; i < stack.length; i++) {
+        if (stack[i] === x) {
+          drop(path, "a cycle");
+          return undefined;
+        }
+      }
+      if (depth >= 64) {
+        drop(path, "nested deeper than 64 levels");
+        return undefined;
+      }
+      try {
+        let out;
+        putIn(stack, x);
+        if (isArray(x)) {
+          out = plain();
+          for (let i = 0; i < x.length; i++) {
+            const v = enc(x[i], path + "[" + i + "]", depth + 1);
+            putIn(out, v === undefined ? null : v);
+          }
+        } else {
+          const pr = getPrototypeOf(x);
+          if (pr !== ObjectProto && pr !== null) {
+            drop(path, "not plain data: " + apply(objectTag, x, []));
+            return undefined;
+          }
+          out = create(null);
+          const k = keys(x);
+          for (let i = 0; i < k.length; i++) {
+            const at = apply(regexpTest, segment, [k[i]]) ? path + "." + k[i] : path + "[" + stringify(k[i]) + "]";
+            if (k[i] === "$clax") drop(at, "a member named $clax, which state keeps for handles");
+            else {
+              const v = enc(x[k[i]], at, depth + 1);
+              if (v !== undefined) out[k[i]] = v;
+            }
+          }
+        }
+        return out;
+      } catch (_) {
+        drop(path, "reading it threw");
+        return undefined;
+      } finally {
+        stack.length = stack.length - 1;
+      }
+    };
+    let value = enc(current, "state", 0);
+    if (value === null || typeof value !== "object" || isArray(value)) value = create(null);
+    const out = create(null);
+    out.value = value;
+    out.handles = handles;
+    out.dropped = dropped;
+    out.more = more;
+    return stringify(out);
+  };
 
   const lineOf = (stack) => {
     if (typeof stack !== "string") return undefined;
@@ -248,7 +385,13 @@
     const ended = (ok, payload) => {
       if (finished) return;
       finished = true;
-      done(ok, payload);
+      let saved;
+      try {
+        saved = saveState();
+      } catch (_) {
+        saved = undefined;
+      }
+      done(ok, payload, saved);
     };
     let p;
     try {

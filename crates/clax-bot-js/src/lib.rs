@@ -66,7 +66,7 @@
 
 use clax_bot_sandbox::{
     CODE_CANCELLED, CODE_INVALID_ARGS, CODE_SCRIPT_FINISHED, CODE_WAITING, CallRecord, CancelToken,
-    ErrorKind, Host, HostError, HostReply, Limits, LogBuffer, Sandbox, Script,
+    ErrorKind, Host, HostError, HostReply, Limits, LogBuffer, Sandbox, Script, StateOut,
     ScriptError, ScriptOutcome, Thrown, check_body, validate_ops, wrap,
 };
 use futures_channel::mpsc;
@@ -468,6 +468,7 @@ impl Sandbox for QuickJs {
                 busy_us: micros(busy),
                 mem_peak_bytes: run.peak.load(Ordering::SeqCst),
                 wall_us: micros(started.elapsed()),
+                state: None,
             }
         };
         let mut outcome = loop {
@@ -611,6 +612,8 @@ struct Shared {
     queued_bytes: u64,
     /// `done(ok, payload)`, once the script's body has settled.
     done: Option<(bool, Option<String>)>,
+    /// `done`'s third argument: the `state` the script left, as JSON.
+    state: Option<String>,
 }
 
 /// The engine's own state the interrupt handler reads and writes.
@@ -730,6 +733,7 @@ impl Engine {
             let _ = to_host.unbounded_send(ToHost::Refused(record));
         }
         let cpu_us = micros(meter.elapsed());
+        let state = StateOut::read(shared.borrow_mut().state.take().as_deref());
         let ended = ended.and_then(|value| match value {
             Some(json) if json.len() as u64 > self.limits.max_result_bytes => {
                 Err(ScriptError::new(
@@ -765,6 +769,7 @@ impl Engine {
             busy_us: 0,
             mem_peak_bytes: peak,
             wall_us: 0,
+            state,
         }
     }
 
@@ -890,6 +895,9 @@ impl Engine {
             if let Some(d) = self.script.determinism {
                 options.set("nowMs", d.now_ms as f64).map_err(caught)?;
                 options.set("seed", f64::from(d.seed)).map_err(caught)?;
+            }
+            if let Some(state) = &self.script.state {
+                options.set("state", state.to_string()).map_err(caught)?;
             }
             let ops: Vec<String> = self.ops.to_vec();
             let api: Object = prelude
@@ -1155,12 +1163,16 @@ impl Engine {
         };
         let done = {
             let shared = shared.clone();
-            Function::new(ctx.clone(), move |ok: bool, payload: Option<String>| {
-                let mut shared = shared.borrow_mut();
-                if shared.done.is_none() {
-                    shared.done = Some((ok, payload));
-                }
-            })?
+            Function::new(
+                ctx.clone(),
+                move |ok: bool, payload: Option<String>, state: Option<String>| {
+                    let mut shared = shared.borrow_mut();
+                    if shared.done.is_none() {
+                        shared.done = Some((ok, payload));
+                        shared.state = state;
+                    }
+                },
+            )?
         };
         Ok((call, log, done))
     }

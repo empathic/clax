@@ -7,7 +7,8 @@
 //
 // The Worker's instance calls `run(job, host)` once: `job` is the JSON of
 // {ops, maxCalls, maxCallArgsBytes, maxLogBytes, truncated, file, nowMs?,
-// seed?} (the last two for a determined script), `host` a
+// seed?, state?} (nowMs and seed for a determined script, state the JSON
+// text of the run's state it starts from), `host` a
 // function back into the instance that takes one JSON message and answers
 // one JSON text. Messages:
 //
@@ -15,9 +16,9 @@
 //       the script made before it that never reach the host (records) and
 //       the log lines since the last message; answered {ok, json}, or
 //       {stop} once the instance has ended the run;
-//   {final: {records, logs, done?: {ok, payload}, stop?, never?, gone?}}
+//   {final: {records, logs, done?: {ok, payload, state}, stop?, never?, gone?}}
 //       how the script ended: its body settled (done, as the prelude's
-//       done(ok, payload) reported it), it went over its host calls
+//       done(ok, payload, state) reported it), it went over its host calls
 //       (stop: "calls"), it awaited a promise nothing can settle (never),
 //       or the host stopped answering (gone).
 //
@@ -251,13 +252,14 @@ const begin = (job, host, resolveRun) => {
     apply(push, logs, [text]);
   };
 
-  const ended = (ok, payload) => {
+  const ended = (ok, payload, state) => {
     if (done) return;
     done = true;
     const r = create(null);
     const d = create(null);
     d.ok = ok;
     d.payload = payload === undefined ? null : payload;
+    d.state = typeof state === "string" ? state : null;
     r.done = d;
     finish(r);
   };
@@ -331,6 +333,7 @@ const begin = (job, host, resolveRun) => {
   // A determined script's frozen clock and seed, as the prelude takes them.
   if (typeof job.nowMs === "number") options.nowMs = job.nowMs;
   if (typeof job.seed === "number") options.seed = job.seed;
+  if (typeof job.state === "string") options.state = job.state;
   api = prelude(job.ops, call, log, ended, options);
   api.lockdown();
   // Off the global object and every prototype above it (the runtime keeps
