@@ -257,6 +257,9 @@ struct Entry {
     url: String,
     /// The synthetic origin's host it is served from, until it leaves it.
     synthetic: Option<String>,
+    /// When its browser opened (the WebSocket's upgrade): what its points
+    /// are measured from.
+    opened_at: DateTime<Utc>,
 }
 
 #[derive(Default)]
@@ -436,6 +439,7 @@ impl BrowserSessions {
                 tx,
                 url: start.url(),
                 synthetic,
+                opened_at,
             },
         );
         drop(clax_rt::spawn(
@@ -763,6 +767,21 @@ impl BrowserSessions {
             ));
         }
         Ok(cap)
+    }
+
+    /// The point session `session` of run `run` is at now, in milliseconds
+    /// since its browser opened (the points its calls answer and are
+    /// charged through, [`Answered::at_ms`]), by the registry's clock;
+    /// `None` for a session this process does not hold for `run` or that
+    /// ended.
+    #[must_use]
+    pub fn at_ms(&self, run: &str, session: &str) -> Option<i64> {
+        let reg = lock(&self.reg);
+        let e = reg
+            .sessions
+            .get(session)
+            .filter(|e| e.run == run && e.ended.is_none())?;
+        Some((self.clock.now() - e.opened_at).num_milliseconds().max(0))
     }
 
     /// Whether session `session` of run `run` is open in this process.
@@ -1761,6 +1780,25 @@ mod tests {
             log.sent("Fetch.fulfillRequest").last().unwrap()["params"]["requestId"],
             "late"
         );
+    }
+
+    /// A session's point now is its time since the open by the registry's
+    /// clock, the model's turns included; none for another run's session
+    /// or one that ended.
+    #[tokio::test]
+    async fn a_sessions_point_counts_from_its_open() {
+        let w = World::new();
+        let (o, _) = w.open(TIMES).await;
+        let at = w.sessions.at_ms("run-1", "s1").unwrap();
+        assert_eq!(at, o.at_ms);
+        w.clock.advance(7);
+        assert_eq!(w.sessions.at_ms("run-1", "s1"), Some(at + 7_000));
+        assert_eq!(w.sessions.at_ms("run-2", "s1"), None);
+        w.sessions
+            .close("run-1", "s1", SessionEnd::Closed)
+            .await
+            .unwrap();
+        assert_eq!(w.sessions.at_ms("run-1", "s1"), None);
     }
 
     #[tokio::test]

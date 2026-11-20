@@ -260,6 +260,11 @@ pub(super) struct CallArgs {
     /// The capability that authorized the call, once checked: its
     /// session's task holds a navigation to its `origin` caveat again.
     held: Option<Cap>,
+    /// The session's charged point when the call was admitted, and its
+    /// time since then not yet charged (the model's turns included): what
+    /// the price check adds to the call's time cap (spec §10.3).
+    charged_ms: i64,
+    uncharged_ms: i64,
 }
 
 /// What a `share` or `revoke` asks of the page's capability (spec §18.4).
@@ -373,6 +378,7 @@ fn time_cap(seconds: u32) -> PriceCap {
     PriceCap {
         line: LINE_BROWSER_TIME.to_string(),
         qty: i64::from(seconds) * 1000,
+        after: 0,
         costs: format!("a browser call of {seconds} s can cost"),
     }
 }
@@ -953,6 +959,8 @@ impl Performer for SessionOp {
                         cap_call: Some(cap_call),
                         nav: Nav::None,
                         held: None,
+                        charged_ms: 0,
+                        uncharged_ms: 0,
                     });
                 }
                 if action == "record"
@@ -1031,6 +1039,8 @@ impl Performer for SessionOp {
             cap_call: None,
             nav,
             held: None,
+            charged_ms: 0,
+            uncharged_ms: 0,
         })
     }
 
@@ -1101,6 +1111,16 @@ impl Performer for SessionOp {
             }
         }
         args.held = Some(cap);
+        // The session's time not yet charged, to its point now: what the
+        // price check adds to the call's time cap (spec §10.3).
+        args.charged_ms = s
+            .store()
+            .bot_browser_session(&s.run.id, &session)
+            .map_err(|e| host_error(&e))?
+            .map_or(0, |r| r.charged_ms);
+        args.uncharged_ms = sessions
+            .at_ms(&s.run.id, &session)
+            .map_or(0, |at| (at - args.charged_ms).max(0));
         if let Some(c) = args.row.and_then(|r| r.needs)
             && self.kind.is_some_and(|k| cap_of(k) != c)
         {
@@ -1119,11 +1139,23 @@ impl Performer for SessionOp {
     fn price_cap(&self, _call: &Call<'_>, args: &CallArgs) -> PriceCap {
         // A share or revoke reaches no browser and costs nothing (spec
         // §18.4).
-        time_cap(if args.cap_call.is_some() {
-            0
-        } else {
-            args.terms.call_seconds
-        })
+        if args.cap_call.is_some() {
+            return time_cap(0);
+        }
+        // Any other call charges the session's time since its charged
+        // point through its end: the person can pay the time not yet
+        // charged and the call's time cap, priced after the charged point
+        // as the segment will be (spec §10.3).
+        let seconds = args.terms.call_seconds;
+        PriceCap {
+            qty: args.uncharged_ms + i64::from(seconds) * 1000,
+            after: args.charged_ms,
+            costs: format!(
+                "the browser session's {} s not yet charged and a call of {seconds} s can cost",
+                args.uncharged_ms as f64 / 1000.0
+            ),
+            ..time_cap(seconds)
+        }
     }
 
     async fn perform(
@@ -1196,7 +1228,9 @@ impl Performer for SessionOp {
             .map_or(0, |r| r.charged_ms);
         let through = at_ms.max(charged);
         let ms = through - charged;
-        let (usage, cost) = match priced.usage(ms) {
+        // Rounded once over the session: the segment costs what the
+        // session's time through it costs less what it cost before it.
+        let (usage, cost) = match priced.usage_after(charged, ms) {
             Ok(x) => x,
             Err(e) => return Finish::refused(host_error(&e)),
         };

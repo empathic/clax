@@ -2844,7 +2844,9 @@ fn browser_refusal(e: &clax_bot::browser::BrowserError) -> ApiError {
 /// that does not verify or is another grant's (it says nothing of the
 /// session), and once the run ended (the registry forgets its sessions);
 /// 410 `browser_session_closed` once its session closed; 402
-/// `credits_exhausted` when the person cannot pay one call's time cap; 400 `invalid_args` for a call the layer does not
+/// `credits_exhausted` when the person cannot pay the session's time not
+/// yet charged and one call's time cap; 400 `invalid_args` for a call the
+/// layer does not
 /// take, and 403 `browser_disabled` for `record`, `runTests` and a `goto`
 /// out of the session's origin; 503 `browser_unavailable` on a host that
 /// holds no browser sessions or prices no browser time.
@@ -2900,16 +2902,29 @@ pub async fn page_call(
                 false,
             ))
         })?;
-    let (bot, cap_id, class, g, r) = (
+    let (bot, cap_id, class, g, r, sid) = (
         s.bot.clone(),
         cap.id().to_string(),
         held.class,
         grant.clone(),
         run_id.clone(),
+        session.clone(),
     );
+    let point = sessions.at_ms(&run_id, &session);
     let checked = s
         .store_call(move |st| {
-            held_call_terms(st, &bot, &g, &r, &cap_id, class, kind, location, now)
+            held_call_terms(
+                st,
+                &bot,
+                &g,
+                &r,
+                &cap_id,
+                class,
+                kind,
+                location,
+                (&sid, point),
+                now,
+            )
         })
         .await??;
     let deadline = s.store.now_utc() + chrono::Duration::seconds(i64::from(checked));
@@ -2957,8 +2972,11 @@ pub async fn page_call(
 /// `kind` of run `run`) needs of the store before it is made (see
 /// [`page_call`]): its grant conveys `class` at `location` to grant
 /// `grant` at `now`; the run has not ended and still holds the session's
-/// open action; the person can pay one call's time cap. Answers that cap,
-/// in seconds, or the refusal.
+/// open action; the person can pay the session's time not yet charged (from
+/// its charged point to `point`, the session's point now, by the
+/// registry's clock) and one call's time cap, priced after the charged
+/// point as the segment is (spec §10.3). Answers that cap, in seconds, or
+/// the refusal.
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
 fn held_call_terms(
@@ -2970,11 +2988,12 @@ fn held_call_terms(
     class: clax_bot::browser::cap::Class,
     kind: clax_store::bot_web::SessionKind,
     location: Option<String>,
+    (session, point): (&str, Option<i64>),
     now: chrono::DateTime<chrono::Utc>,
 ) -> clax_core::Result<Result<u32, ApiError>> {
     use clax_bot::browser::cap::Refusal;
     use clax_bot::capability::Capability;
-    use clax_store::credits::{Applies, LINE_BROWSER_TIME, row_credits_milli};
+    use clax_store::credits::{Applies, LINE_BROWSER_TIME, series_credits_milli};
     let forbidden = |why: String| {
         ApiError::new(
             StatusCode::FORBIDDEN,
@@ -3012,11 +3031,16 @@ fn held_call_terms(
         return Ok(Err(no_browser()));
     };
     let ks = st.key_source_of(&run.person)?;
+    let charged = st
+        .bot_browser_session(&run.id, session)?
+        .map_or(0, |r| r.charged_ms);
+    let uncharged = point.map_or(0, |at| (at - charged).max(0));
     let most = if ks == KeySource::Own && rate.applies == Applies::InstanceKey {
         0
     } else {
-        row_credits_milli(
-            i64::from(terms.call_seconds) * 1000,
+        series_credits_milli(
+            charged,
+            uncharged + i64::from(terms.call_seconds) * 1000,
             rate.cost_micro_usd,
             rate.margin_bp,
             rate.fixed_credits_milli,
@@ -3030,9 +3054,10 @@ fn held_call_terms(
             StatusCode::PAYMENT_REQUIRED,
             "credits_exhausted",
             format!(
-                "the person this page's run acts for has {} credits left this week and a browser \
-                 call of {} s can cost {}",
+                "the person this page's run acts for has {} credits left this week and the \
+                 browser session's {} s not yet charged and a call of {} s can cost {}",
                 left as f64 / 1000.0,
+                uncharged as f64 / 1000.0,
                 terms.call_seconds,
                 most as f64 / 1000.0
             ),

@@ -35,8 +35,9 @@
 //! 8. **Price.** The line exists (else `<family>_unavailable`: pricing
 //!    not configured), and the person can pay the call's price cap
 //!    ([`Performer::price_cap`]: one request, or a browser call's time
-//!    cap) at its rate, at most their credits left this week unless their
-//!    credits are not enforced, or `credits_exhausted`.
+//!    cap, with a session call's session's time not yet charged) at its
+//!    rate, at most their credits left this week unless their credits are
+//!    not enforced, or `credits_exhausted`.
 //! 9. **Perform** ([`Performer::perform`]), with the run's cancel token.
 //!    What it answers is the call's answer: a failure on the page
 //!    (`passed: false`, `ok: false`) is a value, journaled and charged as
@@ -76,7 +77,7 @@ use clax_bot_sandbox::HostError;
 use clax_core::audit::{AuditKind, AuditRecord};
 use clax_store::bot_runs::CallEntry;
 use clax_store::bot_web::{SessionSpend, Spend, WebPageRow};
-use clax_store::credits::{Applies, KeySource, Metered, Rate, row_credits_milli};
+use clax_store::credits::{Applies, KeySource, Metered, Rate, series_credits_milli};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -156,8 +157,13 @@ impl Finish {
 pub(super) struct PriceCap {
     pub line: String,
     /// In the line's unit: 1 request, or a browser call's time cap in
-    /// milliseconds.
+    /// milliseconds (a session call's with the session's time not yet
+    /// charged).
     pub qty: i64,
+    /// What of the line the series the call charges in has charged before
+    /// it ([`Metered::after`]): a session call's session's charged point;
+    /// 0 for a call charged alone.
+    pub after: i64,
     /// What the refusal says the call costs: `clax.web.fetch costs`, `a
     /// browser call of 60 s can cost`.
     pub costs: String,
@@ -178,10 +184,22 @@ impl Priced {
     /// # Errors
     /// The price cannot be computed.
     pub(super) fn usage(&self, qty: i64) -> clax_core::Result<(Metered, i64)> {
+        self.usage_after(0, qty)
+    }
+
+    /// [`Priced::usage`] for `qty` charged after `after` of the line in the
+    /// same series (a browser session's segment after its charged point,
+    /// [`Metered::after`]): its credits are what the series costs through
+    /// it less what it cost before it, as the store charges the row.
+    ///
+    /// # Errors
+    /// The price cannot be computed.
+    pub(super) fn usage_after(&self, after: i64, qty: i64) -> clax_core::Result<(Metered, i64)> {
         let credits = if self.ks == KeySource::Own && self.rate.applies == Applies::InstanceKey {
             0
         } else {
-            row_credits_milli(
+            series_credits_milli(
+                after,
                 qty,
                 self.rate.cost_micro_usd,
                 self.rate.margin_bp,
@@ -192,6 +210,7 @@ impl Priced {
         };
         let usage = Metered {
             rate: Some(self.rate),
+            after,
             ..Metered::new(&self.line, qty, self.ks)
         };
         Ok((usage, credits))
@@ -530,7 +549,9 @@ fn priced(
         line: line.clone(),
         credits: s.week_left()?,
     };
-    let (_, most) = priced.usage(cap.qty).map_err(|e| host_error(&e))?;
+    let (_, most) = priced
+        .usage_after(cap.after, cap.qty)
+        .map_err(|e| host_error(&e))?;
     let unenforced = store
         .flags_of(&s.run.person)
         .map_err(|e| host_error(&e))?

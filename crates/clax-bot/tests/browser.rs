@@ -2063,6 +2063,77 @@ async fn credits_running_out_close_the_session() {
     assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Credits));
 }
 
+/// Before a session call the person can pay the session's time not yet
+/// charged (the model's turn since its last call included) plus the
+/// call's time cap: a call the cap alone would pass is refused
+/// `credits_exhausted` once a long turn's time is added, and its session
+/// closes `credits` with that time charged.
+#[tokio::test]
+async fn a_calls_price_check_adds_the_sessions_uncharged_time() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let run = env.run_with_caps("clax-browser:open-artifact");
+    let deps = env.deps();
+    let d = DriverId::mint();
+    next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_1",
+        "state.page = await clax.browser.open({ artifact: 'draft' }); return 1;",
+    )
+    .await;
+    let session = only_session(&env, &run);
+    // A browser second now costs a hundredth of what the person has left:
+    // a call's 60 s cap is 0.6 of it, and 90 s more of the model's turn
+    // takes the check past it.
+    let left = env.store.week_usage_now(OWNER).unwrap().remaining_milli();
+    assert!(left >= 100, "{left}");
+    env.store
+        .put_cost_line(
+            &AuditCtx::DAEMON,
+            LINE_BROWSER_TIME,
+            CostLinePatch {
+                fixed_credits_milli: Some(Some(left / 100)),
+                ..CostLinePatch::default()
+            },
+        )
+        .unwrap();
+    let r = next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_2",
+        "return await state.page.title();",
+    )
+    .await;
+    assert!(r.get("error").is_none(), "the cap alone is paid: {r}");
+    let charged = session_row(&env, &run, &session).charged_ms;
+    // The model thinks for 90 s, the heartbeat keeping the browser.
+    env.clock.advance(90);
+    env.browser.fire_until(env.clock_now());
+    let log = env.browser.logs()[0].clone();
+    within("the heartbeat", log.wait_sent("Browser.getVersion", 1)).await;
+    let r = next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_3",
+        "try { await state.page.title(); return 'ok'; } catch (e) { return e.code; }",
+    )
+    .await;
+    assert_eq!(r["value"], "credits_exhausted");
+    let row = session_row(&env, &run, &session);
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Credits));
+    assert!(
+        row.charged_ms >= charged + 90_000,
+        "the turn's time is charged when the session closes: {row:?}"
+    );
+}
+
 /// A run's end closes the sessions it left open, `run_ended`, and
 /// charges their tails.
 #[tokio::test]

@@ -66,7 +66,9 @@ pub struct Spend {
     /// What a browser session call does to its session's row: opens it,
     /// moves its charged point, or closes it. `usage` then holds the
     /// segment, one item of [`LINE_BROWSER_TIME`] whose quantity is the
-    /// point the call charges through less the session's charged point.
+    /// point the call charges through less the session's charged point,
+    /// charged after that point ([`Metered::after`]): a session's time is
+    /// rounded once, over the whole session.
     pub session: Option<SessionSpend>,
     /// What the call writes of the grants: a page's share, or its revoke
     /// (spec 2026-11-19-claxbot-browser-design §18.4), recorded as
@@ -328,11 +330,13 @@ fn apply_session(
         ));
     }
     let segment = through - charged;
-    if !usage.is_some_and(|m| m.line == LINE_BROWSER_TIME && m.qty == segment) {
+    if !usage.is_some_and(|m| m.line == LINE_BROWSER_TIME && m.qty == segment && m.after == charged)
+    {
         return Err(session_mismatch(
             run_id,
             format!(
-                "a call of session {id} through {through} ms charges {segment} ms of {LINE_BROWSER_TIME}"
+                "a call of session {id} through {through} ms charges {segment} ms of \
+                 {LINE_BROWSER_TIME} after {charged} ms"
             ),
         ));
     }
@@ -750,7 +754,10 @@ impl Store {
                 &run.person,
                 Some(run_id),
                 step,
-                &[Metered::new(LINE_BROWSER_TIME, segment, run.key_source)],
+                &[Metered {
+                    after: row.charged_ms,
+                    ..Metered::new(LINE_BROWSER_TIME, segment, run.key_source)
+                }],
                 at,
             )?;
             let credits: i64 = rows.iter().map(|u| u.credits_milli).sum();
@@ -847,7 +854,10 @@ impl Store {
                 &run.person,
                 Some(run_id),
                 step,
-                &[Metered::new(LINE_BROWSER_TIME, segment, run.key_source)],
+                &[Metered {
+                    after: row.charged_ms,
+                    ..Metered::new(LINE_BROWSER_TIME, segment, run.key_source)
+                }],
                 at,
             )?;
             let credits: i64 = rows.iter().map(|u| u.credits_milli).sum();
@@ -1544,7 +1554,7 @@ mod tests {
     }
 
     /// A browser session call of `run` at `(step, seq)`: `s` with its
-    /// segment, `qty` milliseconds of browser time.
+    /// segment, `qty` milliseconds of browser time ending at its point.
     fn session_spend(
         st: &Store,
         run: &Run,
@@ -1567,7 +1577,10 @@ mod tests {
             .answered(true, json!({"value": {"ok": true}}));
         Spend {
             entry,
-            usage: Some(Metered::new(LINE_BROWSER_TIME, qty, KeySource::Instance)),
+            usage: Some(Metered {
+                after: s.through_ms() - qty,
+                ..Metered::new(LINE_BROWSER_TIME, qty, KeySource::Instance)
+            }),
             page: None,
             session: Some(s),
             grant: None,
@@ -1883,6 +1896,73 @@ mod tests {
                 .charged_ms,
             5_000
         );
+    }
+
+    /// A session's time is rounded once over the session: 100 segments of
+    /// 30 ms cost what 3 s cost, and a segment priced as a row of its own
+    /// (not after the session's charged point) is refused.
+    #[test]
+    fn a_session_is_rounded_once_over_its_time() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 30, open(&st, 30)),
+        )
+        .unwrap();
+        for seq in 1..99 {
+            st.spend_journaled(
+                &run,
+                &d,
+                session_spend(&st, &run, &d, (1, seq), 30, call((seq + 1) * 30)),
+            )
+            .unwrap();
+        }
+        let close = SessionSpend::Close {
+            session: "s1".into(),
+            through_ms: 3_000,
+            reason: SessionEnd::Closed,
+        };
+        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 99), 30, close))
+            .unwrap();
+        assert_eq!(browser_ms(&st, &run), (3_000, 100));
+        let r = st.rate_of(LINE_BROWSER_TIME).unwrap().unwrap();
+        let whole = crate::credits::row_credits_milli(
+            3_000,
+            r.cost_micro_usd,
+            r.margin_bp,
+            r.fixed_credits_milli,
+            r.credit_price_micro_usd,
+            r.unit.base(),
+        )
+        .unwrap();
+        let charged: i64 = st
+            .usage_of_run(&run.id)
+            .unwrap()
+            .iter()
+            .filter(|u| u.line == LINE_BROWSER_TIME)
+            .map(|u| u.credits_milli)
+            .sum();
+        assert_eq!(charged, whole);
+        assert!(charged < 100, "one milli-credit a segment: {charged}");
+        assert_eq!(st.run(&run.id).unwrap().unwrap().credits_milli, charged);
+    }
+
+    #[test]
+    fn a_segment_not_after_the_charged_point_is_refused() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 5_000, open(&st, 5_000)),
+        )
+        .unwrap();
+        let mut alone = session_spend(&st, &run, &d, (1, 1), 1_000, call(6_000));
+        alone.usage = Some(Metered::new(LINE_BROWSER_TIME, 1_000, KeySource::Instance));
+        assert_eq!(refused(&st, &run, &d, alone), "session_mismatch");
+        assert_eq!(browser_ms(&st, &run), (5_000, 1));
     }
 
     #[test]

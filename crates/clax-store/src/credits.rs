@@ -16,8 +16,13 @@
 //!   milli-credit once, for the row ([`row_credits_milli`]); a line with
 //!   `fixed_credits_milli` charges `qty` × that ÷ the base instead (the
 //!   per-run harness fee). Its **cost** is `qty` × cost ÷ the base, rounded
-//!   up. The per-unit rate shown to admins ([`credits_per_unit_milli`]) is
-//!   rounded up for display only and never charged from.
+//!   up. A row of a series (a browser session's segments,
+//!   [`Metered::after`]) is rounded once over the series instead: it
+//!   charges what the series costs through it less what it cost before it
+//!   ([`series_credits_milli`]), so many short segments cost what their
+//!   total costs. The per-unit rate shown to admins
+//!   ([`credits_per_unit_milli`]) is rounded up for display only and never
+//!   charged from.
 //! - The exact inputs are snapshotted on the row (cost per unit, margin,
 //!   fixed credits, the credit price, the unit's base), so a later price
 //!   change never reprices history.
@@ -313,6 +318,30 @@ pub fn row_credits_milli(
     i64::try_from(v).map_err(|_| overflow())
 }
 
+/// The milli-credits `qty` more base quantities charge after `after` of
+/// them were charged in the same series of rows (a browser session's
+/// segments, [`Metered::after`]): what `after + qty` costs less what
+/// `after` costs, each as [`row_credits_milli`] rounds it. The series is
+/// rounded once, over its whole quantity, so its rows sum to what its
+/// total costs however it is cut.
+///
+/// # Errors
+/// `charge_overflow`.
+pub fn series_credits_milli(
+    after: i64,
+    qty: i64,
+    cost_micro_usd: i64,
+    margin_bp: i64,
+    fixed: Option<i64>,
+    price_micro_usd: i64,
+    base: i64,
+) -> Result<i64> {
+    let after = after.max(0);
+    let whole = after.checked_add(qty.max(0)).ok_or_else(overflow)?;
+    let row = |q| row_credits_milli(q, cost_micro_usd, margin_bp, fixed, price_micro_usd, base);
+    Ok(row(whole)? - row(after)?)
+}
+
 /// `qty` base quantities of `per_unit` (a line-unit rate) in a unit of
 /// `base`, rounded up, checked.
 ///
@@ -323,6 +352,14 @@ fn scaled(qty: i64, per_unit: i64, base: i64) -> Result<i64> {
         .checked_mul(i128::from(per_unit.max(0)))
         .ok_or_else(overflow)?;
     i64::try_from(div_ceil_checked(n, i128::from(base.max(1)))?).map_err(|_| overflow())
+}
+
+/// [`scaled`] for `qty` more after `after` in one series: rounded once
+/// over the series, as [`series_credits_milli`].
+fn series_cost(after: i64, qty: i64, per_unit: i64, base: i64) -> Result<i64> {
+    let after = after.max(0);
+    let whole = after.checked_add(qty.max(0)).ok_or_else(overflow)?;
+    Ok(scaled(whole, per_unit, base)? - scaled(after, per_unit, base)?)
 }
 
 /// The start of the week `t` falls in: the Monday 00:00 UTC on or before it.
@@ -360,6 +397,12 @@ pub struct Metered {
     /// The rates to charge at, snapshotted when the usage happened; `None`
     /// charges at the line's rates now.
     pub rate: Option<Rate>,
+    /// The quantity of the line already charged before this row in the
+    /// same series (a browser session's charged point): the row's credits
+    /// and cost are what `after + qty` costs less what `after` costs
+    /// ([`series_credits_milli`]), so the series is rounded once. 0 for a
+    /// row of its own.
+    pub after: i64,
 }
 
 /// A cost line's rates and the credit price, as a usage is charged at
@@ -440,6 +483,7 @@ impl Metered {
             absorbed: false,
             estimated: false,
             rate: None,
+            after: 0,
         }
     }
 
@@ -1168,11 +1212,12 @@ pub(crate) fn charge_rows_in(
         let (cost, credits) = if waived {
             (0, 0)
         } else if m.absorbed {
-            (scaled(m.qty, r.cost_micro_usd, base)?, 0)
+            (series_cost(m.after, m.qty, r.cost_micro_usd, base)?, 0)
         } else {
             (
-                scaled(m.qty, r.cost_micro_usd, base)?,
-                row_credits_milli(
+                series_cost(m.after, m.qty, r.cost_micro_usd, base)?,
+                series_credits_milli(
+                    m.after,
                     m.qty,
                     r.cost_micro_usd,
                     r.margin_bp,
@@ -3438,6 +3483,34 @@ mod tests {
                 row_credits_milli(ms, 90_000, margin, None, price, 3_600_000).unwrap(),
                 "{ms} ms at {margin} bp, {price} micro-USD a credit"
             );
+        }
+    }
+
+    /// A series is rounded once: 100 segments of 30 ms cost what 3 s cost,
+    /// not a milli-credit each, and every cut of a quantity sums to it.
+    #[test]
+    fn a_series_of_short_segments_costs_its_total_time() {
+        let base = Unit::BrowserSecond.base();
+        let row = |q| row_credits_milli(q, 25, INFRA_MARGIN_BP, None, 10_000, base).unwrap();
+        let seg = |after, q| {
+            series_credits_milli(after, q, 25, INFRA_MARGIN_BP, None, 10_000, base).unwrap()
+        };
+        let total: i64 = (0..100).map(|i| seg(i * 30, 30)).sum();
+        assert_eq!(total, row(3_000));
+        assert!(
+            total < 100,
+            "rounded per row, 100 segments would cost 100 milli-credits: {total}"
+        );
+        assert_eq!(seg(0, 4_200), row(4_200), "a first segment is a row");
+        assert_eq!(seg(1_000, 0), 0, "an empty segment costs nothing");
+        for cuts in [vec![1, 1, 1], vec![999, 1, 61_234], vec![7; 50]] {
+            let mut after = 0;
+            let mut sum = 0;
+            for q in &cuts {
+                sum += seg(after, *q);
+                after += q;
+            }
+            assert_eq!(sum, row(after), "{cuts:?}");
         }
     }
 }

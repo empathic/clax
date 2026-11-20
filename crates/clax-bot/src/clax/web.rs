@@ -316,6 +316,7 @@ impl Performer for Search {
 
     fn price_cap(&self, call: &Call<'_>, args: &SearchArgs) -> PriceCap {
         PriceCap {
+            after: 0,
             line: web_search_line(args.grant.provider.as_str()),
             qty: 1,
             costs: format!("clax.{} costs", call.op),
@@ -488,6 +489,7 @@ impl Performer for Fetch {
 
     fn price_cap(&self, call: &Call<'_>, _args: &FetchArgs) -> PriceCap {
         PriceCap {
+            after: 0,
             line: LINE_WEB_FETCH.to_string(),
             qty: 1,
             costs: format!("clax.{} costs", call.op),

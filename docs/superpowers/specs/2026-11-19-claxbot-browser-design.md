@@ -1409,13 +1409,28 @@ Browser time is charged in contiguous segments, as it is used:
   the orphaned browser lives at most `keep_alive` (§7.2); the instance's
   loss, as web's window is (recorded as a waiver). A daemon starting
   marks the session lost.
-- Quantities are milliseconds: nothing is rounded up per call, so many
-  short calls cost what their time costs.
-- **Before each call**: the person can pay for the time not yet charged,
-  the call's time cap, and the idle time (what the session may cost
-  before it is next seen); else `credits_exhausted`, and an open session
-  is closed (`credits`) with its time charged. The run's credit cap
-  counts browser time as it is charged.
+- **Rounded once per session**: quantities are milliseconds, and a
+  session's time is rounded to the milli-credit once, over the whole
+  session. Each segment is charged credits(through) − credits(charged),
+  both computed over the session's time from its open at the segment's
+  rate, so the segments of a session sum to what its total time costs
+  and many short calls cost what their time costs (100 calls of 30 ms
+  cost what 3 s cost, not a milli-credit each). A segment's usage row
+  carries that difference (`Metered::after`, the charged point it
+  follows), which the store checks is the session's charged point. What
+  a call answers as its `cost`, and its `bot.spend` record's
+  `credits_milli`, is its segment's charge: the same difference.
+- **Before each call**: the person can pay for the session's time not
+  yet charged (everything since its charged point, the model's turns
+  included, to the session's point now by the registry's clock) plus the
+  call's time cap, priced after the charged point as the segment will
+  be; the idle time is not added. Else `credits_exhausted`, and an open
+  session is closed (`credits`) with its time charged. An open checks
+  its time cap alone (the session has no time yet); a `share` or
+  `revoke` reaches no browser and is priced at no time. A call an export's
+  holder makes (`POST /api/bot/pages`, §18.5) is held to the same rule
+  and refused 402 `credits_exhausted`. The run's credit cap counts
+  browser time as it is charged.
 - `browser.test` is one call: its segment is its whole session.
 
 ## 11. Controls and hosts
