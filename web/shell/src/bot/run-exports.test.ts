@@ -30,4 +30,29 @@ describe("RunExports", () => {
     expect(m.root.querySelector('[aria-label="Your exported pages"]')).toBeNull();
     m.unmount();
   });
+
+  it("copies an export's capability for the person's agent once it is released", async () => {
+    const view = {
+      pages: [{ path: "state.page" }], grants: [{ id: "g_1", name: "Laptop" }], released: true,
+      exports: [{ id: "x1", grant: "g_1", actions: ["read"], expires_at: null, issued_at: "2026-10-21T09:00:00Z" }],
+    };
+    const calls = stubFetch({
+      "GET /api/bot/runs/r1/exports": view,
+      "GET /api/bot/runs/r1/exports/x1/capability": { id: "x1", capability: "cxk_abc", shown: "<browser page: read>" },
+    });
+    const written: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (t: string) => { written.push(t); } } });
+    const m = mount(RunExports, { run: "r1" });
+    const details = m.root.querySelector<HTMLDetailsElement>("details.rexports")!;
+    flush(() => { details.open = true; details.dispatchEvent(new Event("toggle")); });
+    await settle();
+    expect(m.root.textContent).not.toContain("its holder cannot use it yet");
+    const copy = m.root.querySelector<HTMLElement>('button[aria-label="Copy the page exported to Laptop"]')!;
+    click(copy);
+    await settle();
+    expect(calls.some(c => c.url === "/api/bot/runs/r1/exports/x1/capability")).toBe(true);
+    expect(written).toEqual(["cxk_abc"]);
+    expect(copy.textContent).toBe("Copied");
+    m.unmount();
+  });
 });

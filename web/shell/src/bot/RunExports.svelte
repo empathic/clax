@@ -4,10 +4,11 @@
   // Exporting a page of a run's state to one of the person's machine grants
   // (spec 2026-11-19-claxbot-browser §18.5, option A): the person, never the
   // model, picks a page the run's last committed state holds, a grant and
-  // what it may do. The export is a grant row, listed and revoked here; its
-  // capability is not released to the grant's holder in this version.
+  // what it may do. The export is a grant row, listed and revoked here; Copy
+  // puts its capability on the clipboard, for the person to give the agent,
+  // which calls the page with it (`POST /api/bot/pages`).
   import { refusal } from "../people/refusal";
-  import { type RunExports, deleteRunExport, getRunExports, postRunExport } from "./api";
+  import { type RunExports, deleteRunExport, getExportCapability, getRunExports, postRunExport } from "./api";
 
   let { run }: { run: string } = $props();
   let data = $state<RunExports | null>(null);
@@ -16,6 +17,7 @@
   let readOnly = $state(true);
   let err = $state<string | null>(null);
   let busy = $state(false);
+  let copied = $state<string | null>(null);
 
   function take(v: RunExports) {
     data = v;
@@ -28,6 +30,14 @@
   }
   function opened(e: Event) {
     if ((e.currentTarget as HTMLDetailsElement).open && !data) void act(() => getRunExports(run));
+  }
+  async function copy(id: string) {
+    err = null; copied = null;
+    try {
+      const c = await getExportCapability(run, id);
+      await navigator.clipboard.writeText(c.capability);
+      copied = id;
+    } catch (e) { err = refusal(e); }
   }
   const grantName = (id: string | null) => data?.grants.find(g => g.id === id)?.name ?? id ?? "";
 </script>
@@ -48,7 +58,7 @@
     {#if data.exports.length}
       <ul class="capgrants" aria-label="Your exported pages">
         {#each data.exports as x (x.id)}
-          <li><span>{grantName(x.grant)}: {x.actions.join(", ")}</span><button type="button" aria-label={`Revoke the page exported to ${grantName(x.grant)}`} onclick={() => void act(() => deleteRunExport(run, x.id))}>Revoke</button></li>
+          <li><span>{grantName(x.grant)}: {x.actions.join(", ")}</span>{#if data.released}<button type="button" aria-label={`Copy the page exported to ${grantName(x.grant)}`} onclick={() => void copy(x.id)}>{copied === x.id ? "Copied" : "Copy"}</button>{/if}<button type="button" aria-label={`Revoke the page exported to ${grantName(x.grant)}`} onclick={() => void act(() => deleteRunExport(run, x.id))}>Revoke</button></li>
         {/each}
       </ul>
     {/if}

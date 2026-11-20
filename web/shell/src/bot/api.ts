@@ -498,12 +498,14 @@ export const putAdminBrowser = (patch: BrowserPatch) => call<BrowserSettings>("/
 export type AdminGrant = { id: string; capability: CapabilityId; grantee: "everyone" | "person"; person: PersonKey | null; granter?: string; conveys?: boolean; issued_at: string };
 /** One live page share or export (spec 2026-11-19-claxbot-browser §18.4, §18.5): within `run`, or to the machine grant `grant`, conveying `actions` until `expires_at`. */
 export type AdminShare = { id: string; run: string | null; grant: string | null; granter: string; actions: string[]; origins: string[] | null; expires_at: string | null; issued_at: string };
-/** A run's pages its person may export to their machine grants, those grants, and their live exports (spec 2026-11-19-claxbot-browser §18.5); `released` false while no export's capability reaches its holder. */
+/** A run's pages its person may export to their machine grants, those grants, and their live exports (spec 2026-11-19-claxbot-browser §18.5); `released` true when each export's capability is released to its person ([`getExportCapability`]). */
 export type RunExports = { pages: { path: string }[]; grants: { id: string; name: string }[]; exports: { id: string; grant: string | null; actions: string[]; expires_at: string | null; issued_at: string }[]; released: boolean };
 export const getRunExports = (run: string) => call<RunExports>(`/api/bot/runs/${e(run)}/exports`);
 /** Exports the page at `path` of the run's state to machine grant `grant`, narrowed to `actions` (all five when absent). */
 export const postRunExport = (run: string, body: { path: string; grant: string; actions?: string[]; expires_s?: number }) => call<RunExports>(`/api/bot/runs/${e(run)}/exports`, "POST", body);
 export const deleteRunExport = (run: string, id: string) => call<RunExports>(`/api/bot/runs/${e(run)}/exports/${e(id)}`, "DELETE");
+/** Export `id`'s capability, for the person to give their machine, which calls the page with it (`POST /api/bot/pages`). */
+export const getExportCapability = (run: string, id: string) => call<{ id: string; capability: string; shown: string }>(`/api/bot/runs/${e(run)}/exports/${e(id)}/capability`);
 export const getAdminGrants = () => call<{ grants: AdminGrant[]; shares?: AdminShare[] }>("/api/admin/bot/grants");
 /** Grants `capability` to everyone on the instance, or to one person. */
 export const grantCapability = (capability: CapabilityId, to: "everyone" | PersonKey) =>
