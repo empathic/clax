@@ -11,6 +11,14 @@
 //! deadline (no sleep in Clax). Every other event is taken in as between
 //! calls, so the page's requests are served while it records.
 //!
+//! The recording ends at its `seconds`, at the call's `timeout` (the
+//! call's cap when it names none), or [`STOP_MARGIN_MS`] before the
+//! call's own deadline, whichever comes first, so `Page.stopScreencast`
+//! is answered within the call. The time it took is `ms`. When the
+//! call's deadline still passes while it records (the page's requests
+//! held it), the stop is sent unanswered and the frames gathered are
+//! answered.
+//!
 //! The frames are the JPEG Chrome sent, neither decoded nor encoded. The
 //! performer keeps each as an item of the run's content and the clip as
 //! one more, of type [`MANIFEST_MEDIA_TYPE`], [`manifest`]'s JSON; the
@@ -20,7 +28,7 @@
 use super::cdp::CdpFail;
 use super::session::Driver;
 use base64::Engine as _;
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
 
 /// The fewest seconds a recording takes.
@@ -29,6 +37,8 @@ pub const MIN_SECONDS: i64 = 1;
 pub const MAX_SECONDS: i64 = 10;
 /// The least time between two frames kept: at most 8 a second.
 pub const MIN_FRAME_GAP_MS: i64 = 125;
+/// The time kept at the end of the call for `Page.stopScreencast`.
+pub const STOP_MARGIN_MS: i64 = 1_000;
 /// How many frames the script is answered.
 pub const SHOWN: usize = 4;
 /// The media type of a clip's manifest.
@@ -70,27 +80,57 @@ pub fn manifest(width: u32, height: u32, frames: &[(String, i64)]) -> Value {
 }
 
 /// Records the page `d` shows for `seconds` (clamped to 1 to 10), its
-/// frames at most `side` pixels a side, ending by `timing`'s deadline
-/// for the recording's end or the call's, whichever comes first.
+/// frames at most `side` pixels a side, ending by `until` (the call's
+/// `timeout`), by the recording's end or [`STOP_MARGIN_MS`] before the
+/// call's deadline, whichever comes first.
 ///
 /// # Errors
-/// What ended the call (its deadline before the recording's end, the
-/// run's cancellation, the page lost).
+/// What ended the call other than its deadline (the run's cancellation,
+/// the page lost).
 pub(super) async fn record(
     d: &mut Driver<'_>,
     timing: &super::act::Timing<'_>,
     seconds: i64,
+    until: DateTime<Utc>,
 ) -> Result<Recorded, CdpFail> {
     let seconds = seconds.clamp(MIN_SECONDS, MAX_SECONDS);
     let side = timing.limits.image_side;
     let began = timing.clock.now();
-    let end = (began + Duration::seconds(seconds)).min(timing.call_until);
+    let end = (began + Duration::seconds(seconds))
+        .min(until)
+        .min(timing.call_until - Duration::milliseconds(STOP_MARGIN_MS));
     d.page_call(
         "Page.startScreencast",
         json!({"format": "jpeg", "quality": 70, "maxWidth": side, "maxHeight": side}),
     )
     .await?;
     let mut out = Recorded::default();
+    match gather(d, timing, began, end, &mut out).await {
+        Ok(()) => {
+            d.page_call("Page.stopScreencast", json!({})).await?;
+        }
+        Err(CdpFail::Deadline) => {
+            let session = d.session.clone();
+            d.cdp
+                .send_only(session.as_deref(), "Page.stopScreencast", json!({}))
+                .await?;
+        }
+        Err(e) => return Err(e),
+    }
+    out.ms = (timing.clock.now().min(end) - began)
+        .num_milliseconds()
+        .max(0);
+    Ok(out)
+}
+
+/// Takes in the screencast's frames into `out` until `end`.
+async fn gather(
+    d: &mut Driver<'_>,
+    timing: &super::act::Timing<'_>,
+    began: DateTime<Utc>,
+    end: DateTime<Utc>,
+    out: &mut Recorded,
+) -> Result<(), CdpFail> {
     let mut last = None;
     loop {
         let event = {
@@ -102,7 +142,7 @@ pub(super) async fn record(
                 futures::future::Either::Right((e, _)) => Some(e?),
             }
         };
-        let Some(ev) = event else { break };
+        let Some(ev) = event else { return Ok(()) };
         if ev.method != "Page.screencastFrame" {
             d.handle(ev).await?;
             continue;
@@ -119,7 +159,7 @@ pub(super) async fn record(
             )
             .await?;
         if now >= end {
-            break;
+            return Ok(());
         }
         if keeps(last, at_ms)
             && let Some(bytes) = ev.params["data"]
@@ -130,11 +170,6 @@ pub(super) async fn record(
             last = Some(at_ms);
         }
     }
-    d.page_call("Page.stopScreencast", json!({})).await?;
-    out.ms = (timing.clock.now().min(end) - began)
-        .num_milliseconds()
-        .max(0);
-    Ok(out)
 }
 
 #[cfg(test)]

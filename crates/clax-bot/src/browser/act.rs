@@ -1548,7 +1548,8 @@ pub(super) async fn page(
         }
         "record" => {
             let seconds = args.get("seconds").and_then(Value::as_i64).unwrap_or(1);
-            let r = super::record::record(d, timing, seconds).await?;
+            let (_, until) = timing.until(args, i64::MAX);
+            let r = super::record::record(d, timing, seconds, until).await?;
             let at: Vec<i64> = r.frames.iter().map(|(at, _)| *at).collect();
             d.shots.extend(r.frames.into_iter().map(|(_, jpeg)| jpeg));
             ok(
@@ -2429,6 +2430,15 @@ mod tests {
     /// A page that sends a screencast frame when the screencast starts
     /// and after each acknowledgement, each 50 ms after the last.
     fn screencasting(clock: Arc<ManualClock>) -> PageModel {
+        screencasting_firing(clock, Arc::default())
+    }
+
+    /// The source a test puts in once its world is open.
+    type SourceSlot = Arc<std::sync::Mutex<Option<Arc<FakeBrowserSource>>>>;
+
+    /// As [`screencasting`], each acknowledgement also firing the
+    /// deadlines of the source in `source` up to the clock's time.
+    fn screencasting_firing(clock: Arc<ManualClock>, source: SourceSlot) -> PageModel {
         let mut n = 0;
         model(form()).on(move |cmd: &Value| {
             let method = cmd["method"].as_str().unwrap_or_default();
@@ -2437,6 +2447,9 @@ mod tests {
             }
             if method == "Page.screencastFrameAck" {
                 clock.advance_millis(50);
+                if let Some(src) = source.lock().unwrap().as_ref() {
+                    src.fire_until(clock.now());
+                }
             }
             n += 1;
             let data = base64::engine::general_purpose::STANDARD.encode(format!("jpeg{n}"));
@@ -2486,5 +2499,52 @@ mod tests {
         assert!(a.ok, "{a:?}");
         assert_eq!(a.value["record"]["ms"], 10_000);
         assert_eq!(w.log.sent("Page.screencastFrameAck").len(), 201);
+    }
+
+    #[tokio::test]
+    async fn a_recording_as_long_as_the_call_answers_its_frames() {
+        let clock = Arc::new(ManualClock::at("2026-11-19T10:00:00Z"));
+        // Each acknowledgement moves the clock, and the source's deadlines
+        // with it.
+        let source = SourceSlot::default();
+        let w = world_clocked(screencasting_firing(clock.clone(), source.clone()), clock).await;
+        *source.lock().unwrap() = Some(w.src.clone());
+        // The call has 10 s, as `browser.call_seconds` at its least.
+        let ctx = CallCtx::new(
+            w.clock.now() + chrono::Duration::seconds(10),
+            CancelToken::new(),
+        );
+        let a = w
+            .sessions
+            .call(
+                "run-1",
+                "s1",
+                SessionCall::Page {
+                    action: "record".into(),
+                    args: json!({"seconds": 10}),
+                },
+                ctx,
+            )
+            .await
+            .expect("answered");
+        assert!(a.ok, "{a:?}");
+        // It ends a second before the call does, so the stop is answered.
+        assert_eq!(a.value["record"]["ms"], 9_000);
+        // Kept every 150 ms, from 0 to 8850.
+        assert_eq!(a.shots.len(), 60);
+        assert_eq!(w.log.sent("Page.stopScreencast").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_recording_ends_at_its_timeout() {
+        let clock = Arc::new(ManualClock::at("2026-11-19T10:00:00Z"));
+        let w = world_clocked(screencasting(clock.clone()), clock).await;
+        let a = w
+            .page("record", json!({"seconds": 10, "timeout": 2_000}))
+            .await
+            .unwrap();
+        assert!(a.ok, "{a:?}");
+        assert_eq!(a.value["record"]["ms"], 2_000);
+        assert_eq!(w.log.sent("Page.stopScreencast").len(), 1);
     }
 }
