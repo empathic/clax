@@ -139,6 +139,19 @@ describe("AnalyticsPanel", () => {
     expect(q("[data-testid=analytics-setting-note]")!.textContent).toBe("Clax is not counting visits to this clax's site. What it counted before is kept.");
   });
 
+  it("follows the setting's change on an empty range: the setting alone once off, the empty line once on again", async () => {
+    const none = { totals: { visitors: 0, views: 0, framed: 0, load_ms_median: null, lcp_ms_median: null }, versions: [], pages: [], referrers: [], countries: [], devices: [], versions_viewed: [] };
+    setup(from => { const a = answer(from, none); return { ...a, days: a.days.map(d => ({ ...d, visitors: 0, views: 0 })) }; });
+    analyticsOpen.current!();
+    await vi.waitFor(() => expect(q("[data-testid=analytics-empty]")?.textContent).toBe("No visits in the last 30 days."));
+    flushSync(() => button("Stop counting visits")!.click());
+    await vi.waitFor(() => expect(button("Count visits")).toBeDefined());
+    expect(q("[data-testid=analytics-empty]")).toBeNull();
+    flushSync(() => button("Count visits")!.click());
+    await vi.waitFor(() => expect(button("Stop counting visits")).toBeDefined());
+    expect(q("[data-testid=analytics-empty]")?.textContent).toBe("No visits in the last 30 days.");
+  });
+
   it("closes on Escape and gives the more menu no opener once unmounted", async () => {
     setup(from => answer(from));
     analyticsOpen.current!();

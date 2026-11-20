@@ -88,7 +88,9 @@
   });
 
   const a = $derived(answer);
-  const empty = $derived(a ? emptyText(a, range) : null);
+  // The setting as it now is, not as the answer read it: a change made here
+  // shows at once (off and empty, the setting alone).
+  const empty = $derived(a ? emptyText(setting ? { ...a, analytics: setting } : a, range) : null);
   const c = $derived(a ? chart(a) : null);
   const year = $derived(a ? withYear(a) : false);
   const words = $derived(setting ? settingWords(setting) : null);
