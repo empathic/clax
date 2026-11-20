@@ -292,7 +292,9 @@ test("the owner's browser has the owner's surfaces, a person's rights limit thei
     // On a phone, the name field too.
     const phone = await (await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true })).newPage();
     await phone.goto(`${origin}/a/${plan.id}`);
-    await phone.getByRole("button", { name: "People and agents" }).click();
+    // The bar shows no roster at phone width while nobody works; the more menu opens the panel.
+    await phone.locator(".topbar button[aria-label=More]").click();
+    await phone.getByRole("menuitem", { name: "People and agents" }).click();
     const field = phone.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name");
     await expect(field).toBeVisible();
     await expect.poll(async () => (await field.boundingBox())!.x + (await field.boundingBox())!.width).toBeLessThanOrEqual(390);

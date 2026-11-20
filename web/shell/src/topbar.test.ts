@@ -117,6 +117,55 @@ describe("Echo top bar parts", () => {
     m.unmount();
   });
 
+  it("the more menu lists Usage, the week's ClaxBot credits, linking to their page", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    const usage = { href: "/settings/claxbot", text: "310 / 2,000", label: "ClaxBot: 310 of 2,000 credits used this week", title: "Your ClaxBot credits this week", warn: true, out: false };
+    const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), usage });
+    const b = m.root.querySelector("button.icon") as HTMLButtonElement;
+    flush(() => b.click());
+    const item = [...m.root.querySelectorAll<HTMLAnchorElement>("[role=menuitem]")].at(-1)!;
+    expect(item.textContent!.replace(/\s+/g, " ")).toBe("Usage 310 / 2,000");
+    expect(item.getAttribute("href")).toBe("/settings/claxbot");
+    expect(item.getAttribute("aria-label")).toBe("Usage: ClaxBot: 310 of 2,000 credits used this week");
+    expect(item.title).toBe("Your ClaxBot credits this week");
+    expect(item.classList.contains("warn")).toBe(true);
+    item.addEventListener("click", e => e.preventDefault());
+    flush(() => item.click());
+    expect(m.root.querySelector("[role=menu]")).toBeNull();
+    m.unmount();
+    // Without ClaxBot there is no Usage item.
+    const bare = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn() });
+    flush(() => (bare.root.querySelector("button.icon") as HTMLButtonElement).click());
+    expect([...bare.root.querySelectorAll("[role=menuitem]")].map(i => i.textContent)).toEqual(["Open raw", "Copy link"]);
+    bare.unmount();
+    vi.unstubAllGlobals();
+  });
+
+  it("the more menu stands in at phone width for the roster and the ClaxBot button, and at full width does not", () => {
+    const onPeople = vi.fn();
+    const onBot = { label: "ClaxBot, working", open: vi.fn() };
+    const names = (phone: boolean) => {
+      vi.stubGlobal("matchMedia", (q: string) => ({ matches: phone && q === "(max-width: 700px)" }));
+      const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), onPeople, onBot });
+      flush(() => (m.root.querySelector("button.icon") as HTMLButtonElement).click());
+      const items = [...m.root.querySelectorAll<HTMLElement>("[role=menuitem]")];
+      return { m, items, text: items.map(i => i.textContent) };
+    };
+    const wide = names(false);
+    expect(wide.text).toEqual(["Open raw", "Copy link"]);
+    wide.m.unmount();
+    const phone = names(true);
+    expect(phone.text).toEqual(["Versions", "People and agents", "ClaxBot, working", "Open raw", "Copy link"]);
+    flush(() => phone.items[1].click());
+    expect(onPeople).toHaveBeenCalledTimes(1);
+    expect(phone.m.root.querySelector("[role=menu]")).toBeNull();
+    flush(() => (phone.m.root.querySelector("button.icon") as HTMLButtonElement).click());
+    flush(() => phone.m.root.querySelectorAll<HTMLElement>("[role=menuitem]")[2].click());
+    expect(onBot.open).toHaveBeenCalledTimes(1);
+    phone.m.unmount();
+    vi.unstubAllGlobals();
+  });
+
   it("the more menu keeps a disabled, focusable open raw for a deleted artifact", async () => {
     const m = mount(MoreMenu, { rawHref: null, canCopy: false, onCopy: vi.fn() });
     flush(() => (m.root.querySelector("button.icon") as HTMLButtonElement).click());
@@ -188,6 +237,16 @@ describe("Echo top bar parts", () => {
     Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: Object.freeze({ transport: "host", shell: "clax://app", content: "clax://{id}.c" }) }) });
     try {
       expect(await items()).toEqual({ items: ["Versions"], phoneOnly: true });
+      // Clone with git and Usage have no other home in the app's bar: the menu then shows at every width, with them alone at full width.
+      vi.stubGlobal("matchMedia", () => ({ matches: false }));
+      const usage = { href: "/settings/claxbot", text: "310 / 2,000", label: "ClaxBot: 310 of 2,000 credits used this week", title: "Your ClaxBot credits this week", warn: false, out: false };
+      for (const extra of [{ onClone: vi.fn() }, { usage }, { onClone: vi.fn(), usage }]) {
+        const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), onFork: vi.fn(), ...extra });
+        expect(m.root.querySelector(".more")!.classList.contains("phone-only")).toBe(false);
+        flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
+        expect(Array.from(m.root.querySelectorAll("[role=menuitem]")).map(i => i.textContent!.replace(/\s+/g, " "))).toEqual([...("onClone" in extra ? ["Clone with git…"] : []), ...("usage" in extra ? ["Usage 310 / 2,000"] : [])]);
+        m.unmount();
+      }
     } finally {
       delete (window as { claxTransport?: unknown }).claxTransport;
       vi.unstubAllGlobals();

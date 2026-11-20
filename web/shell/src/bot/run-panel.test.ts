@@ -11,6 +11,7 @@ import { writable } from "svelte/store";
 import type { ArtifactController } from "../view/artifact-controller";
 import ArtifactBot from "./ArtifactBot.svelte";
 import { nav } from "../nav";
+import { usage } from "../ui/more-menu.svelte";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
 const button = (root: Element, text: string) => [...root.querySelectorAll("button")].find(b => b.textContent?.trim() === text)!;
@@ -314,20 +315,20 @@ describe("ClaxBot in the artifact view", () => {
     m.unmount();
   });
 
-  it("marks the week's meter 'your key' on the person's own key, and leaves it bare on the instance's", async () => {
+  it("gives the more menu the week's meter as its Usage item, not the top bar, marked 'your key' on the person's own key", async () => {
     history.replaceState(null, "", "/a/7q3k9mzx2b4t");
     const ownKey = { own: { set: true, last4: "4f2c", set_at: null, last_ok_at: null }, use_own: true };
     daemon({ "GET /api/me/bot": json(meBot({ key: ownKey, week: week({ weekly_milli: 3_000_000, spent_milli: 21_000 }) })), "GET /api/bot/runs?artifact=7q3k9mzx2b4t": json({ runs: [] }) });
     const m = mount(ArtifactBot, { ctl: view() });
     await settle();
-    const wk = m.root.querySelector<HTMLAnchorElement>(".botwk")!;
-    expect(wk.textContent).toBe("your key · 21 / 3,000");
-    expect(wk.title).toContain("Credits pay only for run fees, script compute, storage and web calls.");
+    expect(m.root.querySelector("a"), "no credits link in the top bar").toBeNull();
+    expect(usage.current).toMatchObject({ href: "/settings/claxbot", text: "your key · 21 / 3,000", warn: false, out: false });
+    expect(usage.current!.title).toContain("Credits pay only for run fees, script compute, storage and web calls.");
     botView.me = meBot();
     flush();
-    expect(wk.textContent).toBe("310 / 2,000");
-    expect(wk.title).toBe("Your ClaxBot credits this week");
+    expect(usage.current).toMatchObject({ text: "310 / 2,000", label: "ClaxBot: 310 of 2,000 credits used this week", title: "Your ClaxBot credits this week" });
     m.unmount();
+    expect(usage.current, "unmounting clears the item").toBeNull();
     history.replaceState(null, "", "/");
   });
 

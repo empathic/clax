@@ -223,7 +223,8 @@ On screen: Rae's browser, the private window, then Jo's profile.
 
 On screen: the second terminal tab, then Rae's browser on the brief.
 
-1. In Rae's browser on the brief, click **Clone** in the top bar: the
+1. In Rae's browser on the brief, open the top bar's **⋯** menu and click
+   **Clone with git…**: the
    Clone dialog offers Read and Write, as her rights allow. With **Read**
    chosen, click **Make a token**, then **Copy** beside the git command,
    and paste it in the second tab with `brief` at the end; then the log

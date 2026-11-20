@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // The top bar's Share button, on a hosted Clax for whoever may share the
+  // The top bar's Share button (an icon, named Share), on a hosted Clax for whoever may share the
   // artifact (the owner and its maker; the daemon says, `can_share`): it
   // opens the Share dialog (its own lazy chunk). Elsewhere (a local
   // daemon, which answers no sharing route; a reader who may not share) it
@@ -39,6 +39,8 @@
 </script>
 
 {#if sharing}
-  <button type="button" class="share hide-sm" aria-haspopup="dialog" onclick={show}>Share</button>
+  <button type="button" class="icon share hide-sm" aria-haspopup="dialog" aria-label="Share" title="Share this artifact" onclick={show}>
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V2M5 4.75l3-3 3 3M5.5 7H4v7h8V7h-1.5"/></svg>
+  </button>
   {#if open && Dialog}<Dialog {id} {title} initial={sharing} {onComments} onClose={() => { open = false; }} />{/if}
 {/if}

@@ -116,6 +116,39 @@ test("the New artifact tile leads the gallery, and ClaxBot builds what it makes 
   await expect(run).toHaveCount(0);
 });
 
+test("at phone width the artifact's top bar fits: the title keeps its room, and the roster, ClaxBot and Usage are in the more menu", async ({ page, daemon: d }) => {
+  const { artifact } = await publish(d.base, d.token, "Grocery splitter for the house", { "index.html": "<main><h2>Totals</h2></main>" });
+  await stubBot(page, { runs: { r1: RUN(artifact.id) } });
+  for (const width of [360, 430]) {
+    await page.setViewportSize({ width, height: 800 });
+    await openArtifact(page, d.base, artifact.id, 1);
+    const bar = page.locator(".topbar");
+    const more = bar.getByRole("button", { name: "More" });
+    await expect(more).toBeVisible();
+    // ClaxBot's part has loaded (its Usage item is set) before the bar is measured.
+    await more.click();
+    const menu = page.getByRole("menu");
+    await expect(menu.getByRole("menuitem", { name: /^Usage: ClaxBot: 310 of 2,000 credits/ })).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: "People and agents" })).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: /^ClaxBot/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(bar.locator("button.who")).toBeHidden();
+    await expect(bar.locator("button.botbtn")).toBeHidden();
+    await expect(bar.locator("a.botwk")).toHaveCount(0);
+    expect(await sideways(page), `nothing past the right edge at ${width}px`).toEqual([]);
+    // The title keeps a readable width and ends before the first control beside it.
+    const title = await bar.locator(".ttl").boundingBox();
+    const comment = await bar.locator("button.comment").boundingBox();
+    expect(title!.width, `title width at ${width}px`).toBeGreaterThanOrEqual(80);
+    expect(title!.x + title!.width, `title clear of Comment at ${width}px`).toBeLessThanOrEqual(comment!.x);
+  }
+  // The more menu's ClaxBot item opens the run panel.
+  await page.getByRole("button", { name: "More" }).click();
+  await page.getByRole("menuitem", { name: /^ClaxBot/ }).click();
+  await expect(page.getByRole("complementary", { name: "ClaxBot" })).toBeVisible();
+});
+
 test("at its limit, the gallery says ClaxBot is paused and the Send menu lists it disabled with the reset", async ({ page, daemon: d }) => {
   const me = { ...ME, available: false, unavailable_reason: "no_credits", week: { ...WEEK, spent_milli: 2_000_000, exhausted: true } };
   const { artifact } = await publish(d.base, d.token, "Over the limit", { "index.html": "<main><h2>Totals</h2></main>" });

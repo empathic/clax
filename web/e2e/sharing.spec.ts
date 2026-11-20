@@ -129,7 +129,7 @@ test("the owner shares one artifact with one person and a login, shares it by li
     await expect(sam.locator("a.card")).toContainText("Launch plan");
     await sam.goto(`${origin}/a/${artifact.id}`);
     await expect(sam.frameLocator("iframe.frame").locator("h1")).toHaveText("Launch plan");
-    await expect(sam.locator(".topbar button.clone, .topbar .reload")).toHaveCount(0);
+    await expect(sam.locator(".topbar .reload")).toHaveCount(0);
     await expect(sam.getByRole("button", { name: "Share", exact: true })).toHaveCount(0);
 
     // No Public while the gallery is off; anyone with the link, Can view; Copy link.

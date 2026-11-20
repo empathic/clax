@@ -1,7 +1,8 @@
-// The top bar's more menu, roster and working summary, and its Clone, Share and Publish buttons,
-// are not needed for the first paint: the artifact entry loads their code
-// (and their styles) once the page has painted. Until then the bar keeps a
-// slot of the menu's size and shows no roster and no Clone.
+// The top bar's more menu, roster and working summary, the Clone dialog's
+// opener, and its Fork, Share and Publish buttons, are not needed for the first
+// paint: the artifact entry loads their code (and their styles) once the
+// page has painted. Until then the bar keeps a slot of the menu's size and
+// shows no roster, and the menu has no Clone item.
 import type { Component } from "svelte";
 import type WhoT from "./Who.svelte";
 import { getToken } from "../api";
@@ -9,10 +10,15 @@ import type { ArtifactController } from "../view/artifact-controller";
 
 /** What the more menu's Publish item says and opens. */
 export type PublishOpener = { label: string; open(): void };
+/** The more menu's Usage item: this week's ClaxBot credits, linking to the
+ * page that details them. `text` is shown, `label` is its accessible name
+ * and `title` its hover text. */
+export type UsageItem = { href: string; text: string; label: string; title: string; warn: boolean; out: boolean };
 /** A hosted Clax's Terms of Service and Privacy Policy, which the more menu links. */
 export type LegalLinks = { terms_url: string; privacy_url: string };
-type More = Component<{ rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: PublishOpener | null; onPermissions?: (() => void) | null; legal?: LegalLinks | null }>;
+type More = Component<{ rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: PublishOpener | null; onPermissions?: (() => void) | null; onPeople?: (() => void) | null; onBot?: PublishOpener | null; usage?: UsageItem | null; legal?: LegalLinks | null }>;
 type CloneT = Component<{ id: string }>;
+type ForkT = Component<{ shown: number; disabled: boolean; onFork(): void }>;
 type ShareT = Component<{ id: string; title: string; onComments?(on: boolean): void }>;
 type PermissionsT = Component<{ ctl: ArtifactController }>;
 type PublishT = Component<{ id: string; title: string; latest: number }>;
@@ -20,6 +26,7 @@ type PublishT = Component<{ id: string; title: string; latest: number }>;
 let loaded: More | null = $state(null);
 let whoLoaded: typeof WhoT | null = $state(null);
 let cloneLoaded: CloneT | null = $state(null);
+let forkLoaded: ForkT | null = $state(null);
 let cloneOpener: (() => void) | null = $state(null);
 let shareLoaded: ShareT | null = $state(null);
 let shareOpener: (() => void) | null = $state(null);
@@ -28,18 +35,22 @@ let publishOpener: PublishOpener | null = $state(null);
 let permissionsLoaded: PermissionsT | null = $state(null);
 let permissionsOpener: PermissionsOpener | null = $state(null);
 let legalLinks: LegalLinks | null = $state(null);
+let usageItem: UsageItem | null = $state(null);
+let botOpener: PublishOpener | null = $state(null);
 
 /** The more menu's component once `loadMoreMenu` has loaded it, else null. */
 export const moreMenu = { get current(): More | null { return loaded; } };
 /** The roster and summary component once `loadMoreMenu` has loaded it, else null. */
 export const who = { get current(): typeof WhoT | null { return whoLoaded; } };
-/** The Clone button's component once `loadMoreMenu` has loaded it, else null. */
+/** The Fork button's component once `loadMoreMenu` has loaded it, else null. */
+export const forkButton = { get current(): ForkT | null { return forkLoaded; } };
+/** The Clone dialog's host (no button of its own) once `loadMoreMenu` has loaded it, else null. */
 export const clone = { get current(): CloneT | null { return cloneLoaded; } };
 /** What opens the Clone dialog while the viewer may clone (the more menu's
- * Clone item at phone width), else null. */
+ * Clone with git item), else null. */
 export const cloneOpen = { get current(): (() => void) | null { return cloneOpener; } };
 
-/** Sets what opens the Clone dialog (the Clone button sets it once it knows
+/** Sets what opens the Clone dialog (the Clone host sets it once it knows
  * the viewer may clone; null clears it). */
 export function setCloneOpener(f: (() => void) | null): void { cloneOpener = f; }
 
@@ -68,14 +79,27 @@ export const permissionsOpen = { get current(): PermissionsOpener | null { retur
 /** Sets what opens the Permissions panel (the panel sets it on mount; null clears it). */
 export function setPermissionsOpener(f: PermissionsOpener | null): void { permissionsOpener = f; }
 
+/** The more menu's Usage item while ClaxBot is on for this person, else null. */
+export const usage = { get current(): UsageItem | null { return usageItem; } };
+/** Sets the Usage item (the artifact view's ClaxBot part sets it from the
+ * week's meter; null clears it). */
+export function setUsage(u: UsageItem | null): void { usageItem = u; }
+
+/** The more menu's ClaxBot item at phone width (the bar's ClaxBot button
+ * is hidden there) while the artifact has runs, else null. */
+export const botOpen = { get current(): PublishOpener | null { return botOpener; } };
+/** Sets the ClaxBot item (the artifact view's ClaxBot part sets it; null clears it). */
+export function setBotOpener(o: PublishOpener | null): void { botOpener = o; }
+
 /** The hosted Clax's documents once `loadMoreMenu` has asked for them, else null. */
 export const legal = { get current(): LegalLinks | null { return legalLinks; } };
 
-/** Loads the more menu's, the roster's and the Clone, Share and Publish buttons' code. A failed load leaves its part out. */
+/** Loads the more menu's, the roster's, the Clone dialog host's and the Fork, Share and Publish buttons' code. A failed load leaves its part out. */
 export function loadMoreMenu(): void {
   import("./MoreMenu.svelte").then(m => { loaded = m.default; }, () => {});
   import("./Who.svelte").then(m => { whoLoaded = m.default; }, () => {});
   import("./Clone.svelte").then(m => { cloneLoaded = m.default; }, () => {});
+  import("./ForkButton.svelte").then(m => { forkLoaded = m.default; }, () => {});
   import("./Share.svelte").then(m => { shareLoaded = m.default; }, () => {});
   import("./PermissionsPanel.svelte").then(m => { permissionsLoaded = m.default; }, () => {});
   import("./Publish.svelte").then(m => { publishLoaded = m.default; }, () => {});
