@@ -136,6 +136,9 @@ export type BotStep = {
   credits_milli: number;
   text?: string; model?: string; input_tokens?: number; cached_tokens?: number; output_tokens?: number; key_source?: "instance" | "own";
   title?: string; code?: string; calls?: BotCall[]; logs?: string[]; value?: unknown; error?: string | null; cpu_ms?: number;
+  /** The run's state a script step kept, each browser page in it shown as
+   * "<browser page>"; absent when the step left it as it was. */
+  state?: Record<string, unknown>;
   summary?: string; reason?: string;
   /** A `stopped` or `failed` step's failed model call, for admins, and for
    * the run's own person on their own key (never a reader's, nor an older

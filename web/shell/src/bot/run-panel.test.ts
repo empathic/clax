@@ -281,6 +281,21 @@ describe("the run panel", () => {
     m.unmount();
   });
 
+  it("a_script_step_shows_its_state", async () => {
+    daemon({ "GET /api/bot/runs/r9": json(run({ id: "r9", status: "finished", steps: [
+      { n: 1, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Open", calls: [], error: "x",
+        state: { page: "<browser page>", n: 1 } },
+      { n: 2, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Look", calls: [], error: "y" },
+    ] })) });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r9");
+    flush();
+    await settle();
+    const states = [...document.querySelectorAll('#bot-run-panel pre[aria-label="State"]')];
+    expect(states.map(p => JSON.parse(p.textContent!))).toEqual([{ page: "<browser page>", n: 1 }]);
+    m.unmount();
+  });
+
   it("finish_lists_sources", async () => {
     daemon({ "GET /api/bot/runs/r4": json(run({ id: "r4", status: "finished", steps: [
       { n: 1, kind: "finish", status: "done", started_at: "x", credits_milli: 0, summary: "Added the release notes.", sources: [{ title: "Svelte blog", url: "https://svelte.dev/blog" }, { title: "javascript:alert(1)", url: "javascript:alert(1)" }, { title: "Again", url: "https://svelte.dev/blog" }] },

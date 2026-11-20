@@ -165,6 +165,7 @@
               {/if}
               {#if s.logs?.length}<pre class="out" aria-label="Logs">{s.logs.join("\n")}</pre>{/if}
               {#if output(s) !== null}<pre class="out" aria-label="Output">{output(s)}</pre>{/if}
+              {#if s.state}<pre class="out" aria-label="State">{JSON.stringify(s.state, null, 2)}</pre>{/if}
               {#if s.error}<p class="err">{s.error}</p>{/if}
             </details>
           {:else if s.kind === "finish"}
