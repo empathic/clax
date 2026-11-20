@@ -42,8 +42,6 @@ async function typeReply(page: Page, tid: string, text: string) {
 }
 
 test("a Clax taken down: the shell says it is not answering, keeps what was typed, and clears by itself once it answers again", async ({ page, context }) => {
-  // Two daemon starts and a page load: the timeout only stops a hung test.
-  test.setTimeout(120_000);
   let own: Daemon = await startDaemon();
   try {
     const { artifact } = await publish(own.base, own.token, "Taken down", { "index.html": PAGE });

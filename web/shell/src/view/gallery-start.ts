@@ -7,6 +7,7 @@
 // but for the requests `Io` makes, so the rules are unit-tested here.
 import type { Artifact, AttentionSummary, InboxSummary, QuestionView } from "../api";
 import type { HostedMe } from "../hosted/api";
+import { ApiError, reasonText } from "../trouble";
 import { type BotMe, type GalleryBoot, type GalleryField, type ViewerMe, GALLERY_ROUTES, answered } from "./gallery-boot";
 
 /** Which of the gallery entry's views a path is: the gallery's list, a page
@@ -164,6 +165,10 @@ export async function gatherHeader(b: GalleryBoot | null, io: Io, token: Promise
   return { ...h, summary: (await (early ?? one<InboxSummary>(b, io, "summary"))).body };
 }
 
+/** Why the block's list was refused, in the person's words: the daemon wrote
+ * the block, so the refusal is Clax's own, and no status number is shown. */
+const refusal = (status: number) => reasonText(new ApiError(status, "", null, true));
+
 /** The content's answers: the list and this viewer's attention, and for a
  * browser with an inbox its open questions; each from the block where it
  * answered, the rest asked at once (the questions, as the summary is, once
@@ -172,8 +177,8 @@ export function gatherContent(b: GalleryBoot | null, io: Io, hdr: Promise<Header
   const list = fromBlock<{ artifacts: Artifact[] }>(b, "artifacts");
   // A refused list (the block's status) says why as the route would.
   const listed: Promise<{ artifacts: Artifact[] | null; error: string | null }> = list
-    ? Promise.resolve(list.body ? { artifacts: list.body.artifacts, error: null } : { artifacts: null, error: `${list.status}` })
-    : io.list().then(artifacts => ({ artifacts, error: null }), (e: unknown) => ({ artifacts: null, error: e instanceof Error ? e.message : String(e) }));
+    ? Promise.resolve(list.body ? { artifacts: list.body.artifacts, error: null } : { artifacts: null, error: refusal(list.status) })
+    : io.list().then(artifacts => ({ artifacts, error: null }), (e: unknown) => ({ artifacts: null, error: reasonText(e) }));
   const attention = one<{ artifacts: Record<string, AttentionSummary> }>(b, io, "attention").then(a => a.body?.artifacts ?? {});
   const early = inboxNow(b, io) ? one<{ questions: QuestionView[] }>(b, io, "questions") : null;
   const open = hdr.then(h => (h.inbox ? early ?? one<{ questions: QuestionView[] }>(b, io, "questions") : null)).then(q => (q?.body ? q.body.questions ?? [] : null));
@@ -190,7 +195,7 @@ export function contentFromBlock(b: GalleryBoot | null, h: Header | null): Conte
   const q = h.inbox ? fromBlock<{ questions: QuestionView[] }>(b, "questions")! : null;
   return {
     artifacts: list.body?.artifacts ?? null,
-    error: list.body ? null : `${list.status}`,
+    error: list.body ? null : refusal(list.status),
     attention: fromBlock<{ artifacts: Record<string, AttentionSummary> }>(b, "attention")!.body?.artifacts ?? {},
     questions: q?.body ? q.body.questions ?? [] : null,
   };

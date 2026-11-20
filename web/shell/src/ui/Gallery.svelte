@@ -61,7 +61,6 @@
   import { banner } from "../bot/meter";
   import { reasonText, unreached } from "../trouble";
   import { loadWait } from "../reach";
-  import { loadWait } from "../reach";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
   import { readConfig } from "../feedback/boot";
   import { configOnce } from "../feedback/config";
