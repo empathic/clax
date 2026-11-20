@@ -507,9 +507,11 @@ impl Store {
     /// The instance-wide grant of each of `web.search` and `web.fetch` that
     /// the daemon's configuration turns on (its switch an override from
     /// config.toml or the environment, [`Store::set_bot_overrides`]) and
-    /// that no grant to everyone has ever been written for, live or
-    /// revoked: what migration 67 writes for a switch stored on, which it
-    /// cannot see for one set only in the configuration. As migration 67
+    /// that no grant of it has ever been issued, to anyone, live or revoked:
+    /// what migration 67 writes for a switch stored on, which it cannot
+    /// see for one set only in the configuration. An instance whose admin
+    /// has granted the capability to some people keeps the grants the
+    /// admin made. As migration 67
     /// does, it issues the child to the runs of the owner and of every
     /// person ([`person_keys_in`]) except a person whose
     /// `bot_person_prefs.web` is 0. Issued as `ctx` in one transaction,
@@ -546,9 +548,8 @@ impl Store {
             let mut issued = Vec::new();
             for cap in caps {
                 let ever: bool = tx.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM bot_cap_grants
-                                     WHERE capability = ?1 AND grantee = ?2)",
-                    params![cap, EVERYONE],
+                    "SELECT EXISTS (SELECT 1 FROM bot_cap_grants WHERE capability = ?1)",
+                    params![cap],
                     |r| r.get(0),
                 )?;
                 if ever {
@@ -1014,5 +1015,35 @@ mod tests {
         let events = grant_events(&st);
         assert_eq!(events.len(), 3, "the root and two children: {events:?}");
         assert!(events.iter().all(|e| e["grantee"] != runs(&mia).as_str()));
+    }
+
+    /// Any grant of a web capability, to anyone and live or revoked,
+    /// means the config writes none of it.
+    #[test]
+    fn a_config_web_grant_is_not_written_where_the_capability_was_ever_granted() {
+        let (_d, st) = store();
+        let sam = person(&st, "Sam", 1);
+        let to_sam = st
+            .issue_cap_grant(
+                DAEMON,
+                "web.fetch",
+                GRANTER_INSTANCE,
+                &Grantee::Person(sam.clone()).as_text(),
+                None,
+            )
+            .unwrap();
+        config_turns_fetch_on(&st);
+        assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
+        st.revoke_cap_grant(DAEMON, &to_sam.id).unwrap();
+        assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
+        assert!(!st.person_caps(OWNER).unwrap()["web.fetch"].reaches_runs());
+        assert!(
+            st.cap_grants(&GrantFilter {
+                grantee: Some(EVERYONE.into()),
+                ..GrantFilter::default()
+            })
+            .unwrap()
+            .is_empty()
+        );
     }
 }
