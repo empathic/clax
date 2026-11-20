@@ -1393,7 +1393,8 @@ const URL_ATTRS: &[&str] = &[
 /// `html` format (spec 2026-11-19-claxbot-browser §5.2): its markup with
 /// `<script>`, `<style>`, `<noscript>` and `<template>` left out with
 /// their content, comments and every inline event handler (an `on…`
-/// attribute) and `javascript:` URL removed, and each URL attribute
+/// attribute), `srcdoc`, refreshing `<meta>` and `javascript:` URL (as
+/// the URL parser reads the scheme) removed, and each URL attribute
 /// (`href`, `src`, `action`, …) made absolute against the document's base
 /// (its first `<base href>`, else `base`) when the absolute URL is at
 /// most [`MAX_URL_CHARS`](super::url::MAX_URL_CHARS) characters, else
@@ -1444,6 +1445,18 @@ pub fn clean_html(html: &str, base: &PublicUrl) -> String {
             }
         }
     }
+    /// Whether `value` reads as a `javascript:` URL to the URL parser,
+    /// which skips leading C0 controls and spaces and every ASCII tab and
+    /// newline.
+    fn is_javascript(value: &str) -> bool {
+        let mut scheme = value
+            .trim_start_matches(|c: char| c <= ' ')
+            .chars()
+            .filter(|c| !matches!(c, '\t' | '\n' | '\r'));
+        "javascript:"
+            .chars()
+            .all(|want| scheme.next().is_some_and(|c| c.eq_ignore_ascii_case(&want)))
+    }
     impl Cleaner {
         fn base(&self) -> url::Url {
             self.doc_base
@@ -1465,6 +1478,13 @@ pub fn clean_html(html: &str, base: &PublicUrl) -> String {
             {
                 *self.doc_base.borrow_mut() = self.base.join(h.value.trim()).ok();
             }
+            if name == "meta"
+                && tag.attrs.iter().any(|a| {
+                    &*a.name.local == "http-equiv" && a.value.trim().eq_ignore_ascii_case("refresh")
+                })
+            {
+                return;
+            }
             let base = self.base();
             out.push('<');
             out.push_str(name);
@@ -1473,21 +1493,24 @@ pub fn clean_html(html: &str, base: &PublicUrl) -> String {
                 if key.len() > 2 && key[..2].eq_ignore_ascii_case("on") {
                     continue;
                 }
+                if key == "srcdoc" {
+                    continue;
+                }
                 let mut value = a.value.to_string();
                 if URL_ATTRS.contains(&key) {
-                    if value
-                        .trim_start()
-                        .to_ascii_lowercase()
-                        .starts_with("javascript:")
-                    {
+                    if is_javascript(&value) {
                         continue;
                     }
                     if value.len() <= MAX_TARGET_BYTES
                         && !value.trim().starts_with('#')
                         && let Ok(u) = base.join(value.trim())
-                        && u.as_str().chars().count() <= super::url::MAX_URL_CHARS
                     {
-                        value = u.to_string();
+                        if u.scheme() == "javascript" {
+                            continue;
+                        }
+                        if u.as_str().chars().count() <= super::url::MAX_URL_CHARS {
+                            value = u.to_string();
+                        }
                     }
                 }
                 out.push(' ');
@@ -1840,6 +1863,39 @@ mod tests {
         let out = clean_html(&long, &at);
         assert!(out.len() < long.len() * 2, "{} bytes", out.len());
         assert!(out.ends_with("<b src=\"\">"));
+    }
+
+    /// A `javascript:` URL is recognised as the URL parser reads it, tabs,
+    /// newlines and leading control characters ignored; `srcdoc` and a
+    /// refreshing `<meta>` are dropped.
+    #[test]
+    fn clean_html_drops_hidden_script() {
+        let at = base("https://a.example/");
+        for href in [
+            "java&#9;script:alert(1)",
+            "&#1;javascript:alert(1)",
+            " JaVa&#10;Script:alert(1)",
+        ] {
+            assert_eq!(
+                clean_html(&format!("<a href=\"{href}\">x</a>"), &at),
+                "<a>x</a>",
+                "{href}"
+            );
+        }
+        let long = format!("java&#9;script:{}", "a".repeat(MAX_TARGET_BYTES));
+        assert_eq!(
+            clean_html(&format!("<a href=\"{long}\">x</a>"), &at),
+            "<a>x</a>"
+        );
+        assert_eq!(
+            clean_html(
+                "<iframe srcdoc=\"&lt;script&gt;go()&lt;/script&gt;\" title=\"t\"></iframe>\
+                 <meta http-equiv=\" Refresh\" content=\"0;url=javascript:go()\">\
+                 <meta charset=\"utf-8\">",
+                &at
+            ),
+            "<iframe title=\"t\"></iframe><meta charset=\"utf-8\">"
+        );
     }
 
     #[test]
