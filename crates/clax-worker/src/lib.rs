@@ -203,11 +203,10 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
                 .headers()
                 .get("service-worker")?
                 .is_some_and(|v| v.eq_ignore_ascii_case("script"));
-            if worker_script {
-                return to_instance(&env, req).await;
-            }
-            if path == PAGE_VIEW_PATH {
-                return to_instance(&env, with_country(req)?).await;
+            match site_first(&path, worker_script) {
+                SiteFirst::PageView => return to_instance(&env, with_country(req)?).await,
+                SiteFirst::Instance => return to_instance(&env, req).await,
+                SiteFirst::Files => {}
             }
             if let Some(mut res) = static_asset(&env, &path, false).await? {
                 let hosted = env.var("HOSTED").is_ok_and(|v| v.to_string() == "1");
@@ -235,6 +234,33 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
 /// A page view's report on a site host (`POST /_clax/api/analytics`,
 /// `clax_server::routes::site_api`).
 const PAGE_VIEW_PATH: &str = "/_clax/api/analytics";
+
+/// Where a site host's request goes before the static files are looked in.
+#[derive(Debug, PartialEq, Eq)]
+enum SiteFirst {
+    /// A page view's report: to the instance with Cloudflare's country
+    /// ([`with_country`]).
+    PageView,
+    /// A service worker's script: to the instance as it came.
+    Instance,
+    /// The static files, then the instance.
+    Files,
+}
+
+/// Where a site host's request for `path` goes first, `worker_script` when
+/// it carries `Service-Worker: script`. A page view's report goes with
+/// Cloudflare's country whatever else it carries: anyone may send a
+/// `Service-Worker` header, and a report sent with one must not take the
+/// client's own `CF-IPCountry` to the instance.
+fn site_first(path: &str, worker_script: bool) -> SiteFirst {
+    if path == PAGE_VIEW_PATH {
+        SiteFirst::PageView
+    } else if worker_script {
+        SiteFirst::Instance
+    } else {
+        SiteFirst::Files
+    }
+}
 
 /// The header a page view's country is forwarded in.
 const COUNTRY_HEADER: &str = "cf-ipcountry";
@@ -1197,6 +1223,24 @@ mod tests {
         assert_eq!(
             route(super::PAGE_VIEW_PATH, Some(SITE), SITE, &sites, false),
             Route::Site
+        );
+        // A report with a service worker's header still takes Cloudflare's
+        // country, never the one it sent.
+        assert_eq!(
+            super::site_first(super::PAGE_VIEW_PATH, true),
+            super::SiteFirst::PageView
+        );
+        assert_eq!(
+            super::site_first(super::PAGE_VIEW_PATH, false),
+            super::SiteFirst::PageView
+        );
+        assert_eq!(
+            super::site_first("/sw.js", true),
+            super::SiteFirst::Instance
+        );
+        assert_eq!(
+            super::site_first("/_clax/bridge.js", false),
+            super::SiteFirst::Files
         );
         let fwd = |c: Option<&str>| super::forwarded_country(c.map(String::from));
         assert_eq!(fwd(Some("DE")).as_deref(), Some("DE"));
