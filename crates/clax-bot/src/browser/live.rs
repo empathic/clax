@@ -545,6 +545,23 @@ impl BrowserSessions {
         })
     }
 
+    /// Where a `goto` of `url` in session `session` of run `run` goes:
+    /// `url` resolved against the page's URL after the last call.
+    ///
+    /// # Errors
+    /// As [`BrowserSessions::call`], for a session not open.
+    pub fn goto_target(&self, run: &str, session: &str, url: &str) -> Result<String, BrowserError> {
+        self.sender(run, session)?;
+        let reg = lock(&self.reg);
+        let Some(e) = reg.sessions.get(session) else {
+            return Err(lost(
+                session,
+                "this process holds no such session for this run",
+            ));
+        };
+        Ok(resolve_url(&e.url, url).unwrap_or_else(|| url.to_string()))
+    }
+
     /// The ID of the session `handle` is a capability of, for a call of
     /// run `run`, open or ended (see the module docs); nothing of its
     /// caveats but its holder is read.

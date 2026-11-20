@@ -29,7 +29,9 @@
 //! - **Price** (step 8): one call's time cap, `browser.call_seconds`.
 //! - **Perform** (step 9): the host's session registry
 //!   ([`crate::browser::live::BrowserSessions`]) opens the session or
-//!   performs the call; a `goto` out of an artifact or content session is
+//!   performs the call; each `goto` of a URL session passes
+//!   `browser.open.url`'s URL rule, as its open did, else the rule's
+//!   refusal; a `goto` out of an artifact or content session is
 //!   given the URL session's policy when the run declared
 //!   `browser.open.url`, it is live and its rule admits the URL, and is refused `browser_disabled` by the
 //!   session otherwise.
@@ -1099,6 +1101,7 @@ impl Performer for SessionOp {
                         .leave_policy(
                             &sessions,
                             session,
+                            self.kind,
                             a["url"].as_str().unwrap_or_default(),
                             seen,
                         )
@@ -1378,21 +1381,29 @@ impl ClaxSession<'_> {
         Pages::Draft(st.draft.files().clone(), st.draft.base_version)
     }
 
-    /// The URL session's policy a `goto` of `url` out of session
-    /// `session`'s origin is given: none when it stays in the origin, or
-    /// when `browser.open.url` is not declared by the run or not live (the
-    /// session then refuses it
-    /// `browser_disabled`); the refusal of the URL rule otherwise.
+    /// What a `goto` of `url` in session `session`, of kind `kind`, is
+    /// given (spec §6.3). In a URL session the URL, resolved against the
+    /// page's, passes `browser.open.url`'s rule as an open's does (else the
+    /// rule's refusal) and the session keeps its policy (none). Out of an
+    /// artifact or content session's origin, the URL session's policy when
+    /// the run declared `browser.open.url`, it is live and its rule admits
+    /// the URL (else the rule's refusal); none when the run did not declare
+    /// it or it is not live (the session then refuses it
+    /// `browser_disabled`), and none for a `goto` within the origin.
     async fn leave_policy(
         &self,
         sessions: &BrowserSessions,
         session: &str,
+        kind: Option<SessionKind>,
         url: &str,
         seen: &Seen,
     ) -> Result<Option<Arc<dyn RequestPolicy>>, HostError> {
-        if !sessions
-            .leaves(&self.run.id, session, url)
-            .map_err(|e| from_browser(&e))?
+        let run = &self.run.id;
+        let in_url_session = kind == Some(SessionKind::Url);
+        if !in_url_session
+            && !sessions
+                .leaves(run, session, url)
+                .map_err(|e| from_browser(&e))?
         {
             return Ok(None);
         }
@@ -1404,13 +1415,19 @@ impl ClaxSession<'_> {
         let Ok(terms) = seen.caps.get(Capability::OpenUrl) else {
             return Ok(None);
         };
+        let target = sessions
+            .goto_target(run, session, url)
+            .map_err(|e| from_browser(&e))?;
         let rule = open_grant(terms)
             .url_rule
             .clone()
             .unwrap_or(UrlRule::Sender);
         let source = browser_source(self);
         let scope = self.browse_scope(source.as_ref(), &rule).await?;
-        scope.allowed(url).map_err(|e| from_browser(&e))?;
+        scope.allowed(&target).map_err(|e| from_browser(&e))?;
+        if in_url_session {
+            return Ok(None);
+        }
         Ok(Some(Arc::new(BrowsePolicy::new(scope, source))))
     }
 }

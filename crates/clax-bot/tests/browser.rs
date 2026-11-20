@@ -1726,6 +1726,39 @@ async fn a_kind_granted_mid_run_is_not_added_to_it() {
     assert_eq!(env.browser.opened(), 1);
 }
 
+/// Each `goto` of a URL session passes `browser.open.url`'s URL rule, as
+/// its open did: a URL the sender did not write is refused with the
+/// rule's code, and the page does not go there.
+#[tokio::test]
+async fn a_goto_in_a_url_session_passes_the_url_rule() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    sender_says(&env, "See https://a.example/one");
+    let (_, v) = one_script_with(
+        &env,
+        "browser.open.url",
+        "const p = await clax.browser.open({ url: 'https://a.example/one' });
+         const codes = [];
+         for (const u of ['https://a.example/one', 'https://b.example/two']) {
+           try { await p.goto(u); codes.push('went'); } catch (e) { codes.push(e.code); }
+         }
+         await p.close();
+         return codes;",
+    )
+    .await;
+    assert_eq!(v, json!(["went", "url_not_in_prior_context"]));
+    let log = &env.browser.logs()[0];
+    let navigated: Vec<Value> = log
+        .sent("Page.navigate")
+        .iter()
+        .map(|c| c["params"]["url"].clone())
+        .collect();
+    assert!(
+        !navigated.contains(&json!("https://b.example/two")),
+        "{navigated:?}"
+    );
+}
+
 /// A run holds at most `browser.max_open_per_run` sessions at once (1 by
 /// default): another open answers `browser_cap` until one is closed.
 #[tokio::test]
