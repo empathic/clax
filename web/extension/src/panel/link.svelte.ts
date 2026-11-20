@@ -17,7 +17,8 @@ import { PanelQuestions } from "./questions";
 
 /** A request the worker answers with `step` (its `req` is the link's to give). */
 export type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string }
-  | { t: "join"; origin: string; with: string } | { t: "split"; origin: string };
+  | { t: "join"; origin: string; with: string } | { t: "split"; origin: string }
+  | { t: "site-join"; origin: string; with: string } | { t: "site-split"; origin: string };
 /** A question or inbox request, without its `req`. */
 type Req<M = PanelToWorker> = M extends { req: number } ? Omit<M, "req"> : never;
 export type InboxReq = Exclude<Req, Ask | { t: "clip" | "far-page" | "firsts" }>;

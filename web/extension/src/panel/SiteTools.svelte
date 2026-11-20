@@ -10,8 +10,8 @@
   // Chrome for the other origins first (under the click), so a thread of the
   // site can open on any of them with Clax staying on.
   import type { SiteChoice, SiteView, Suggestion } from "../messages";
+  import { type Step, host, plural, runJoin } from "./site-actions";
 
-  type Step = { moved: number; remaining: number };
   type Ask = { t: "join"; origin: string; with: string } | { t: "split"; origin: string };
   let { site, origin, suggestion, sites, request, answer, list, permit, banner = false }: {
     site: SiteView | null; origin: string; suggestion: Suggestion | null; sites: SiteChoice[] | null;
@@ -21,9 +21,6 @@
     /** Asks Chrome for `origins` (under the person's click): whether it allowed them. */
     permit(origins: string[]): Promise<boolean>;
   } = $props();
-  /** The most batches one join sends (200 threads each). */
-  const MAX_BATCHES = 1000;
-  const host = (o: string) => o.replace(/^\w+:\/\//, "");
   const info = $derived(site?.site ?? null);
   const joined = $derived(!!info?.joined);
   const mine = $derived(info?.origins.map(o => o.origin) ?? [origin]);
@@ -36,7 +33,6 @@
   let note = $state<{ text: string; bad: boolean } | null>(null);
   let alive = true;
   $effect(() => () => { alive = false; });
-  const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
   /** Joins, or with `continuing` finishes a join already made, which needs no permission. */
   async function join(target: string, all: string[], continuing = false): Promise<void> {
@@ -45,20 +41,11 @@
     const allowed = permit(all);
     busy = `Joining ${host(target)}`;
     note = null;
-    let moved = 0;
-    let left = Infinity;
     try {
-      const denied = !(await allowed);
-      if (denied && !continuing) throw new Error(`Chrome was not allowed access to ${all.map(host).join(", ")}, so Clax cannot follow the site there.`);
-      for (let i = 0; ; i++) {
-        if (!alive) return;
-        const r = await request({ t: "join", origin, with: target });
-        moved += r.moved;
-        if (!r.remaining) break;
-        busy = `Joining ${host(target)}… ${plural(r.remaining, "thread")} left`;
-        if (!r.moved || r.remaining >= left || i + 1 >= MAX_BATCHES) throw new Error(`Stopped with ${plural(r.remaining, "thread")} left to merge. Join again later to finish.`);
-        left = r.remaining;
-      }
+      const r = await runJoin({ all, allowed, continuing, step: () => request({ t: "join", origin, with: target }),
+        left: n => { busy = `Joining ${host(target)}… ${plural(n, "thread")} left`; }, alive: () => alive });
+      if (!r) return;
+      const { moved, denied } = r;
       const unfollowed = denied ? ` Chrome was not allowed access to ${all.filter(o => o !== origin).map(host).join(", ")}, so Clax will not follow the tab there.` : "";
       note = { text: `Joined ${host(origin)} and ${host(target)}: one site${moved ? `, ${plural(moved, "thread")} merged` : ""}.${unfollowed}`, bad: false };
       pick = "";

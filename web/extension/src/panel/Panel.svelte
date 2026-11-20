@@ -14,10 +14,11 @@
   // into a closed set of elements whose strings are still text: its raw
   // HTML shows as text, an image as a link, and a link only to an absolute
   // http(s) or mailto address.
-  // For the owner (the daemon takes the extension as the owner), two tabs
+  // For the owner (the daemon takes the extension as the owner), three tabs
   // (spec 2026-10-06-agent-questions-and-inbox §9.6): **Page**, with the open
-  // questions about the live page above its threads, and **Inbox** with the
-  // unread count.
+  // questions about the live page above its threads, **Inbox** with the
+  // unread count, and **Sites**, every joined site's addresses to join and
+  // split whatever the tab shows.
   import Sidebar from "../../../shell/src/ui/Sidebar.svelte";
   import type { Thread } from "../../../shell/src/threads";
   import { agentName } from "../../../shell/src/view/history-model";
@@ -38,7 +39,8 @@
 
   type Step = { moved: number; remaining: number };
   type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string }
-    | { t: "join"; origin: string; with: string } | { t: "split"; origin: string };
+    | { t: "join"; origin: string; with: string } | { t: "split"; origin: string }
+    | { t: "site-join"; origin: string; with: string } | { t: "site-split"; origin: string };
   type Link = {
     state: PanelState | null; up?: boolean; site?: SiteView | null; failures?: number; post(m: PanelToWorker): void; request?(m: Ask): Promise<Step>;
     clip?(threadId: string): Promise<string | null>;
@@ -228,14 +230,18 @@
   // a card leaving with focus can hand it on.
   let asked = $state(false);
   $effect(() => { if (!asked && s?.page && link.questions?.byArtifact(s.page.artifact_id).length) asked = true; });
-  let tab = $state<"page" | "inbox">("page");
+  const TABS = ["page", "inbox", "sites"] as const;
+  let tab = $state<(typeof TABS)[number]>("page");
   const inboxTab = $derived(owner && tab === "inbox");
+  const sitesTab = $derived(owner && tab === "sites");
+  const pageTab = $derived(!inboxTab && !sitesTab);
   const unreadCount = $derived(link.inbox?.unread ?? 0);
   // Arrows move between the tabs, as a tab list's do.
   function tabKey(e: KeyboardEvent): void {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "Home" && e.key !== "End") return;
     e.preventDefault();
-    tab = e.key === "Home" ? "page" : e.key === "End" ? "inbox" : tab === "page" ? "inbox" : "page";
+    const i = TABS.indexOf(tab);
+    tab = TABS[e.key === "Home" ? 0 : e.key === "End" ? TABS.length - 1 : (i + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length];
     queueMicrotask(() => document.getElementById(`ptab-${tab}`)?.focus());
   }
 </script>
@@ -259,10 +265,12 @@
     {/if}
     {#if owner}
       <div class="tabs" role="tablist" aria-label="Side panel">
-        <button type="button" role="tab" id="ptab-page" aria-selected={!inboxTab} aria-controls="ptab-page-panel" tabindex={inboxTab ? -1 : 0}
+        <button type="button" role="tab" id="ptab-page" aria-selected={pageTab} aria-controls="ptab-page-panel" tabindex={pageTab ? 0 : -1}
           onclick={() => (tab = "page")} onkeydown={tabKey}>Page</button>
         <button type="button" role="tab" id="ptab-inbox" aria-selected={inboxTab} aria-controls="ptab-inbox-panel" tabindex={inboxTab ? 0 : -1}
           aria-label={unreadCount ? `Inbox, ${unreadCount} unread` : "Inbox"} onclick={() => (tab = "inbox")} onkeydown={tabKey}>Inbox{#if unreadCount}<span class="count" aria-hidden="true">{unreadCount}</span>{/if}</button>
+        <button type="button" role="tab" id="ptab-sites" aria-selected={sitesTab} aria-controls="ptab-sites-panel" tabindex={sitesTab ? 0 : -1}
+          onclick={() => (tab = "sites")} onkeydown={tabKey}>Sites</button>
       </div>
     {/if}
     {#if link.up === false}
@@ -289,6 +297,13 @@
         <!-- Loaded when first opened: the panel's first paint carries none of it. -->
         {#await import("./InboxTab.svelte") then { default: InboxTab }}
           <InboxTab link={{ inbox: link.inbox, questions: link.questions, ask: m => link.ask!(m), post: m => link.post(m), onItem: f => link.onItem!(f) }} {now} />
+        {/await}
+      </div>
+    {:else if sitesTab}
+      <div class="tabpanel" role="tabpanel" id="ptab-sites-panel" aria-labelledby="ptab-sites">
+        <!-- Whatever the tab shows, Clax on or off in it; loaded when first opened. -->
+        {#await import("./SitesTab.svelte") then { default: SitesTab }}
+          <SitesTab sites={link.sites ?? null} request={ask} {permit} list={() => link.post({ t: "list-sites" })} />
         {/await}
       </div>
     {:else}

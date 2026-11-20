@@ -190,6 +190,14 @@ describe("messages", () => {
     expect(isFromPanel({ t: "suggest" })).toBe(true);
     expect(isFromPanel({ t: "suggest", url: O })).toBe(false);
     expect(isFromPanel({ t: "list-sites" })).toBe(true);
+    // The Sites tab's join and split, on any site.
+    expect(isFromPanel({ t: "site-join", req: 1, origin: A, with: O })).toBe(true);
+    expect(isFromPanel({ t: "site-join", req: 1, origin: A, with: A })).toBe(false);
+    expect(isFromPanel({ t: "site-join", req: 1, origin: A })).toBe(false);
+    expect(isFromPanel({ t: "site-join", origin: A, with: O })).toBe(false);
+    expect(isFromPanel({ t: "site-split", req: 2, origin: A })).toBe(true);
+    expect(isFromPanel({ t: "site-split", req: 2, origin: "localhost" })).toBe(false);
+    expect(isFromPanel({ t: "site-split", req: 2, origin: A, with: O })).toBe(false);
     expect(isFromPanel({ t: "answer", with: A, answer: "never" })).toBe(true);
     expect(isFromPanel({ t: "answer", with: A, answer: "later" })).toBe(true);
     expect(isFromPanel({ t: "answer", with: A, answer: "always" })).toBe(false);
@@ -203,10 +211,12 @@ describe("messages", () => {
     // A site holds any number of origins.
     const twenty = Array.from({ length: 20 }, (_, i) => `http://localhost:${7800 + i}`);
     expect(isToPanel({ t: "suggestion", origin: O, suggestion: { ...sug, origins: twenty } })).toBe(true);
-    expect(isToPanel({ t: "sites", sites: [{ key: twenty[0], name: twenty[0], origins: twenty }] })).toBe(true);
-    expect(isToPanel({ t: "sites", sites: [{ key: A, name: O, origins: [O, A] }] })).toBe(true);
-    expect(isToPanel({ t: "sites", sites: [{ key: A, name: O, origins: [O, A], pages: 2 }] })).toBe(false);
-    expect(isToPanel({ t: "sites", sites: [{ key: "x", name: O, origins: [O] }] })).toBe(false);
+    expect(isToPanel({ t: "sites", sites: [{ key: twenty[0], name: twenty[0], origins: twenty, pages: 1, threads: 0, joining: 0 }] })).toBe(true);
+    const choice = { key: A, name: O, origins: [O, A], pages: 2, threads: 5, joining: 0 };
+    expect(isToPanel({ t: "sites", sites: [choice] })).toBe(true);
+    for (const bad of [{ key: A, name: O, origins: [O, A] }, { ...choice, pages: -1 }, { ...choice, joining: 1.5 }, { ...choice, threads: "5" }, { ...choice, extra: 1 }, { ...choice, key: "x" }]) {
+      expect(isToPanel({ t: "sites", sites: [bad] }), JSON.stringify(bad)).toBe(false);
+    }
     expect(isToPanel({ t: "sites", sites: {} })).toBe(false);
   });
 

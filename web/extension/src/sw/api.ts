@@ -177,7 +177,7 @@ export class Api {
       `/api/live/sites/suggest?url=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}`);
   }
   /** Every site Clax has live pages of, one entry per joined site. */
-  sites() { return this.json<{ sites: { site: SiteInfo }[] }>("/api/live/sites"); }
+  sites() { return this.json<{ sites: { site: SiteInfo; pages: number; threads: number; joining: number }[] }>("/api/live/sites"); }
   /** One batch of joining `origin` to the site of `with`; `remaining` says how many threads are left to merge. */
   join(origin: string, withOrigin: string) { return this.send<{ site: SiteInfo; moved: string[]; remaining: number }>("POST", "/api/live/sites/join", { origin, with: withOrigin }); }
   /** Splits `origin` off its site. */

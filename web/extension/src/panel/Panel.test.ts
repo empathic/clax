@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PanelState, PanelToWorker, SiteView } from "../messages";
+import type { PanelState, PanelToWorker, SiteChoice, SiteView } from "../messages";
 import type { InboxItem } from "../../../shell/src/api";
 import * as fixtures from "../../../shell/src/q/fixtures";
 import type { InboxReq as InboxReqLike } from "./link.svelte";
@@ -728,7 +728,7 @@ describe("Panel: joined sites", () => {
     expect(screen.getByText(/localhost:7702 is a site of its own again/)).toBeTruthy();
     // "Same app as…" offers the other sites only.
     const C = "http://localhost:3000";
-    l.sites = [{ key: A, name: O, origins: [O, A] }, { key: C, name: C, origins: [C] }];
+    l.sites = [{ key: A, name: O, origins: [O, A], pages: 2, threads: 3, joining: 0 }, { key: C, name: C, origins: [C], pages: 1, threads: 0, joining: 0 }];
     await r.rerender({ link: { ...l } as never, now: NOW, permit: async () => true });
     const select = screen.getByLabelText("Same app as") as HTMLSelectElement;
     expect([...select.options].map(o => o.textContent)).toEqual(["Choose an address", "localhost:3000"]);
@@ -1000,5 +1000,118 @@ describe("Panel for the owner's questions and inbox", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("Panel: the Sites tab", () => {
+  const O = "http://localhost:5173";
+  const A = "http://localhost:7702";
+  const C = "http://localhost:3000";
+  const NOW = new Date("2026-10-07T10:00:00.000Z");
+  type Step = { moved: number; remaining: number };
+  const choice = (key: string, origins: string[], over: Partial<SiteChoice> = {}): SiteChoice => ({ key, name: origins[0], origins, pages: 2, threads: 3, joining: 0, ...over });
+  /** The owner's panel on a tab Clax is off in, whose worker answers each request with the next of `steps`. */
+  function sitesLink(steps: Step[] = []) {
+    const l = {
+      ...link(state({ enabled: false, page: null, threads: [], url: "https://example.com/" })),
+      inbox: { owner: true, unread: 0 }, questions: null as unknown as PanelQuestions, ask: async () => ({}), onItem: () => () => {},
+      sites: null as SiteChoice[] | null, asked: [] as unknown[],
+      request: async (m: unknown) => { l.asked.push(m); const r = steps.shift(); if (!r) throw new Error("No such site."); return r; },
+    };
+    l.questions = new PanelQuestions(l as never);
+    return l;
+  }
+  async function open(l: ReturnType<typeof sitesLink>, permit: (o: string[]) => Promise<boolean> = async () => true) {
+    const r = render(Panel, { props: { link: l as never, now: NOW, permit } });
+    await fireEvent.click(screen.getByRole("tab", { name: "Sites" }));
+    await vi.waitFor(() => expect(l.sent).toContainEqual({ t: "list-sites" }));
+    l.sites = [choice(A, [A, O], { pages: 4, threads: 9 }), choice(C, [C], { pages: 1, threads: 1 })];
+    await r.rerender({ link: { ...l } as never, now: NOW, permit });
+    await vi.waitFor(() => expect(screen.getByRole("heading", { name: "localhost:7702" })).toBeTruthy());
+    return r;
+  }
+
+  it("shows for the owner beside Page and Inbox, by click and by arrow keys, and lists every site with Clax off in the tab", async () => {
+    const l = sitesLink();
+    render(Panel, { props: { link: l as never, now: NOW } });
+    const sites = screen.getByRole("tab", { name: "Sites" });
+    expect(screen.getAllByRole("tab").map(t => t.id)).toEqual(["ptab-page", "ptab-inbox", "ptab-sites"]);
+    expect(sites.getAttribute("aria-controls")).toBe("ptab-sites-panel");
+    await fireEvent.keyDown(screen.getByRole("tab", { name: "Page" }), { key: "End" });
+    expect(sites.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tabpanel").id).toBe("ptab-sites-panel");
+    await fireEvent.keyDown(sites, { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Page" }).getAttribute("aria-selected")).toBe("true");
+    await fireEvent.keyDown(screen.getByRole("tab", { name: "Page" }), { key: "ArrowLeft" });
+    expect(sites.getAttribute("aria-selected")).toBe("true");
+    cleanup();
+    const l2 = sitesLink();
+    await open(l2);
+    const panel = screen.getByRole("tabpanel");
+    expect([...panel.querySelectorAll(".site h2")].map(h => h.textContent)).toEqual(["localhost:7702", "localhost:3000"]);
+    expect([...panel.querySelectorAll(".site .o")].map(h => h.textContent)).toEqual(["localhost:7702", "localhost:5173", "localhost:3000"]);
+    expect(panel.textContent).toContain("4 pages · 9 threads");
+    expect(panel.textContent).toContain("1 page · 1 thread");
+    // Only a joined site's addresses split off.
+    expect(screen.queryByRole("button", { name: "Split localhost:3000 off" })).toBeNull();
+  });
+
+  it("splits an address off its site, and asks for the list again", async () => {
+    const l = sitesLink([{ moved: 0, remaining: 0 }]);
+    await open(l);
+    const lists = l.sent.filter(m => m.t === "list-sites").length;
+    await fireEvent.click(screen.getByRole("button", { name: "Split localhost:5173 off" }));
+    await settled();
+    expect(l.asked).toEqual([{ t: "site-split", origin: O }]);
+    expect(screen.getByText(/localhost:5173 is a site of its own again/)).toBeTruthy();
+    expect(l.sent.filter(m => m.t === "list-sites")).toHaveLength(lists + 1);
+  });
+
+  it("joins a picked site into this one in batches while threads remain, asking Chrome for every origin of the joined site first", async () => {
+    const l = sitesLink([{ moved: 200, remaining: 1 }, { moved: 1, remaining: 0 }]);
+    const asked: string[][] = [];
+    await open(l, async o => { asked.push(o); return true; });
+    const lists = l.sent.filter(m => m.t === "list-sites").length;
+    const select = screen.getByLabelText("Join localhost:7702 with") as HTMLSelectElement;
+    expect([...select.options].map(o => o.textContent)).toEqual(["Join with…", "localhost:3000"]);
+    expect([...(screen.getByLabelText("Join localhost:3000 with") as HTMLSelectElement).options].map(o => o.textContent)).toEqual(["Join with…", "localhost:7702 (+1)"]);
+    await fireEvent.change(select, { target: { value: C } });
+    await fireEvent.click(screen.getByRole("button", { name: "Join localhost:7702" }));
+    await settled();
+    expect(asked).toEqual([[A, O, C]]);
+    expect(l.asked).toEqual([{ t: "site-join", origin: C, with: A }, { t: "site-join", origin: C, with: A }]);
+    expect(screen.getByText(/Joined localhost:3000 and localhost:7702: one site, 201 threads merged/)).toBeTruthy();
+    expect(l.sent.filter(m => m.t === "list-sites")).toHaveLength(lists + 1);
+  });
+
+  it("stops a join whose batch merges nothing, and joins nothing when Chrome is not allowed the origins", async () => {
+    const l = sitesLink([{ moved: 1, remaining: 5 }, { moved: 0, remaining: 5 }]);
+    await open(l);
+    await fireEvent.change(screen.getByLabelText("Join localhost:7702 with"), { target: { value: C } });
+    await fireEvent.click(screen.getByRole("button", { name: "Join localhost:7702" }));
+    await settled();
+    expect(l.asked).toHaveLength(2);
+    expect(screen.getByText(/Stopped with 5 threads left to merge/)).toBeTruthy();
+    cleanup();
+    const no = sitesLink([{ moved: 0, remaining: 0 }]);
+    await open(no, async () => false);
+    await fireEvent.change(screen.getByLabelText("Join localhost:7702 with"), { target: { value: C } });
+    await fireEvent.click(screen.getByRole("button", { name: "Join localhost:7702" }));
+    await settled();
+    expect(no.asked).toEqual([]);
+    expect(screen.getByText(/Chrome was not allowed access to localhost:7702, localhost:5173, localhost:3000/)).toBeTruthy();
+  });
+
+  it("continues a join not finished from an origin of the site that is not its key", async () => {
+    const l = sitesLink([{ moved: 3, remaining: 0 }]);
+    const r = render(Panel, { props: { link: l as never, now: NOW, permit: async () => true } });
+    await fireEvent.click(screen.getByRole("tab", { name: "Sites" }));
+    l.sites = [choice(A, [O, A], { joining: 3 })];
+    await r.rerender({ link: { ...l } as never, now: NOW, permit: async () => true });
+    const box = await vi.waitFor(() => screen.getByRole("group", { name: "Join of localhost:5173 not finished" }));
+    expect(box.textContent).toContain("3 threads left to merge");
+    await fireEvent.click(within(box).getByRole("button", { name: "Continue joining" }));
+    await settled();
+    expect(l.asked).toEqual([{ t: "site-join", origin: O, with: A }]);
   });
 });
