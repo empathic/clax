@@ -365,9 +365,15 @@ CREATE TABLE analytics_seen (
   forging page's growth of its own rows.
 - The setting does not travel: a push to a public Clax, a fork, a clone
   and a bundle each start at `on`, the default, and none carries totals.
-- A deleted artifact's rows are deleted in the store's
-  `delete_artifact` transaction (`crates/clax-store/src/artifacts.rs`),
-  not by a listener (qualifier `f84ab739` on
+- A deleted artifact's rows are never read again (`Store::analytics_range`
+  reads only a live artifact's, and the read route answers 404 for a
+  deleted one) and are deleted by the retention pass
+  (`Store::analytics_prune`, `limit` rows at a time), which deletes the
+  rows of an artifact deleted or gone beside those past their keep. Not in
+  the store's `delete_artifact` transaction: up to 13 months of rows (500
+  paths and 500 referrers a day at the caps) deleted at once would outgrow
+  the Worker VFS's transaction cap and leave the artifact undeletable
+  there. Not by a listener either (qualifier `f84ab739` on
   `crates/clax-worker/src/instance.rs` is what a listener risks).
 
 `crates/clax-store/src/analytics.rs` (a `Store` impl block, as

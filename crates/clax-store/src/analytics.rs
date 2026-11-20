@@ -17,8 +17,11 @@
 //!   that day can be recomputed or matched.
 //! - **Totals are kept [`RETENTION_MONTHS`](clax_core::analytics::RETENTION_MONTHS) calendar months**
 //!   ([`Store::analytics_prune`], in bounded passes).
-//! - A deleted artifact's totals go in its deletion's transaction
-//!   (`Store::delete_artifact`).
+//! - A deleted artifact's totals are never read ([`Store::analytics_range`]
+//!   reads only a live artifact's) and go in the same bounded passes
+//!   ([`Store::analytics_prune`]), not in its deletion's transaction, which
+//!   would otherwise delete up to 13 months of rows at once, past the hosted
+//!   Worker's transaction cap.
 //!
 //! Every time is the store's clock's ([`Store::now_utc`]); days are UTC.
 
@@ -225,7 +228,8 @@ impl Store {
     /// Deletes at most `limit` rows of daily totals (`analytics_days`,
     /// `analytics_dims`, `analytics_timings`) of days before the oldest one
     /// kept ([`oldest_kept`]: [`RETENTION_MONTHS`](clax_core::analytics::RETENTION_MONTHS) calendar months before
-    /// today). `more` says such rows are left for the next pass.
+    /// today), or of an artifact deleted or gone. `more` says such rows are
+    /// left for the next pass.
     ///
     /// # Errors
     /// The database's.
@@ -247,7 +251,8 @@ impl Store {
                 let n = tx.execute(
                     &format!(
                         "DELETE FROM {table} WHERE ({key}) IN
-                            (SELECT {key} FROM {table} WHERE day < ?1 LIMIT ?2)"
+                            (SELECT {key} FROM {table} WHERE {} LIMIT ?2)",
+                        pruned(table)
                     ),
                     params![cutoff, limit_of(left)],
                 )?;
@@ -255,9 +260,14 @@ impl Store {
                 left -= n.min(left);
             }
             let more = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM analytics_days WHERE day < ?1)
-                         OR EXISTS(SELECT 1 FROM analytics_dims WHERE day < ?1)
-                         OR EXISTS(SELECT 1 FROM analytics_timings WHERE day < ?1)",
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM analytics_days WHERE {})
+                         OR EXISTS(SELECT 1 FROM analytics_dims WHERE {})
+                         OR EXISTS(SELECT 1 FROM analytics_timings WHERE {})",
+                    pruned("analytics_days"),
+                    pruned("analytics_dims"),
+                    pruned("analytics_timings")
+                ),
                 params![cutoff],
                 |r| r.get(0),
             )?;
@@ -283,6 +293,16 @@ impl Store {
         let key = |d: NaiveDate| d.format("%Y-%m-%d").to_string();
         let (f, t) = (key(from), key(to));
         let mut out = RangeTotals::default();
+        // A deleted artifact's rows wait for the prune: never read.
+        let live = self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT 1 FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
+                params![aid.as_str()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+        })?;
         let mut d = from;
         while d <= to {
             out.days.push(DayTotals {
@@ -295,6 +315,9 @@ impl Store {
                 break;
             };
             d = next;
+        }
+        if !live {
+            return Ok(out);
         }
         self.with_read(|c| {
             let a = aid.as_str();
@@ -387,15 +410,14 @@ fn limit_of(limit: usize) -> i64 {
     i64::try_from(limit).unwrap_or(i64::MAX)
 }
 
-/// Deletes artifact `aid`'s daily totals, in its deletion's transaction.
-pub(crate) fn delete_artifact_in(tx: &Transaction<'_>, aid: &str) -> Result<()> {
-    for table in ["analytics_days", "analytics_dims", "analytics_timings"] {
-        tx.execute(
-            &format!("DELETE FROM {table} WHERE artifact_id = ?1"),
-            params![aid],
-        )?;
-    }
-    Ok(())
+/// The rows of daily totals table `table` [`Store::analytics_prune`]
+/// deletes, its cutoff day `?1`: those of a day before it, and those of an artifact
+/// deleted or gone.
+fn pruned(table: &str) -> String {
+    format!(
+        "({table}.day < ?1 OR NOT EXISTS (SELECT 1 FROM artifacts a
+            WHERE a.id = {table}.artifact_id AND a.deleted_at IS NULL))"
+    )
 }
 
 /// [`Store::analytics_record`]'s writes, in `tx`.
@@ -896,51 +918,63 @@ mod tests {
     }
 
     #[test]
-    fn an_artifacts_totals_go_with_it() {
+    fn an_artifacts_totals_go_with_it_in_bounded_passes_and_are_never_read_meanwhile() {
         let (_d, st) = store_with_clock(Arc::new(ManualClock::at("2026-11-19T10:00:00Z")));
         let a = artifact(&st);
         let kept = artifact(&st);
-        st.analytics_record(&batch_of(&a, "2026-11-19", &[view("index.html")]))
-            .unwrap();
-        st.analytics_record(&batch_of(&kept, "2026-11-19", &[view("index.html")]))
-            .unwrap();
+        let views: Vec<_> = (0..6).map(|i| view(&format!("p{i}.html"))).collect();
+        for day in ["2026-11-18", "2026-11-19"] {
+            st.analytics_record(&batch_of(&a, day, &views)).unwrap();
+            st.analytics_record(&batch_of(&kept, day, &[view("index.html")]))
+                .unwrap();
+        }
+        let rows = |aid: &ArtifactId| -> i64 {
+            ["analytics_days", "analytics_dims", "analytics_timings"]
+                .iter()
+                .map(|table| {
+                    count(
+                        &st,
+                        &format!(
+                            "SELECT count(*) FROM {table} WHERE artifact_id = '{}'",
+                            aid.as_str()
+                        ),
+                    )
+                })
+                .sum()
+        };
+        let before = rows(&a);
+        assert!(before > 8, "more rows than two passes of 4: {before}");
+        let kept_rows = rows(&kept);
         st.delete_artifact(DAEMON, &a).unwrap();
         assert!(!st.analytics_on(&a).unwrap());
-        for table in ["analytics_days", "analytics_dims", "analytics_timings"] {
-            assert_eq!(
-                count(
-                    &st,
-                    &format!(
-                        "SELECT count(*) FROM {table} WHERE artifact_id = '{}'",
-                        a.as_str()
-                    )
-                ),
-                0,
-                "{table}"
-            );
-            assert!(
-                count(
-                    &st,
-                    &format!(
-                        "SELECT count(*) FROM {table} WHERE artifact_id = '{}'",
-                        kept.as_str()
-                    )
-                ) > 0,
-                "{table}"
-            );
+        // The deletion's transaction leaves them; no read returns them.
+        assert_eq!(rows(&a), before);
+        let (from, to) = (
+            clax_core::analytics::parse_day("2026-11-18").unwrap(),
+            clax_core::analytics::parse_day("2026-11-19").unwrap(),
+        );
+        let r = st.analytics_range(&a, from, to).unwrap();
+        assert!(r.days.iter().all(|d| d.views == 0 && d.visitors == 0));
+        assert!(r.dims.is_empty() && r.timings.is_empty() && r.versions.is_empty());
+        // The prune deletes them, at most `limit` a pass, the kept artifact's
+        // rows untouched.
+        let mut passes = 0;
+        loop {
+            let p = st.analytics_prune(4).unwrap();
+            assert!(p.deleted <= 4, "{p:?}");
+            passes += 1;
+            if !p.more {
+                break;
+            }
+            assert!(passes < 100);
         }
+        assert!(passes >= 3, "{passes} passes");
+        assert_eq!(rows(&a), 0);
+        assert_eq!(rows(&kept), kept_rows);
+        assert_eq!(st.analytics_prune(4).unwrap(), Pass::default());
         // A batch counted before the deletion and written after adds nothing.
         st.analytics_record(&batch_of(&a, "2026-11-19", &[view("index.html")]))
             .unwrap();
-        assert_eq!(
-            count(
-                &st,
-                &format!(
-                    "SELECT count(*) FROM analytics_days WHERE artifact_id = '{}'",
-                    a.as_str()
-                )
-            ),
-            0
-        );
+        assert_eq!(rows(&a), 0);
     }
 }

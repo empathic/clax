@@ -11927,8 +11927,9 @@ was made; and a run's end, sent until it is acknowledged.
   500 distinct pages and 500 referring hosts, the rest counted as
   `(other)`. Views are written in batches, at most a minute apart (a
   batch not yet written is lost if the process ends), and reads include
-  the batch not yet written. Totals are kept 13 calendar months, and go
-  with a deleted artifact.
+  the batch not yet written. Totals are kept 13 calendar months; a deleted
+  artifact's are never read again and are deleted by the retention pass
+  after it, a bounded number of rows at a time.
 - **Cross-app reads.** `read/<source>/docs…` on artifact A's site reads
   app B's (`<source>`'s) documents for A, with the bodies of B's document
   reads: only for a site session of the owner or a person who may read B
