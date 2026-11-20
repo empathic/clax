@@ -2551,6 +2551,7 @@ pub struct ExportBody {
 /// `browser_unavailable` on a host that holds no browser sessions; the
 /// page's own refusal (`browser_session_lost`, `browser_session_closed`)
 /// when its session is gone.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn export(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -2643,6 +2644,26 @@ pub async fn export(
         })
         .await?;
     Ok(Json(v))
+}
+
+/// [`export`] on wasm32 (the Worker), which holds no browser session:
+/// 503 `browser_unavailable` for the person a run acts for.
+#[cfg(target_arch = "wasm32")]
+pub async fn export(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    p: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let (_, person) = me(&s, &d).await?;
+    let rid = path(p)?;
+    s.store_call(move |st| own_run(st, &rid, &person).map(|_| ()))
+        .await?;
+    Err(ApiError::new(
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "browser_unavailable",
+        "this host holds no browser sessions",
+    ))
 }
 
 /// `DELETE /api/bot/runs/<id>/exports/<eid>`: the person who exported
