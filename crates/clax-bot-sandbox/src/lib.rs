@@ -1535,7 +1535,10 @@ mod tests {
         let with = prelude_source(true);
         assert!(with.contains(BROWSER_LAYER));
         assert!(!with.contains(LAYER_AT));
-        assert_eq!(with.len(), PRELUDE.len() - LAYER_AT.len() + BROWSER_LAYER.len());
+        assert_eq!(
+            with.len(),
+            PRELUDE.len() - LAYER_AT.len() + BROWSER_LAYER.len()
+        );
         assert!(Script::new("t", "").with_browser().browser);
         let json = serde_json::to_value(Script::new("t", "")).unwrap();
         assert!(json.get("browser").is_none(), "{json}");

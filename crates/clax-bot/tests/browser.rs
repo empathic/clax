@@ -1162,7 +1162,15 @@ async fn a_page_in_state_lives_into_the_next_script() {
     .await;
     assert_eq!(r["value"], "Hello", "{r}");
     assert!(session_row(&env, &run, &session).is_open());
-    next_script(&env, &deps, &run, &d, "tu_3", "delete state.page; return 1;").await;
+    next_script(
+        &env,
+        &deps,
+        &run,
+        &d,
+        "tu_3",
+        "delete state.page; return 1;",
+    )
+    .await;
     let row = session_row(&env, &run, &session);
     assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Dropped));
     assert_eq!(browser_rows(&env).iter().sum::<i64>(), row.charged_ms);
@@ -1196,7 +1204,10 @@ async fn a_replayed_step_drops_the_same_sessions() {
         Next::Waiting(clax_bot::Wait::Crashed)
     );
     let session = only_session(&env, &run);
-    assert!(session_row(&env, &run, &session).is_open(), "nothing committed yet");
+    assert!(
+        session_row(&env, &run, &session).is_open(),
+        "nothing committed yet"
+    );
     env.clock.advance(61);
     let out = env.drive(&a, &run, &DriverId::mint()).await;
     assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));

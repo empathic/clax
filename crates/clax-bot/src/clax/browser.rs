@@ -904,7 +904,11 @@ impl Performer for SessionOp {
         // made are charged first.
         s.charge_ended();
         let sessions = s.sessions()?;
-        let handle = call.args.first().and_then(Value::as_str).unwrap_or_default();
+        let handle = call
+            .args
+            .first()
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         sessions
             .resolve(&s.run.id, handle)
             .and_then(|id| sessions.check(&s.run.id, &id))

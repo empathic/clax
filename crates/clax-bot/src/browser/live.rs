@@ -1759,11 +1759,16 @@ mod tests {
     async fn a_session_not_held_closes_dropped() {
         let w = World::new();
         let (o, log) = w.open(TIMES).await;
-        w.sessions.close_unheld("run-1", &[o.handle.clone()]).await;
+        w.sessions
+            .close_unheld("run-1", std::slice::from_ref(&o.handle))
+            .await;
         assert!(w.sessions.ended().is_empty());
         w.clock.advance(3);
         w.sessions.close_unheld("run-2", &[]).await;
-        assert!(w.sessions.ended().is_empty(), "another run's call ends nothing");
+        assert!(
+            w.sessions.ended().is_empty(),
+            "another run's call ends nothing"
+        );
         w.sessions.close_unheld("run-1", &[]).await;
         assert_eq!(
             w.sessions

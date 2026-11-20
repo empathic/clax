@@ -87,7 +87,9 @@ fn remark(v: &Value, f: &dyn Fn(usize) -> Value) -> Value {
     }
     match v {
         Value::Array(items) => Value::Array(items.iter().map(|x| remark(x, f)).collect()),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), remark(x, f))).collect()),
+        Value::Object(o) => {
+            Value::Object(o.iter().map(|(k, x)| (k.clone(), remark(x, f))).collect())
+        }
         other => other.clone(),
     }
 }
@@ -133,7 +135,11 @@ pub fn fit(left: Option<StateOut>, stopped: Option<&str>) -> Fitted {
         Value::Object(m) => m,
         _ => Map::new(),
     };
-    let size = |m: &Map<String, Value>| prune(Value::Object(m.clone()), &out.handles).to_string().len();
+    let size = |m: &Map<String, Value>| {
+        prune(Value::Object(m.clone()), &out.handles)
+            .to_string()
+            .len()
+    };
     while size(&members) > CAP_BYTES && !members.is_empty() {
         let (key, bytes) = members
             .iter()
@@ -145,7 +151,9 @@ pub fn fit(left: Option<StateOut>, stopped: Option<&str>) -> Fitted {
             .chars()
             .next()
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
-            && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
         {
             format!("state.{key}")
         } else {
@@ -226,7 +234,13 @@ mod tests {
         let f = fit(Some(out(json!({"a": 1}), json!([]))), None);
         assert_eq!(f.saved, Some(json!({"value": {"a": 1}, "handles": []})));
         assert_eq!(f.told, None);
-        assert_eq!(fit(None, None), Fitted { saved: None, told: None });
+        assert_eq!(
+            fit(None, None),
+            Fitted {
+                saved: None,
+                told: None
+            }
+        );
         let stopped = fit(None, Some("the script ran out of memory"));
         assert_eq!(stopped.told.unwrap()["saved"], false);
     }
@@ -264,7 +278,10 @@ mod tests {
                            "handles": [{"page": "secret", "of": "Page"},
                                        {"page": "secret", "of": "Locator"}]});
         let s = shown(&saved);
-        assert_eq!(s, json!({"p": "<browser page>", "l": ["<browser locator>"], "n": 1}));
+        assert_eq!(
+            s,
+            json!({"p": "<browser page>", "l": ["<browser locator>"], "n": 1})
+        );
         assert!(!s.to_string().contains("secret"));
     }
 }

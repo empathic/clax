@@ -766,10 +766,7 @@ impl Tick<'_> {
         // 2026-11-19-claxbot-browser §17.4).
         if c.is_ok() {
             for surface in &surfaces {
-                surface
-                    .provider
-                    .state_committed(info, self.n, &held)
-                    .await;
+                surface.provider.state_committed(info, self.n, &held).await;
             }
         }
         Ok(self.outcome(StepKind::Script, c))
@@ -957,7 +954,8 @@ mod tests {
     #[test]
     fn a_result_is_cut_to_its_bound_with_the_sessions_fields_in_it() {
         let (outcome, calls, told) = logged(40);
-        let (whole, is_error) = tool_result_content(&outcome, &calls, &told, None, None, usize::MAX);
+        let (whole, is_error) =
+            tool_result_content(&outcome, &calls, &told, None, None, usize::MAX);
         assert!(!is_error);
         assert!(whole.contains(r#""published":{"version":2}"#), "{whole}");
         assert!(whole.contains(r#""line 39""#));
@@ -993,7 +991,8 @@ mod tests {
     fn a_cut_result_counts_its_marker_within_its_bound() {
         let (mut outcome, calls, told) = logged(0);
         outcome.value = Some(json!("x".repeat(200)));
-        let result = |o: &ScriptOutcome, max| tool_result_content(o, &calls, &told, None, None, max).0;
+        let result =
+            |o: &ScriptOutcome, max| tool_result_content(o, &calls, &told, None, None, max).0;
         let whole = result(&outcome, usize::MAX);
         // At its bound and one byte under it, it is left whole.
         assert_eq!(result(&outcome, whole.len()), whole);

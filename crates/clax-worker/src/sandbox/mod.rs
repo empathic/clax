@@ -699,9 +699,9 @@ impl RunState {
         // A run that loaded no isolate held no memory.
         let loaded = !matches!(end, End::NotLoaded(_));
         let state = match &end {
-            End::Final(f) => clax_bot_sandbox::StateOut::read(
-                f.done.as_ref().and_then(|d| d.state.as_deref()),
-            ),
+            End::Final(f) => {
+                clax_bot_sandbox::StateOut::read(f.done.as_ref().and_then(|d| d.state.as_deref()))
+            }
             _ => None,
         };
         let ended: Result<Option<Value>, ScriptError> = match end {
