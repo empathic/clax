@@ -66,7 +66,7 @@
 
 use clax_bot_sandbox::{
     CODE_CANCELLED, CODE_INVALID_ARGS, CODE_SCRIPT_FINISHED, CODE_WAITING, CallRecord, CancelToken,
-    ErrorKind, Host, HostError, HostReply, Limits, LogBuffer, PRELUDE, Sandbox, Script,
+    ErrorKind, Host, HostError, HostReply, Limits, LogBuffer, Sandbox, Script,
     ScriptError, ScriptOutcome, Thrown, check_body, validate_ops, wrap,
 };
 use futures_channel::mpsc;
@@ -878,7 +878,10 @@ impl Engine {
             let caught = |e| thrown(CaughtError::from_error(&ctx, e), &file);
             let (call, log, done) = self.natives(&ctx, interrupt, shared).map_err(caught)?;
             let prelude: Function = ctx
-                .eval_with_options(PRELUDE, eval_options("clax:prelude"))
+                .eval_with_options(
+                    &*clax_bot_sandbox::prelude_source(self.script.browser),
+                    eval_options("clax:prelude"),
+                )
                 .map_err(caught)?;
             let options = Object::new(ctx.clone()).map_err(caught)?;
             options

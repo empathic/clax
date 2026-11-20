@@ -92,6 +92,8 @@ pub struct Case {
     /// The script's own operations ([`Script::ops`]); `None` for the
     /// sandbox's, [`OPS`].
     pub ops: Option<Vec<String>>,
+    /// Whether the script asks for the browser layer ([`Script::browser`]).
+    pub browser: bool,
     pub calls: Vec<Exchange>,
     pub records: Records,
     pub expect: Expect,
@@ -106,6 +108,7 @@ impl Case {
             code: self.code.into(),
             determinism: self.determinism,
             ops: self.ops.clone(),
+            browser: self.browser,
         }
     }
 }
@@ -151,6 +154,7 @@ fn case(name: &'static str, code: &'static str, expect: Expect) -> Case {
         cancel_in_call: false,
         determinism: None,
         ops: None,
+        browser: false,
         calls: Vec::new(),
         records: Records::FromCalls,
         expect,
@@ -1732,6 +1736,7 @@ fn browser_layer() -> Vec<Case> {
     }
     let layered = |c: Case| Case {
         ops: browser_ops(),
+        browser: true,
         ..c
     };
     vec![
@@ -1948,6 +1953,7 @@ return 'done';",
         }),
         Case {
             ops: ops(&["browser.open", "browser.test"]),
+            browser: true,
             ..case(
                 "the_layer_is_absent_without_the_session_ops",
                 "return [typeof expect, Object.keys(clax.browser).sort(), typeof globalThis.expect];",
@@ -1981,26 +1987,45 @@ return (await page.record({ seconds: 3 })).clip;",
             )
         }),
         layered(Case {
-            calls: vec![
-                open(),
-                call("browser.page", json!(["s7", "title", {}]), answered(json!("T"))),
-            ],
+            calls: vec![open()],
             ..case(
-                "a_returned_page_shows_its_session_and_a_later_script_reaches_it",
+                "a_returned_page_shows_no_capability",
                 "const page = await clax.browser.open({ url: 'https://x.test/' });
-const later = clax.browser.session('s7');
-const before = later.url();
-const title = await later.title();
-return [page, before, title, later.url(), JSON.stringify(later)];",
-                ok(json!([
-                    {"session": "s1", "url": "https://x.test/"},
-                    "",
-                    "T",
-                    PAGE_URL,
-                    format!("{{\"session\":\"s7\",\"url\":\"{PAGE_URL}\"}}")
-                ])),
+const l = page.getByText('x');
+console.log(page, l);
+return [page, l, JSON.stringify({ page }), String(JSON.stringify(page.keyboard))];",
+                Expect {
+                    logs: Some(vec!["\"<browser page>\" \"<browser locator>\"".into()]),
+                    ..ok(json!([
+                        "<browser page>",
+                        "<browser locator>",
+                        "{\"page\":\"<browser page>\"}",
+                        "{}"
+                    ]))
+                },
             )
         }),
+        // The flat operations listed, the layer not asked for: a run
+        // without a browser capability. `clax.browser.open` is the plain
+        // operation, and nothing else of the layer exists.
+        Case {
+            ops: browser_ops(),
+            calls: vec![call(
+                "browser.open",
+                json!([{"url": "https://x.test/"}]),
+                json!({"session": "s1"}),
+            )],
+            ..case(
+                "the_layer_is_absent_without_browser",
+                "const r = await clax.browser.open({ url: 'https://x.test/' });
+return [typeof expect, Object.keys(clax.browser).sort(), r];",
+                ok(json!([
+                    "undefined",
+                    ["act", "close", "expect", "open", "page", "test"],
+                    {"session": "s1"}
+                ])),
+            )
+        },
         layered(Case {
             calls: vec![
                 open(),

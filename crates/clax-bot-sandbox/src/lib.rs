@@ -173,6 +173,12 @@ pub struct Script {
     /// the JSON when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ops: Option<Vec<String>>,
+    /// Whether the script's prelude has the browser layer
+    /// ([`BROWSER_LAYER`], [`prelude_source`]): asked for by a run that
+    /// holds a browser capability, and nothing without one. Left out of
+    /// the JSON when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub browser: bool,
 }
 
 /// What a script's clock and random numbers are, so a script run again
@@ -193,6 +199,17 @@ impl Script {
             code: code.into(),
             determinism: None,
             ops: None,
+            browser: false,
+        }
+    }
+
+    /// The same script, its prelude with the browser layer
+    /// ([`Script::browser`]).
+    #[must_use]
+    pub fn with_browser(self) -> Self {
+        Script {
+            browser: true,
+            ..self
         }
     }
 
@@ -814,19 +831,25 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 ///
 /// # The browser layer
 ///
-/// When `ops` holds all five of [`BROWSER_SESSION_OPS`], the prelude
-/// installs a Playwright-shaped layer over them (spec
+/// [`PRELUDE`] is every script's; the browser layer ([`BROWSER_LAYER`],
+/// `src/browser.js`) is spliced into it, at its `// browser-layer` line,
+/// only for a script that asks for it ([`Script::browser`]): what a
+/// sandbox evaluates is [`prelude_source`]. With it, and when `ops` holds
+/// all five of [`BROWSER_SESSION_OPS`], the prelude installs a
+/// Playwright-shaped layer over them (spec
 /// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §6.9,
-/// §6.10): `clax.browser.open` answers a `Page`, whose `Locator`s,
+/// §6.10, §17.5): `clax.browser.open` answers a `Page`, whose `Locator`s,
 /// `keyboard`, `mouse` and the global `expect` make one call of
 /// `browser.page`, `browser.act` or `browser.expect` each, and
 /// `page.close()` one of `browser.close`. Those four leave
 /// `clax.browser`, so a script reaches them only through a `Page`;
-/// `browser.test` and any other listed browser operation stay. A session
-/// outlives the script: a `Page` returned shows `{session, url}`, and
-/// `clax.browser.session(id)` makes, with no call, the `Page` of session
-/// `id` in a later script (its `url()` empty until its first call).
-/// Without all five, neither the layer nor `expect` exists.
+/// `browser.test` and any other listed browser operation stay. A `Page`
+/// names its session by what `browser.open` answered, which no script
+/// reads: a `Page` returned or logged shows `"<browser page>"`, a
+/// `Locator` `"<browser locator>"`. `clax.browser.session(id)` makes,
+/// with no call, the `Page` of session `id` in a later script (its
+/// `url()` empty until its first call). Without the layer, or without all five operations, neither
+/// the layer nor `expect` exists.
 ///
 /// The methods are built from one table, a JSON array between the lines
 /// `// browser-layer-table:begin` and `// browser-layer-table:end`
@@ -849,8 +872,41 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 pub const PRELUDE: &str = include_str!("prelude.js");
 
 /// The most bytes [`PRELUDE`] may have: it is evaluated once per run in
-/// every sandbox (spec §6.9, "A budget").
+/// every sandbox (spec §6.9, "A budget", §17.5).
 pub const PRELUDE_BUDGET_BYTES: usize = 24 * 1024;
+
+/// The browser layer: statements [`prelude_source`] splices into
+/// [`PRELUDE`] for a script that asks for it (see [`PRELUDE`], "The
+/// browser layer").
+pub const BROWSER_LAYER: &str = include_str!("browser.js");
+
+/// The most bytes [`BROWSER_LAYER`] may have: it is evaluated only in a
+/// browser run's sandboxes, on top of [`PRELUDE_BUDGET_BYTES`] (spec
+/// §17.5).
+pub const BROWSER_LAYER_BUDGET_BYTES: usize = 20 * 1024;
+
+/// The line of [`PRELUDE`] the browser layer takes the place of.
+const LAYER_AT: &str = "  // browser-layer\n";
+
+/// The prelude a sandbox evaluates for a script: [`PRELUDE`], with
+/// [`BROWSER_LAYER`] in place of its `// browser-layer` line when
+/// `browser` ([`Script::browser`]).
+///
+/// # Panics
+/// When [`PRELUDE`] lacks the line: it is this crate's own file, and a
+/// test holds it.
+#[must_use]
+pub fn prelude_source(browser: bool) -> std::borrow::Cow<'static, str> {
+    assert!(
+        PRELUDE.contains(LAYER_AT),
+        "src/prelude.js has no `// browser-layer` line"
+    );
+    if browser {
+        std::borrow::Cow::Owned(PRELUDE.replacen(LAYER_AT, BROWSER_LAYER, 1))
+    } else {
+        std::borrow::Cow::Borrowed(PRELUDE)
+    }
+}
 
 /// The flat browser session operations whose presence in a script's
 /// operations installs the prelude's browser layer.
@@ -862,21 +918,21 @@ pub const BROWSER_SESSION_OPS: [&str; 5] = [
     "browser.close",
 ];
 
-/// The rows of the prelude's browser layer table, as [`PRELUDE`] writes
-/// them between its marker lines: `[class, method, operation, action or
+/// The rows of the prelude's browser layer table, as [`BROWSER_LAYER`]
+/// writes them between its marker lines: `[class, method, operation, action or
 /// null, [parameter names]]` each.
 ///
 /// # Panics
 /// When the markers are missing or what lies between them is not JSON:
-/// [`PRELUDE`] is this crate's own file, and a test holds both.
+/// [`BROWSER_LAYER`] is this crate's own file, and a test holds both.
 #[must_use]
 pub fn browser_layer_table() -> serde_json::Value {
     let begin = "// browser-layer-table:begin";
     let end = "// browser-layer-table:end";
-    let from = PRELUDE.find(begin).map(|i| i + begin.len());
-    let to = PRELUDE.find(end);
+    let from = BROWSER_LAYER.find(begin).map(|i| i + begin.len());
+    let to = BROWSER_LAYER.find(end);
     match (from, to) {
-        (Some(from), Some(to)) if from < to => serde_json::from_str(&PRELUDE[from..to])
+        (Some(from), Some(to)) if from < to => serde_json::from_str(&BROWSER_LAYER[from..to])
             .unwrap_or_else(|e| panic!("the browser layer table is not JSON: {e}")),
         _ => panic!("the browser layer table's markers are missing"),
     }
@@ -1365,12 +1421,33 @@ mod tests {
     }
 
     #[test]
-    fn the_prelude_stays_within_its_budget() {
+    fn the_prelude_and_the_layer_stay_within_their_budgets() {
         assert!(
             PRELUDE.len() <= PRELUDE_BUDGET_BYTES,
             "src/prelude.js is {} bytes, over its budget of {PRELUDE_BUDGET_BYTES}",
             PRELUDE.len()
         );
+        assert!(
+            BROWSER_LAYER.len() <= BROWSER_LAYER_BUDGET_BYTES,
+            "src/browser.js is {} bytes, over its budget of {BROWSER_LAYER_BUDGET_BYTES}",
+            BROWSER_LAYER.len()
+        );
+    }
+
+    /// The layer is in a browser script's prelude, at the marker's place,
+    /// and in no other's.
+    #[test]
+    fn the_layer_is_spliced_only_for_a_browser_script() {
+        let plain = prelude_source(false);
+        assert_eq!(plain, PRELUDE);
+        assert!(!plain.contains("browser-layer-table:begin"));
+        let with = prelude_source(true);
+        assert!(with.contains(BROWSER_LAYER));
+        assert!(!with.contains(LAYER_AT));
+        assert_eq!(with.len(), PRELUDE.len() - LAYER_AT.len() + BROWSER_LAYER.len());
+        assert!(Script::new("t", "").with_browser().browser);
+        let json = serde_json::to_value(Script::new("t", "")).unwrap();
+        assert!(json.get("browser").is_none(), "{json}");
     }
 
     #[test]

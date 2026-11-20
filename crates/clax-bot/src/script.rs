@@ -481,9 +481,19 @@ impl Tick<'_> {
         let now_ms = chrono::DateTime::parse_from_rfc3339(&s.started_at)
             .map(|t| t.timestamp_millis())
             .unwrap_or(0);
-        let script = Script::new(title, code)
+        let mut script = Script::new(title, code)
             .with_ops(ops.iter().cloned())
             .with_determinism(now_ms, seed_of(&self.run.id, self.n));
+        // The browser layer, for a run one of whose bindings has the
+        // session operations among its own (spec 2026-11-19-claxbot-browser
+        // §17.5): every other run's prelude is without it.
+        if info.bindings.iter().any(|b| {
+            clax_bot_sandbox::BROWSER_SESSION_OPS
+                .iter()
+                .all(|op| b.operations.iter().any(|o| o == op))
+        }) {
+            script = script.with_browser();
+        }
         let limits = self.limits.script;
         let lost = AtomicBool::new(false);
         let mut outcome = watched(

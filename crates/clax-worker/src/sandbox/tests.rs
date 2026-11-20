@@ -38,8 +38,9 @@ fn the_script_module_puts_code_line_n_on_module_line_n_plus_one() {
 fn the_driver_imports_the_script_module_by_its_quoted_name() {
     let driver = driver_module("my \"script\"");
     assert!(driver.starts_with("import make from \"my \\\"script\\\"\";\n"));
-    assert!(prelude_module().starts_with("module.exports = "));
-    assert!(prelude_module().ends_with(PRELUDE));
+    assert!(prelude_module(false).starts_with("module.exports = "));
+    assert!(prelude_module(false).ends_with(PRELUDE));
+    assert!(prelude_module(true).contains(clax_bot_sandbox::BROWSER_LAYER));
 }
 
 #[test]

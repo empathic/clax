@@ -8,7 +8,8 @@
 //! The script's code passes [`check_body`] first, as on every sandbox. The
 //! dynamic Worker is then loaded (`LOADER.load`, a fresh isolate per
 //! script, never cached) with three modules: the driver (`driver.js`, its
-//! main module), the shared [`PRELUDE`] as `clax-prelude.js`, and the
+//! main module), the shared [`PRELUDE`] (with the browser layer for a
+//! script that asks for it, [`prelude_module`]) as `clax-prelude.js`, and the
 //! script, a CommonJS module whose export makes [`wrap`]`(code)`: CommonJS
 //! is compiled as script code, so the body is sloppy-mode code with
 //! HTML-like comments allowed, as the native sandbox compiles it, and line
@@ -364,10 +365,17 @@ pub fn script_module(code: &str) -> String {
     format!("{SCRIPT_PREFIX}{}{SCRIPT_SUFFIX}", wrap(code))
 }
 
-/// The prelude's CommonJS module, exporting [`PRELUDE`]'s function.
+/// The prelude's CommonJS module, exporting the function of
+/// [`clax_bot_sandbox::prelude_source`]: [`PRELUDE`], with the browser
+/// layer when `browser` ([`clax_bot_sandbox::Script::browser`]).
 #[must_use]
-pub fn prelude_module() -> String {
-    format!("module.exports = {PRELUDE}")
+pub fn prelude_module(browser: bool) -> String {
+    let source = if browser {
+        clax_bot_sandbox::prelude_source(true)
+    } else {
+        PRELUDE.into()
+    };
+    format!("module.exports = {source}")
 }
 
 /// The driver module, importing the script's module `name`.

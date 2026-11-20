@@ -68,7 +68,7 @@ fn worker_code(script: &Script, limits: &Limits, name: &str) -> Result<Object, S
         set(&m, "cjs", &source.into())?;
         Ok(m.into())
     };
-    set(&modules, PRELUDE_MODULE, &cjs(prelude_module())?)?;
+    set(&modules, PRELUDE_MODULE, &cjs(prelude_module(script.browser))?)?;
     set(&modules, name, &cjs(script_module(&script.code))?)?;
     set(&code, "modules", &modules)?;
     set(&code, "env", &Object::new())?;

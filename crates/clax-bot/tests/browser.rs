@@ -441,6 +441,35 @@ async fn a_mid_run_opt_out_answers_browser_disabled() {
     assert!(browser_rows(&env).is_empty());
 }
 
+/// The prelude's `Page` layer and its `expect` are in the sandbox of a
+/// run holding a `browser.open` capability, and in no other's (spec
+/// §17.5); the plain operation a run without one calls is refused as
+/// before.
+#[tokio::test]
+async fn a_run_without_a_browser_capability_has_no_page_layer() {
+    let env = Env::new().await;
+    let probe = "let code = null;
+try { await clax.browser.open({ html: '' }); } catch (e) { code = e.code; }
+return [typeof expect, code];";
+    let (_, v) = one_script_with(&env, "", probe).await;
+    assert_eq!(v, json!(["undefined", "browser_disabled"]));
+    let (_, v) = one_script_with(
+        &env,
+        "",
+        "return [typeof expect, typeof clax.browser.page];",
+    )
+    .await;
+    assert_eq!(v, json!(["undefined", "function"]));
+    let env = Env::new().await;
+    let (_, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "return [typeof expect, typeof clax.browser.page];",
+    )
+    .await;
+    assert_eq!(v, json!(["function", "undefined"]));
+}
+
 #[tokio::test]
 async fn an_undeclared_browser_call_is_refused() {
     let env = Env::new().await;
@@ -1031,6 +1060,13 @@ async fn next_script(
     script_result(env, run, n - 1)
 }
 
+/// The ID of the run's one browser session, as the store keeps it.
+fn only_session(env: &Env, run: &str) -> String {
+    let rows = env.store.bot_browser_sessions(run).unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    rows[0].session_id.clone()
+}
+
 /// The run's session row of `id`.
 fn session_row(env: &Env, run: &str, id: &str) -> clax_store::bot_web::SessionRow {
     env.store.bot_browser_session(run, id).unwrap().unwrap()
@@ -1056,11 +1092,8 @@ async fn a_session_lives_across_steps_and_its_time_is_charged_once() {
         "const page = await clax.browser.open({ artifact: 'draft' }); return page;",
     )
     .await;
-    let session = r["value"]["session"].as_str().unwrap().to_string();
-    assert_eq!(
-        r["value"]["url"],
-        format!("https://{}.clax-test.invalid/", env.aid)
-    );
+    assert_eq!(r["value"], "<browser page>");
+    let session = only_session(&env, &run);
     let opened = session_row(&env, &run, &session);
     assert!(opened.is_open());
     // The model thinks for 90 s: the heartbeat goes out.
@@ -1226,7 +1259,7 @@ async fn an_idle_session_answers_closed_idle() {
         "return await clax.browser.open({ artifact: 'draft' });",
     )
     .await;
-    let session = r["value"]["session"].as_str().unwrap().to_string();
+    let session = only_session(&env, &run);
     env.clock.advance(301);
     env.browser.fire_until(env.clock_now());
     let log = env.browser.logs()[0].clone();
@@ -1417,7 +1450,7 @@ async fn credits_running_out_close_the_session() {
         "return await clax.browser.open({ artifact: 'draft' });",
     )
     .await;
-    let session = r["value"]["session"].as_str().unwrap().to_string();
+    let session = only_session(&env, &run);
     // A browser call now costs more than the person has left.
     env.store
         .put_cost_line(
@@ -1465,8 +1498,9 @@ async fn the_run_end_closes_its_sessions() {
         "return await clax.browser.open({ artifact: 'draft' });",
     )
     .await;
-    let session = v["session"].as_str().unwrap();
-    let row = session_row(&env, &run, session);
+    assert_eq!(v, "<browser page>");
+    let session = only_session(&env, &run);
+    let row = session_row(&env, &run, &session);
     assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::RunEnded));
     assert_eq!(env.browser.logs()[0].sent("Browser.close").len(), 1);
     assert_eq!(browser_rows(&env).iter().sum::<i64>(), row.charged_ms);
