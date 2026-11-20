@@ -15,7 +15,9 @@
 //!   no live one; a person who joins later gets it when their row is made
 //!   ([`Store::issue_joined_grants_in`]).
 //! - **A revoke ends the grant and its live descendants**, transitively.
-//!   A person revoking their own grant ends only theirs.
+//!   A person revoking their own grant ends only theirs. A person's runs
+//!   grant ended under one admin grant while another still gives them the
+//!   capability is issued anew under the other.
 //!
 //! Each row issued or revoked is recorded as `bot.grant {grant,
 //! capability, granter, grantee, parent, op}`; migration 67's rows are
@@ -464,6 +466,14 @@ impl Store {
     /// Revokes grant `id` and every live grant under it, transitively, as
     /// `ctx`, each recorded as `bot.grant` with `op: "revoke"`. Returns the
     /// IDs it ended, `id` first; none when `id` was already revoked.
+    ///
+    /// A person's grant to their runs that ends because an admin grant
+    /// above it ends, while another live admin grant of the capability
+    /// still gives it to them (one to them, else the instance-wide one),
+    /// is issued anew under that grant in the same transaction, with the
+    /// person as granter, recorded as `bot.grant` with `op: "issue"`: the
+    /// person holds the union of their live admin grants and made no
+    /// choice. Revoking a person's own runs grant reissues nothing.
     /// Whether `ctx`'s actor may revoke it is the caller's to check.
     ///
     /// # Errors
@@ -499,6 +509,35 @@ impl Store {
                     params![g.id, now, by],
                 )?;
                 self.record_audit(tx, ctx, grant_record(g, "revoke", now.clone()))?;
+            }
+            // A runs grant ended because an admin grant over it ended (not
+            // the one revoked, which is the person's own choice) is issued
+            // anew under another live admin grant of the person's.
+            for g in ended.iter().skip(1) {
+                let Ok(Grantee::RunsOf(person)) = Grantee::parse(&g.grantee) else {
+                    continue;
+                };
+                if live_grant_to(tx, &g.capability, &g.grantee)?.is_some() {
+                    continue;
+                }
+                let as_person = Grantee::Person(person.clone()).as_text();
+                let other = match live_grant_to(tx, &g.capability, &as_person)? {
+                    Some(o) => Some(o),
+                    None => live_grant_to(tx, &g.capability, EVERYONE)?,
+                };
+                let Some(other) = other else {
+                    continue;
+                };
+                let child = insert_grant(
+                    tx,
+                    &g.capability,
+                    &person,
+                    &g.grantee,
+                    Some(&other.id),
+                    &now,
+                    &by,
+                )?;
+                self.record_audit(tx, ctx, grant_record(&child, "issue", now.clone()))?;
             }
             Ok(ended.into_iter().map(|g| g.id).collect())
         })
@@ -1045,5 +1084,72 @@ mod tests {
             .unwrap()
             .is_empty()
         );
+    }
+
+    /// A person holding a capability from two admin grants keeps it in
+    /// their runs when either is revoked, whichever was issued first: the
+    /// runs grant is issued anew under the other.
+    #[test]
+    fn revoking_one_of_two_admin_grants_keeps_the_runs_grant() {
+        for everyone_first in [true, false] {
+            let (_d, st) = store();
+            let ben = person(&st, "Ben", 1);
+            let to_ben = || {
+                st.issue_cap_grant(
+                    DAEMON,
+                    "browser.open.url",
+                    GRANTER_INSTANCE,
+                    &Grantee::Person(ben.clone()).as_text(),
+                    None,
+                )
+                .unwrap()
+            };
+            let (first, second) = if everyone_first {
+                let e = admin_everyone(&st, "browser.open.url");
+                (e, to_ben())
+            } else {
+                let p = to_ben();
+                (p, admin_everyone(&st, "browser.open.url"))
+            };
+            let before = st.person_caps(&ben).unwrap()["browser.open.url"].clone();
+            assert!(before.reaches_runs());
+            let old_runs = before.runs_grant.clone().unwrap();
+            let n = grant_events(&st).len();
+            st.revoke_cap_grant(DAEMON, &first.id).unwrap();
+            let after = st.person_caps(&ben).unwrap()["browser.open.url"].clone();
+            assert_eq!(
+                after.granted_by.as_deref(),
+                Some(second.id.as_str()),
+                "everyone first: {everyone_first}"
+            );
+            assert!(after.reaches_runs(), "everyone first: {everyone_first}");
+            let new_runs = after.runs_grant.unwrap();
+            assert_ne!(new_runs, old_runs);
+            let g = st
+                .cap_grants(&GrantFilter {
+                    grantee: Some(runs(&ben)),
+                    live: true,
+                    ..GrantFilter::default()
+                })
+                .unwrap();
+            assert_eq!(g.len(), 1);
+            assert_eq!(g[0].parent.as_deref(), Some(second.id.as_str()));
+            assert_eq!(g[0].granter, ben);
+            let events = grant_events(&st);
+            let issued: Vec<_> = events[n..].iter().filter(|e| e["op"] == "issue").collect();
+            assert_eq!(issued.len(), 1, "{events:?}");
+            assert_eq!(issued[0]["grant"], new_runs.as_str());
+            assert_eq!(issued[0]["parent"], second.id.as_str());
+            if everyone_first {
+                // The owner held it only from everyone's grant: it ends.
+                assert_eq!(
+                    st.person_caps(OWNER).unwrap()["browser.open.url"],
+                    PersonCap::default()
+                );
+            }
+            // A person's own revoke is their choice: nothing is reissued.
+            st.revoke_cap_grant(DAEMON, &new_runs).unwrap();
+            assert!(!st.person_caps(&ben).unwrap()["browser.open.url"].reaches_runs());
+        }
     }
 }
