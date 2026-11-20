@@ -119,12 +119,8 @@ impl Macaroon {
                 (last.as_bytes(), sig.to_vec())
             }
         };
-        hmac::verify(
-            &hmac::Key::new(hmac::HMAC_SHA256, &before),
-            last,
-            &self.sig,
-        )
-        .map_err(|_| Unverified)
+        hmac::verify(&hmac::Key::new(hmac::HMAC_SHA256, &before), last, &self.sig)
+            .map_err(|_| Unverified)
     }
 
     /// `prefix` and the unpadded base64url of its JSON (see the module

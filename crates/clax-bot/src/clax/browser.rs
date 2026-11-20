@@ -304,7 +304,9 @@ fn share_of(args: &Value) -> Result<CapCall, HostError> {
             os.iter()
                 .map(|o| {
                     origin_of(o).ok_or_else(|| {
-                        bad(format!("args.origins: `{o}` is not an origin like https://example.com"))
+                        bad(format!(
+                            "args.origins: `{o}` is not an origin like https://example.com"
+                        ))
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()
@@ -1223,7 +1225,11 @@ fn cap_call(
     cc: &CapCall,
     shown: &mut Value,
 ) -> Finish {
-    let handle = call.args.first().and_then(Value::as_str).unwrap_or_default();
+    let handle = call
+        .args
+        .first()
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let answer = |value: Value| json!({"ok": true, "url": "", "ms": 0, "cost": 0, "value": value});
     match cc {
         CapCall::Share {
@@ -1256,7 +1262,10 @@ fn cap_call(
                     ("parent", json!(parent)),
                     (
                         "ops",
-                        json!(ops.as_ref().map(|o| o.iter().map(|c| c.as_str()).collect::<Vec<_>>())),
+                        json!(
+                            ops.as_ref()
+                                .map(|o| o.iter().map(|c| c.as_str()).collect::<Vec<_>>())
+                        ),
                     ),
                     ("expires", json!(expires_ms)),
                     ("origins", json!(origins)),

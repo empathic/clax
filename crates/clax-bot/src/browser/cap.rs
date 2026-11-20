@@ -135,7 +135,9 @@ impl Caveat {
             ),
             Caveat::Expires(ms) => format!("expires={ms}"),
             Caveat::Holder(h) => format!("holder={}", h.render()),
-            Caveat::Origin(o) => format!("origin={}", o.iter().cloned().collect::<Vec<_>>().join(" ")),
+            Caveat::Origin(o) => {
+                format!("origin={}", o.iter().cloned().collect::<Vec<_>>().join(" "))
+            }
         }
     }
 
@@ -408,7 +410,11 @@ impl Cap {
             parts.push(if classes.is_empty() {
                 "nothing".to_string()
             } else {
-                classes.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")
+                classes
+                    .iter()
+                    .map(|c| c.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             });
         }
         if let Some(ms) = self.expires() {
@@ -432,7 +438,9 @@ pub struct Keys {
 
 impl std::fmt::Debug for Keys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Keys").field("id", &self.id).finish_non_exhaustive()
+        f.debug_struct("Keys")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -594,7 +602,10 @@ mod tests {
         assert_eq!(back.id().len(), 22);
         assert!(back.encode().starts_with(PREFIX));
         let r1 = run("run-1");
-        assert_eq!(back.check(&at(&r1, Some(Class::Act), Target::None, 0)), Ok(()));
+        assert_eq!(
+            back.check(&at(&r1, Some(Class::Act), Target::None, 0)),
+            Ok(())
+        );
         let r2 = run("run-2");
         assert_eq!(
             back.check(&at(&r2, Some(Class::Read), Target::None, 0)),
@@ -628,11 +639,9 @@ mod tests {
         // Its JSON edited: a caveat dropped, the run changed.
         let json = |f: &dyn Fn(&mut serde_json::Value)| {
             let body = &child.encode()[PREFIX.len()..];
-            let raw = base64::Engine::decode(
-                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                body,
-            )
-            .unwrap();
+            let raw =
+                base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, body)
+                    .unwrap();
             let mut v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
             f(&mut v);
             format!("{PREFIX}{}", base64url(v.to_string().as_bytes()))
@@ -658,7 +667,10 @@ mod tests {
         let root = k.root("sess1", "run-1");
         let adds: Vec<Vec<Caveat>> = vec![
             vec![ops(&[Class::Read])],
-            vec![ops(&[Class::Read, Class::Act]), ops(&[Class::Act, Class::Close])],
+            vec![
+                ops(&[Class::Read, Class::Act]),
+                ops(&[Class::Act, Class::Close]),
+            ],
             vec![ops(&[])],
             vec![Caveat::Expires(5_000)],
             vec![origins(&["https://a.example"])],
@@ -703,7 +715,9 @@ mod tests {
         ] {
             let mut m = Macaroon::decode(PREFIX, &root.encode()).unwrap();
             m = m.attenuate(c);
-            let cap = k.verify(&m.encode(PREFIX)).expect("an appended caveat verifies");
+            let cap = k
+                .verify(&m.encode(PREFIX))
+                .expect("an appended caveat verifies");
             for u in uses(std::slice::from_ref(&r1)) {
                 assert_eq!(cap.check(&u), Err(Refusal::NotUnderstood), "{c}");
             }
@@ -716,12 +730,18 @@ mod tests {
         let k = keys();
         let cap = k.child(&k.root("sess1", "run-1"), &[Caveat::Expires(10_000)]);
         let r1 = run("run-1");
-        assert_eq!(cap.check(&at(&r1, Some(Class::Read), Target::None, 9_999)), Ok(()));
+        assert_eq!(
+            cap.check(&at(&r1, Some(Class::Read), Target::None, 9_999)),
+            Ok(())
+        );
         assert_eq!(
             cap.check(&at(&r1, Some(Class::Read), Target::None, 10_000)),
             Err(Refusal::Expired(10_000))
         );
-        assert_eq!(cap.check(&at(&r1, None, Target::None, 10_001)), Err(Refusal::Expired(10_000)));
+        assert_eq!(
+            cap.check(&at(&r1, None, Target::None, 10_001)),
+            Err(Refusal::Expired(10_000))
+        );
         assert_eq!(cap.shown(), "<browser page: expires 1970-01-01T00:00:10Z>");
     }
 
@@ -730,7 +750,10 @@ mod tests {
         let k = keys();
         let cap = k.child(&k.root("sess1", "run-1"), &[ops(&[Class::Read])]);
         let r1 = run("run-1");
-        assert_eq!(cap.check(&at(&r1, Some(Class::Read), Target::None, 0)), Ok(()));
+        assert_eq!(
+            cap.check(&at(&r1, Some(Class::Read), Target::None, 0)),
+            Ok(())
+        );
         assert_eq!(cap.check(&at(&r1, None, Target::None, 0)), Ok(()));
         for c in [Class::Act, Class::Navigate, Class::Record, Class::Close] {
             let e = cap.check(&at(&r1, Some(c), Target::None, 0)).unwrap_err();
@@ -749,11 +772,26 @@ mod tests {
         );
         let r1 = run("run-1");
         let nav = |t| cap.check(&at(&r1, Some(Class::Navigate), t, 0));
-        assert_eq!(nav(Target::Url("https://a.example/deep?q=1".into())), Ok(()));
-        assert!(matches!(nav(Target::Url("https://b.example/".into())), Err(Refusal::Origin(Some(_), _))));
-        assert!(matches!(nav(Target::Url("http://a.example/".into())), Err(Refusal::Origin(Some(_), _))));
-        assert!(matches!(nav(Target::Unknown), Err(Refusal::Origin(None, _))));
-        assert_eq!(cap.check(&at(&r1, Some(Class::Act), Target::None, 0)), Ok(()));
+        assert_eq!(
+            nav(Target::Url("https://a.example/deep?q=1".into())),
+            Ok(())
+        );
+        assert!(matches!(
+            nav(Target::Url("https://b.example/".into())),
+            Err(Refusal::Origin(Some(_), _))
+        ));
+        assert!(matches!(
+            nav(Target::Url("http://a.example/".into())),
+            Err(Refusal::Origin(Some(_), _))
+        ));
+        assert!(matches!(
+            nav(Target::Unknown),
+            Err(Refusal::Origin(None, _))
+        ));
+        assert_eq!(
+            cap.check(&at(&r1, Some(Class::Act), Target::None, 0)),
+            Ok(())
+        );
     }
 
     #[test]
@@ -780,7 +818,12 @@ mod tests {
             Caveat::Holder(Holder::Grant("g_1".into())),
             origins(&["https://a.example", "http://b.example:8080"]),
         ] {
-            assert_eq!(Caveat::parse(&c.render()), Some(c.clone()), "{}", c.render());
+            assert_eq!(
+                Caveat::parse(&c.render()),
+                Some(c.clone()),
+                "{}",
+                c.render()
+            );
         }
     }
 }

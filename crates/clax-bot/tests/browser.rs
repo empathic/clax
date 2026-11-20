@@ -1325,7 +1325,12 @@ async fn a_replayed_share_answers_the_same_capability() {
             .unwrap()
             .iter()
             .filter(|c| c.op() == "browser.page")
-            .map(|c| c.result()["value"]["value"]["page"].as_str().unwrap_or_default().to_string())
+            .map(|c| {
+                c.result()["value"]["value"]["page"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
             .collect()
     };
     let first = shared(&env);
@@ -1333,7 +1338,11 @@ async fn a_replayed_share_answers_the_same_capability() {
     env.clock.advance(61);
     let out = env.drive(&a, &run, &DriverId::mint()).await;
     assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
-    assert_eq!(shared(&env), first, "the share is answered from the journal");
+    assert_eq!(
+        shared(&env),
+        first,
+        "the share is answered from the journal"
+    );
     assert_eq!(env.browser.opened(), 1);
     let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
     let script = steps.iter().find(|s| s.kind == StepKind::Script).unwrap();

@@ -597,7 +597,10 @@ impl BrowserSessions {
         let target = {
             let reg = lock(&self.reg);
             let Some(e) = reg.sessions.get(&session) else {
-                return Err(lost(&session, "this process holds no such session for this run"));
+                return Err(lost(
+                    &session,
+                    "this process holds no such session for this run",
+                ));
             };
             if cap.revoked_in(&e.revoked) {
                 return Err(forbidden(super::cap::Refusal::Revoked.message()));
@@ -1863,7 +1866,11 @@ mod tests {
     async fn a_handle_reaches_its_session_for_its_run_alone() {
         let w = World::new();
         let (o, _) = w.open(TIMES).await;
-        assert!(o.handle.starts_with(super::super::cap::PREFIX), "{}", o.handle);
+        assert!(
+            o.handle.starts_with(super::super::cap::PREFIX),
+            "{}",
+            o.handle
+        );
         assert_eq!(w.sessions.resolve("run-1", &o.handle).unwrap(), o.session);
         let mut tampered = o.handle.clone();
         let last = tampered.pop().unwrap();
@@ -1901,12 +1908,18 @@ mod tests {
     async fn a_shared_capability_allows_no_more_than_its_caveats() {
         let w = World::new();
         let (o, _) = w.open(TIMES).await;
-        let read = w.sessions.share("run-1", &o.handle, &[ops(&[Class::Read])]).unwrap();
+        let read = w
+            .sessions
+            .share("run-1", &o.handle, &[ops(&[Class::Read])])
+            .unwrap();
         let read = read.encode();
         let auth = |h: &str, c: Option<Class>, nav: Nav| {
             w.sessions.authorize("run-1", h, c, &nav).map(|(s, _)| s)
         };
-        assert_eq!(auth(&read, Some(Class::Read), Nav::None).unwrap(), o.session);
+        assert_eq!(
+            auth(&read, Some(Class::Read), Nav::None).unwrap(),
+            o.session
+        );
         for c in [Class::Act, Class::Navigate, Class::Record, Class::Close] {
             let e = auth(&read, Some(c), Nav::None).unwrap_err();
             assert_eq!(e.code, CODE_BROWSER_FORBIDDEN, "{c:?}");
@@ -1918,7 +1931,10 @@ mod tests {
             .share("run-1", &read, &[ops(&Class::ALL)])
             .unwrap()
             .encode();
-        assert_eq!(auth(&wider, Some(Class::Act), Nav::None).unwrap_err().code, CODE_BROWSER_FORBIDDEN);
+        assert_eq!(
+            auth(&wider, Some(Class::Act), Nav::None).unwrap_err().code,
+            CODE_BROWSER_FORBIDDEN
+        );
         let now = w.clock.now().timestamp_millis();
         let soon = w
             .sessions
@@ -1927,7 +1943,10 @@ mod tests {
             .encode();
         assert!(auth(&soon, Some(Class::Act), Nav::None).is_ok());
         w.clock.advance(5);
-        assert_eq!(auth(&soon, Some(Class::Read), Nav::None).unwrap_err().code, CODE_BROWSER_FORBIDDEN);
+        assert_eq!(
+            auth(&soon, Some(Class::Read), Nav::None).unwrap_err().code,
+            CODE_BROWSER_FORBIDDEN
+        );
         assert!(auth(&o.handle, Some(Class::Act), Nav::None).is_ok());
         let only_a = w
             .sessions
@@ -1938,10 +1957,24 @@ mod tests {
             )
             .unwrap()
             .encode();
-        assert!(auth(&only_a, Some(Class::Navigate), Nav::Goto("https://a.example/x".into())).is_ok());
-        for nav in [Nav::Goto("https://b.example/".into()), Nav::Goto("/x".into()), Nav::History, Nav::Reload] {
+        assert!(
+            auth(
+                &only_a,
+                Some(Class::Navigate),
+                Nav::Goto("https://a.example/x".into())
+            )
+            .is_ok()
+        );
+        for nav in [
+            Nav::Goto("https://b.example/".into()),
+            Nav::Goto("/x".into()),
+            Nav::History,
+            Nav::Reload,
+        ] {
             assert_eq!(
-                auth(&only_a, Some(Class::Navigate), nav.clone()).unwrap_err().code,
+                auth(&only_a, Some(Class::Navigate), nav.clone())
+                    .unwrap_err()
+                    .code,
                 CODE_BROWSER_FORBIDDEN,
                 "{nav:?}"
             );
@@ -1960,7 +1993,10 @@ mod tests {
         let child = share(&parent);
         let grandchild = share(&child);
         let sibling = share(&o.handle);
-        let ok = |h: &str| w.sessions.authorize("run-1", h, Some(Class::Read), &Nav::None);
+        let ok = |h: &str| {
+            w.sessions
+                .authorize("run-1", h, Some(Class::Read), &Nav::None)
+        };
         assert_eq!(
             w.sessions.revoke("run-1", &o.handle).unwrap_err().code,
             crate::api::CODE_BAD_ARGS
@@ -1971,10 +2007,16 @@ mod tests {
             let e = ok(h).unwrap_err();
             assert_eq!(e.code, CODE_BROWSER_FORBIDDEN);
             assert!(e.message.contains("revoked"), "{}", e.message);
-            assert_eq!(w.sessions.share("run-1", h, &[]).unwrap_err().code, CODE_BROWSER_FORBIDDEN);
+            assert_eq!(
+                w.sessions.share("run-1", h, &[]).unwrap_err().code,
+                CODE_BROWSER_FORBIDDEN
+            );
         }
         assert!(ok(&o.handle).is_ok() && ok(&sibling).is_ok());
-        w.sessions.close("run-1", "s1", SessionEnd::Closed).await.unwrap();
+        w.sessions
+            .close("run-1", "s1", SessionEnd::Closed)
+            .await
+            .unwrap();
         for h in [&o.handle, &sibling, &child] {
             assert_eq!(ok(h).unwrap_err().code, CODE_BROWSER_SESSION_CLOSED);
         }
@@ -1990,15 +2032,29 @@ mod tests {
         let now = w.clock.now().timestamp_millis();
         let read = w
             .sessions
-            .share("run-1", &o.handle, &[ops(&[Class::Read]), Caveat::Expires(now + 1_000)])
+            .share(
+                "run-1",
+                &o.handle,
+                &[ops(&[Class::Read]), Caveat::Expires(now + 1_000)],
+            )
             .unwrap()
             .encode();
-        w.sessions.close_unheld("run-1", &[o.handle.clone()]).await;
+        w.sessions
+            .close_unheld("run-1", std::slice::from_ref(&o.handle))
+            .await;
         w.clock.advance(3);
-        w.sessions.close_unheld("run-1", &[read.clone()]).await;
-        assert!(w.sessions.ended().is_empty(), "an expired read-only page holds it");
+        w.sessions
+            .close_unheld("run-1", std::slice::from_ref(&read))
+            .await;
+        assert!(
+            w.sessions.ended().is_empty(),
+            "an expired read-only page holds it"
+        );
         w.sessions.close_unheld("run-2", &[]).await;
-        assert!(w.sessions.ended().is_empty(), "another run's call ends nothing");
+        assert!(
+            w.sessions.ended().is_empty(),
+            "another run's call ends nothing"
+        );
         let foreign = Keys::new([9; 32]).root("s1", "run-1").encode();
         let mut tampered = read.clone();
         tampered.insert(10, 'x');

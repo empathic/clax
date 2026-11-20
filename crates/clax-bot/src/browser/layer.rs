@@ -1209,7 +1209,10 @@ mod tests {
         assert_eq!(of(Op::Act, "screenshot", false), Some(Class::Read));
         assert_eq!(of(Op::Act, "click", false), Some(Class::Act));
         assert_eq!(of(Op::Expect, "toHaveURL", true), Some(Class::Read));
-        assert_eq!(class(ROWS.iter().find(|r| r.op == Op::Close).unwrap()), Some(Class::Close));
+        assert_eq!(
+            class(ROWS.iter().find(|r| r.op == Op::Close).unwrap()),
+            Some(Class::Close)
+        );
     }
 
     #[test]

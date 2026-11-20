@@ -1293,9 +1293,13 @@ fn browser_sessions(
     // The capabilities' instance key is the KEK's (spec §18.2): a
     // capability from before a restart verifies, and answers lost; without
     // a KEK, a key of this process's own.
-    let keys = state.bot.kek.as_ref().map_or_else(clax_bot::browser::cap::Keys::random, |k| {
-        clax_bot::browser::cap::Keys::new(k.derive(clax_bot::browser::cap::INSTANCE_LABEL))
-    });
+    let keys = state
+        .bot
+        .kek
+        .as_ref()
+        .map_or_else(clax_bot::browser::cap::Keys::random, |k| {
+            clax_bot::browser::cap::Keys::new(k.derive(clax_bot::browser::cap::INSTANCE_LABEL))
+        });
     let sessions = Arc::new(
         clax_bot::browser::live::BrowserSessions::new(
             browser,
