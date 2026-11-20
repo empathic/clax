@@ -492,7 +492,10 @@ fn issue_record(g: &GrantRow, at: String) -> AuditRecord {
         .with("grant_id", g.id.as_str())
         .with("granter", g.granter.as_str())
         .with("grantee", g.grantee.as_str())
-        .with("access", serde_json::to_value(&g.access).expect("access encodes"))
+        .with(
+            "access",
+            serde_json::to_value(&g.access).expect("access encodes"),
+        )
         .with("event", g.event.as_str());
     if let Some(p) = &g.parent {
         rec = rec.with("parent", p.as_str());
@@ -690,7 +693,10 @@ fn person_caps_in(
     conveying.sort_by_key(|g| g.parent.is_some());
     let mut out = BTreeMap::new();
     for cap in CAPABILITIES {
-        let granted_by = conveying.iter().find(|g| g.lists(cap)).map(|g| g.id.clone());
+        let granted_by = conveying
+            .iter()
+            .find(|g| g.lists(cap))
+            .map(|g| g.id.clone());
         let runs_grant = runs
             .iter()
             .find(|g| g.lists(cap) && g.holds_at(now) && g.granter == person)
@@ -1274,9 +1280,9 @@ impl Store {
     pub fn issue_export(&self, ctx: &AuditCtx, e: &ExportGrant) -> Result<GrantRow> {
         let now = self.now();
         self.with_tx(|tx| {
-            let parent = grant_in(tx, &e.parent)?.filter(GrantRow::live).ok_or_else(|| {
-                CoreError::invalid("not_held", "the page's grant is not issued")
-            })?;
+            let parent = grant_in(tx, &e.parent)?
+                .filter(GrantRow::live)
+                .ok_or_else(|| CoreError::invalid("not_held", "the page's grant is not issued"))?;
             let runs = Grantee::RunsOf(e.person.clone()).as_text();
             let theirs = chain_issued(tx, &parent)? && root_of(tx, &parent)?.grantee == runs;
             if !theirs {
@@ -1409,7 +1415,14 @@ mod tests {
         ] {
             assert_eq!(Grantee::parse(&g.as_text()).unwrap(), g);
         }
-        for bad in ["", "person:", "runs_of", "team:x", "everyone", "people_of:x"] {
+        for bad in [
+            "",
+            "person:",
+            "runs_of",
+            "team:x",
+            "everyone",
+            "people_of:x",
+        ] {
             assert!(Grantee::parse(bad).is_err(), "{bad}");
         }
     }
@@ -1440,7 +1453,10 @@ mod tests {
         assert!(bounded.allows(TYPE_BROWSER, "navigate", Some("https://a.example")));
         assert!(!bounded.allows(TYPE_BROWSER, "navigate", Some("https://b.example")));
         assert!(bounded.allows(TYPE_BROWSER, "navigate", None));
-        assert_eq!(code(&access_of("clax-web:crawl").unwrap_err()), "unknown_capability");
+        assert_eq!(
+            code(&access_of("clax-web:crawl").unwrap_err()),
+            "unknown_capability"
+        );
     }
 
     #[test]
@@ -1449,12 +1465,18 @@ mod tests {
         let sam = person(&st, "Sam", 1);
         let root = admin_everyone(&st, "clax-browser:open-content");
         assert_eq!(root.grantee, EVERYONE);
-        assert_eq!(root.granter, OWNER, "the admin who issued it, not the instance");
+        assert_eq!(
+            root.granter, OWNER,
+            "the admin who issued it, not the instance"
+        );
         assert_eq!(root.event, "admin");
         for p in [OWNER, sam.as_str()] {
             let caps = st.person_caps(p).unwrap();
             let c = &caps["clax-browser:open-content"];
-            let child = st.cap_grant(c.granted_by.as_ref().unwrap()).unwrap().unwrap();
+            let child = st
+                .cap_grant(c.granted_by.as_ref().unwrap())
+                .unwrap()
+                .unwrap();
             assert_eq!(child.parent.as_deref(), Some(root.id.as_str()), "{p}");
             assert_eq!(child.grantee, Grantee::Person(p.into()).as_text());
             assert!(c.reaches_runs(), "{p}");
@@ -1468,7 +1490,10 @@ mod tests {
             .unwrap();
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0].granter, sam, "the person grants to their runs");
-        assert_eq!(mine[0].parent, None, "a runs grant is no child of the admin's");
+        assert_eq!(
+            mine[0].parent, None,
+            "a runs grant is no child of the admin's"
+        );
         assert_eq!(mine[0].event, "bot");
         let mia = person(&st, "Mia", 2);
         assert!(
@@ -1495,7 +1520,10 @@ mod tests {
         assert_eq!(held.granted_by, None, "no longer conveyed");
         assert!(held.runs_grant.is_some(), "the person's own grant stands");
         assert!(!st.grant_conveys(&g).unwrap());
-        assert!(st.cap_grant(&g.id).unwrap().unwrap().live(), "no row changed");
+        assert!(
+            st.cap_grant(&g.id).unwrap().unwrap().live(),
+            "no row changed"
+        );
         let e = st
             .issue_cap_grant(DAEMON, "clax-web:fetch", &ana, EVERYONE)
             .unwrap_err();
@@ -1523,7 +1551,11 @@ mod tests {
         let gone = st.cap_grant(&ended[1]).unwrap().unwrap();
         assert_eq!(gone.revoke_reason.as_deref(), Some("parent_ended"));
         assert_eq!(
-            st.cap_grant(&root.id).unwrap().unwrap().revoke_reason.as_deref(),
+            st.cap_grant(&root.id)
+                .unwrap()
+                .unwrap()
+                .revoke_reason
+                .as_deref(),
             Some("granter")
         );
         assert!(
@@ -1543,7 +1575,10 @@ mod tests {
         let sam = person(&st, "Sam", 1);
         admin_everyone(&st, "clax-browser:open-artifact");
         let cap = "clax-browser:open-artifact";
-        let mine = st.person_caps(&sam).unwrap()[cap].runs_grant.clone().unwrap();
+        let mine = st.person_caps(&sam).unwrap()[cap]
+            .runs_grant
+            .clone()
+            .unwrap();
         assert_eq!(
             st.revoke_cap_grant(DAEMON, &mine, RevokeReason::Controller)
                 .unwrap(),
@@ -1557,9 +1592,13 @@ mod tests {
         let again = st.issue_cap_grant(DAEMON, cap, &sam, &runs(&sam)).unwrap();
         assert_eq!(again.granter, sam);
         assert!(st.person_caps(&sam).unwrap()[cap].reaches_runs());
-        let e = st.issue_cap_grant(DAEMON, cap, &sam, &runs(&sam)).unwrap_err();
+        let e = st
+            .issue_cap_grant(DAEMON, cap, &sam, &runs(&sam))
+            .unwrap_err();
         assert_eq!(code(&e), "grant_exists");
-        let e = st.issue_cap_grant(DAEMON, cap, &sam, &runs(OWNER)).unwrap_err();
+        let e = st
+            .issue_cap_grant(DAEMON, cap, &sam, &runs(OWNER))
+            .unwrap_err();
         assert_eq!(code(&e), "not_held", "not another person's runs");
     }
 
@@ -1568,12 +1607,16 @@ mod tests {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
         let cap = "clax-browser:open-url";
-        let e = st.issue_cap_grant(DAEMON, cap, &sam, &runs(&sam)).unwrap_err();
+        let e = st
+            .issue_cap_grant(DAEMON, cap, &sam, &runs(&sam))
+            .unwrap_err();
         assert_eq!(code(&e), "not_held");
         let mia = person(&st, "Mia", 2);
         let to_mia = to_person(&st, cap, OWNER, &mia);
         assert!(st.person_caps(&mia).unwrap()[cap].reaches_runs());
-        let e = st.issue_cap_grant(DAEMON, cap, &sam, &runs(&sam)).unwrap_err();
+        let e = st
+            .issue_cap_grant(DAEMON, cap, &sam, &runs(&sam))
+            .unwrap_err();
         assert_eq!(code(&e), "not_held", "another person's grant is not theirs");
         let e = st
             .issue_cap_grant(DAEMON, cap, OWNER, &Grantee::Person(mia.clone()).as_text())
@@ -1589,7 +1632,9 @@ mod tests {
             .issue_cap_grant(DAEMON, "clax-web:crawl", OWNER, EVERYONE)
             .unwrap_err();
         assert_eq!(code(&e), "unknown_capability");
-        let e = st.issue_cap_grant(DAEMON, cap, OWNER, "run:r1").unwrap_err();
+        let e = st
+            .issue_cap_grant(DAEMON, cap, OWNER, "run:r1")
+            .unwrap_err();
         assert_eq!(code(&e), "invalid_grantee");
     }
 
@@ -1660,7 +1705,11 @@ mod tests {
             .unwrap();
         assert_eq!(g.len(), 1, "{g:?}");
         assert_eq!(
-            (g[0].capability(), g[0].granter.as_str(), g[0].event.as_str()),
+            (
+                g[0].capability(),
+                g[0].granter.as_str(),
+                g[0].event.as_str()
+            ),
             (Some("clax-web:fetch"), GRANTER_CONFIG, "config")
         );
         assert!(st.person_caps(OWNER).unwrap()["clax-web:fetch"].reaches_runs());
@@ -1766,7 +1815,10 @@ mod tests {
             let after = st.person_caps(&ben).unwrap()[cap].clone();
             assert!(after.reaches_runs(), "everyone first: {everyone_first}");
             assert_eq!(after.runs_grant, before.runs_grant, "the same runs grant");
-            let by = st.cap_grant(after.granted_by.as_ref().unwrap()).unwrap().unwrap();
+            let by = st
+                .cap_grant(after.granted_by.as_ref().unwrap())
+                .unwrap()
+                .unwrap();
             assert!(
                 by.id == second.id || by.parent.as_deref() == Some(second.id.as_str()),
                 "conveyed by the other"
@@ -1786,7 +1838,10 @@ mod tests {
         let (_d, st) = store();
         let cap = "clax-browser:open-artifact";
         admin_everyone(&st, cap);
-        let runs_grant = st.person_caps(OWNER).unwrap()[cap].runs_grant.clone().unwrap();
+        let runs_grant = st.person_caps(OWNER).unwrap()[cap]
+            .runs_grant
+            .clone()
+            .unwrap();
         let share = |id: &str, parent: &str, actions: &[&str], expires: Option<&str>| {
             st.with_tx(|tx| {
                 st.write_grant_in(
@@ -1807,16 +1862,23 @@ mod tests {
         share("s1", &runs_grant, &["read", "act"], None).unwrap();
         share("s2", "s1", &["read"], Some("2100-01-01T00:00:00.000Z")).unwrap();
         let now = st.now_utc();
-        let conveys = |id: &str, action: &str| {
-            st.share_conveys("r1", id, Some(action), None, now).unwrap()
-        };
+        let conveys =
+            |id: &str, action: &str| st.share_conveys("r1", id, Some(action), None, now).unwrap();
         assert!(conveys("s1", "act") && conveys("s2", "read"));
         assert!(!conveys("s2", "act"), "no wider than itself");
-        assert!(!st.share_conveys("r2", "s1", Some("read"), None, now).unwrap(), "another run's");
+        assert!(
+            !st.share_conveys("r2", "s1", Some("read"), None, now)
+                .unwrap(),
+            "another run's"
+        );
         let later = chrono::DateTime::parse_from_rfc3339("2100-01-02T00:00:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        assert!(!st.share_conveys("r1", "s2", Some("read"), None, later).unwrap(), "expired");
+        assert!(
+            !st.share_conveys("r1", "s2", Some("read"), None, later)
+                .unwrap(),
+            "expired"
+        );
         assert_eq!(
             st.live_shares("r1").unwrap(),
             ["s1".to_string(), "s2".to_string()].into()
@@ -1833,7 +1895,9 @@ mod tests {
         assert_eq!(s2.revoke_reason.as_deref(), Some("parent_ended"));
         // A run revokes only its own share; the runs grant is not one.
         let e = st
-            .with_tx(|tx| st.write_grant_in(tx, DAEMON, "r1", &GrantWrite::Revoke(runs_grant.clone())))
+            .with_tx(|tx| {
+                st.write_grant_in(tx, DAEMON, "r1", &GrantWrite::Revoke(runs_grant.clone()))
+            })
             .unwrap_err();
         assert_eq!(code(&e), "not_held");
         let issued = events(&st, "grant.issue");
@@ -1841,7 +1905,6 @@ mod tests {
             && e["event"] == "share"
             && e["expires_at"] == "2100-01-01T00:00:00.000Z"));
     }
-
 
     /// An export is a grant row from the person to their machine grant,
     /// under a page of their own runs, listed and revoked like a share.
@@ -1851,8 +1914,14 @@ mod tests {
         let sam = person(&st, "Sam", 1);
         let cap = "clax-browser:open-content";
         admin_everyone(&st, cap);
-        let mine = st.person_caps(&sam).unwrap()[cap].runs_grant.clone().unwrap();
-        let theirs = st.person_caps(OWNER).unwrap()[cap].runs_grant.clone().unwrap();
+        let mine = st.person_caps(&sam).unwrap()[cap]
+            .runs_grant
+            .clone()
+            .unwrap();
+        let theirs = st.person_caps(OWNER).unwrap()[cap]
+            .runs_grant
+            .clone()
+            .unwrap();
         let export = |id: &str, parent: &str| {
             st.issue_export(
                 DAEMON,
@@ -1873,8 +1942,8 @@ mod tests {
         );
         assert_eq!(code(&export("e2", &theirs).unwrap_err()), "not_held");
         assert_eq!(st.exports_of(&sam).unwrap().len(), 1);
-        st.revoke_cap_grant(DAEMON, "e1", RevokeReason::Granter).unwrap();
+        st.revoke_cap_grant(DAEMON, "e1", RevokeReason::Granter)
+            .unwrap();
         assert!(st.exports_of(&sam).unwrap().is_empty());
     }
-
 }

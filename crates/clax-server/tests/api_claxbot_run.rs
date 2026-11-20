@@ -2005,7 +2005,12 @@ async fn a_run_started_with_browser_on_declares_it() {
     assert_eq!(start(&no_source, &threads[1]).caps, "");
     // A person who turned the capability off gets a run without it.
     ts.store
-        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "clax-browser:open-artifact", false)
+        .set_cap_choice(
+            &AuditCtx::DAEMON,
+            OWNER,
+            "clax-browser:open-artifact",
+            false,
+        )
         .unwrap();
     assert_eq!(start(&ts.state.bot, &threads[2]).caps, "");
     ts.store
@@ -2078,7 +2083,10 @@ async fn a_run_made_with_the_url_switch_on_holds_browser_open_url() {
         .set_web_choice(&AuditCtx::DAEMON, OWNER, false)
         .unwrap();
     let both = start(&threads[1]);
-    assert_eq!(both.caps, "clax-browser:open-artifact,clax-browser:open-url");
+    assert_eq!(
+        both.caps,
+        "clax-browser:open-artifact,clax-browser:open-url"
+    );
     // Testing off, browsing on: a run that browses alone.
     ts.store
         .set_bot_settings(
@@ -2590,7 +2598,7 @@ async fn opened_in_registry(
             path: "index.html".into(),
         },
     };
-    let opened = sessions
+    sessions
         .open(
             rid,
             id,
@@ -2607,8 +2615,7 @@ async fn opened_in_registry(
             &clax_bot_sandbox::CancelToken::new(),
         )
         .await
-        .unwrap();
-    opened
+        .unwrap()
 }
 
 /// What a call of session `session` of run `rid` would meet now: `None`
@@ -2854,5 +2861,8 @@ async fn a_runs_pages_are_listed_for_export_to_the_persons_grants() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert!(ts.store.live_share_grants().unwrap().is_empty(), "nothing written");
+    assert!(
+        ts.store.live_share_grants().unwrap().is_empty(),
+        "nothing written"
+    );
 }

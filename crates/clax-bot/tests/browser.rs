@@ -433,7 +433,12 @@ async fn a_mid_run_opt_out_answers_browser_disabled() {
     let d = DriverId::mint();
     assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
     env.store
-        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "clax-browser:open-artifact", false)
+        .set_cap_choice(
+            &AuditCtx::DAEMON,
+            OWNER,
+            "clax-browser:open-artifact",
+            false,
+        )
         .unwrap();
     env.drive(&deps, &run, &d).await;
     assert_eq!(script_result(&env, &run, 0)["value"], "browser_disabled");
@@ -1294,10 +1299,10 @@ async fn a_shared_read_only_page_reads_and_cannot_click() {
         (g.granter.as_str(), g.grantee.as_str(), g.event.as_str()),
         (holder.as_str(), holder.as_str(), "share")
     );
-    let runs = env.store.person_caps(clax_store::roles::OWNER).unwrap()
-        ["clax-browser:open-artifact"]
-        .runs_grant
-        .clone();
+    let runs =
+        env.store.person_caps(clax_store::roles::OWNER).unwrap()["clax-browser:open-artifact"]
+            .runs_grant
+            .clone();
     assert_eq!(g.parent, runs);
     assert_eq!(g.access[0].actions, ["read"]);
     assert_eq!(g.revoke_reason.as_deref(), Some("granter"));
@@ -1858,7 +1863,11 @@ async fn a_goto_out_counts_against_the_url_cap() {
     .await;
     assert_eq!(v, json!(["went", "browser_cap", "browser_cap"]));
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
-    assert_eq!(counted.get("clax-browser:open-url"), Some(&1), "{counted:?}");
+    assert_eq!(
+        counted.get("clax-browser:open-url"),
+        Some(&1),
+        "{counted:?}"
+    );
 }
 
 /// An open whose browser opened and failed before its page loaded is

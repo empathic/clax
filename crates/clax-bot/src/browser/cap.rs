@@ -844,15 +844,27 @@ mod tests {
     #[test]
     fn a_mint_for_a_new_holder_keeps_every_caveat_but_the_holder() {
         let k = keys();
-        let parent = k.child(&k.root("sess1", "run-1"), &[ops(&[Class::Read, Class::Act])]);
+        let parent = k.child(
+            &k.root("sess1", "run-1"),
+            &[ops(&[Class::Read, Class::Act])],
+        );
         let g = Holder::Grant("g_1".into());
         let out = k.child_for(&parent, &g, &[Caveat::Expires(10_000)]);
         assert!(k.verify(&out.encode()).is_some());
         assert_eq!(out.chain()[..2], parent.chain()[..]);
         assert!(out.admits(&g) && !out.admits(&run("run-1")));
-        assert_eq!(out.check(&at(&g, Some(Class::Read), Target::None, 0)), Ok(()));
-        assert!(out.check(&at(&g, Some(Class::Navigate), Target::None, 0)).is_err());
-        assert!(out.check(&at(&g, Some(Class::Read), Target::None, 10_000)).is_err());
+        assert_eq!(
+            out.check(&at(&g, Some(Class::Read), Target::None, 0)),
+            Ok(())
+        );
+        assert!(
+            out.check(&at(&g, Some(Class::Navigate), Target::None, 0))
+                .is_err()
+        );
+        assert!(
+            out.check(&at(&g, Some(Class::Read), Target::None, 10_000))
+                .is_err()
+        );
     }
 
     #[test]

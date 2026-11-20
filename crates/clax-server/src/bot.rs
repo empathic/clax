@@ -1326,7 +1326,7 @@ fn browser_sessions(
 /// # Errors
 /// The store's.
 pub async fn stop_revoked_runs(s: &AppState) -> Result<Vec<String>, clax_http::error::ApiError> {
-    Ok(s.store_call(|st| {
+    s.store_call(|st| {
         let ctx = clax_core::audit::AuditCtx::DAEMON;
         let mut stopped = Vec::new();
         for run in st.live_runs()? {
@@ -1346,7 +1346,7 @@ pub async fn stop_revoked_runs(s: &AppState) -> Result<Vec<String>, clax_http::e
         }
         Ok(stopped)
     })
-    .await?)
+    .await
 }
 
 /// [`reevaluate_browser`] on wasm32 (the Worker), which holds no browser

@@ -3259,7 +3259,8 @@ mod tests {
         assert!(fetch.has("web.fetch") && !fetch.has("web.search"));
         let test = of("clax-browser:open-artifact");
         assert!(test.has("browser.test") && !test.has("browser.browse"));
-        let both = of("clax-web:search,clax-web:fetch,clax-browser:open-artifact,clax-browser:open-url");
+        let both =
+            of("clax-web:search,clax-web:fetch,clax-browser:open-artifact,clax-browser:open-url");
         let names: Vec<&str> = crate::api::definition()
             .operations()
             .map(|o| o.name)

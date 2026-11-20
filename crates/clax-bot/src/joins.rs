@@ -204,7 +204,12 @@ mod tests {
     #[test]
     fn the_clax_binding_lists_what_a_run_of_its_web_grant_has() {
         let def = api::definition();
-        for web in ["", "clax-web:search", "clax-web:fetch", "clax-web:search,clax-web:fetch"] {
+        for web in [
+            "",
+            "clax-web:search",
+            "clax-web:fetch",
+            "clax-web:search,clax-web:fetch",
+        ] {
             let v1 = Bindings::clax("a1", web);
             let had = Binding::from_stored(v1.of(CLAX_SURFACE).unwrap(), def, |op| {
                 api::declared(op, &CapSet::default())

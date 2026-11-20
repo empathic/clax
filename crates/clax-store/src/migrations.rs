@@ -9645,7 +9645,12 @@ mod tests {
                 .collect();
             assert_eq!(
                 children,
-                ["person:*owner", "person:u_ana", "person:u_ben", "person:u_cy"],
+                [
+                    "person:*owner",
+                    "person:u_ana",
+                    "person:u_ben",
+                    "person:u_cy"
+                ],
                 "{cap}"
             );
             let runs: Vec<&str> = grants
@@ -9759,7 +9764,10 @@ mod tests {
             .take(4)
             .map(|id| st.run(id).unwrap().unwrap().caps)
             .collect();
-        assert_eq!(caps, ["clax-web:fetch,clax-web:search", "clax-web:fetch", "", ""]);
+        assert_eq!(
+            caps,
+            ["clax-web:fetch,clax-web:search", "clax-web:fetch", "", ""]
+        );
         let run = st.run(&ids[0]).unwrap().unwrap();
         assert_eq!(run.web, "search,fetch", "read as it was");
     }

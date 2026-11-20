@@ -1382,8 +1382,13 @@ mod tests {
 
     fn everyone(st: &Store, caps: &[&str]) {
         for cap in caps {
-            st.issue_cap_grant(DAEMON, cap, crate::roles::OWNER, crate::bot_grants::EVERYONE)
-                .unwrap();
+            st.issue_cap_grant(
+                DAEMON,
+                cap,
+                crate::roles::OWNER,
+                crate::bot_grants::EVERYONE,
+            )
+            .unwrap();
         }
     }
 
@@ -1396,7 +1401,10 @@ mod tests {
             .filter(|e| e.kind.starts_with("grant."))
             .map(|e| {
                 let b: serde_json::Value = serde_json::from_str(&e.body).unwrap();
-                let g = st.cap_grant(b["grant_id"].as_str().unwrap()).unwrap().unwrap();
+                let g = st
+                    .cap_grant(b["grant_id"].as_str().unwrap())
+                    .unwrap()
+                    .unwrap();
                 let why = b.get("reason").unwrap_or(&b["event"]);
                 (
                     e.kind.clone(),

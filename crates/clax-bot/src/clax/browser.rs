@@ -90,7 +90,8 @@ use crate::browser::session::{
 };
 use crate::browser::{
     BrowserError, BrowserSource, CODE_BROWSER_BUSY, CODE_BROWSER_CAP, CODE_BROWSER_DISABLED,
-    CODE_BROWSER_FORBIDDEN, CODE_BROWSER_TARGET_NOT_FOUND, CODE_BROWSER_TIMEOUT, CODE_BROWSER_UNAVAILABLE, Cdp,
+    CODE_BROWSER_FORBIDDEN, CODE_BROWSER_TARGET_NOT_FOUND, CODE_BROWSER_TIMEOUT,
+    CODE_BROWSER_UNAVAILABLE, Cdp,
 };
 use crate::capability::{BrowserTerms, Capability, OpenGrant, Terms, UrlRule};
 use crate::host::host_error;
@@ -1394,9 +1395,9 @@ fn cap_call(
                 parent: parent_grant,
                 actions: actions_held,
                 origins: origins.clone(),
-                expires_at: expires_ms.and_then(chrono::DateTime::from_timestamp_millis).map(
-                    |t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                ),
+                expires_at: expires_ms
+                    .and_then(chrono::DateTime::from_timestamp_millis)
+                    .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             });
             shown["capability"] = json!(child.id());
             shown["ok"] = json!(true);
@@ -1408,7 +1409,8 @@ fn cap_call(
                     (
                         "actions",
                         json!(
-                            actions.as_ref()
+                            actions
+                                .as_ref()
                                 .map(|o| o.iter().map(|c| c.as_str()).collect::<Vec<_>>())
                         ),
                     ),

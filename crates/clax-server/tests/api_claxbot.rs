@@ -3710,7 +3710,11 @@ async fn admin_grants_to_everyone_and_revokes() {
                 json!("everyone"),
                 Value::Null
             ),
-            (json!("clax-browser:open-content"), json!("person"), json!(sam)),
+            (
+                json!("clax-browser:open-content"),
+                json!("person"),
+                json!(sam)
+            ),
         ]
     );
     assert!(
@@ -3984,7 +3988,9 @@ async fn me_put_web_sets_both_web_capabilities() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["web"]["on"], false, "{v}");
     let held = ts.store.person_caps(&p.sam.1).unwrap();
-    assert!(held["clax-web:search"].runs_grant.is_none() && held["clax-web:fetch"].runs_grant.is_none());
+    assert!(
+        held["clax-web:search"].runs_grant.is_none() && held["clax-web:fetch"].runs_grant.is_none()
+    );
     assert!(
         held["clax-browser:open-url"].runs_grant.is_some(),
         "the browser left as it was"

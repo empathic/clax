@@ -525,7 +525,7 @@ mod tests {
         grant(&st, c, EVERYONE);
         let mine = runs_grant(&st, OWNER, c);
         st.revoke_cap_grant(&AuditCtx::DAEMON, &mine, RevokeReason::Controller)
-                .unwrap();
+            .unwrap();
         assert_eq!(now(&st, OWNER).get(c), Err(Off::NotOffered));
         let none = |_: Capability| false;
         offer(&st, &[c], true);
@@ -623,7 +623,8 @@ mod tests {
         );
         assert_eq!(CapSet::parse(&all.as_str()), all);
         assert_eq!(
-            CapSet::parse("clax-web:search,web.crawl,,clax-browser:open-url,clax-web:search").as_str(),
+            CapSet::parse("clax-web:search,web.crawl,,clax-browser:open-url,clax-web:search")
+                .as_str(),
             "clax-browser:open-url,clax-web:search",
             "unknown parts ignored, each once"
         );

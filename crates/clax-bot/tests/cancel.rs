@@ -278,5 +278,8 @@ async fn a_run_stopped_for_a_revoked_grant_ends_with_its_reason() {
         (RunStatus::Stopped, Some("grant_revoked"))
     );
     let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
-    assert_eq!(steps[1].payload.as_ref().unwrap()["reason"], "grant_revoked");
+    assert_eq!(
+        steps[1].payload.as_ref().unwrap()["reason"],
+        "grant_revoked"
+    );
 }

@@ -3911,7 +3911,10 @@ mod tests {
         );
         assert_eq!(run.web, "");
         assert_eq!(st.run(&run.id).unwrap().unwrap().caps, run.caps);
-        assert_eq!(caps_of_web("fetch,search,search,x"), "clax-web:fetch,clax-web:search");
+        assert_eq!(
+            caps_of_web("fetch,search,search,x"),
+            "clax-web:fetch,clax-web:search"
+        );
         assert_eq!(caps_of_web(" search"), "");
         assert_eq!(
             web_shape("clax-web:fetch,clax-web:search"),
@@ -3966,7 +3969,10 @@ mod tests {
         // Content allows the session operations, and the scope names it.
         let content = Bindings::clax(&aid, "clax-browser:open-content,Test,web,search");
         assert_eq!(content.bindings[0].granted().len(), 5);
-        assert_eq!(content.bindings[0].scope["caps"], "clax-browser:open-content");
+        assert_eq!(
+            content.bindings[0].scope["caps"],
+            "clax-browser:open-content"
+        );
         // A web run's scope is the artifact alone.
         assert_eq!(
             Bindings::clax(&aid, "clax-web:search").bindings[0].scope,
