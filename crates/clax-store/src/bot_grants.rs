@@ -31,7 +31,7 @@ use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::{CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Every capability a grant may name, in the order they are shown.
 pub const CAPABILITIES: [&str; 5] = [
@@ -280,6 +280,15 @@ fn grant_record(g: &GrantRow, op: &str, at: String) -> AuditRecord {
     }
 }
 
+/// The person keys whose web switch was off on main
+/// (`bot_person_prefs.web` 0), on `c`: whom migration 67 and
+/// [`Store::grant_web_from_config`] give no grant of web to their runs.
+fn web_off_people_in(c: &Connection) -> Result<BTreeSet<String>> {
+    let mut q = c.prepare_cached("SELECT person FROM bot_person_prefs WHERE web = 0")?;
+    let rows = q.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Migration 67's Rust step, on `tx`: main's web switches as explicit
 /// grants, and each run's capabilities from its shapes.
 ///
@@ -309,13 +318,7 @@ pub(crate) fn grants_from_main(tx: &Transaction<'_>) -> Result<()> {
     let now: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |r| {
         r.get(0)
     })?;
-    let mut off_people = std::collections::BTreeSet::new();
-    {
-        let mut q = tx.prepare("SELECT person FROM bot_person_prefs WHERE web = 0")?;
-        for p in q.query_map([], |r| r.get::<_, String>(0))? {
-            off_people.insert(p?);
-        }
-    }
+    let off_people = web_off_people_in(tx)?;
     let people = person_keys_in(tx)?;
     for (cap, key) in [
         ("web.search", "web.search.enabled"),
@@ -506,43 +509,65 @@ impl Store {
     /// config.toml or the environment, [`Store::set_bot_overrides`]) and
     /// that no grant to everyone has ever been written for, live or
     /// revoked: what migration 67 writes for a switch stored on, which it
-    /// cannot see for one set only in the configuration. Issued as
-    /// `ctx`, granter [`GRANTER_CONFIG`], each recorded as `bot.grant`,
-    /// with every person's grant to their runs. So it is written at most
-    /// once per instance and capability: a restart after the admin
-    /// revokes it writes nothing. No `browser.open` kind is ever granted
-    /// here. Returns the grants issued.
+    /// cannot see for one set only in the configuration. As migration 67
+    /// does, it issues the child to the runs of the owner and of every
+    /// person ([`person_keys_in`]) except a person whose
+    /// `bot_person_prefs.web` is 0. Issued as `ctx` in one transaction,
+    /// granter [`GRANTER_CONFIG`], each row recorded as `bot.grant`. So it
+    /// is written at most once per instance and capability: a restart
+    /// after the admin revokes it writes nothing. No `browser.open` kind
+    /// is ever granted here. Returns the instance-wide grants issued.
     ///
     /// # Errors
     /// The store's.
     pub fn grant_web_from_config(&self, ctx: &AuditCtx) -> Result<Vec<String>> {
         use crate::bot_settings::{Setting, SettingSource};
         let eff = self.effective_bot_settings()?;
-        let mut issued = Vec::new();
-        for (cap, switch) in [
+        let caps: Vec<&str> = [
             ("web.search", Setting::WebSearchEnabled),
             ("web.fetch", Setting::WebFetchEnabled),
-        ] {
-            let on_in_config = eff.get(&switch).is_some_and(|e| {
+        ]
+        .into_iter()
+        .filter(|(_, switch)| {
+            eff.get(switch).is_some_and(|e| {
                 matches!(e.source, SettingSource::Config(_)) && e.value.as_bool() == Some(true)
-            });
-            if !on_in_config {
-                continue;
-            }
-            let ever = self.cap_grants(&GrantFilter {
-                capability: Some(cap.to_string()),
-                grantee: Some(EVERYONE.to_string()),
-                live: false,
-            })?;
-            if !ever.is_empty() {
-                continue;
-            }
-            issued.push(
-                self.issue_cap_grant(ctx, cap, GRANTER_CONFIG, EVERYONE, None)?
-                    .id,
-            );
+            })
+        })
+        .map(|(cap, _)| cap)
+        .collect();
+        if caps.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(issued)
+        self.with_tx(|tx| {
+            let off = web_off_people_in(tx)?;
+            let people = person_keys_in(tx)?;
+            let now = self.now();
+            let by = set_by(ctx);
+            let mut issued = Vec::new();
+            for cap in caps {
+                let ever: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM bot_cap_grants
+                                     WHERE capability = ?1 AND grantee = ?2)",
+                    params![cap, EVERYONE],
+                    |r| r.get(0),
+                )?;
+                if ever {
+                    continue;
+                }
+                let root = insert_grant(tx, cap, GRANTER_CONFIG, EVERYONE, None, &now, &by)?;
+                self.record_audit(tx, ctx, grant_record(&root, "issue", now.clone()))?;
+                for person in people.iter().filter(|p| !off.contains(*p)) {
+                    let runs = Grantee::RunsOf(person.clone()).as_text();
+                    if live_grant_to(tx, cap, &runs)?.is_some() {
+                        continue;
+                    }
+                    let child = insert_grant(tx, cap, person, &runs, Some(&root.id), &now, &by)?;
+                    self.record_audit(tx, ctx, grant_record(&child, "issue", now.clone()))?;
+                }
+                issued.push(root.id);
+            }
+            Ok(issued)
+        })
     }
 
     /// Every person key of the instance: the owner, then each connected
@@ -946,5 +971,48 @@ mod tests {
                 "{cap}"
             );
         }
+    }
+
+    fn config_turns_fetch_on(st: &Store) {
+        use crate::bot_settings::{Overrides, Setting};
+        let mut ov = Overrides::default();
+        ov.set(Setting::WebFetchEnabled, &serde_json::json!(true), "file")
+            .unwrap();
+        st.set_bot_overrides(ov);
+    }
+
+    /// The config grant skips a person whose web was off on main, as
+    /// migration 67 does.
+    #[test]
+    fn a_config_web_grant_skips_a_person_whose_web_was_off() {
+        let (_d, st) = store();
+        let sam = person(&st, "Sam", 1);
+        let mia = person(&st, "Mia", 2);
+        st.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO bot_person_prefs (person, web, set_at) VALUES (?1, 0, 'x')",
+                params![mia],
+            )?;
+            tx.execute(
+                "INSERT INTO bot_person_prefs (person, web, set_at) VALUES (?1, 1, 'x')",
+                params![sam],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        config_turns_fetch_on(&st);
+        assert_eq!(st.grant_web_from_config(DAEMON).unwrap().len(), 1);
+        for p in [OWNER, sam.as_str()] {
+            assert!(
+                st.person_caps(p).unwrap()["web.fetch"].reaches_runs(),
+                "{p}"
+            );
+        }
+        let mias = st.person_caps(&mia).unwrap()["web.fetch"].clone();
+        assert!(mias.granted_by.is_some(), "the admin grant covers her");
+        assert_eq!(mias.runs_grant, None, "her runs are not granted it");
+        let events = grant_events(&st);
+        assert_eq!(events.len(), 3, "the root and two children: {events:?}");
+        assert!(events.iter().all(|e| e["grantee"] != runs(&mia).as_str()));
     }
 }
