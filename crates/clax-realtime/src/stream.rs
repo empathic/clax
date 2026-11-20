@@ -812,6 +812,7 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
     let a = ev.artifact_id().to_string();
     match ev {
         Event::Version { .. }
+        | Event::ArtifactMeta { .. }
         | Event::Thread { .. }
         | Event::ThreadDeleted { .. }
         | Event::ThreadMoved { .. } => {

@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::live::KIND_LIVE;
 use clax_core::model::{Artifact, Session};
-use clax_core::publish::{PublishRequest, require_title, validate};
+use clax_core::publish::{PublishRequest, validate};
 use clax_core::rights::RightType;
 use clax_core::{ArtifactId, CoreError, Event};
 use clax_http::agent::{Agent, ArtifactsList, TokenOrAgent, page_marker, person_agent_session};
@@ -432,8 +432,9 @@ pub async fn list(
     Ok(Json(v))
 }
 
-/// Creates an artifact. The body must carry a non-blank `title`, and on a
-/// hosted daemon may carry `comments: false` to make it with its Comments
+/// Creates an artifact. Without a non-blank `title` it is untitled and
+/// shows its page's `<title>`, else `Untitled` ([`clax_core::model::Artifact::untitled`]).
+/// On a hosted daemon the body may carry `comments: false` to make it with its Comments
 /// switch off in the transaction that writes version 1 (on when absent);
 /// the answer's `artifact.comments` is the switch. A local daemon refuses
 /// `comments` 400 `invalid_args`: it has no route to turn the switch back
@@ -476,7 +477,6 @@ pub async fn create(
     }
     let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), s.hosted.is_some());
     let comments = comments.unwrap_or(true);
-    require_title(p.title.as_deref())?;
     p.person = publisher(&a.caller);
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
@@ -599,6 +599,8 @@ pub(crate) fn working_threads_of(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BriefBody {
+    /// Absent or blank: the artifact has no title of its own.
+    #[serde(default)]
     title: String,
     /// What the person wants built: the artifact's first thread.
     brief: String,
@@ -650,10 +652,11 @@ pub(crate) fn brief_refusal(
     })
 }
 
-/// `POST /api/artifacts:new {title, brief}` → 201 `{artifact, version, url,
+/// `POST /api/artifacts:new {title?, brief}` → 201 `{artifact, version, url,
 /// thread}`: a person starts an artifact from a brief in their browser
-/// (the gallery's New). Version 1 is a placeholder page naming the title
-/// ([`clax_core::brief::placeholder_html`]); the brief is its first thread,
+/// (the gallery's New). Without a title (absent or blank) the artifact is
+/// untitled. Version 1 is a placeholder page naming the title, `Untitled`
+/// for none ([`clax_core::brief::placeholder_html`]); the brief is its first thread,
 /// on the whole artifact, authored by the person and sent to no agent (a
 /// send naming an agent, `POST …/threads/<tid>/send {to}`, gives that agent
 /// its watch). The artifact is the person's (`person`; the owner's has
@@ -661,7 +664,7 @@ pub(crate) fn brief_refusal(
 /// connected person whose rights create artifacts; a guest is 403
 /// `not_permitted`, no credential 401, agents 403 (`forbidden` for a
 /// person's, `not_for_agents` for the owner's: agents publish). A foreign
-/// `Origin` is refused. 400 `invalid_title` (blank, over
+/// `Origin` is refused. 400 `invalid_title` (over
 /// [`clax_core::brief::MAX_TITLE_CHARS`] characters, or holding a control
 /// or format character) and `invalid_brief` (blank, or longer than a
 /// comment may be). An `Idempotency-Key` (1 to
@@ -758,7 +761,9 @@ pub async fn create_from_brief(
     let starter = person
         .clone()
         .unwrap_or_else(|| clax_store::briefs::OWNER_STARTER.to_string());
-    let html = clax_core::brief::placeholder_html(&title);
+    let html = clax_core::brief::placeholder_html(
+        title.as_deref().unwrap_or(clax_core::publish::UNTITLED),
+    );
     let mut files = std::collections::BTreeMap::new();
     files.insert(
         clax_core::publish::INDEX.to_string(),
@@ -769,7 +774,7 @@ pub async fn create_from_brief(
         }),
     );
     let mut p = validate(PublishRequest {
-        title: Some(title),
+        title,
         files,
         ..Default::default()
     })?;
@@ -1187,6 +1192,19 @@ pub struct PatchBody {
 }
 
 impl PatchBody {
+    /// It changes the title alone, which a browser whose viewer may update
+    /// the artifact may do without the token (the shell's rename).
+    fn title_only(&self) -> bool {
+        self.title.is_some()
+            && self.site_access.is_none()
+            && self.content_security_policy.is_none()
+            && self.description.is_none()
+            && self.icon.is_none()
+            && self.pinned.is_none()
+            && self.capabilities.is_none()
+            && self.question_id.is_none()
+    }
+
     /// It changes the site's access or its Content Security Policy alone,
     /// which the owner's or the page's maker's browser may do without the
     /// token.
@@ -1242,9 +1260,17 @@ pub async fn presence(
 /// the token alone while an agent session is live waits for a click in
 /// their browser: 202 `confirmation_pending` ([`clax_http::confirm`]), and
 /// changes nothing.
+/// A blank `title` makes the artifact untitled: it shows its page's
+/// `<title>`, else `Untitled`. A patch of the title alone may come from a
+/// browser without the token, from the shell's own origin, when its viewer
+/// may update the artifact ([`browser_edits`]); else 401. A change to the
+/// title, description or icon is told to the artifact's and the gallery's
+/// streams (`artifact_meta`).
+#[allow(clippy::too_many_arguments)]
 pub async fn patch(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ArtifactsPatch>,
+    same_origin: Result<clax_http::viewer::SameOrigin, ApiError>,
     confirming: clax_http::confirm::Confirming,
     headers: HeaderMap,
     audit: AuditCtx,
@@ -1254,7 +1280,19 @@ pub async fn patch(
 ) -> Result<Response, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let mut b = body(req)?;
-    if !b.site_only() {
+    if b.title_only() && a.require_credential().is_err() {
+        // A rename in the shell, from the browser of someone who may
+        // update the artifact.
+        same_origin?;
+        let (caller, member, i2) = (a.caller.clone(), a.member().cloned(), id.clone());
+        let hosted = s.hosted.is_some();
+        let may = s
+            .store_call(move |st| browser_edits(st, &caller, member.as_ref(), hosted, i2.as_str()))
+            .await?;
+        if !may {
+            return Err(ApiError::unauthorized());
+        }
+    } else if !b.site_only() {
         a.require_credential()?;
     }
     person_agent_session(&a.caller)?;
@@ -1294,6 +1332,9 @@ pub async fn patch(
         clax_http::auth::Caller::PersonAgent { person, .. } => {
             clax_core::visibility::Author::of_token(person.as_deref())
         }
+        clax_http::auth::Caller::Person { viewer } => {
+            clax_core::visibility::Author::Person(viewer.public_id.clone())
+        }
         _ => clax_core::visibility::Author::Owner,
     };
     let via_page = page_marker(&a.caller, &headers)?;
@@ -1315,12 +1356,24 @@ pub async fn patch(
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
-    clax_core::publish::check_update_title(b.title.as_deref())?;
     clax_core::publish::check_meta_text(
         b.title.as_deref(),
         b.description.as_deref(),
         b.icon.as_deref(),
     )?;
+    // A blank title: the artifact is untitled, and shows its page's. Line
+    // breaks and tabs are refused in it as in any title.
+    let untitled = b.title.as_deref().is_some_and(|t| t.trim().is_empty());
+    if untitled
+        && b.title
+            .as_deref()
+            .is_some_and(|t| t.chars().any(char::is_control))
+    {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "title holds a control character",
+        ));
+    }
     // A change that needs approval is a confirmed decision.
     if let Some(change) = change {
         super::setting_change::confirm(&s, &a.caller, &confirming, &id, change).await?;
@@ -1347,6 +1400,17 @@ pub async fn patch(
         .unwrap_or_default();
     let site_url = format!("{}/", clax_http::site_access::site_origin(&s, &id, host));
     let events = s.events.clone();
+    let title = match untitled {
+        true => {
+            let i2 = id.clone();
+            Some(
+                s.store_call_async(move |st| async move { st.page_title_async(&i2).await })
+                    .await?,
+            )
+        }
+        false => b.title,
+    };
+    let text_changed = title.is_some() || b.description.is_some() || b.icon.is_some();
     let artifact = s
         .store_call(move |st| {
             let approved = st.capability_approval(&id)?;
@@ -1354,7 +1418,8 @@ pub async fn patch(
                 &audit,
                 &id,
                 MetaPatch {
-                    title: b.title,
+                    title,
+                    untitled,
                     description: b.description,
                     icon: b.icon,
                     pinned: b.pinned,
@@ -1364,6 +1429,11 @@ pub async fn patch(
                 },
             )?;
             super::permissions::tell_if_narrowed(st, &events, &id, approved.as_ref())?;
+            if text_changed {
+                events.publish(Event::ArtifactMeta {
+                    artifact_id: id.as_str().to_string(),
+                });
+            }
             let mut view = json!(a);
             let vis = vf.build(st)?;
             vis.filter_artifact(st, &a, &[], &mut view)?;

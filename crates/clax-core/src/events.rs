@@ -30,6 +30,14 @@ pub enum Event {
     ArtifactDeleted {
         artifact_id: String,
     },
+    /// Artifact `artifact_id`'s title, description or icon changed
+    /// (`PATCH /api/artifacts/<id>`). It carries none of them, which the
+    /// visibility filter may withhold from a reader: clients refetch the
+    /// artifact. Its topic and the `gallery` topic carry it; `/api/events`
+    /// never does.
+    ArtifactMeta {
+        artifact_id: String,
+    },
     /// Artifact `artifact_id`'s site was opened to the world (`world`) or
     /// made private: its room sockets of visitors close when it closes.
     /// No stream carries it.
@@ -289,6 +297,7 @@ impl Event {
         match self {
             Event::Version { artifact_id, .. }
             | Event::ArtifactDeleted { artifact_id }
+            | Event::ArtifactMeta { artifact_id }
             | Event::SiteAccess { artifact_id, .. }
             | Event::Thread { artifact_id, .. }
             | Event::Comment { artifact_id, .. }
@@ -328,6 +337,7 @@ impl Event {
         match self {
             Event::Version { .. } => "version",
             Event::ArtifactDeleted { .. } => "artifact_deleted",
+            Event::ArtifactMeta { .. } => "artifact_meta",
             Event::SiteAccess { .. } => "site_access",
             Event::Access { .. } => "access",
             Event::Thread { .. } => "thread",
@@ -642,6 +652,9 @@ mod tests {
                 comments: false,
             },
             Event::Permissions {
+                artifact_id: "a".into(),
+            },
+            Event::ArtifactMeta {
                 artifact_id: "a".into(),
             },
         ] {

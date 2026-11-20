@@ -116,7 +116,9 @@ test("C and ? are the shell's only letter keys: T, J, K, S, R and Enter do nothi
   await expect(card).toHaveClass(/selected/);
   const threads = page.getByRole("button", { name: /^Threads/ });
   const panel = await threads.getAttribute("aria-pressed");
-  await page.locator(".topbar h1").click();
+  // A press in the top bar's own padding: the title is a Rename button for
+  // an owner, which would open its text field.
+  await page.locator(".topbar").click({ position: { x: 4, y: 4 } });
   const writes = threadWrites(page, artifact.id);
   for (const k of ["t", "j", "k", "s", "r", "Shift+S", "Enter"]) await page.keyboard.press(k);
   await settle(page);
@@ -161,7 +163,7 @@ test("after a reload the page's publish caused, the viewer's typing stays inert 
   await expect(comment).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
   // The viewer's own press in the shell gives the keys back, and a later load starts with them.
-  await page.locator(".topbar h1").click();
+  await page.locator(".topbar").click({ position: { x: 4, y: 4 } });
   await page.keyboard.press("c");
   await expect(comment).toHaveAttribute("aria-pressed", "true");
   await page.reload();
@@ -248,7 +250,7 @@ for (const closer of ["Space", "Enter", "Escape"]) {
     const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; sent_to_agent: boolean }[] };
     expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", sent_to_agent: false });
     // The viewer's own press in the shell gives the keys back.
-    await page.locator(".topbar h1").click();
+    await page.locator(".topbar").click({ position: { x: 4, y: 4 } });
     await page.keyboard.press("c");
     await expect(comment).toHaveAttribute("aria-pressed", "true");
   });

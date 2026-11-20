@@ -6,7 +6,13 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Artifact {
     pub id: String,
+    /// The title to show: the artifact's own, or while it has none
+    /// (`untitled`) its current page's `<title>`, else `Untitled`.
     pub title: String,
+    /// It has no title of its own (`artifacts.untitled`): `title` follows
+    /// its page. Serialised only when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub untitled: bool,
     pub description: Option<String>,
     pub icon: Option<String>,
     pub created_at: String,

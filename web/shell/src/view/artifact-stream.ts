@@ -13,6 +13,7 @@ import type { ArtifactController } from "./artifact-controller";
 import { holdKeysAcrossLoad } from "./keys";
 import { type ThreadDelta, applyPresence, applyThread } from "./deltas";
 import type { PresenceView } from "./presence-model";
+import { followTitle, takeTitle } from "./title-live";
 
 /** What the stream reads from the view and hands it. */
 export type ArtifactStreamView = {
@@ -171,6 +172,11 @@ export class ArtifactStream {
 export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   if (c.disposed) return;
   c.host?.onEvent(e);
+  // The title in the tab, and Rename on the heading, from the view's first
+  // `ready` on (`title-live.ts`).
+  if (e.type === "ready" && !titled.has(c)) { titled.add(c); followTitle(c); }
+  // Renamed here or elsewhere, or its description or icon changed.
+  if (e.type === "artifact_meta") getArtifact(c.id).then(d => { if (!c.disposed) takeTitle(c, d.artifact); }, () => {});
   if (e.type === "version" && e.by_page && e.n > c.shown()) {
     // The page republished itself (artifact.publish): every unpinned view
     // follows at once, on the page it shows (the new version carries every
@@ -220,6 +226,7 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
     const at = c.approvalTicket();
     getArtifact(c.id).then(d => {
       const n = d.artifact.current_version;
+      takeTitle(c, d.artifact);
       c.setTags(tt, { tags: d.artifact.tags ?? [], may: !!d.artifact.may_tag });
       c.takeApproval(at, d.artifact);
       // A working delta heard since the request started is newer than its answer.
@@ -229,6 +236,9 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
     }, err => { if (err instanceof ApiError && err.status === 404) c.set({ deleted: true }); });
   }
 }
+
+/** The views whose title `followTitle` follows. */
+const titled = new WeakSet<ArtifactController>();
 
 /** This viewer's name as `people` (a presence list) gives it, taken when it
  * differs: it was set in another view of this viewer (the owner's other

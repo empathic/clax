@@ -131,6 +131,8 @@ async fn embeds_what_the_api_answers_and_never_the_token() {
     assert!(b.get("frame").is_none());
     assert!(!html.contains(&ts.token));
     assert!(html.contains("<h1>Report</h1>"));
+    // The tab names the artifact, as the shell keeps it.
+    assert!(html.contains("<title>Report · Clax</title>"));
     assert!(!html.contains("<!--clax:boot-->") && !html.contains("<!--clax:frame-->"));
     assert!(html.contains("<iframe"));
 }
@@ -439,7 +441,9 @@ async fn a_host_the_api_refuses_gets_no_data() {
             "{host}"
         );
         assert!(
-            !html.contains("Secret plans") && html.contains("<h1>Clax</h1>"),
+            !html.contains("Secret plans")
+                && html.contains("<h1>Clax</h1>")
+                && html.contains("<title>Clax</title>"),
             "{host}"
         );
     }
