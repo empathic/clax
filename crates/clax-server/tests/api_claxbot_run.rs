@@ -15,11 +15,7 @@ use serde_json::{Value, json};
 
 const KEY: &str = "sk-ant-api03-FAKEKEYFORTESTS-wxyz";
 
-/// The settings of a daemon driving runs against the fake at `base`. A
-/// script's watchdog runs on real time, four times its CPU budget while
-/// the engine is busy (`clax_bot_js::Watchdog`): the budget is set far past
-/// the HANG guard, so a loaded machine never has the watchdog end a run.
-/// The instance-wide grant of every capability: none reaches a run
+/// The grant to everyone of every capability: none reaches a run
 /// without one (migration 67). Whether the instance offers each is its
 /// settings'.
 fn grant_everyone(ts: &TestServer) {
@@ -41,6 +37,10 @@ fn grant_everyone(ts: &TestServer) {
     }
 }
 
+/// The settings of a daemon driving runs against the fake at `base`. A
+/// script's watchdog runs on real time, four times its CPU budget while
+/// the engine is busy (`clax_bot_js::Watchdog`): the budget is set far past
+/// the HANG guard, so a loaded machine never has the watchdog end a run.
 fn on_fake(base: &str) -> [(Setting, Option<Value>); 2] {
     [
         (Setting::BaseUrl, Some(json!(base))),

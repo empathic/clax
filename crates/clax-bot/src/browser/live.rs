@@ -1087,12 +1087,39 @@ impl Task {
                     };
                     let r = match &converted {
                         Some(_) => match d.become_browse(&left_host).await {
-                            // Once out, the synthetic origin's documents
-                            // are no history entry of the page.
-                            Ok(()) => match perform(&mut d, &call, &timing).await {
-                                Ok(a) => d.reset_history().await.map(|()| a),
-                                other => other,
-                            },
+                            Ok(()) => {
+                                let r = perform(&mut d, &call, &timing).await;
+                                // A goto that committed no document of
+                                // another origin (a 204, a download, a
+                                // failed navigation) leaves the synthetic
+                                // one loaded, with what it read: the page
+                                // is blanked, so no document of the clax or
+                                // its content runs under URL egress.
+                                let blank = match &r {
+                                    Ok(a) if a.ok => d
+                                        .evaluate("location.host")
+                                        .await
+                                        .ok()
+                                        .and_then(Result::ok)
+                                        .is_some_and(|h| h.as_str() == Some(left_host.as_str())),
+                                    Ok(_) | Err(CdpFail::Protocol(_) | CdpFail::Deadline) => true,
+                                    Err(_) => false,
+                                };
+                                let r = if blank {
+                                    match d.navigate("about:blank").await {
+                                        Ok(_) => r,
+                                        Err(e) => Err(e),
+                                    }
+                                } else {
+                                    r
+                                };
+                                // Once out, the synthetic origin's documents
+                                // are no history entry of the page.
+                                match r {
+                                    Ok(a) => d.reset_history().await.map(|()| a),
+                                    other => other,
+                                }
+                            }
                             Err(e) => Err(e),
                         },
                         None => perform(&mut d, &call, &timing).await,
@@ -2406,6 +2433,37 @@ mod tests {
         // A URL session runs no saved tests.
         let t = w.page("runTests", json!({})).await;
         assert_eq!(t.unwrap_err().code, crate::browser::CODE_BROWSER_DISABLED);
+    }
+
+    /// A goto out whose document does not load (here its request is
+    /// refused, as a 204, a download or a failed navigation leave the page)
+    /// still converts the session, and blanks the page: the synthetic
+    /// origin's document does not stay loaded under URL egress.
+    #[tokio::test]
+    async fn a_goto_out_that_loads_no_document_blanks_the_page() {
+        struct Refuse;
+        #[async_trait::async_trait]
+        impl RequestPolicy for Refuse {
+            async fn decide(&self, _req: &Paused) -> Decision {
+                Decision::Fail { why: "refused" }
+            }
+        }
+        let w = World::new();
+        let (_, log) = w.open(TIMES).await;
+        let out = "https://example.com/nothing";
+        let g = w
+            .call_with("goto", json!({"url": out}), None, Some(Arc::new(Refuse)))
+            .await
+            .unwrap();
+        assert!(!g.ok, "{g:?}");
+        assert_eq!(g.kind, Some(SessionKind::Url));
+        assert_eq!(g.url, "about:blank", "{g:?}");
+        let navs: Vec<Value> = log
+            .sent("Page.navigate")
+            .iter()
+            .map(|c| c["params"]["url"].clone())
+            .collect();
+        assert_eq!(navs.last(), Some(&json!("about:blank")), "{navs:?}");
     }
 
     #[tokio::test]
