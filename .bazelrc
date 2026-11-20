@@ -8,6 +8,11 @@ common --enable_platform_specific_config
 startup --max_idle_secs=900
 startup --host_jvm_args=-Xmx3g
 
+# rules_cc's detected C toolchain links with gold when lld is
+# not installed, and rustc warns on every link with gold. A later -fuse-ld
+# flag overrides gold. GNU ld is present wherever gcc is.
+common:linux --repo_env=BAZEL_LINKOPTS=-fuse-ld=bfd
+
 # rules_js reports which rule sets and versions a build uses to its authors
 # unless told not to.
 common --repo_env=DO_NOT_TRACK=1
