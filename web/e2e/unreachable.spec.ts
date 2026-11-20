@@ -140,9 +140,11 @@ test.describe("on the worker's daemon", () => {
     const seen = (p: Page) => p.evaluate(() => (window as unknown as { claxNoticeSeen?: boolean }).claxNoticeSeen ?? false);
     const quiet = async (p: Page, url: string) => {
       await p.addInitScript(watch);
-      const hosted = p.waitForResponse(r => new URL(r.url()).pathname === "/api/hosted/me");
       await p.goto(url);
-      expect((await hosted).status()).toBe(404);
+      await settle(p);
+      // The page may read this answer from its first document instead of
+      // asking, so the route is asked here, through the shell's own fetch.
+      expect(await p.evaluate(() => fetch("/api/hosted/me").then(async r => [r.status, await r.text()]))).toEqual([404, ""]);
       await settle(p);
       expect(await seen(p)).toBe(false);
     };
