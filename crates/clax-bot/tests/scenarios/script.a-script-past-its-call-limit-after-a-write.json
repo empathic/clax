@@ -438,7 +438,7 @@
           ],
           "is_error": true,
           "published": null,
-          "result": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.write\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"}],\"error\":{\"kind\":\"call_limit\",\"message\":\"the script made more than its 3 host calls\"},\"logs\":[],\"value\":null}",
+          "result": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.write\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"}],\"error\":{\"kind\":\"call_limit\",\"message\":\"the script made more than its 3 host calls\"},\"logs\":[],\"state\":{\"saved\":false,\"why\":\"the script made too many calls, before its state could be written: the state the last script left stands\"},\"value\":null}",
           "title": "Script"
         }
       },
@@ -704,7 +704,7 @@
         "published": null,
         "replied": [],
         "result": {
-          "content": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.write\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"}],\"error\":{\"kind\":\"call_limit\",\"message\":\"the script made more than its 3 host calls\"},\"logs\":[],\"value\":null}",
+          "content": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.write\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"}],\"error\":{\"kind\":\"call_limit\",\"message\":\"the script made more than its 3 host calls\"},\"logs\":[],\"state\":{\"saved\":false,\"why\":\"the script made too many calls, before its state could be written: the state the last script left stands\"},\"value\":null}",
           "is_error": true,
           "tool_use_id": "tu_1",
           "type": "tool_result"

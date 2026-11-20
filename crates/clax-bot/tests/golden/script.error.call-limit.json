@@ -22,8 +22,12 @@
       "message": "the script made more than its 3 host calls"
     },
     "logs": [],
+    "state": {
+      "saved": false,
+      "why": "the script made too many calls, before its state could be written: the state the last script left stands"
+    },
     "value": null
   },
-  "content_bytes": 245,
+  "content_bytes": 382,
   "is_error": true
 }

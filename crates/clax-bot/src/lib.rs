@@ -88,6 +88,7 @@ pub mod script;
 #[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod script_scenarios;
+pub mod state;
 pub mod surface;
 pub mod web;
 

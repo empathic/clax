@@ -1615,7 +1615,7 @@ else does: every other global is the script's own, as before.
   first, until it fits, each listed `too large (N bytes)`.
 - **Stored with the step** **(owner)**: the encoded state is the script
   step's payload's `state`, `{"value": …, "handles": […]}`, written by the
-  step's commit, the commit that keeps what the step's journal answered.
+  step's commit when it differs from the state the script started from.
 - **Restored before the next script** **(owner)**: from the last
   committed script step that kept one (`Script::state`; none before the
   first). A step executed again (a crash, a park, a failed commit)

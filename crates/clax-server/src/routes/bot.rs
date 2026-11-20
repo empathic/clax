@@ -1766,6 +1766,11 @@ pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
             set("calls", json!(calls));
             set("logs", out["logs"].clone());
             set("value", out["value"].clone());
+            // The run's state as the step kept it, each handle shown
+            // opaque: its capabilities never leave the store.
+            if p.get("state").is_some_and(|st| st["value"].is_object()) {
+                set("state", clax_bot::state::shown(&p["state"]));
+            }
             set("error", out["error"]["message"].clone());
             set("cpu_ms", json!(out["cpu_us"].as_u64().unwrap_or(0) / 1000));
         }
@@ -1892,6 +1897,7 @@ pub fn for_reader(step: &mut Value) {
             "text",
             "code",
             "value",
+            "state",
             "logs",
             "error",
             "error_detail",
@@ -2219,6 +2225,31 @@ mod tests {
     fn web_call() -> Value {
         json!({"op": "web.fetch", "target": null, "ok": true, "code": null, "ms": 3,
                "cost_milli": 1, "web": {"url": "https://example.com/a", "source": "comment"}})
+    }
+
+    /// A script step's state is shown with its pages opaque, and none of
+    /// its handle entries, which hold the sessions' capabilities; a reader
+    /// is shown none of it.
+    #[test]
+    fn a_steps_state_is_shown_without_its_capabilities() {
+        let step = clax_store::bot_runs::Step {
+            run_id: "r1".into(),
+            n: 2,
+            kind: clax_store::bot_runs::StepKind::Script,
+            started_at: "2026-11-03T10:00:00Z".into(),
+            attempt: 1,
+            committed_at: Some("2026-11-03T10:00:01Z".into()),
+            payload: Some(json!({"title": "Open", "code": "…", "calls": [],
+                "state": {"value": {"page": {"$clax": 0}, "n": 1},
+                          "handles": [{"page": "f00d", "url": "https://x.test/", "of": "Page"}]}})),
+            observed: Vec::new(),
+            failures: 0,
+        };
+        let mut v = step_view(&step, 0);
+        assert_eq!(v["state"], json!({"page": "<browser page>", "n": 1}), "{v}");
+        assert!(!v.to_string().contains("f00d"), "{v}");
+        for_reader(&mut v);
+        assert!(v.get("state").is_none(), "{v}");
     }
 
     #[test]

@@ -32,9 +32,9 @@ const PROMPT_PREFIXES: &[&str] = &["core", "rules"];
 /// beside the run loop's own fields and `clax`'s, so a surface named as
 /// one of them could not add a field to any step. They are the run
 /// loop's fields of a step's payload (`calls`, `code`, `error`,
-/// `images`, `outcome`, `reason`, `result`, `summary`, `title`,
+/// `images`, `outcome`, `reason`, `result`, `state`, `summary`, `title`,
 /// `tool_use_id`) and of what a model is told of a script (`calls`,
-/// `error`, `images`, `logs`, `replay`, `value`), and the fields Clax's own surface adds (`base`,
+/// `error`, `images`, `logs`, `replay`, `state`, `value`), and the fields Clax's own surface adds (`base`,
 /// `changed`, `created`, `notice`, `posted`, `published`, `replied`,
 /// `sources`). The run loop holds this list equal to its own
 /// (`clax-bot`, `surface.rs`).
@@ -57,6 +57,7 @@ pub const STEP_FIELDS: &[&str] = &[
     "replied",
     "result",
     "sources",
+    "state",
     "summary",
     "title",
     "tool_use_id",

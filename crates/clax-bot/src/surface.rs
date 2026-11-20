@@ -1787,8 +1787,9 @@ fn without_a_charge_the_core_would_journal(mut answer: Answer, op: &str) -> Answ
 /// `result` of a finish of any other kind (`crate::finish`); `code`
 /// and `reason` of a give-up; `reason` and `error` of a failure. And
 /// `images`, a script step's images shown to the model
-/// (`crate::images`).
-pub const PAYLOAD_KEYS: [&str; 11] = [
+/// (`crate::images`), and `state`, the run's state a script step kept
+/// (`crate::state`).
+pub const PAYLOAD_KEYS: [&str; 12] = [
     "calls",
     "code",
     "error",
@@ -1797,6 +1798,7 @@ pub const PAYLOAD_KEYS: [&str; 11] = [
     "outcome",
     "reason",
     "result",
+    "state",
     "summary",
     "title",
     "tool_use_id",
@@ -1804,8 +1806,10 @@ pub const PAYLOAD_KEYS: [&str; 11] = [
 
 /// The names the core gives fields of what a model is told of a script
 /// (`tool_result_content`, `script.rs`): `value`, `logs`,
-/// `calls`, `error`, `replay`, `images`.
-pub const TOOL_RESULT_KEYS: [&str; 6] = ["calls", "error", "images", "logs", "replay", "value"];
+/// `calls`, `error`, `replay`, `images`, `state`.
+pub const TOOL_RESULT_KEYS: [&str; 7] = [
+    "calls", "error", "images", "logs", "replay", "state", "value",
+];
 
 /// The names `clax`'s provider puts at the top of a step's payload
 /// ([`merge_fields`]): a script step's session's (`changed`, `replied`,

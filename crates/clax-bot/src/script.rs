@@ -316,6 +316,7 @@ fn tool_result_content(
     calls: &Calls,
     told: &Fields,
     images: Option<&[Value]>,
+    state: Option<&Value>,
     max: usize,
 ) -> (String, bool) {
     let made: Vec<Value> = o
@@ -333,6 +334,11 @@ fn tool_result_content(
     // only for a value that holds one.
     if let Some(images) = images {
         v["images"] = json!(images);
+    }
+    // What was not kept of the run's state ([`crate::state`]): only when
+    // something was not.
+    if let Some(state) = state {
+        v["state"] = state.clone();
     }
     if let Some((at, why)) = &calls.diverged {
         let done: Vec<&str> = calls
@@ -494,6 +500,12 @@ impl Tick<'_> {
         }) {
             script = script.with_browser();
         }
+        // The run's state, as the last committed script step kept it: a
+        // step executed again starts from the same one.
+        let before = crate::state::last_committed(&self.steps);
+        if let Some(saved) = &before {
+            script = script.with_state(saved.clone());
+        }
         let limits = self.limits.script;
         let lost = AtomicBool::new(false);
         let mut outcome = watched(
@@ -561,7 +573,7 @@ impl Tick<'_> {
         }
         // The state the script left is the run's, not the outcome's: it is
         // kept apart from what the step stores of the outcome.
-        let _left = outcome.state.take();
+        let left = outcome.state.take();
         let StepHost { calls, journal, .. } = host;
         let mut calls = calls.into_inner().unwrap_or_else(|e| e.into_inner());
         // A script that waited for a call and, run again with its
@@ -689,6 +701,18 @@ impl Tick<'_> {
                 .await;
         }
         events.extend(self.unreported_calls(&reported));
+        // A script the sandbox stopped before its body settled wrote no
+        // state; one that never ran has nothing to tell.
+        let stopped = outcome.error.as_ref().and_then(|e| match e.kind {
+            ErrorKind::CpuLimit => Some("the script ran out of CPU time"),
+            ErrorKind::MemoryLimit => Some("the script ran out of memory"),
+            ErrorKind::CallLimit => Some("the script made too many calls"),
+            ErrorKind::Thrown | ErrorKind::HostError if left.is_none() => {
+                Some("the script was stopped")
+            }
+            _ => None,
+        });
+        let state = crate::state::fit(left, stopped);
         let images = crate::images::of_step(
             self.store,
             &self.run.id,
@@ -701,10 +725,17 @@ impl Tick<'_> {
             &calls,
             join.told(),
             images.as_ref().map(|i| &i.told[..]),
+            state.told.as_ref(),
             self.limits.tool_result_bytes,
         );
         if let Some(images) = images.as_ref().filter(|i| !i.shown.is_empty()) {
             core.insert("images".into(), images.kept());
+        }
+        // Kept when it changed: the last state kept stands otherwise.
+        if let Some(saved) = state.saved
+            && saved != before.unwrap_or_else(crate::state::empty)
+        {
+            core.insert("state".into(), saved);
         }
         core.insert("tool_use_id".into(), json!(tool_use_id));
         core.insert("outcome".into(), json!(outcome));
@@ -912,17 +943,17 @@ mod tests {
     #[test]
     fn a_result_is_cut_to_its_bound_with_the_sessions_fields_in_it() {
         let (outcome, calls, told) = logged(40);
-        let (whole, is_error) = tool_result_content(&outcome, &calls, &told, None, usize::MAX);
+        let (whole, is_error) = tool_result_content(&outcome, &calls, &told, None, None, usize::MAX);
         assert!(!is_error);
         assert!(whole.contains(r#""published":{"version":2}"#), "{whole}");
         assert!(whole.contains(r#""line 39""#));
         // At its own length it is left whole.
         assert_eq!(
-            tool_result_content(&outcome, &calls, &told, None, whole.len()).0,
+            tool_result_content(&outcome, &calls, &told, None, None, whole.len()).0,
             whole
         );
         // One byte under: the logs are cut, and the result fits.
-        let (cut, _) = tool_result_content(&outcome, &calls, &told, None, whole.len() - 1);
+        let (cut, _) = tool_result_content(&outcome, &calls, &told, None, None, whole.len() - 1);
         assert!(cut.len() < whole.len(), "{} bytes", cut.len());
         assert!(cut.contains(clax_bot_sandbox::LOGS_TRUNCATED));
         assert!(cut.contains(r#""published":{"version":2}"#), "{cut}");
@@ -931,7 +962,7 @@ mod tests {
         let field = r#""published":{"version":2},"#.len();
         for under in 1..=field {
             let max = whole.len() - under;
-            let (text, _) = tool_result_content(&outcome, &calls, &told, None, max);
+            let (text, _) = tool_result_content(&outcome, &calls, &told, None, None, max);
             assert!(
                 text.len() <= max,
                 "{} bytes for a bound of {max}",
@@ -948,7 +979,7 @@ mod tests {
     fn a_cut_result_counts_its_marker_within_its_bound() {
         let (mut outcome, calls, told) = logged(0);
         outcome.value = Some(json!("x".repeat(200)));
-        let result = |o: &ScriptOutcome, max| tool_result_content(o, &calls, &told, None, max).0;
+        let result = |o: &ScriptOutcome, max| tool_result_content(o, &calls, &told, None, None, max).0;
         let whole = result(&outcome, usize::MAX);
         // At its bound and one byte under it, it is left whole.
         assert_eq!(result(&outcome, whole.len()), whole);
