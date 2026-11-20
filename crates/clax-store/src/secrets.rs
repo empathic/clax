@@ -111,6 +111,15 @@ impl Kek {
         Kek(clax_core::secret::random_bytes::<32>())
     }
 
+    /// `HMAC-SHA256(KEK, label)`: a key for `label` alone, derived from
+    /// this one and never stored (the browser's capabilities' instance
+    /// key, spec 2026-11-19-claxbot-browser §18.2). Knowing it reveals
+    /// nothing of the KEK.
+    #[must_use]
+    pub fn derive(&self, label: &str) -> [u8; 32] {
+        clax_core::macaroon::derive_key(&self.0, label)
+    }
+
     /// The first 4 bytes of the SHA-256 of the key's 32 bytes, in
     /// lowercase hex: which key this is, without the key. The hosted key
     /// is 64 hex digits, so `xxd -r -p | shasum -a 256 | cut -c1-8` gives
@@ -626,6 +635,15 @@ mod tests {
     use super::*;
     use crate::roles::OWNER;
     use crate::test_util::{DAEMON, store};
+
+    #[test]
+    fn a_derived_key_depends_on_its_label_and_kek() {
+        let k = Kek::from_bytes([1; 32]);
+        assert_eq!(k.derive("a"), Kek::from_bytes([1; 32]).derive("a"));
+        assert_ne!(k.derive("a"), k.derive("b"));
+        assert_ne!(k.derive("a"), Kek::from_bytes([2; 32]).derive("a"));
+        assert_ne!(k.derive("a"), [1; 32]);
+    }
 
     const KEY: &str = "sk-ant-api03-SECRETSECRETSECRET-wxyz";
     /// The default base URL, which keys set in these tests are bound to.

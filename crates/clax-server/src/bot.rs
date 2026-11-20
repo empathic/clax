@@ -1275,7 +1275,8 @@ pub fn driver_with_sources(
 /// docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §7.4). A
 /// new registry holds no session, so every session the store still holds
 /// open is marked lost first (§6.4: a daemon starting holds none of the
-/// previous process's). Each end the registry makes is charged as it is
+/// previous process's). Its capabilities are keyed from the home's KEK
+/// (spec §18.2). Each end the registry makes is charged as it is
 /// made ([`clax_bot::clax::charge`]), so an idle end while the model
 /// thinks is charged then, not at the run's next call.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1289,13 +1290,22 @@ fn browser_sessions(
         Ok(n) => tracing::info!(count = n, "marked the browser sessions left open lost"),
         Err(e) => tracing::warn!(error = %e, "could not mark the browser sessions left open lost"),
     }
-    let sessions = Arc::new(clax_bot::browser::live::BrowserSessions::new(
-        browser,
-        Arc::new(StoreClock(store.clone())),
-        clax_bot::browser::session::SessionLimits {
-            image_side: clax_bot::policy::DEFAULT_IMAGE_SIDE,
-        },
-    ));
+    // The capabilities' instance key is the KEK's (spec §18.2): a
+    // capability from before a restart verifies, and answers lost; without
+    // a KEK, a key of this process's own.
+    let keys = state.bot.kek.as_ref().map_or_else(clax_bot::browser::cap::Keys::random, |k| {
+        clax_bot::browser::cap::Keys::new(k.derive(clax_bot::browser::cap::INSTANCE_LABEL))
+    });
+    let sessions = Arc::new(
+        clax_bot::browser::live::BrowserSessions::new(
+            browser,
+            Arc::new(StoreClock(store.clone())),
+            clax_bot::browser::session::SessionLimits {
+                image_side: clax_bot::policy::DEFAULT_IMAGE_SIDE,
+            },
+        )
+        .with_keys(keys),
+    );
     sessions.charge_with(Arc::new(move |ended| clax_bot::clax::charge(&store, ended)));
     sessions
 }
