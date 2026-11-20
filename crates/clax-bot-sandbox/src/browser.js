@@ -22,6 +22,8 @@
   ["Page","failedRequests","page","failedRequests",[]],
   ["Page","record","page","record",["opts"]],
   ["Page","runTests","page","runTests",["paths"]],
+  ["Page","share","page","share",["opts"]],
+  ["Page","revoke","page","revoke",[]],
   ["Page","close","close",null,[]],
   ["Keyboard","down","page","keyboard.down",["key"]],
   ["Keyboard","up","page","keyboard.up",["key"]],
@@ -198,6 +200,14 @@
     return answer(p, await flat.page(p.session, "evaluate", args));
   };
   P.Page.close = function () { return flat.close(S(this).p.session); };
+  // A narrowed page of the same session (spec §18.4), shown by what it allows.
+  P.Page.share = async function (opts) {
+    const p = S(this).p;
+    const v = answer(p, await flat.page(p.session, "share", spread(create(null), opts)));
+    const n = pageOf(v.page, p.url);
+    S(n).shown = toText(v.shown);
+    return n;
+  };
   P.Page.url = function () { return S(this).p.url; };
   P.Page.setDefaultTimeout = function (ms) { S(this).p.timeout = ms; };
   // Locators are data: each builder adds one step and makes no call.
@@ -243,10 +253,13 @@
     return page;
   };
   // Shown opaque: a returned or logged Page never shows its capability.
-  P.Page.toJSON = () => "<browser page>";
+  P.Page.toJSON = function () {
+    const s = S(this);
+    return (s && s.shown) || "<browser page>";
+  };
   P.Locator.toJSON = () => "<browser locator>";
   // In state (spec §17.2): each object of the layer's classes as a handle
-  // entry {page, url, of, steps?, not?, timeout?}, restored live, one Page
+  // entry {page, url, of, steps?, not?, timeout?, shown?}, restored live, one Page
   // per handle.
   const classes = ["Page", "Locator", "Keyboard", "Mouse", "LocatorAssertions", "PageAssertions"];
   stateHooks.encode = (o) => {
@@ -262,6 +275,7 @@
     if (s.steps !== undefined && s.p !== s) h.steps = s.steps;
     if (s.not === true) h.not = true;
     if (s.p.timeout !== undefined) h.timeout = s.p.timeout;
+    if (s.p.shown !== undefined) h.shown = s.p.shown;
     return h;
   };
   const revived = create(null);
@@ -271,6 +285,7 @@
     if (page === undefined) {
       page = pageOf(h.page, typeof h.url === "string" ? h.url : "");
       if (typeof h.timeout === "number") S(page).timeout = h.timeout;
+      if (typeof h.shown === "string") S(page).shown = h.shown;
       revived[h.page] = page;
     }
     if (h.of === "Page") return page;

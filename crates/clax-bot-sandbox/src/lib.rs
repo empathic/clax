@@ -903,7 +903,7 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 /// When the script's body settles, returned or thrown, the prelude writes
 /// it out ([`StateOut`]) with the built-ins it captured: JSON values, and
 /// each object of the browser layer as a handle entry `{page, url, of,
-/// steps?, not?, timeout?}`, restored live in the next script, one `Page`
+/// steps?, not?, timeout?, shown?}`, restored live in the next script, one `Page`
 /// per handle. A function, a symbol, a `bigint`, a number JSON cannot
 /// hold, a cycle, an object that is not plain data, a member named
 /// `$clax`, a value nested deeper than 64 levels or one whose reading
@@ -930,7 +930,10 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 /// names its session by the capability `browser.open` answered
 /// (`page`), which no script reads: a `Page` returned or logged shows
 /// `"<browser page>"`, a `Locator` `"<browser locator>"`, and no `Page` is
-/// made from a string. A later script reaches a session only through
+/// made from a string. `page.share(opts)` answers a new `Page` whose
+/// capability is the `share` call's answer `{page, shown}` (spec §18.4),
+/// shown as its `shown` (`"<browser page: read>"`, say), which its
+/// handle entry keeps. A later script reaches a session only through
 /// `state` (see "State"). Without the layer, or without all five operations, neither
 /// the layer nor `expect` exists.
 ///

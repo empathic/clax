@@ -38,6 +38,7 @@
 
 pub mod act;
 pub mod browse;
+pub mod cap;
 pub mod cdp;
 pub mod fake;
 pub mod layer;
@@ -83,6 +84,10 @@ pub const CODE_BROWSER_SESSION_LOST: &str = "browser_session_lost";
 /// The session was closed (`close`, its idle time, its lifetime, a
 /// revoke, credits, the run's end); the reason is in the message.
 pub const CODE_BROWSER_SESSION_CLOSED: &str = "browser_session_closed";
+/// The page's capability does not allow the call: its classes, its expiry,
+/// its origins, a condition the host does not understand, or it was
+/// revoked (spec §18.3); not retryable, the reason is in the message.
+pub const CODE_BROWSER_FORBIDDEN: &str = "browser_forbidden";
 
 /// A browser call that failed: a code above, a message for the model,
 /// whether trying again may succeed, and whether a browser had opened.

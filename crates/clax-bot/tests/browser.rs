@@ -1094,7 +1094,7 @@ async fn an_open_answers_a_handle_no_record_names() {
         .as_str()
         .unwrap_or_else(|| panic!("no handle in {}", open.result()))
         .to_string();
-    assert_eq!(handle.len(), 64, "{handle}");
+    assert!(handle.starts_with("cxb_"), "{handle}");
     let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
     let script = steps.iter().find(|s| s.kind == StepKind::Script).unwrap();
     let p = script.payload.as_ref().unwrap();
@@ -1215,6 +1215,139 @@ async fn a_replayed_step_drops_the_same_sessions() {
     let row = session_row(&env, &run, &session);
     assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Dropped));
     assert_eq!(browser_rows(&env).iter().sum::<i64>(), row.charged_ms);
+}
+
+/// A page shared read-only reads and cannot click, navigate or close;
+/// revoked, it allows nothing, and the page it was shared from still
+/// works (spec §18.4). The share and the revoke are `bot.spend` records
+/// naming the capabilities by their IDs, and nothing the run shows or
+/// records holds a capability.
+#[tokio::test]
+async fn a_shared_read_only_page_reads_and_cannot_click() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    let (run, v) = one_script_with(
+        &env,
+        "browser.open.artifact",
+        "const page = await clax.browser.open({ artifact: 'draft' });
+         const ro = await page.share({ ops: ['read'] });
+         const out = [await ro.title(), ro, JSON.stringify({ ro })];
+         try { await ro.getByRole('button', { name: 'Book' }).click(); out.push('clicked'); } catch (e) { out.push(e.code); }
+         try { await ro.goto('/x'); out.push('went'); } catch (e) { out.push(e.code); }
+         try { await ro.close(); out.push('closed'); } catch (e) { out.push(e.code); }
+         try { await page.share({ ops: ['write'] }); } catch (e) { out.push(e.code); }
+         await page.getByRole('button', { name: 'Book' }).click();
+         await ro.revoke();
+         try { await ro.title(); } catch (e) { out.push(e.code + ': ' + e.message); }
+         try { await page.revoke(); } catch (e) { out.push(e.code); }
+         out.push(await page.title());
+         state.page = page;
+         return out;",
+    )
+    .await;
+    assert_eq!(
+        v,
+        json!([
+            "Hello",
+            "<browser page: read>",
+            "{\"ro\":\"<browser page: read>\"}",
+            "browser_forbidden",
+            "browser_forbidden",
+            "browser_forbidden",
+            "invalid_args",
+            "browser_forbidden: this browser page's capability was revoked",
+            "invalid_args",
+            "Hello"
+        ])
+    );
+    let records = browser_events(&env);
+    let of = |action: &str| -> Vec<&Value> {
+        records
+            .iter()
+            .filter(|r| r["action"] == action && r["ok"] == true)
+            .collect()
+    };
+    let (shares, revokes) = (of("share"), of("revoke"));
+    assert_eq!((shares.len(), revokes.len()), (1, 1), "{records:?}");
+    let id = shares[0]["capability"].as_str().unwrap();
+    assert_eq!(id.len(), 22);
+    assert_eq!(shares[0]["parent"].as_str().map(str::len), Some(22));
+    assert_eq!(shares[0]["ops"], json!(["read"]));
+    assert_eq!(revokes[0]["capability"], id);
+    assert_eq!(shares[0]["credits_milli"], 0, "{}", shares[0]);
+    let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
+    let script = steps.iter().find(|s| s.kind == StepKind::Script).unwrap();
+    let p = script.payload.as_ref().unwrap();
+    for (what, text) in [
+        ("events", serde_json::to_string(&env.bot_events()).unwrap()),
+        ("calls", p["calls"].to_string()),
+        ("result", p["result"].to_string()),
+    ] {
+        assert!(!text.contains("cxb_"), "{what} holds a capability: {text}");
+    }
+    let row = session_row(&env, &run, &only_session(&env, &run));
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::RunEnded));
+}
+
+/// A step executed again after a crash before its commit answers its
+/// share from the journal: the state it commits holds the capability the
+/// journal answered, which alone keeps the session open (spec §18.7), and
+/// the session ends with the run, not `dropped`.
+#[tokio::test]
+async fn a_replayed_share_answers_the_same_capability() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Share",
+        "const page = await clax.browser.open({ artifact: 'draft' });
+         state.ro = await page.share({ ops: ['read'], expires: 600 });
+         return String(state.ro.toJSON());",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_caps("browser.open.artifact");
+    let mut a = env.deps();
+    crash_once(
+        &mut a,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    let out = env.drive(&a, &run, &DriverId::mint()).await;
+    assert_eq!(
+        out.last().unwrap().next,
+        Next::Waiting(clax_bot::Wait::Crashed)
+    );
+    let shared = |env: &Env| -> Vec<String> {
+        env.store
+            .bot_calls(&run, 2)
+            .unwrap()
+            .iter()
+            .filter(|c| c.op() == "browser.page")
+            .map(|c| c.result()["value"]["value"]["page"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    let first = shared(&env);
+    assert_eq!(first.len(), 1, "{first:?}");
+    env.clock.advance(61);
+    let out = env.drive(&a, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(shared(&env), first, "the share is answered from the journal");
+    assert_eq!(env.browser.opened(), 1);
+    let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
+    let script = steps.iter().find(|s| s.kind == StepKind::Script).unwrap();
+    let p = script.payload.as_ref().unwrap();
+    assert_eq!(p["state"]["handles"][0]["page"], first[0]);
+    assert!(
+        script_result(&env, &run, 0)["value"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("<browser page: read; expires ")),
+        "{}",
+        script_result(&env, &run, 0)
+    );
+    let row = session_row(&env, &run, &only_session(&env, &run));
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::RunEnded));
 }
 
 /// The run's session row of `id`.

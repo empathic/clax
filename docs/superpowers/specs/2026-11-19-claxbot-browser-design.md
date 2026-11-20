@@ -1641,7 +1641,7 @@ else does: every other global is the script's own, as before.
 ### 17.2 Handles in `state`; a `Page`'s JSON **(owner)**
 
 - Each handle in the encoded value is `{"$clax": i}`, an index into
-  `handles`, whose entry is `{page, url, of, steps?, not?, timeout?}`:
+  `handles`, whose entry is `{page, url, of, steps?, not?, timeout?, shown?}`:
   the page's capability (§17.3), its URL as of the last call, the class
   (`Page`, `Locator`, `Keyboard`, `Mouse`, `LocatorAssertions`,
   `PageAssertions`), a locator's steps, a negated assertion, the page's

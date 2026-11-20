@@ -1671,6 +1671,13 @@ pub fn layer_calls() -> Vec<LayerCall> {
             "runTests",
             json!({"paths": ["tests/a.test.js"]}),
         ),
+        page(
+            "share",
+            "page.share({ ops: ['read'], expires: 60 })",
+            "share",
+            json!({"ops": ["read"], "expires": 60}),
+        ),
+        page("revoke", "page.revoke()", "revoke", json!({})),
         key(
             "Keyboard",
             "down",
@@ -1882,6 +1889,8 @@ fn browser_layer() -> Vec<Case> {
     for c in layer_calls() {
         let reply = if c.op == "browser.close" {
             json!({"ms": 10, "cost": 0.1})
+        } else if c.method == "share" {
+            answered(json!({"page": "s2", "shown": "<browser page: read>"}))
         } else {
             answered(Value::Null)
         };
@@ -2156,6 +2165,37 @@ return [page, l, JSON.stringify({ page }), String(JSON.stringify(page.keyboard))
                         "{}"
                     ]))
                 },
+            )
+        }),
+        // A shared page (spec §18.4) is a Page of its own capability,
+        // shown by what it allows, and its handle entry keeps that.
+        layered(Case {
+            calls: vec![
+                open(),
+                call(
+                    "browser.page",
+                    json!(["s1", "share", {"ops": ["read"]}]),
+                    answered(json!({"page": "s2", "shown": "<browser page: read>"})),
+                ),
+                call("browser.page", json!(["s2", "title", {}]), answered(json!("T"))),
+                call("browser.page", json!(["s2", "revoke", {}]), answered(Value::Null)),
+            ],
+            expect: Expect {
+                state: Some(left(
+                    json!({"ro": {"$clax": 0}}),
+                    json!([{"page": "s2", "url": PAGE_URL, "of": "Page", "shown": "<browser page: read>"}]),
+                    json!([]),
+                    0,
+                )),
+                ..ok(json!(["<browser page: read>", "{\"ro\":\"<browser page: read>\"}", "T", null, "<browser page>"]))
+            },
+            ..case(
+                "a_shared_page_shows_its_classes",
+                "const page = await clax.browser.open({ url: 'https://x.test/' });
+const ro = await page.share({ ops: ['read'] });
+state.ro = ro;
+return [ro, JSON.stringify({ ro }), await ro.title(), await ro.revoke(), page];",
+                none(),
             )
         }),
         layered(case(

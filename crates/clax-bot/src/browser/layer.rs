@@ -23,6 +23,7 @@
 //! (milliseconds, 0 or more); every matcher takes `not`. A text matcher
 //! is a string or `{regex, flags}`.
 
+use super::cap::Class;
 use crate::capability::Capability;
 use serde_json::Value;
 
@@ -262,6 +263,17 @@ pub const ROWS: &[Row] = &[
             &[opt("paths", Kind::Any)],
         )
     },
+    page(
+        "share",
+        "share",
+        O,
+        &[
+            opt("ops", Kind::Any),
+            opt("expires", Kind::Int),
+            opt("origins", Kind::Any),
+        ],
+    ),
+    page("revoke", "revoke", &[], &[]),
     Row {
         class: "Page",
         method: "close",
@@ -671,6 +683,18 @@ pub const DECLS: &[Decl] = &[
     },
     d(
         "Page",
+        "share",
+        "share(opts?: { ops?: (\"read\" | \"act\" | \"navigate\" | \"record\" | \"close\")[]; expires?: number; origins?: string[] }): Promise<Page>;",
+        "Clax's own: a new page of this session that allows only `ops`, for `expires` seconds, navigating only to `origins`, and nothing this page does not; its other calls throw `browser_forbidden`.",
+    ),
+    d(
+        "Page",
+        "revoke",
+        "revoke(): Promise<void>;",
+        "Clax's own: ends this shared page's capability and every page shared from it; the session stays open for the others.",
+    ),
+    d(
+        "Page",
         "close",
         "close(): Promise<{ ms: number; cost: number }>;",
         "Ends the session, which costs by the second while open; a page no script's `state` holds is closed when its script ends.",
@@ -1034,6 +1058,45 @@ pub fn row(op: Op, action: &str, on_page: bool) -> Option<&'static Row> {
     })
 }
 
+/// The class a call of `row` is of (spec §18.3), which a capability's
+/// `ops` caveat holds; `None` for `share` and `revoke`, which need none.
+#[must_use]
+pub fn class(row: &Row) -> Option<Class> {
+    const READS: &[&str] = &[
+        "title",
+        "content",
+        "screenshot",
+        "consoleMessages",
+        "pageErrors",
+        "failedRequests",
+        "waitForLoadState",
+        "waitForURL",
+        "textContent",
+        "innerText",
+        "inputValue",
+        "getAttribute",
+        "allTextContents",
+        "isVisible",
+        "isHidden",
+        "isEnabled",
+        "isChecked",
+        "count",
+        "waitFor",
+    ];
+    let action = row.action.unwrap_or_default();
+    Some(match row.op {
+        Op::Close => Class::Close,
+        Op::Expect => Class::Read,
+        _ => match action {
+            "share" | "revoke" => return None,
+            "goto" | "reload" | "goBack" | "goForward" => Class::Navigate,
+            "record" => Class::Record,
+            a if READS.contains(&a) => Class::Read,
+            _ => Class::Act,
+        },
+    })
+}
+
 /// The actions of `op`, in the table's order, each once.
 #[must_use]
 pub fn actions(op: Op) -> Vec<&'static str> {
@@ -1125,6 +1188,30 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Every row's class (spec §18.3): `share` and `revoke` need none.
+    #[test]
+    fn every_row_has_its_class() {
+        for r in ROWS {
+            let c = class(r);
+            assert_eq!(
+                c.is_none(),
+                matches!(r.action, Some("share" | "revoke")),
+                "{}.{}",
+                r.class,
+                r.method
+            );
+        }
+        let of = |op, a, on_page| class(row(op, a, on_page).unwrap());
+        assert_eq!(of(Op::Page, "evaluate", false), Some(Class::Act));
+        assert_eq!(of(Op::Page, "runTests", false), Some(Class::Act));
+        assert_eq!(of(Op::Page, "goBack", false), Some(Class::Navigate));
+        assert_eq!(of(Op::Page, "record", false), Some(Class::Record));
+        assert_eq!(of(Op::Act, "screenshot", false), Some(Class::Read));
+        assert_eq!(of(Op::Act, "click", false), Some(Class::Act));
+        assert_eq!(of(Op::Expect, "toHaveURL", true), Some(Class::Read));
+        assert_eq!(class(ROWS.iter().find(|r| r.op == Op::Close).unwrap()), Some(Class::Close));
+    }
+
     #[test]
     fn the_prelude_table_equals_the_layer_table() {
         let prelude = clax_bot_sandbox::browser_layer_table();
@@ -1139,7 +1226,8 @@ mod tests {
     #[test]
     fn every_row_with_options_takes_a_timeout_and_every_matcher_not() {
         for r in ROWS {
-            if r.params.contains(&"opts") {
+            // `share` waits for no browser (spec §18.4).
+            if r.params.contains(&"opts") && r.action != Some("share") {
                 assert!(r.args.contains(&TIMEOUT), "{}.{}", r.class, r.method);
             }
             if r.op == Op::Expect {

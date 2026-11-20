@@ -56,23 +56,30 @@
 //!
 //! # Who may reach a session
 //!
-//! A session's handle is its capability (spec §17.3): 256 bits from the
-//! operating system, drawn at the open ([`Opened::handle`]), bound to the
-//! run that opened it. Holding it is the authority to drive the session
-//! ([`BrowserSessions::resolve`]): a handle of another run, an unknown
-//! one, or one this process does not hold (the daemon restarted), answers
-//! `browser_session_lost`, whose message never repeats it; a session that
-//! ended answers `browser_session_closed` with its reason (or
-//! `browser_session_lost`, for a lost one). Everything else, events,
-//! records and messages, names a session by its ID.
+//! A session's handle is a capability, a macaroon (spec §18,
+//! [`super::cap`]): the open mints the session's root
+//! ([`Opened::handle`]), held by the run that opened it, and a share mints
+//! a narrowed child of a capability ([`BrowserSessions::share`]). Holding
+//! one is the authority to drive the session as far as its caveats allow
+//! ([`BrowserSessions::authorize`]): one that does not verify, is not held
+//! by the calling run, or names a session this process does not hold (the
+//! daemon restarted) answers `browser_session_lost`, whose message never
+//! repeats it; one whose caveats refuse the call, or that was revoked
+//! ([`BrowserSessions::revoke`]: it and every capability under it),
+//! answers `browser_forbidden`; a session that ended answers
+//! `browser_session_closed` with its reason (or `browser_session_lost`,
+//! for a lost one), whichever capability names it. Everything else,
+//! events, records and messages, names a session by its ID.
 
+use super::cap::{Cap, Caveat, Class, Holder, Keys, Target, Use};
 use super::cdp::{Cdp, CdpFail};
 use super::opts::Tests;
 use super::opts::{MAX_EVAL_BYTES, Viewport};
 use super::serve::{Decision, Left, Pages, Paused};
 use super::session::{Driver, RequestPolicy, SessionLimits, Start};
 use super::{
-    BrowserError, BrowserSource, CODE_BROWSER_SESSION_CLOSED, CODE_BROWSER_SESSION_LOST, Deadline,
+    BrowserError, BrowserSource, CODE_BROWSER_FORBIDDEN, CODE_BROWSER_SESSION_CLOSED,
+    CODE_BROWSER_SESSION_LOST, Deadline,
 };
 use chrono::{DateTime, Duration, Utc};
 use clax_bot_sandbox::{CODE_CANCELLED, CancelToken};
@@ -81,7 +88,7 @@ use clax_store::bot_web::{SessionEnd, SessionKind};
 use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, StreamExt};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// How long a session may send the browser no command before the
@@ -190,8 +197,8 @@ impl CallCtx {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Opened {
     pub session: String,
-    /// The session's capability: 64 hex digits, shown nowhere but to the
-    /// prelude that holds it in its `Page` (see the module docs).
+    /// The session's root capability, serialized: shown nowhere but to
+    /// the prelude that holds it in its `Page` (see the module docs).
     pub handle: String,
     pub kind: SessionKind,
     pub url: String,
@@ -234,8 +241,9 @@ enum Msg {
 /// A session the registry holds.
 struct Entry {
     run: String,
-    /// The session's capability ([`Opened::handle`]).
-    handle: String,
+    /// The capability IDs revoked (spec §18.6): a capability whose chain
+    /// holds one is refused.
+    revoked: BTreeSet<String>,
     kind: SessionKind,
     /// `None` while open; why it ended once it did.
     ended: Option<SessionEnd>,
@@ -264,6 +272,21 @@ pub struct BrowserSessions {
     clock: Arc<dyn Clock>,
     limits: SessionLimits,
     reg: Arc<Mutex<Registry>>,
+    /// What its capabilities are made and checked with (spec §18.2).
+    keys: Keys,
+}
+
+/// Where a call goes, for a capability's `origin` caveat (spec §18.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Nav {
+    /// Not a `navigate` call.
+    None,
+    /// A `goto` of this URL, resolved against the page's.
+    Goto(String),
+    /// A `reload`: to the page's own URL.
+    Reload,
+    /// A `goBack` or `goForward`: not known before the call.
+    History,
 }
 
 impl std::fmt::Debug for BrowserSessions {
@@ -314,7 +337,16 @@ impl BrowserSessions {
             clock,
             limits,
             reg: Arc::new(Mutex::new(Registry::default())),
+            keys: Keys::random(),
         }
+    }
+
+    /// This registry, making and checking its capabilities with `keys`
+    /// (the instance's, spec §18.2) instead of a random key of its own.
+    #[must_use]
+    pub fn with_keys(mut self, keys: Keys) -> BrowserSessions {
+        self.keys = keys;
+        self
     }
 
     /// Opens session `id` (from [`new_session_id`]) of `kind` for run
@@ -351,10 +383,7 @@ impl BrowserSessions {
         let (tx, rx) = mpsc::unbounded();
         let (open_tx, open_rx) = oneshot::channel();
         let synthetic = start.synthetic_host();
-        let handle: String = clax_core::secret::random_bytes::<32>()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let handle = self.keys.root(&id, run).encode();
         let task = Task {
             run: run.to_string(),
             id: id.clone(),
@@ -371,7 +400,7 @@ impl BrowserSessions {
             id.clone(),
             Entry {
                 run: run.to_string(),
-                handle: handle.clone(),
+                revoked: BTreeSet::new(),
                 kind,
                 ended: None,
                 tx,
@@ -444,13 +473,34 @@ impl BrowserSessions {
         lock(&self.reg).sessions.retain(|_, e| e.run != run);
     }
 
-    /// Closes, `dropped`, every open session of run `run` whose handle is
-    /// not among `held`, each closed before this answers (spec §17.4).
+    /// Closes, `dropped`, every open session of run `run` that no
+    /// capability among `held` keeps open, each closed before this answers
+    /// (spec §18.7): one keeps its session open when it verifies, names
+    /// it, is held by `run` and has no revoked ID in its chain; its
+    /// expiry and classes are not read, so the decision is the same
+    /// whenever it is made from the same `held`.
     pub async fn close_unheld(&self, run: &str, held: &[String]) {
-        for (session, handle) in self.open_handles(run) {
-            if !held.contains(&handle) {
-                let _ = self.close(run, &session, SessionEnd::Dropped).await;
-            }
+        let holder = Holder::Run(run.to_string());
+        let caps: Vec<Cap> = held.iter().filter_map(|h| self.keys.verify(h)).collect();
+        let doomed: Vec<String> = {
+            let reg = lock(&self.reg);
+            reg.sessions
+                .iter()
+                .filter(|(id, e)| {
+                    e.run == run
+                        && e.ended.is_none()
+                        && !caps.iter().any(|c| {
+                            c.session() == id.as_str()
+                                && c.run() == e.run
+                                && c.admits(&holder)
+                                && !c.revoked_in(&e.revoked)
+                        })
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        for session in doomed {
+            let _ = self.close(run, &session, SessionEnd::Dropped).await;
         }
     }
 
@@ -495,37 +545,119 @@ impl BrowserSessions {
         })
     }
 
-    /// The ID of the session `handle` is the capability of, for run `run`,
-    /// open or ended (see the module docs).
+    /// The ID of the session `handle` is a capability of, for a call of
+    /// run `run`, open or ended (see the module docs); nothing of its
+    /// caveats but its holder is read.
     ///
     /// # Errors
-    /// `browser_session_lost` for a handle this process holds for no
-    /// session of `run`; its message does not repeat the handle.
+    /// `browser_session_lost` for a handle that does not verify, is not
+    /// held by `run`, or names no session this process holds of the run
+    /// that opened it; its message does not repeat the handle.
     pub fn resolve(&self, run: &str, handle: &str) -> Result<String, BrowserError> {
-        let reg = lock(&self.reg);
-        reg.sessions
-            .iter()
-            .find(|(_, e)| e.run == run && !handle.is_empty() && e.handle == handle)
-            .map(|(id, _)| id.clone())
-            .ok_or_else(|| {
-                BrowserError::new(
-                    CODE_BROWSER_SESSION_LOST,
-                    "this browser page's session is lost: this process holds no session of \
-                     this run for it (the host may have restarted); open a new one",
-                    false,
-                )
-            })
+        self.verified(run, handle).map(|c| c.session().to_string())
     }
 
-    /// The capability of each session of run `run` open now, with its ID.
-    #[must_use]
-    pub fn open_handles(&self, run: &str) -> Vec<(String, String)> {
+    fn verified(&self, run: &str, handle: &str) -> Result<Cap, BrowserError> {
+        let lost = || {
+            BrowserError::new(
+                CODE_BROWSER_SESSION_LOST,
+                "this browser page's session is lost: this process holds no session of \
+                 this run for it (the host may have restarted); open a new one",
+                false,
+            )
+        };
+        let cap = self.keys.verify(handle).ok_or_else(lost)?;
         let reg = lock(&self.reg);
-        reg.sessions
-            .iter()
-            .filter(|(_, e)| e.run == run && e.ended.is_none())
-            .map(|(id, e)| (id.clone(), e.handle.clone()))
-            .collect()
+        match reg.sessions.get(cap.session()) {
+            Some(e) if e.run == cap.run() && cap.admits(&Holder::Run(run.to_string())) => Ok(cap),
+            _ => Err(lost()),
+        }
+    }
+
+    /// The session `handle` is a capability of, and the capability, when
+    /// it allows a call of class `class` (none for `share` and `revoke`)
+    /// going to `nav`, by run `run`, now (see the module docs).
+    ///
+    /// # Errors
+    /// `browser_session_lost` as [`BrowserSessions::resolve`];
+    /// `browser_session_closed` (or `_lost`) for a session that ended;
+    /// `browser_forbidden` for a capability revoked, or whose caveats
+    /// refuse the call.
+    pub fn authorize(
+        &self,
+        run: &str,
+        handle: &str,
+        class: Option<Class>,
+        nav: &Nav,
+    ) -> Result<(String, Cap), BrowserError> {
+        let cap = self.verified(run, handle)?;
+        let session = cap.session().to_string();
+        self.sender(cap.run(), &session)?;
+        let forbidden = |why: String| BrowserError::new(CODE_BROWSER_FORBIDDEN, why, false);
+        let target = {
+            let reg = lock(&self.reg);
+            let Some(e) = reg.sessions.get(&session) else {
+                return Err(lost(&session, "this process holds no such session for this run"));
+            };
+            if cap.revoked_in(&e.revoked) {
+                return Err(forbidden(super::cap::Refusal::Revoked.message()));
+            }
+            match nav {
+                Nav::None => Target::None,
+                Nav::Goto(url) => {
+                    Target::Url(resolve_url(&e.url, url).unwrap_or_else(|| url.clone()))
+                }
+                Nav::Reload => Target::Url(e.url.clone()),
+                Nav::History => Target::Unknown,
+            }
+        };
+        let holder = Holder::Run(run.to_string());
+        let u = Use {
+            holder: &holder,
+            class,
+            target,
+            now_ms: self.clock.now().timestamp_millis(),
+        };
+        cap.check(&u).map_err(|r| forbidden(r.message()))?;
+        Ok((session, cap))
+    }
+
+    /// The registry's clock, in Unix milliseconds: what `expires` caveats
+    /// are held to.
+    #[must_use]
+    pub fn now_ms(&self) -> i64 {
+        self.clock.now().timestamp_millis()
+    }
+
+    /// A new capability of the session `handle` is one of, its caveats and
+    /// `more` (spec §18.4), for a call of run `run`.
+    ///
+    /// # Errors
+    /// As [`BrowserSessions::authorize`] for a call of no class.
+    pub fn share(&self, run: &str, handle: &str, more: &[Caveat]) -> Result<Cap, BrowserError> {
+        let (_, parent) = self.authorize(run, handle, None, &Nav::None)?;
+        Ok(self.keys.child(&parent, more))
+    }
+
+    /// Revokes the capability `handle` and every capability shared from
+    /// it (spec §18.6), for a call of run `run`, and answers it.
+    ///
+    /// # Errors
+    /// As [`BrowserSessions::authorize`] for a call of no class;
+    /// `invalid_args` for a session's root, which is closed instead.
+    pub fn revoke(&self, run: &str, handle: &str) -> Result<Cap, BrowserError> {
+        let (session, cap) = self.authorize(run, handle, None, &Nav::None)?;
+        if cap.is_root() {
+            return Err(BrowserError::new(
+                crate::api::CODE_BAD_ARGS,
+                "this page opened its browser session: close it instead of revoking it",
+                false,
+            ));
+        }
+        if let Some(e) = lock(&self.reg).sessions.get_mut(&session) {
+            e.revoked.insert(cap.id().to_string());
+        }
+        Ok(cap)
     }
 
     /// Whether session `session` of run `run` is open in this process.
@@ -1724,23 +1856,23 @@ mod tests {
         assert_eq!((WHY_POPUP, WHY_TARGET), ("popup", "target"));
     }
 
-    /// A session's handle is 256 random bits, mapped to the session for
-    /// the run that opened it alone; another run's, an unknown one and
-    /// one from no open are lost, and the message repeats none of them.
+    /// A session's handle is its root capability, held by the run that
+    /// opened it; a forged, tampered, foreign or empty one, and one
+    /// presented by another run, are lost, and no message repeats it.
     #[tokio::test]
     async fn a_handle_reaches_its_session_for_its_run_alone() {
         let w = World::new();
         let (o, _) = w.open(TIMES).await;
-        assert_eq!(o.handle.len(), 64);
-        assert!(o.handle.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(o.handle, o.session);
+        assert!(o.handle.starts_with(super::super::cap::PREFIX), "{}", o.handle);
         assert_eq!(w.sessions.resolve("run-1", &o.handle).unwrap(), o.session);
-        assert_eq!(
-            w.sessions.open_handles("run-1"),
-            [(o.session.clone(), o.handle.clone())]
-        );
+        let mut tampered = o.handle.clone();
+        let last = tampered.pop().unwrap();
+        tampered.push(if last == 'A' { 'B' } else { 'A' });
+        let foreign = Keys::new([9; 32]).root(&o.session, "run-1").encode();
         for (run, handle) in [
             ("run-2", o.handle.as_str()),
+            ("run-1", tampered.as_str()),
+            ("run-1", foreign.as_str()),
             ("run-1", "00".repeat(32).as_str()),
             ("run-1", o.session.as_str()),
             ("run-1", ""),
@@ -1748,28 +1880,133 @@ mod tests {
             let e = w.sessions.resolve(run, handle).unwrap_err();
             assert_eq!(e.code, CODE_BROWSER_SESSION_LOST);
             assert!(!e.message.contains(&o.handle), "{}", e.message);
+            let e = w
+                .sessions
+                .authorize(run, handle, Some(Class::Read), &Nav::None)
+                .unwrap_err();
+            assert_eq!(e.code, CODE_BROWSER_SESSION_LOST);
         }
         let (other, _) = w.open(TIMES).await;
         assert_ne!(other.handle, o.handle);
     }
 
-    /// A session whose handle is held stays; one whose is not closes,
-    /// `dropped`, queued for the store.
+    fn ops(cs: &[Class]) -> Caveat {
+        Caveat::Ops(cs.iter().copied().collect())
+    }
+
+    /// A read-only share reads and cannot act, navigate, record or close;
+    /// one expired on the registry's clock allows nothing; an origin
+    /// caveat holds a goto to its origins.
+    #[tokio::test]
+    async fn a_shared_capability_allows_no_more_than_its_caveats() {
+        let w = World::new();
+        let (o, _) = w.open(TIMES).await;
+        let read = w.sessions.share("run-1", &o.handle, &[ops(&[Class::Read])]).unwrap();
+        let read = read.encode();
+        let auth = |h: &str, c: Option<Class>, nav: Nav| {
+            w.sessions.authorize("run-1", h, c, &nav).map(|(s, _)| s)
+        };
+        assert_eq!(auth(&read, Some(Class::Read), Nav::None).unwrap(), o.session);
+        for c in [Class::Act, Class::Navigate, Class::Record, Class::Close] {
+            let e = auth(&read, Some(c), Nav::None).unwrap_err();
+            assert_eq!(e.code, CODE_BROWSER_FORBIDDEN, "{c:?}");
+            assert!(!e.message.contains(&read));
+        }
+        // Narrowing a narrowed capability never widens it.
+        let wider = w
+            .sessions
+            .share("run-1", &read, &[ops(&Class::ALL)])
+            .unwrap()
+            .encode();
+        assert_eq!(auth(&wider, Some(Class::Act), Nav::None).unwrap_err().code, CODE_BROWSER_FORBIDDEN);
+        let now = w.clock.now().timestamp_millis();
+        let soon = w
+            .sessions
+            .share("run-1", &o.handle, &[Caveat::Expires(now + 5_000)])
+            .unwrap()
+            .encode();
+        assert!(auth(&soon, Some(Class::Act), Nav::None).is_ok());
+        w.clock.advance(5);
+        assert_eq!(auth(&soon, Some(Class::Read), Nav::None).unwrap_err().code, CODE_BROWSER_FORBIDDEN);
+        assert!(auth(&o.handle, Some(Class::Act), Nav::None).is_ok());
+        let only_a = w
+            .sessions
+            .share(
+                "run-1",
+                &o.handle,
+                &[Caveat::Origin(["https://a.example".to_string()].into())],
+            )
+            .unwrap()
+            .encode();
+        assert!(auth(&only_a, Some(Class::Navigate), Nav::Goto("https://a.example/x".into())).is_ok());
+        for nav in [Nav::Goto("https://b.example/".into()), Nav::Goto("/x".into()), Nav::History, Nav::Reload] {
+            assert_eq!(
+                auth(&only_a, Some(Class::Navigate), nav.clone()).unwrap_err().code,
+                CODE_BROWSER_FORBIDDEN,
+                "{nav:?}"
+            );
+        }
+    }
+
+    /// Revoking a capability refuses it and every one shared from it, and
+    /// nothing else; the root is closed, not revoked; closing the session
+    /// ends every capability of it.
+    #[tokio::test]
+    async fn revoking_a_parent_revokes_its_children_and_closing_ends_all() {
+        let w = World::new();
+        let (o, _) = w.open(TIMES).await;
+        let share = |h: &str| w.sessions.share("run-1", h, &[]).unwrap().encode();
+        let parent = share(&o.handle);
+        let child = share(&parent);
+        let grandchild = share(&child);
+        let sibling = share(&o.handle);
+        let ok = |h: &str| w.sessions.authorize("run-1", h, Some(Class::Read), &Nav::None);
+        assert_eq!(
+            w.sessions.revoke("run-1", &o.handle).unwrap_err().code,
+            crate::api::CODE_BAD_ARGS
+        );
+        let revoked = w.sessions.revoke("run-1", &parent).unwrap();
+        assert_eq!(revoked.encode(), parent);
+        for h in [&parent, &child, &grandchild] {
+            let e = ok(h).unwrap_err();
+            assert_eq!(e.code, CODE_BROWSER_FORBIDDEN);
+            assert!(e.message.contains("revoked"), "{}", e.message);
+            assert_eq!(w.sessions.share("run-1", h, &[]).unwrap_err().code, CODE_BROWSER_FORBIDDEN);
+        }
+        assert!(ok(&o.handle).is_ok() && ok(&sibling).is_ok());
+        w.sessions.close("run-1", "s1", SessionEnd::Closed).await.unwrap();
+        for h in [&o.handle, &sibling, &child] {
+            assert_eq!(ok(h).unwrap_err().code, CODE_BROWSER_SESSION_CLOSED);
+        }
+    }
+
+    /// A session stays open while a capability of it that is held by its
+    /// run and not revoked is held, whatever its classes or expiry; it
+    /// closes `dropped`, queued for the store, once none is.
     #[tokio::test]
     async fn a_session_not_held_closes_dropped() {
         let w = World::new();
         let (o, log) = w.open(TIMES).await;
-        w.sessions
-            .close_unheld("run-1", std::slice::from_ref(&o.handle))
-            .await;
-        assert!(w.sessions.ended().is_empty());
+        let now = w.clock.now().timestamp_millis();
+        let read = w
+            .sessions
+            .share("run-1", &o.handle, &[ops(&[Class::Read]), Caveat::Expires(now + 1_000)])
+            .unwrap()
+            .encode();
+        w.sessions.close_unheld("run-1", &[o.handle.clone()]).await;
         w.clock.advance(3);
+        w.sessions.close_unheld("run-1", &[read.clone()]).await;
+        assert!(w.sessions.ended().is_empty(), "an expired read-only page holds it");
         w.sessions.close_unheld("run-2", &[]).await;
-        assert!(
-            w.sessions.ended().is_empty(),
-            "another run's call ends nothing"
-        );
-        w.sessions.close_unheld("run-1", &[]).await;
+        assert!(w.sessions.ended().is_empty(), "another run's call ends nothing");
+        let foreign = Keys::new([9; 32]).root("s1", "run-1").encode();
+        let mut tampered = read.clone();
+        tampered.insert(10, 'x');
+        let revoked = w.sessions.share("run-1", &o.handle, &[]).unwrap().encode();
+        w.sessions.revoke("run-1", &revoked).unwrap();
+        w.sessions
+            .close_unheld("run-1", &[foreign, tampered, revoked, "x".into()])
+            .await;
         assert_eq!(
             w.sessions
                 .ended()

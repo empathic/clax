@@ -66,8 +66,11 @@
 use super::session::ClaxSession;
 use super::spend::{self, Finish, Performer, PriceCap, Priced, Seen};
 use crate::browser::browse::{BrowsePolicy, BrowseScope};
+use crate::browser::cap::{Caveat, Class, origin_of};
 use crate::browser::layer::{self, Op};
-use crate::browser::live::{BrowserSessions, CallCtx, SessionCall, SessionTimes, new_session_id};
+use crate::browser::live::{
+    BrowserSessions, CallCtx, Nav, SessionCall, SessionTimes, new_session_id,
+};
 use crate::browser::opts::{self, BrowserOpts, BrowserTarget, SourceSpec, Viewport};
 use crate::browser::serve::{ContentFile, ContentSite, Pages, Site};
 use crate::browser::session::{
@@ -241,6 +244,86 @@ pub(super) struct CallArgs {
     call: Option<SessionCall>,
     row: Option<&'static layer::Row>,
     terms: BrowserTerms,
+    /// A `share` or `revoke`: the registry's, not the browser's.
+    cap_call: Option<CapCall>,
+    /// Where a `navigate` call goes, for its capability's `origin` caveat.
+    nav: Nav,
+}
+
+/// What a `share` or `revoke` asks of the page's capability (spec §18.4).
+enum CapCall {
+    /// A share: its classes, its lifetime in seconds, its origins.
+    Share {
+        ops: Option<Vec<Class>>,
+        expires: Option<u32>,
+        origins: Option<Vec<String>>,
+    },
+    Revoke,
+}
+
+/// `args` of a `share`, checked (spec §18.4): `ops` a list of class
+/// names, `expires` seconds (1 or more), `origins` a non-empty list of
+/// origins.
+fn share_of(args: &Value) -> Result<CapCall, HostError> {
+    let strings = |k: &str| -> Result<Option<Vec<String>>, HostError> {
+        match args.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Array(a)) => a
+                .iter()
+                .map(|v| v.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+                .map(Some)
+                .ok_or_else(|| bad(format!("args.{k}: must be a list of strings"))),
+            Some(_) => Err(bad(format!("args.{k}: must be a list of strings"))),
+        }
+    };
+    let ops = strings("ops")?
+        .map(|names| {
+            names
+                .iter()
+                .map(|n| {
+                    Class::parse(n).ok_or_else(|| {
+                        bad(format!(
+                            "args.ops: `{n}` is not one of read, act, navigate, record, close"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let expires = match args.get("expires").and_then(Value::as_u64) {
+        None => None,
+        Some(n) if n >= 1 => Some(u32::try_from(n).unwrap_or(u32::MAX)),
+        Some(_) => return Err(bad("args.expires: must be 1 second or more")),
+    };
+    let origins = strings("origins")?
+        .map(|os| {
+            if os.is_empty() {
+                return Err(bad("args.origins: must name at least one origin"));
+            }
+            os.iter()
+                .map(|o| {
+                    origin_of(o).ok_or_else(|| {
+                        bad(format!("args.origins: `{o}` is not an origin like https://example.com"))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    Ok(CapCall::Share {
+        ops,
+        expires,
+        origins,
+    })
+}
+
+/// Whether `call` is a `share` or `revoke`, which never reach the browser.
+fn is_cap_call(call: &Call<'_>) -> bool {
+    call.op == crate::browser::OP_PAGE
+        && matches!(
+            call.args.get(1).and_then(Value::as_str),
+            Some("share" | "revoke")
+        )
 }
 
 /// The browser source; [`super::spend`]'s step 2 has made sure there is
@@ -815,6 +898,21 @@ impl Performer for SessionOp {
                 let row = layer::row(Op::Page, action, false)
                     .ok_or_else(|| bad(format!("action: `{action}` is not a page action")))?;
                 let args = checked(row, a.get(2))?;
+                if action == "share" || action == "revoke" {
+                    let cap_call = if action == "share" {
+                        share_of(&args)?
+                    } else {
+                        CapCall::Revoke
+                    };
+                    return Ok(CallArgs {
+                        session,
+                        call: None,
+                        row: Some(row),
+                        terms,
+                        cap_call: Some(cap_call),
+                        nav: Nav::None,
+                    });
+                }
                 if action == "record"
                     && !args["seconds"].as_i64().is_some_and(|n| {
                         (crate::browser::record::MIN_SECONDS..=crate::browser::record::MAX_SECONDS)
@@ -874,11 +972,22 @@ impl Performer for SessionOp {
             }
             Op::Close => (None, None),
         };
+        let nav = match &call {
+            Some(SessionCall::Page { action, args }) => match action.as_str() {
+                "goto" => Nav::Goto(args["url"].as_str().unwrap_or_default().to_string()),
+                "reload" => Nav::Reload,
+                "goBack" | "goForward" => Nav::History,
+                _ => Nav::None,
+            },
+            _ => Nav::None,
+        };
         Ok(CallArgs {
             session,
             call,
             row,
             terms,
+            cap_call: None,
+            nav,
         })
     }
 
@@ -909,9 +1018,15 @@ impl Performer for SessionOp {
             .first()
             .and_then(Value::as_str)
             .unwrap_or_default();
+        // The page's capability allows the call (spec §18.3): its class,
+        // its expiry, its origins, not revoked.
+        let class = match (self.op, args.row) {
+            (Op::Close, _) => Some(Class::Close),
+            (_, Some(row)) => layer::class(row),
+            (_, None) => None,
+        };
         sessions
-            .resolve(&s.run.id, handle)
-            .and_then(|id| sessions.check(&s.run.id, &id))
+            .authorize(&s.run.id, handle, class, &args.nav)
             .map_err(|e| from_browser(&e))?;
         if let Some(c) = args.row.and_then(|r| r.needs)
             && self.kind.is_some_and(|k| cap_of(k) != c)
@@ -929,7 +1044,13 @@ impl Performer for SessionOp {
     }
 
     fn price_cap(&self, _call: &Call<'_>, args: &CallArgs) -> PriceCap {
-        time_cap(args.terms.call_seconds)
+        // A share or revoke reaches no browser and costs nothing (spec
+        // §18.4).
+        time_cap(if args.cap_call.is_some() {
+            0
+        } else {
+            args.terms.call_seconds
+        })
     }
 
     async fn perform(
@@ -947,6 +1068,9 @@ impl Performer for SessionOp {
         s.charge_ended();
         let run = s.run.id.as_str();
         let session = args.session.as_str();
+        if let Some(cc) = &args.cap_call {
+            return cap_call(&sessions, run, call, cc, shown);
+        }
         let answered = match &args.call {
             None => sessions
                 .close(run, session, SessionEnd::Closed)
@@ -1075,14 +1199,84 @@ impl Performer for SessionOp {
         }
     }
 
-    async fn out_of_credits(&self, s: &ClaxSession<'_>, _call: &Call<'_>) {
+    async fn out_of_credits(&self, s: &ClaxSession<'_>, call: &Call<'_>) {
         let (Ok(sessions), Some(session)) = (s.sessions(), self.session.as_deref()) else {
             return;
         };
+        if is_cap_call(call) {
+            return;
+        }
         let _ = sessions
             .close(&s.run.id, session, SessionEnd::Credits)
             .await;
         s.charge_ended();
+    }
+}
+
+/// A `share` or `revoke` of the capability `call` names (spec §18.4): the
+/// registry's alone, uncharged, journaled and audited with the
+/// capabilities' IDs and never the capabilities (§18.9).
+fn cap_call(
+    sessions: &BrowserSessions,
+    run: &str,
+    call: &Call<'_>,
+    cc: &CapCall,
+    shown: &mut Value,
+) -> Finish {
+    let handle = call.args.first().and_then(Value::as_str).unwrap_or_default();
+    let answer = |value: Value| json!({"ok": true, "url": "", "ms": 0, "cost": 0, "value": value});
+    match cc {
+        CapCall::Share {
+            ops,
+            expires,
+            origins,
+        } => {
+            let mut more = Vec::new();
+            if let Some(ops) = ops {
+                more.push(Caveat::Ops(ops.iter().copied().collect()));
+            }
+            let expires_ms =
+                expires.map(|secs| sessions.now_ms().saturating_add(i64::from(secs) * 1000));
+            if let Some(ms) = expires_ms {
+                more.push(Caveat::Expires(ms));
+            }
+            if let Some(os) = origins {
+                more.push(Caveat::Origin(os.iter().cloned().collect()));
+            }
+            let child = match sessions.share(run, handle, &more) {
+                Ok(c) => c,
+                Err(e) => return Finish::refused(from_browser(&e)),
+            };
+            let parent = child.chain()[child.chain().len() - 2].clone();
+            shown["capability"] = json!(child.id());
+            shown["ok"] = json!(true);
+            Finish {
+                audit: vec![
+                    ("capability", json!(child.id())),
+                    ("parent", json!(parent)),
+                    (
+                        "ops",
+                        json!(ops.as_ref().map(|o| o.iter().map(|c| c.as_str()).collect::<Vec<_>>())),
+                    ),
+                    ("expires", json!(expires_ms)),
+                    ("origins", json!(origins)),
+                ],
+                ..Finish::new(Ok(answer(
+                    json!({"page": child.encode(), "shown": child.shown()}),
+                )))
+            }
+        }
+        CapCall::Revoke => match sessions.revoke(run, handle) {
+            Ok(cap) => {
+                shown["capability"] = json!(cap.id());
+                shown["ok"] = json!(true);
+                Finish {
+                    audit: vec![("capability", json!(cap.id()))],
+                    ..Finish::new(Ok(answer(Value::Null)))
+                }
+            }
+            Err(e) => Finish::refused(from_browser(&e)),
+        },
     }
 }
 
