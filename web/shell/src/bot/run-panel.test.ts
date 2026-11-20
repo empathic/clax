@@ -185,6 +185,62 @@ describe("the run panel", () => {
     m.unmount();
   });
 
+  it("a_session_is_one_line_with_its_calls", async () => {
+    const book = [{ role: "button", name: "Book" }];
+    daemon({
+      "GET /api/bot/runs/r8": json(run({ id: "r8", status: "finished", browser_sessions: [
+        { session: "s1", kind: "artifact", opened_at: "x", charged_ms: 130_000, closed_at: "y", reason: "closed" },
+      ], steps: [
+        { n: 1, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Open", calls: [
+          { op: "browser.open", ok: true, ms: 1200, cost_milli: 10, browser: { kind: "artifact", target: "draft", viewport: "phone", session: "s1", ms: 1200 } },
+          { op: "browser.page", ok: true, ms: 800, cost_milli: 10, browser: { session: "s1", kind: "artifact", op: "page", action: "screenshot", ms: 800, ok: true, screenshots: ["c_s"] } },
+        ] },
+        { n: 2, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Book", calls: [
+          { op: "browser.act", ok: true, ms: 120_000, cost_milli: 10, browser: { session: "s1", kind: "artifact", op: "act", action: "click", locator: book, ms: 120_000, ok: true } },
+          { op: "browser.close", ok: true, ms: 8000, cost_milli: 10, browser: { session: "s1", op: "close", ms: 8000, ok: true } },
+        ] },
+      ] })),
+    });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r8");
+    flush();
+    await settle();
+    const lines = [...document.querySelectorAll("#bot-run-panel .sessions > li")];
+    expect(lines).toHaveLength(1);
+    expect(lines[0].querySelector("summary")!.textContent).toBe("draft · phone · 4 calls · 2 min 10 s · 0.04 credits · closed");
+    const calls = [...lines[0].querySelectorAll(".scalls li")].map(li => li.querySelector("code")!.textContent);
+    expect(calls).toEqual(["browser.open({ artifact: 'draft' })", "page.screenshot()", "getByRole('button', { name: 'Book' }).click()", "page.close()"]);
+    expect(lines[0].querySelector<HTMLImageElement>(".shots img")!.getAttribute("src")).toBe("/api/bot/runs/r8/content/c_s");
+    // The script's card names each session call as the script wrote it too.
+    const card = [...document.querySelectorAll("#bot-run-panel li.script .calls li")].map(li => li.querySelector(".bl")?.textContent);
+    expect(card[2]).toBe("getByRole('button', { name: 'Book' }).click()");
+    m.unmount();
+  });
+
+  it("a_host_end_shows_its_reason", async () => {
+    daemon({
+      "GET /api/bot/runs/r9": json(run({ id: "r9", status: "finished", browser_sessions: [
+        { session: "s2", kind: "content", opened_at: "x", charged_ms: 300_500, closed_at: "y", reason: "idle" },
+        { session: "s3", kind: "url", opened_at: "x", charged_ms: 900, closed_at: null, reason: null },
+      ], steps: [
+        { n: 1, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Render", calls: [
+          { op: "browser.open", ok: true, ms: 500, cost_milli: 10, browser: { kind: "content", viewport: "desktop", session: "s2", ms: 500 } },
+          { op: "browser.open", ok: true, ms: 900, cost_milli: 0, browser: { kind: "url", url: "https://example.com/", viewport: "desktop", session: "s3", ms: 900 } },
+        ] },
+      ] })),
+    });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r9");
+    flush();
+    await settle();
+    const lines = [...document.querySelectorAll("#bot-run-panel .sessions > li summary")].map(s => s.textContent);
+    expect(lines).toEqual([
+      "content · desktop · 1 call · 5 min 0 s · 0.01 credits · closed: idle for too long",
+      "https://example.com/ · desktop · 1 call · 0.9 s · open",
+    ]);
+    m.unmount();
+  });
+
   it("a_failed_test_reads_failed", async () => {
     daemon({ "GET /api/bot/runs/r6": json(run({ id: "r6", status: "finished", steps: [{ n: 1, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Test", calls: [
       { op: "browser.test", ok: true, ms: 0, cost_milli: 10, browser: { target: "draft", viewport: "tablet", ms: 1200, passed: false, steps: [1, 2], tests: { passed: 2, failed: 1 }, errors: 1, console: 0, blocked: 0, screenshots: [] } },

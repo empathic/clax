@@ -882,6 +882,29 @@ pub fn run_view(st: &Store, run: &Run) -> clax_core::Result<Value> {
     Ok(v)
 }
 
+/// Run `id`'s browser sessions as `GET /api/bot/runs/<id>` shows them to
+/// the person it acts for and admins (spec
+/// docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §12), in
+/// the order they opened: `[{session, kind, opened_at, charged_ms,
+/// closed_at, reason}]`, `reason` how it ended (`closed`, or an end the
+/// host made: `idle`, `lifetime`, `revoked`, `credits`, `run_ended`,
+/// `lost`), null with `closed_at` while it is open.
+///
+/// # Errors
+/// The store's.
+fn browser_sessions_view(st: &Store, id: &str) -> clax_core::Result<Value> {
+    Ok(Value::Array(
+        st.bot_browser_sessions(id)?
+            .into_iter()
+            .map(|r| {
+                json!({"session": r.session_id, "kind": r.kind.as_str(), "opened_at": r.opened_at,
+                       "charged_ms": r.charged_ms, "closed_at": r.closed_at,
+                       "reason": r.reason.map(|e| e.as_str())})
+            })
+            .collect(),
+    ))
+}
+
 /// Run `id`'s parking ([`Store::run_parking`]), `None` when its row does
 /// not read (logged): the run ends `failed` for it, and a view of it
 /// fails no listing.
@@ -1019,6 +1042,9 @@ pub async fn get(
                     }
                 }
                 v["steps"] = json!(steps);
+                if !access.reads_as_reader() {
+                    v["browser_sessions"] = browser_sessions_view(st, &run.id)?;
+                }
             }
             if !sees_instance_failures(st, &caller)? {
                 run_without_instance_failure(&mut v, run.key_source == KeySource::Instance);
@@ -1611,13 +1637,16 @@ async fn serve_draft(
 const RUN_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /// `GET /api/bot/runs/<id>/content/<item>`: an image item of the run's
-/// content (a browser test's screenshot), for the person it acts for and
-/// admins who read its artifact ([`RunAccess::reads_draft`]: a
-/// screenshot shows the draft). Served under its media type and a policy
-/// that runs nothing (`Content-Security-Policy: sandbox; default-src
-/// 'none'`, `nosniff`). 404 for anyone else, for another run's item, for
-/// an item that is not an image of [`RUN_IMAGE_TYPES`] and for one whose
-/// bytes are gone.
+/// content (a browser session's screenshot or a recording's frame), or a
+/// recording's frame manifest (`application/vnd.clax.frames+json`,
+/// `clax_bot::browser::record::MANIFEST_MEDIA_TYPE`, served as
+/// `application/json`), for the person it acts for and admins who read its
+/// artifact ([`RunAccess::reads_draft`]: a screenshot shows the draft).
+/// Served under its media type and a policy that runs nothing
+/// (`Content-Security-Policy: sandbox; default-src 'none'`, `nosniff`).
+/// 404 for anyone else, for another run's item, for an item that is
+/// neither an image of [`RUN_IMAGE_TYPES`] nor a manifest, and for one
+/// whose bytes are gone.
 pub async fn run_content(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -1634,17 +1663,23 @@ pub async fn run_content(
             if !run_access(&st, hosted, live, &caller, &run)?.reads_draft() {
                 return Err(CoreError::NotFound);
             }
-            let Some(row) = st
-                .bot_content_of(&run.id, &item)?
-                .filter(|row| RUN_IMAGE_TYPES.contains(&row.media_type.as_str()))
-            else {
+            use clax_bot::browser::record::MANIFEST_MEDIA_TYPE;
+            let Some(row) = st.bot_content_of(&run.id, &item)?.filter(|row| {
+                RUN_IMAGE_TYPES.contains(&row.media_type.as_str())
+                    || row.media_type == MANIFEST_MEDIA_TYPE
+            }) else {
                 return Ok(None);
+            };
+            let served = if row.media_type == MANIFEST_MEDIA_TYPE {
+                "application/json".to_string()
+            } else {
+                row.media_type
             };
             Ok(st
                 .content()
                 .read_blob(&row.sha256)
                 .await?
-                .map(|bytes| (row.media_type, bytes)))
+                .map(|bytes| (served, bytes)))
         })
         .await?;
     let (media_type, bytes) = found.ok_or_else(ApiError::not_found)?;
@@ -1757,7 +1792,7 @@ pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
                 .flatten()
                 .map(|c| {
                     let mut v = json!({"op": c["op"], "target": c["target"], "ok": c["ok"].as_bool().unwrap_or(false),
-                           "ms": c["ms"].as_u64().unwrap_or(0), "error": c["code"]});
+                           "ms": clax_bot::events::call_ms(c["ms"].as_u64().unwrap_or(0), c), "error": c["code"]});
                     clax_bot::events::with_call_fields(&mut v, c["cost_milli"].as_i64(), c);
                     v
                 })
@@ -1991,7 +2026,7 @@ pub fn panel_event(
         "script" => json!({"step": n, "title": d["title"], "code": d["code"]}),
         "call" => {
             let mut call = json!({"op": d["op"], "target": d["target"], "ok": d["ok"],
-                                  "ms": d["ms"].as_u64().unwrap_or(0), "error": d["code"]});
+                                  "ms": clax_bot::events::call_ms(d["ms"].as_u64().unwrap_or(0), d), "error": d["code"]});
             clax_bot::events::with_call_fields(&mut call, d["cost_milli"].as_i64(), d);
             json!({"step": n, "call": call})
         }

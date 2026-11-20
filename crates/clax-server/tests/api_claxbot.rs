@@ -3581,6 +3581,31 @@ async fn run_content_is_served_to_the_runs_viewers_only() {
     assert_eq!(s, 404);
 }
 
+/// A recording's frame manifest is served as JSON, under the same policy
+/// and to the same people as the run's images.
+#[tokio::test]
+async fn a_frame_manifest_is_served_as_json_to_the_runs_viewers() {
+    let p = people().await;
+    let ts = &p.ts;
+    configured(ts).await;
+    let rid = queued_run(ts).await;
+    let manifest = br#"{"width":390,"height":844,"frames":[{"item":"f1","at_ms":0}]}"#;
+    keep(ts, &rid, "clip1", "application/vnd.clax.frames+json", manifest);
+    let path = format!("/api/bot/runs/{rid}/content/clip1");
+    for who in [Who::OwnerBrowser, Who::Person(p.ana.0.clone())] {
+        let (s, h, body) = fetch(ts, &who, &path).await;
+        assert_eq!(s, 200, "{who:?}");
+        assert_eq!(body, manifest, "{who:?}");
+        assert_eq!(h["content-type"], "application/json");
+        assert_eq!(h["content-security-policy"], "sandbox; default-src 'none'");
+        assert_eq!(h["x-content-type-options"], "nosniff");
+    }
+    for who in [Who::Person(p.sam.0.clone()), Who::Viewer(p.lan.clone())] {
+        let (s, _, _) = fetch(ts, &who, &path).await;
+        assert_eq!(s, 404, "{who:?}");
+    }
+}
+
 #[tokio::test]
 async fn a_non_image_item_is_not_served() {
     let p = people().await;

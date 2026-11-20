@@ -129,7 +129,14 @@ export type BrowserSummary = {
   target?: string | { version?: number } | null; path?: string; viewport?: string; url?: string;
   ms?: number; passed?: boolean; steps?: [number, number]; tests?: { passed: number; failed: number };
   errors?: number; console?: number; blocked?: number; screenshots?: string[];
+  /** A session's calls (spec 2026-11-19-claxbot-browser §6.9, §12): the session's ID and source kind, the flat operation (`page`, `act`, `expect`, `close`), its action or matcher and its locator's steps (null for `expect(page)`), whether it passed, and a recording's clip (its frame manifest's content ID). `ms` is the browser time the call charged. */
+  session?: string; kind?: "url" | "artifact" | "content"; op?: string;
+  action?: string; locator?: unknown[] | null; ok?: boolean; clip?: string;
 };
+/** How a browser session ended: `page.close()`, or an end the host made. */
+export type SessionEnd = "closed" | "idle" | "lifetime" | "revoked" | "credits" | "run_ended" | "lost";
+/** A browser session of a run as the store keeps it: its kind, when it opened, the time charged so far, and when and why it ended (null while open). */
+export type BrowserSessionRow = { session: string; kind: "url" | "artifact" | "content"; opened_at: string; charged_ms: number; closed_at: string | null; reason: SessionEnd | null };
 export type StepKind = "turn" | "script" | "finish" | "give_up" | "stopped" | "failed";
 /** One step of a run (§4.2). A `turn` carries the model's narration
  * (`text`) and tokens; a `script` its title, code, calls, logs, return
@@ -171,6 +178,8 @@ export type BotRun = {
   tokens?: { input: number; cached: number; output: number };
   draft?: { url: string } | null;
   last_event_id?: string | null;
+  /** The run's browser sessions (absent to an overseer and to a reader of the artifact). */
+  browser_sessions?: BrowserSessionRow[];
   steps: BotStep[];
 };
 /** A run as `GET /api/bot/runs?artifact=` lists it: without its steps. */

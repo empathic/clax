@@ -2482,6 +2482,19 @@ async fn the_run_end_closes_and_charges() {
     let rows = browser_rows(&ts, &rid);
     assert_eq!(rows.len(), 2, "the open and the end: {rows:?}");
     assert_eq!(rows.iter().sum::<i64>(), row.charged_ms);
+    // The run panel reads the session and how it ended.
+    let res = ts
+        .client
+        .get(format!("{}/api/bot/runs/{rid}", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["browser_sessions"][0]["session"], session.as_str(), "{v}");
+    assert_eq!(v["browser_sessions"][0]["kind"], "content");
+    assert_eq!(v["browser_sessions"][0]["reason"], "run_ended");
+    assert_eq!(v["browser_sessions"][0]["charged_ms"], row.charged_ms);
 }
 
 /// A daemon whose browsers come from `source`, its driver not started

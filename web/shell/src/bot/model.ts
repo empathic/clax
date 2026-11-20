@@ -6,7 +6,7 @@
 // before and after the free tier; a run's state as its events arrive; the
 // audit's time ranges; and the settings' sections. Pure: no clock but the
 // one passed in.
-import type { AdminUsage, BotCall, BotRun, BotStep, CostLine, ErrorDetail, KeySource, MeBot, PriceSummary, RateSource, RunEvent, RunStatus, SettingField, Source, TokenUnit, Unavailable, Unit, Week } from "./api";
+import type { AdminUsage, BotCall, BotRun, BotStep, BrowserSessionRow, CostLine, ErrorDetail, KeySource, MeBot, PriceSummary, RateSource, RunEvent, RunStatus, SessionEnd, SettingField, Source, TokenUnit, Unavailable, Unit, Week } from "./api";
 import { credits, meter, ownKey, resetDay } from "./meter";
 
 export { type Banner, type Meter, OWN_KEY_SPEND, banner, credits, meter, meterWords, ownKey, resetDay } from "./meter";
@@ -121,6 +121,105 @@ export function browserLine(c: Pick<BotCall, "browser" | "cost_milli">): string 
   const cost = callCost(c.cost_milli);
   if (cost) parts.push(cost);
   return parts.join(" · ");
+}
+
+/** A string as a script writes it in single quotes. */
+const quoted = (v: unknown) => `'${String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+/** A locator step's text or name: a string quoted, a `{regex, flags}` as a regular expression literal. */
+function matchText(v: unknown): string {
+  if (v && typeof v === "object" && "regex" in v) {
+    const r = v as { regex: unknown; flags?: unknown };
+    return `/${String(r.regex)}/${typeof r.flags === "string" ? r.flags : ""}`;
+  }
+  return quoted(v);
+}
+/** A step's options as Playwright writes them (`{ name: 'Book', exact: true }`), empty when it has none. */
+function stepOpts(step: Record<string, unknown>, keys: string[]): string {
+  const given = keys.filter(k => step[k] !== undefined);
+  if (!given.length) return "";
+  return `, { ${given.map(k => `${k}: ${typeof step[k] === "string" || (step[k] && typeof step[k] === "object") ? matchText(step[k]) : String(step[k])}`).join(", ")} }`;
+}
+/** One locator step as the builder that made it (spec 2026-11-19-claxbot-browser §6.5). */
+function stepText(step: Record<string, unknown>): string {
+  if ("role" in step) return `getByRole(${quoted(step.role)}${stepOpts(step, ["name", "exact", "checked", "level", "includeHidden"])})`;
+  if ("css" in step) return `locator(${quoted(step.css)})`;
+  if ("text" in step) return `getByText(${matchText(step.text)}${stepOpts(step, ["exact"])})`;
+  if ("label" in step) return `getByLabel(${matchText(step.label)}${stepOpts(step, ["exact"])})`;
+  if ("placeholder" in step) return `getByPlaceholder(${matchText(step.placeholder)}${stepOpts(step, ["exact"])})`;
+  if ("testId" in step) return `getByTestId(${matchText(step.testId)})`;
+  if ("nth" in step) return step.nth === 0 ? "first()" : step.nth === -1 ? "last()" : `nth(${String(step.nth)})`;
+  if ("hasText" in step) return `filter({ hasText: ${matchText(step.hasText)} })`;
+  if ("hasNotText" in step) return `filter({ hasNotText: ${matchText(step.hasNotText)} })`;
+  return "locator(…)";
+}
+/** A locator's steps as the chain a script wrote: `getByRole('button', { name: 'Save' }).first()`. */
+export function locatorText(steps: unknown): string {
+  return Array.isArray(steps) ? steps.map(s => stepText((s ?? {}) as Record<string, unknown>)).join(".") : "locator(…)";
+}
+
+/** A browser session's call named as the script wrote it, from its flat call's action and locator: `getByRole('button', { name: 'Book' }).click()`, `expect(getByText('Booked')).toBeVisible()`, `page.goto()`, `browser.open({ artifact: 'draft' })`. Null for a call that is no session's (a test, a web call) or one shown without its summary. */
+export function callName(c: Pick<BotCall, "op" | "browser"> & Partial<BotCall>): string | null {
+  const b = c.browser;
+  if (!b) return null;
+  if (c.op === "browser.open") {
+    if (b.kind === "url") return `browser.open({ url: ${quoted(typeof b.url === "string" ? b.url : "…")} })`;
+    if (b.kind === "content") return "browser.open({ html })";
+    const t = b.target;
+    const version = typeof t === "string" && /^v\d+$/.test(t) ? t.slice(1) : typeof t === "object" && t && typeof t.version === "number" ? String(t.version) : null;
+    const target = version ?? quoted("draft");
+    return `browser.open({ artifact: ${target}${b.path && b.path !== "index.html" ? `, path: ${quoted(b.path)}` : ""} })`;
+  }
+  const action = typeof b.action === "string" ? b.action : "…";
+  switch (b.op) {
+    case "page": return `page.${action}()`;
+    case "act": return `${locatorText(b.locator)}.${action}()`;
+    case "expect": return `expect(${b.locator ? locatorText(b.locator) : "page"}).${action}()`;
+    case "close": return "page.close()";
+    default: return null;
+  }
+}
+
+/** A session's time: "4.1 s" under a minute, else "2 min 10 s". */
+function sessionTime(ms: number): string {
+  if (ms < 60_000) return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(ms / 1000)} s`;
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
+/** How a session ended, in words; a host's end says why. */
+const SESSION_ENDS: Record<SessionEnd, string> = {
+  closed: "closed", idle: "closed: idle for too long", lifetime: "closed: open for too long", revoked: "closed: its capability was revoked",
+  credits: "closed: out of credits", run_ended: "closed at the run's end", lost: "lost: its browser is gone",
+};
+
+/** One browser session of a run as the run panel shows it: its line, its calls in order across the run's steps, and how it ended (null while open). */
+export type SessionView = { session: string; line: string; calls: BotCall[]; end: string | null };
+
+/** The run's browser sessions, in the order they opened, each one line (spec 2026-11-19-claxbot-browser §12): "draft · phone · 14 calls · 2 min 10 s · 0.04 credits · closed", its source, viewport, calls, time (what was charged), cost, and how it ended. */
+export function sessionViews(steps: BotStep[], rows: BrowserSessionRow[] = []): SessionView[] {
+  const by = new Map<string, BotCall[]>();
+  for (const s of steps) for (const c of s.calls ?? []) {
+    const id = c.browser?.session;
+    if (typeof id !== "string" || !(c.op.startsWith("browser.") && c.op !== "browser.test")) continue;
+    by.set(id, [...(by.get(id) ?? []), c]);
+  }
+  return [...by].map(([session, calls]) => {
+    const open = calls.find(c => c.op === "browser.open")?.browser;
+    const row = rows.find(r => r.session === session);
+    const source = !open ? "a session"
+      : open.kind === "url" ? (typeof open.url === "string" ? ([...open.url].length > URL_CHARS ? `${[...open.url].slice(0, URL_CHARS - 1).join("")}…` : open.url) : "a URL")
+      : open.kind === "content" ? "content"
+      : `${typeof open.target === "string" ? open.target : typeof open.target === "object" && open.target && typeof open.target.version === "number" ? `v${open.target.version}` : "draft"}${open.path && open.path !== "index.html" ? ` ${open.path}` : ""}`;
+    const ms = row?.charged_ms ?? calls.reduce((n, c) => n + (typeof c.browser?.ms === "number" ? c.browser.ms : 0), 0);
+    const end = row?.reason ? SESSION_ENDS[row.reason] ?? row.reason : calls.some(c => c.op === "browser.close" && c.ok) ? "closed" : null;
+    const parts = [source];
+    if (open?.viewport) parts.push(open.viewport);
+    parts.push(`${calls.length} call${calls.length === 1 ? "" : "s"}`, sessionTime(ms));
+    const cost = callCost(calls.reduce((n, c) => n + (c.cost_milli ?? 0), 0));
+    if (cost) parts.push(cost);
+    parts.push(end ?? "open");
+    return { session, line: parts.join(" · "), calls, end };
+  });
 }
 
 export const UNITS: Record<Unit, string> = {

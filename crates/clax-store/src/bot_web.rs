@@ -640,6 +640,22 @@ impl Store {
         self.with_read(|c| session_in(c, run_id, session))
     }
 
+    /// Every browser session of run `run_id`, in the order they opened
+    /// (by `opened_at`, then ID).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn bot_browser_sessions(&self, run_id: &str) -> Result<Vec<SessionRow>> {
+        self.with_read(|c| {
+            Ok(c.prepare_cached(&format!(
+                "SELECT {SESSION_COLS} FROM bot_browser_sessions
+                  WHERE run_id = ?1 ORDER BY opened_at, session_id"
+            ))?
+            .query_map(params![run_id], row_to_session)?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     /// Ends session `session` of run `run_id` for `reason`, an end the host
     /// makes rather than a call (spec 2026-11-19-claxbot-browser-design
     /// §10.3: idle, lifetime, revoke, credits, the run's end), its browser
@@ -1670,6 +1686,16 @@ mod tests {
             "a lost session charges nothing"
         );
         assert_eq!(st.lose_open_bot_browser_sessions(st.now_utc()).unwrap(), 0);
+        let listed: Vec<_> = st
+            .bot_browser_sessions(&run.id)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.session_id, r.reason))
+            .collect();
+        assert_eq!(
+            listed,
+            [("s1".to_string(), Some(SessionEnd::Lost)), ("s2".to_string(), Some(SessionEnd::Closed))]
+        );
     }
 
     #[test]

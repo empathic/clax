@@ -86,7 +86,8 @@ pub enum Event {
         ok: bool,
         code: Option<String>,
         /// How long the call took, in milliseconds (0 for one answered
-        /// from the journal).
+        /// from the journal); a browser call's is the browser time its
+        /// journal entry charged ([`call_ms`]), live and replayed alike.
         ms: u64,
         /// What a charged call (`web.*`, `browser.*`) charged, in
         /// millicredits; `None` for any other call and for one answered
@@ -147,6 +148,18 @@ pub fn with_call_fields(v: &mut Value, cost_milli: Option<i64>, extra: &Value) {
     }
 }
 
+/// A call's `ms` as the run panel shows it: a browser call's own (its
+/// summary's `ms`, the browser time its journal entry charged, which a
+/// replay keeps), else `ms`, the run loop's.
+#[must_use]
+pub fn call_ms(ms: u64, extra: &Value) -> u64 {
+    extra
+        .get("browser")
+        .and_then(|b| b.get("ms"))
+        .and_then(Value::as_u64)
+        .unwrap_or(ms)
+}
+
 impl Event {
     /// The `call` event of a script's call to `op` that ended `ok` (with
     /// `code` when it failed) after `ms` milliseconds, with what its
@@ -161,14 +174,15 @@ impl Event {
         ms: u64,
         note: &crate::surface::CallNote,
     ) -> Event {
+        let extra = Value::Object(note.extra().clone());
         Event::Call {
             op: op.to_string(),
             target: note.target().map(str::to_string),
             ok,
             code,
-            ms,
+            ms: call_ms(ms, &extra),
             cost_milli: note.cost_milli(),
-            fields: call_fields(&Value::Object(note.extra().clone())),
+            fields: call_fields(&extra),
         }
     }
 
@@ -181,7 +195,7 @@ impl Event {
             target: c["target"].as_str().map(str::to_string),
             ok: c["ok"].as_bool().unwrap_or(false),
             code: c["code"].as_str().map(str::to_string),
-            ms: c["ms"].as_u64().unwrap_or(0),
+            ms: call_ms(c["ms"].as_u64().unwrap_or(0), c),
             cost_milli: c["cost_milli"].as_i64(),
             fields: call_fields(c),
         }
@@ -629,6 +643,26 @@ mod tests {
                 fields: Fields::new(),
             }
         );
+    }
+
+    /// A browser session call's `ms` is the browser time its journal
+    /// entry charged, live and replayed: the run loop's record has none
+    /// (it is 0), and a web call keeps the run loop's.
+    #[test]
+    fn a_session_call_takes_its_ms_from_its_journal_entry() {
+        use crate::surface::Answer;
+        let summary = json!({"session": "s1", "kind": "artifact", "op": "act", "action": "click",
+                             "locator": [{"role": "button", "name": "Book"}], "ms": 3100, "ok": true});
+        let answer = Answer::written(Ok(Value::Null))
+            .charged(2)
+            .showing(Fields::from_iter([("browser".to_string(), summary.clone())]));
+        let live = Event::call("browser.act", true, None, 0, answer.note());
+        let Event::Call { ms, .. } = &live else { panic!("a call") };
+        assert_eq!(*ms, 3100);
+        let mut entry = json!({"op": "browser.act", "target": null, "ok": true, "code": null, "ms": 0});
+        answer.note().add_to(&mut entry);
+        assert_eq!(Event::call_of_entry(&entry), live);
+        assert_eq!(call_ms(7, &json!({"web": {"query": "q"}})), 7);
     }
 
     /// A browser call's event, live and replayed from its step's

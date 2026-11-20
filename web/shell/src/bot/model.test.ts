@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WEB_LINES, errorDetail as detail, meBot, run, week } from "./fixtures";
-import { OWN_KEY_SPEND, actorLabel, after, applyEvent, availability, banner, callCost, credits, errorDetail, instanceProblemWords, stepLine, stopWords, fromText, margins, meter, meterWords, money, parseEvent, perUnitMilli, percent, rangeFrom, resetDay, runCost, runStatus, sections, tail, tokens, turnActivity, unavailableFix, unavailableText, webPrices, webSource } from "./model";
+import { OWN_KEY_SPEND, actorLabel, after, applyEvent, availability, banner, callCost, callName, credits, errorDetail, instanceProblemWords, stepLine, stopWords, fromText, margins, meter, meterWords, money, parseEvent, perUnitMilli, percent, rangeFrom, resetDay, runCost, runStatus, sections, tail, tokens, turnActivity, unavailableFix, unavailableText, webPrices, webSource } from "./model";
 
 describe("ClaxBot's numbers", () => {
   it("shows milli-credits as credits, micro-USD as dollars and basis points as percentages", () => {
@@ -312,5 +312,28 @@ describe("why a run stopped", () => {
       expect(errorDetail(detail({ class: "rate_limited" }), admin, "own").next).toEqual({ text: "Try again in a little while." });
       expect(errorDetail(detail({ class: "auth" }), admin, "instance").next).toEqual(errorDetail(detail({ class: "auth" }), admin).next);
     }
+  });
+});
+
+describe("a browser session's calls", () => {
+  it("a_call_is_named_as_the_script_wrote_it", () => {
+    const act = (action: string, locator: unknown[]) => ({ op: "browser.act", ok: true, ms: 1, browser: { session: "s", op: "act", action, locator } });
+    expect(callName(act("click", [{ role: "button", name: "Book" }]))).toBe("getByRole('button', { name: 'Book' }).click()");
+    expect(callName(act("fill", [{ label: "Email", exact: true }]))).toBe("getByLabel('Email', { exact: true }).fill()");
+    expect(callName(act("count", [{ css: "li.item" }, { hasText: { regex: "^Due", flags: "i" } }, { nth: -1 }]))).toBe("locator('li.item').filter({ hasText: /^Due/i }).last().count()");
+    expect(callName(act("hover", [{ testId: "menu" }, { nth: 0 }, { text: "It's" }, { nth: 2 }]))).toBe("getByTestId('menu').first().getByText('It\\'s').nth(2).hover()");
+    expect(callName(act("isVisible", [{ placeholder: "Search" }, { hasNotText: "x" }]))).toBe("getByPlaceholder('Search').filter({ hasNotText: 'x' }).isVisible()");
+    expect(callName({ op: "browser.expect", ok: false, ms: 1, browser: { session: "s", op: "expect", action: "toBeVisible", locator: [{ text: "Booked" }] } })).toBe("expect(getByText('Booked')).toBeVisible()");
+    expect(callName({ op: "browser.expect", ok: true, ms: 1, browser: { session: "s", op: "expect", action: "toHaveURL", locator: null } })).toBe("expect(page).toHaveURL()");
+    expect(callName({ op: "browser.page", ok: true, ms: 1, browser: { session: "s", op: "page", action: "keyboard.press" } })).toBe("page.keyboard.press()");
+    expect(callName({ op: "browser.page", ok: true, ms: 1, browser: { session: "s", op: "page", action: "goto" } })).toBe("page.goto()");
+    expect(callName({ op: "browser.close", ok: true, ms: 1, browser: { session: "s", op: "close" } })).toBe("page.close()");
+    expect(callName({ op: "browser.open", ok: true, ms: 1, browser: { kind: "artifact", target: "v3", path: "about.html" } })).toBe("browser.open({ artifact: 3, path: 'about.html' })");
+    expect(callName({ op: "browser.open", ok: true, ms: 1, browser: { kind: "url", url: "https://example.com/" } })).toBe("browser.open({ url: 'https://example.com/' })");
+    expect(callName({ op: "browser.open", ok: true, ms: 1, browser: { kind: "content" } })).toBe("browser.open({ html })");
+    // Not a session's: a test, a web call, a reader's call without its summary.
+    expect(callName({ op: "browser.test", ok: true, ms: 1, browser: { target: "draft", passed: true } })).toBeNull();
+    expect(callName({ op: "web.search", ok: true, ms: 1 })).toBeNull();
+    expect(callName({ op: "browser.act", ok: true, ms: 1 })).toBeNull();
   });
 });

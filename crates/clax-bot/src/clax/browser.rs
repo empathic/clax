@@ -753,6 +753,9 @@ impl Performer for SessionOp {
     fn shown(&self, args: &[Value]) -> Value {
         let mut v =
             json!({"session": args.first().cloned().unwrap_or(Value::Null), "op": self.op.name()});
+        if let Some(kind) = self.kind {
+            v["kind"] = json!(kind.as_str());
+        }
         match self.op {
             Op::Page => v["action"] = args.get(1).cloned().unwrap_or(Value::Null),
             Op::Act | Op::Expect => {
@@ -995,9 +998,15 @@ impl Performer for SessionOp {
         let mut ok = a.ok;
         let mut error = a.error.clone();
         let mut value = a.value.clone();
+        if let Some(kind) = a.kind {
+            shown["kind"] = json!(kind.as_str());
+        }
         if value.get("record").is_some() {
             match s.keep_clip(call, &value["record"], &a.shots) {
-                Ok(clip) => value = clip,
+                Ok(clip) => {
+                    shown["clip"] = clip["clip"].clone();
+                    value = clip;
+                }
                 Err(why) => {
                     ok = false;
                     error = Some(why);
@@ -1010,6 +1019,11 @@ impl Performer for SessionOp {
                 .iter()
                 .map(|png| s.keep_screenshot(call, png))
                 .collect();
+            shown["screenshots"] = json!(
+                kept.iter()
+                    .filter_map(|k| k.as_ref().ok().map(|h| h["id"].clone()))
+                    .collect::<Vec<_>>()
+            );
             if let Some(i) = value["screenshot"].as_u64() {
                 match kept.get(usize::try_from(i).unwrap_or(usize::MAX)) {
                     Some(Ok(handle)) => value = handle.clone(),

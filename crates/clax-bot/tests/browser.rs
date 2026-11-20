@@ -1591,4 +1591,15 @@ async fn a_recording_keeps_its_frames_and_a_manifest() {
     assert_eq!(frames[1]["at_ms"], 200);
     assert_eq!(frames[0]["item"], clip["frames"][0]["id"]);
     assert_eq!(frames[9]["item"], clip["frames"][3]["id"]);
+    // The run panel's summary of the call: its session, kind, flat
+    // operation and action, how it went, its time and its clip.
+    let calls = script_calls(&env, &run, 0);
+    let b = &calls[1]["browser"];
+    assert_eq!(
+        (&b["kind"], &b["op"], &b["action"], &b["ok"], &b["clip"]),
+        (&json!("content"), &json!("page"), &json!("record"), &json!(true), &clip["clip"]),
+        "{b}"
+    );
+    assert_eq!(b["session"], calls[0]["browser"]["session"]);
+    assert!(b["ms"].as_i64().unwrap() >= 2000, "{b}");
 }
