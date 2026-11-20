@@ -28,7 +28,7 @@ use clax_core::secret::{base64url, random_bytes};
 use std::collections::BTreeSet;
 
 /// The prefix of a serialized browser capability.
-pub const PREFIX: &str = "cxb_";
+pub const PREFIX: &str = "cxk_";
 /// The identifier's version.
 const VERSION: &str = "v1";
 /// The label the instance key is derived from the KEK with (§18.2).
@@ -548,6 +548,14 @@ mod tests {
         Keys::new([7; 32])
     }
 
+    /// A leaked string's prefix says what it is: a browser capability is
+    /// never read as the owner's browser-session cookie.
+    #[test]
+    fn the_prefix_is_not_the_owner_cookie_s() {
+        assert_ne!(PREFIX, clax_store::browser_login::OWNER_SESSION_PREFIX);
+        assert!(keys().root("sess1", "run-1").encode().starts_with(PREFIX));
+    }
+
     fn run(id: &str) -> Holder {
         Holder::Run(id.to_string())
     }
@@ -652,7 +660,7 @@ mod tests {
             }),
             json(&|v| v["c"][1] = "ops=read act".into()),
             json(&|v| v["i"] = v["i"].as_str().unwrap().replace("run-1", "run-2").into()),
-            "cxb_".into(),
+            "cxk_".into(),
             root.encode()[..root.encode().len() - 2].to_string(),
         ] {
             assert!(k.verify(&bad).is_none(), "{bad}");

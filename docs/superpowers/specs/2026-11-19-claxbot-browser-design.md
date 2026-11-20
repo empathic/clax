@@ -1784,7 +1784,7 @@ are held; §17.1, §17.2 and the rest of §17 stand.
   root to this capability (each 22 base64url characters from 16 random
   bytes, joined by `.`), and the run that opened the session, which pays
   for it (§18.8). A capability's ID is the last of its chain.
-- **Serialized** as `cxb_` and the unpadded base64url of the JSON
+- **Serialized** as `cxk_` and the unpadded base64url of the JSON
   `{"i": identifier, "c": [caveat, …], "s": base64url(signature)}`. The
   prelude's `Page` holds it where §17.2 says a handle is held; nothing
   else of §17's "never shown" changes.

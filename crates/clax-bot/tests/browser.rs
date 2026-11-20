@@ -1094,7 +1094,7 @@ async fn an_open_answers_a_handle_no_record_names() {
         .as_str()
         .unwrap_or_else(|| panic!("no handle in {}", open.result()))
         .to_string();
-    assert!(handle.starts_with("cxb_"), "{handle}");
+    assert!(handle.starts_with("cxk_"), "{handle}");
     let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
     let script = steps.iter().find(|s| s.kind == StepKind::Script).unwrap();
     let p = script.payload.as_ref().unwrap();
@@ -1283,7 +1283,7 @@ async fn a_shared_read_only_page_reads_and_cannot_click() {
         ("calls", p["calls"].to_string()),
         ("result", p["result"].to_string()),
     ] {
-        assert!(!text.contains("cxb_"), "{what} holds a capability: {text}");
+        assert!(!text.contains("cxk_"), "{what} holds a capability: {text}");
     }
     let row = session_row(&env, &run, &only_session(&env, &run));
     assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::RunEnded));
