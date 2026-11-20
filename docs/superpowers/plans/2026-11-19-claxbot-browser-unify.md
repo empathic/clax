@@ -843,3 +843,67 @@ Spec §17.1. **Files:** `web/shell/src/bot/RunPanel.svelte`, `model.ts`,
 - [ ] `just check`, in the background, logged to `target/unify-phase-F.log`.
 - [ ] Commit: `feat(shell): show a script step's state in the run panel`
 - [ ] Close `36272d22` and `f83e9b51` with the tests and `--ref git:<sha>`, in a commit of their own.
+
+## Phase G: browser capabilities as macaroons
+
+The owner's decision "delegatable capabilities, use macaroons", as spec
+§18 sets it out; it replaces §17.3's random handle (decision record
+`7d29f5b7`). Each task verifies its own targets, logged under
+`target/unify-task-G<n>.log`; the last runs `just check`.
+
+### Task G1: the macaroon format
+
+Spec §18.1. **Files:** `crates/clax-core/src/macaroon.rs` (new:
+`Macaroon::mint`, `attenuate`, `verify` with `ring::hmac::verify`,
+`encode`, `decode`, `derive_key`), `crates/clax-core/src/lib.rs`.
+
+- [ ] Tests first: `a_macaroon_verifies_with_its_key_alone`, `any_change_fails_verification`, `an_appended_caveat_verifies`, `what_does_not_decode_is_refused`.
+- [ ] Verify: `bazel test //crates/clax-core/...`.
+- [ ] Commit: `feat(core): macaroons over HMAC-SHA256`
+
+### Task G2: capabilities in the session registry
+
+Spec §18.2 to §18.4, §18.6, §18.7. **Files:**
+`crates/clax-bot/src/browser/cap.rs` (new: the identifier, the
+caveats, `Use`, `Class`, `check`), `browser/layer.rs` (`class` of a row;
+the `share` and `revoke` rows), `browser/live.rs` (the instance key, a
+root minted at the open, `authorize`, `share`, `revoke`, `holds` and
+`close_unheld` by it), `browser/mod.rs` (`browser_forbidden`).
+
+- [ ] Tests first: `caveats_only_narrow`, `an_unknown_caveat_fails_closed`, `expiry_is_on_the_injected_clock`, `a_read_only_capability_cannot_act`, `a_forged_or_tampered_capability_is_lost`, `revoking_a_parent_revokes_its_children`, `closing_a_session_ends_every_capability`, `a_session_held_by_a_revoked_capability_is_dropped`.
+- [ ] Verify: `bazel test //crates/clax-bot/...`.
+- [ ] Commit: `feat(bot): a browser session's handle is a macaroon`
+
+### Task G3: `page.share` and `page.revoke`
+
+Spec §18.4, §18.5, §18.9. **Files:** `crates/clax-bot/src/clax/browser.rs`
+(the two actions on the Spend path, uncharged; `browser_forbidden`;
+their audit), `crates/clax-bot-sandbox/src/browser.js` (`share`
+answering a `Page`, its display, `shown` in its handle entry),
+`lib.rs`, `conformance.rs`, `crates/clax-bot/src/clax.d.ts`,
+`tests/browser.rs`.
+
+- [ ] Tests first: `a_shared_read_only_page_reads_and_cannot_click`, `a_replayed_share_answers_the_same_capability`, `share_and_revoke_are_audited_without_the_macaroon`, conformance `a_shared_page_shows_its_classes`.
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-bot-sandbox/... //crates/clax-bot-js/... //bazel/wasm:check`.
+- [ ] Commit: `feat(bot): share a narrowed page, and revoke it`
+
+### Task G4: the daemon's key from the KEK
+
+Spec §18.2. **Files:** `crates/clax-store/src/secrets.rs`
+(`Kek::derive`), `crates/clax-server/src/bot.rs` (`browser_sessions`
+with the instance key).
+
+- [ ] Tests first: `a_derived_key_depends_on_its_label_and_kek`.
+- [ ] Verify: `bazel test //crates/clax-store/... //crates/clax-server/...`.
+- [ ] Commit: `feat(server): browser capabilities keyed from the KEK`
+
+### Task G5: what ClaxBot is told
+
+Spec §18.10. **Files:** `clax.d.ts` (the browser namespace's rules),
+`browser/layer.rs` (`share`'s and `revoke`'s declarations), goldens, the
+Clax app's prompt copy.
+
+- [ ] Regenerate goldens as `golden.rs` documents; read every diff.
+- [ ] Verify: `bazel test //crates/clax-bot/... //apps/clax_app:prompt_sync`.
+- [ ] `just check`, in the background, logged to `target/unify-phase-G.log`.
+- [ ] Commit: `feat(bot): tell ClaxBot how to share a page`

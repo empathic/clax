@@ -2,7 +2,7 @@
 
 Status: design for the owner's review (2026-11-19), revised the same day
 after the owner's direction below, and again for its sixth item, a
-Playwright-shaped script API (§6.1, §6.5, §6.9 to §6.12), and again for run state and session capabilities (§17). Builds on
+Playwright-shaped script API (§6.1, §6.5, §6.9 to §6.12), and again for run state and session capabilities (§17), and again for browser capabilities as macaroons (§18). Builds on
 `2026-11-02-claxbot-web-tools-design.md` ("web §n"),
 `2026-11-10-claxbot-surfaces-design.md` ("surfaces") and the code they
 became (`crates/clax-bot`, `crates/clax-store`, `crates/clax-server`),
@@ -398,6 +398,7 @@ next; a retryable one says to try again.
 | `browser_timeout` | browser | the deadline passed before the page loaded | yes | yes |
 | `browser_session_lost` | browser | the session's browser is gone: the daemon restarted, the socket dropped or the page crashed | no | its time up to the loss, as far as it was charged |
 | `browser_session_closed` | browser | the session was closed: by `close`, its idle time, its lifetime, a revoke, credits, the run's end, or its page no longer held (`dropped`, §17.4); the reason is in the message | no | no (its time was charged at the close) |
+| `browser_forbidden` | browser | the page's capability does not allow the call: its operations, its expiry, its origins, a condition the host does not understand, or it was revoked (§18.3, §18.4); the reason is in the message | no | no |
 | `cancelled` | the sandbox's | the run was cancelled while the call waited | when it reached the source | when a browser opened, or a fetch went out |
 
 A page that throws, an action whose element is missing or covered, an
@@ -1659,6 +1660,10 @@ else does: every other global is the script's own, as before.
 
 ### 17.3 A session's handle is an unforgeable capability **(owner: what; design: at rest)**
 
+§18 replaces this section's handle (256 random bits) with a macaroon,
+and its registry lookup with the macaroon's verification; what it says
+of where a handle is shown, and never shown, stands.
+
 - **Drawn at the open.** The registry draws 256 bits from the operating
   system (`clax_core::secret::random_bytes::<32>`), the session's handle,
   64 hex digits, bound to the run that opened it. `browser.open` answers
@@ -1750,3 +1755,250 @@ else does: every other global is the script's own, as before.
   commits, charged once; a replayed step makes the same decision.
 - **The run panel** shows a step's state with its pages as `"<browser
   page>"`.
+
+## 18. Browser capabilities as macaroons
+
+Given by the owner on 2026-11-19, after §17 was built: "delegatable
+capabilities, use macaroons". It answered the observation that a raw
+256-bit handle presented only from committed `state` gains little from
+being stored as its hash, and that a keyed MAC makes a handle unforgeable
+without a key, verifiable on its own, and narrowable before it is handed
+on, which is the zero-capability model's shape (§4.3: a holder starts at
+zero, its capabilities are the union of live grants, and a revoke
+re-evaluates transitively). Plan: Phase G of
+`docs/superpowers/plans/2026-11-19-claxbot-browser-unify.md`.
+
+This section replaces §17.3's handle and §17.4's test of which handles
+are held; §17.1, §17.2 and the rest of §17 stand.
+
+### 18.1 The handle is a macaroon **(owner: macaroons; design: the format)**
+
+- **Its parts.** An identifier, a list of first-party caveats, and a
+  signature: `sig₀ = HMAC-SHA256(K_s, identifier)`, then `sigᵢ =
+  HMAC-SHA256(sigᵢ₋₁, caveatᵢ)`; the macaroon's signature is the last.
+  Anyone holding one can append a caveat and compute the next signature;
+  no one can remove one or forge a signature without `K_s`.
+- **The identifier** is `v1/<key ID>/<session>/<chain>/<run>`: the
+  instance key's ID (the first 8 hex digits of its SHA-256, §18.2), the
+  session's ID (§6.3), the chain of capability IDs from the session's
+  root to this capability (each 22 base64url characters from 16 random
+  bytes, joined by `.`), and the run that opened the session, which pays
+  for it (§18.8). A capability's ID is the last of its chain.
+- **Serialized** as `cxb_` and the unpadded base64url of the JSON
+  `{"i": identifier, "c": [caveat, …], "s": base64url(signature)}`. The
+  prelude's `Page` holds it where §17.2 says a handle is held; nothing
+  else of §17's "never shown" changes.
+- **Verified** by recomputing the chain from `K_s` and comparing the last
+  step in constant time (`ring::hmac::verify`). One that does not verify,
+  does not decode, names another instance's key or names no session this
+  process holds answers `browser_session_lost`, as an unknown handle did
+  (§17.3), and its message repeats none of it.
+- **No new crate**: HMAC-SHA256 is `ring`'s, already a dependency of
+  `clax-core`, where the format lives (`clax_core::macaroon`); what the
+  caveats mean is the browser's (`clax_bot::browser::cap`).
+
+### 18.2 The key **(design)**
+
+- **The instance key** is derived from the key-encryption key (§3,
+  `clax_store::secrets::Kek`): `K_i = HMAC-SHA256(KEK,
+  "clax-browser-capabilities/v1")`. It is never stored: the host derives
+  it when it makes its session registry.
+- **A session's root key** is derived from it, `K_s = HMAC-SHA256(K_i,
+  "session/" + session ID)`, so every capability of one session is
+  checked with that session's key alone.
+- Derived, not drawn and sealed in a slot of its own: a sealed key needs
+  a slot, a row and a migration to keep a value that nothing at rest
+  depends on (every session ends with its process, §6.4), while the
+  derivation gives the same properties (secret to whoever holds the KEK,
+  stable across a restart, so a capability from before one verifies and
+  answers `browser_session_lost` for its session, not as a forgery). The
+  sealed slot is recorded as an alternative.
+- A host without a KEK (it could not be read or made) draws a random
+  instance key for the process.
+
+### 18.3 Caveats: a small, closed vocabulary **(design)**
+
+Each caveat is `name=value`. Every caveat is checked on every call, all
+must hold, and repeating one intersects it. A caveat whose name is not
+below, or whose value does not parse, refuses every call
+(`browser_forbidden`: "a condition this host does not understand"): a
+capability is never read as wider than its caveats.
+
+| Caveat | Holds when |
+|---|---|
+| `ops=<class> …` | the call's class is listed: `read`, `act`, `navigate`, `record`, `close` |
+| `expires=<ms>` | the registry's clock (injected, §13) is before this Unix time in milliseconds |
+| `holder=run:<run ID>` | the call is a call of that run |
+| `holder=grant:<grant ID>` | the call is made under that grant (the grant flow's, `GrantCaller::grant_id`); no run's call is |
+| `origin=<origin> …` | a `navigate` call's target is of a listed origin (`scheme://host[:port]`) |
+
+- **The classes** of the layer's rows (`browser::layer::class`):
+  - `read`: `title`, `content`, both `screenshot`s, `consoleMessages`,
+    `pageErrors`, `failedRequests`, `waitForLoadState`, `waitForURL`, a
+    locator's reads (`textContent`, `innerText`, `inputValue`,
+    `getAttribute`, `allTextContents`, `isVisible`, `isHidden`,
+    `isEnabled`, `isChecked`, `count`, `waitFor`), and every `expect`
+    matcher;
+  - `act`: every other locator action, `keyboard.*`, `mouse.*`,
+    `setViewportSize`, `evaluate` (it runs code in the page) and
+    `runTests`;
+  - `navigate`: `goto`, `reload`, `goBack`, `goForward`;
+  - `record`: `record`; `close`: `close`.
+  - `share` and `revoke` (§18.4) need no class: one only narrows, the
+    other only gives up.
+- **`origin`** governs `navigate` alone: `goto`'s URL resolved against
+  the page's, `reload`'s current URL; `goBack` and `goForward`, whose
+  target is not known before the call, are refused under it. A click
+  that follows a link is `act`, not `navigate`.
+- **The root** a `browser.open` answers carries one caveat,
+  `holder=run:<the opening run>`: what §17.3 bound a handle to.
+- **No ceiling** of browser time or credits per capability: every
+  millisecond is the session's payer's (§18.8), and the session's own
+  idle time and lifetime bound it. Recorded as an alternative, as are
+  third-party caveats.
+
+### 18.4 Narrowing: `page.share` and `page.revoke` **(design)**
+
+- **`page.share(opts?)`** answers a new `Page` of the same session whose
+  capability is this page's narrowed: `{ops?: ("read" | "act" |
+  "navigate" | "record" | "close")[], expires?: seconds, origins?:
+  string[]}`. The host mints it: it verifies this page's capability,
+  extends its chain with a new capability ID, copies its caveats and
+  appends `ops`, `expires` (the registry's clock plus the seconds) and
+  `origin` as given. Its caveats are its parent's and more, so it allows
+  no call its parent does not. Each share is a capability of its own,
+  revocable on its own, also when two have the same caveats.
+- **`page.revoke()`** revokes this page's capability and every
+  capability shared from it, at once and for every holder: each of
+  their calls answers `browser_forbidden` ("revoked"). The session stays
+  open while another capability holds it (§18.6). On a session's root it
+  is `invalid_args`: close the page instead.
+- **Both are calls** of `browser.page` (actions `share`, `revoke`) on
+  the Spend path, so each is journaled: a replayed share answers the
+  capability it minted (its IDs and its expiry), and a replayed revoke
+  revokes nothing twice. Neither reaches the browser, and neither is
+  charged: the session's time is charged by its next call or its end.
+- **A holder of another identity** is not a `share` option in this
+  version (§18.5). When one is, the host's mint for a new holder copies
+  the parent's caveats but its `holder` and appends the new one: the
+  current holder moves its own authority, narrowed, to the next. It is
+  the one caveat a mint replaces, and only the host mints.
+
+### 18.5 How a capability travels **(owner: never to the model; design: the channels)**
+
+- **Never shown.** A shared `Page` in a returned value, a log line or
+  `JSON.stringify` is `"<browser page: read; expires
+  2026-11-19T10:42:00Z>"` (its classes and expiry, from the share's
+  answer), a root `"<browser page>"`; the run panel shows every page in a
+  step's state as `"<browser page>"` (§17.1). The serialized macaroon is
+  in the journal, the committed state's handle entries and the prelude's
+  `WeakMap`, as §17.3's handle was, and nowhere else.
+- **Within a run**: in the run's `state` (§17.2), which keeps a shared
+  page's display beside its capability (`shown` in its handle entry).
+- **To another run**: Clax has no channel from one run to another yet
+  (no handoff, no spawned run, no document field typed as a capability).
+  The holder caveat and the host's mint for a new holder (§18.4) are the
+  mechanism such a channel will use; it is recorded as deferred.
+- **To an external agent** (Claude Code, through the grant flow or MCP):
+  `holder=grant:<ID>` is in the vocabulary and checked, and no run's
+  call satisfies it, but no route serves a browser call to a grant
+  holder, and no export hands one the serialized macaroon. Its shape is
+  a question for the owner, recorded `status:needs-decision`.
+
+### 18.6 Revocation **(owner: transitive; design: how)**
+
+- **Closing the session** (by `close`, its idle time, its lifetime, a
+  grant revoked, credits, the run's end, or `dropped`) ends every
+  capability of it: each answers `browser_session_closed` with the
+  reason, as §6.3 says.
+- **Revoking one capability** adds its ID to its session's revoked set,
+  in the registry; a capability whose chain holds a revoked ID is
+  refused, so revoking a parent revokes every capability derived from
+  it, and nothing else. The set lives as long as the session, as every
+  capability of it does.
+- **Revoking a grant** (§4.4) closes the sessions of every run that no
+  longer holds the capability, and with them their capabilities, as
+  before.
+
+### 18.7 A session lives as long as a capability to it **(owner: §17.4; design: precisely)**
+
+When a script step of run `R` commits, each open session of `R` stays
+open while the state the step committed (§17.4) holds a capability that:
+
+1. verifies (§18.1) and names that session;
+2. admits `R` by its holder caveats;
+3. has no revoked ID in its chain;
+
+and is closed `dropped` otherwise. Expiry and classes are not read: a
+read-only capability keeps its session open, and one that expired keeps
+it open until the session's idle time ends it, since it can make no call
+to keep it awake. The decision reads the committed state and the
+revocations made by the run's journaled calls, never the clock or a
+script's own objects, so a step executed again makes the same decision.
+A capability held by an external holder through the grant flow, once
+§18.5's export exists, will hold its session as a live grant with its
+expiry, re-evaluated when the grant ends.
+
+### 18.8 Charging **(design)**
+
+Browser time is the session's, charged to the person the opening run
+acts for, whichever capability's call made it (§10.3: each millisecond
+once). In this version every capability of a session is its own run's,
+so nothing changes. When §18.5's channels exist, a delegatee's calls are
+charged to the same person: the delegation is the payer's own act, and
+`expires`, the session's idle time and its lifetime bound what it costs.
+
+### 18.9 Audit **(design)**
+
+A share and a revoke are `bot.spend` records as every call (§4.8), with
+the session's ID and, never the macaroon or its signature:
+
+- a share: `action: "share"`, `capability` (the new ID), `parent` (the
+  page's), `ops`, `expires`, `origins`;
+- a revoke: `action: "revoke"`, `capability`.
+
+A refusal `browser_forbidden` is recorded as any refusal, with its code.
+
+### 18.10 What ClaxBot is told **(design)**
+
+The browser namespace's rules gain: `page.share({ops, expires,
+origins})` gives a narrowed page of the same session (`ops` of `read`,
+`act`, `navigate`, `record`, `close`; `expires` in seconds); its calls
+outside them answer `browser_forbidden`; `shared.revoke()` ends it and
+every page shared from it; a page shows as `"<browser page…>"` and its
+capability is never shown. The declaration declares `share` and
+`revoke` on `Page`, and `browser_forbidden` on the session operations.
+
+### 18.11 Paths not taken **(design)**
+
+- **A root key sealed in a slot of its own** under the KEK (§18.2).
+- **Third-party caveats**, discharged by another service (an identity
+  provider, another instance): nothing outside this instance holds a
+  capability yet.
+- **A browser-time ceiling per capability**: it needs each capability's
+  time counted apart from its session's; nothing but its own run uses
+  one yet.
+- **Expiry in the liveness test** (§18.7): it makes the decision depend
+  on the commit's time, so a step executed again could decide otherwise.
+
+### 18.12 Tests **(design)**
+
+- **The format** (`clax_core::macaroon`): a macaroon verifies with its
+  key and not with another; a changed identifier, caveat or signature,
+  a caveat removed or reordered, a truncated or undecodable string each
+  fail; appending a caveat verifies.
+- **The caveats** (`browser::cap`): adding any caveat never admits a
+  call its parent refused (every class, holder, origin and time); an
+  unknown caveat and a malformed value refuse every call; `expires`
+  on the injected clock, just before and at its time; a read-only
+  capability cannot act, navigate, record or close.
+- **The registry**: a forged and a tampered capability are lost and not
+  echoed; revoking a parent refuses its children and not its siblings or
+  its parent; closing a session refuses every capability of it; a
+  session held only by a revoked capability closes `dropped` at the next
+  commit.
+- **The run** (`tests/browser.rs`): a delegated read-only page reads and
+  cannot click; a step executed again answers the same shared
+  capability from the journal and makes the same liveness decision; the
+  `bot.spend` records of a share and a revoke carry their IDs and no
+  macaroon.
