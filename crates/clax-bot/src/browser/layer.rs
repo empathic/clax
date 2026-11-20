@@ -673,7 +673,7 @@ pub const DECLS: &[Decl] = &[
         "Page",
         "close",
         "close(): Promise<{ ms: number; cost: number }>;",
-        "Ends the session, which costs by the second while open.",
+        "Ends the session, which costs by the second while open; a page no script's `state` holds is closed when its script ends.",
     ),
     d(
         "Locator",

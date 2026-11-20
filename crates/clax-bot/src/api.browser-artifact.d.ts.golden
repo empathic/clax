@@ -164,7 +164,7 @@ interface Page {
   record(opts: { seconds: number }): Promise<BrowserClip>;
   /** Clax's own: runs the clax's saved tests (all, or these paths under `tests/`) in this page. */
   runTests(paths?: string[]): Promise<{ passed: number; failed: { name: string; error: string }[]; skipped: number }>;
-  /** Ends the session, which costs by the second while open. */
+  /** Ends the session, which costs by the second while open; a page no script's `state` holds is closed when its script ends. */
   close(): Promise<{ ms: number; cost: number }>;
 }
 /** Playwright's `Locator`: data, resolved in the page at each call; actions wait until exactly one element matches and is actionable. */

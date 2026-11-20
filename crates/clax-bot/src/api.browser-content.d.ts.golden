@@ -139,7 +139,7 @@ interface Page {
   failedRequests(): Promise<{ failed: { url: string; status?: number; error?: string }[]; blocked: { url: string; why: string }[] }>;
   /** Clax's own: what the page shows for 1 to 10 seconds, as frames; return `frames` to see them. */
   record(opts: { seconds: number }): Promise<BrowserClip>;
-  /** Ends the session, which costs by the second while open. */
+  /** Ends the session, which costs by the second while open; a page no script's `state` holds is closed when its script ends. */
   close(): Promise<{ ms: number; cost: number }>;
 }
 /** Playwright's `Locator`: data, resolved in the page at each call; actions wait until exactly one element matches and is actionable. */
