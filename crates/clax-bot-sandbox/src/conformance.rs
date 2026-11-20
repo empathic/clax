@@ -1441,7 +1441,7 @@ return 1;",
                 ok(json!(1)),
             ),
             left(
-                json!({"c": {"k": 1}, "arr": [1, null], "deep": deep}),
+                json!({"c": {"k": 1}, "arr": [1, null], "deep": deep, "g": {}}),
                 json!([]),
                 json!([
                     dropped("state.f", "a function"),
@@ -1454,7 +1454,27 @@ return 1;",
                     dropped("state.arr[1]", "a function"),
                     dropped("state[\"a b\"]", "a function"),
                     dropped(&deep_path, "nested deeper than 64 levels"),
+                    dropped("state.g.boom", "reading it threw"),
+                ]),
+                0,
+            ),
+        ),
+        kept(
+            case(
+                "a_getter_that_throws_leaves_out_only_its_member",
+                "state.a = 1; Object.defineProperty(state, 'g', { get() { throw 1; }, enumerable: true });
+state.b = { x: 1, get y() { throw 2; }, z: [1, 2, 3] };
+Object.defineProperty(state.b.z, 1, { get() { throw 3; }, enumerable: true });
+return 1;",
+                ok(json!(1)),
+            ),
+            left(
+                json!({"a": 1, "b": {"x": 1, "z": [1, null, 3]}}),
+                json!([]),
+                json!([
                     dropped("state.g", "reading it threw"),
+                    dropped("state.b.y", "reading it threw"),
+                    dropped("state.b.z[1]", "reading it threw"),
                 ]),
                 0,
             ),

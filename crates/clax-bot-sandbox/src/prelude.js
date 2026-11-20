@@ -206,6 +206,17 @@
       d.why = why;
       putIn(dropped, d);
     };
+    // Each member is read on its own: a getter that throws leaves out
+    // that member alone.
+    const unread = create(null);
+    const read = (x, k, at) => {
+      try {
+        return x[k];
+      } catch (_) {
+        drop(at, "reading it threw");
+        return unread;
+      }
+    };
     const enc = (x, path, depth) => {
       const t = typeof x;
       if (t === "string") return wellFormed(x);
@@ -251,7 +262,9 @@
         if (isArray(x)) {
           out = plain();
           for (let i = 0; i < x.length; i++) {
-            const v = enc(x[i], path + "[" + i + "]", depth + 1);
+            const at = path + "[" + i + "]";
+            const m = read(x, i, at);
+            const v = m === unread ? undefined : enc(m, at, depth + 1);
             putIn(out, v === undefined ? null : v);
           }
         } else {
@@ -269,7 +282,8 @@
             if (n === "$clax") drop(at, "a member named $clax, which state keeps for handles");
             else if (n in out) drop(at, "a name that is the same as another's once made well-formed text");
             else {
-              const v = enc(x[k[i]], at, depth + 1);
+              const m = read(x, k[i], at);
+              const v = m === unread ? undefined : enc(m, at, depth + 1);
               if (v !== undefined) out[n] = v;
             }
           }
