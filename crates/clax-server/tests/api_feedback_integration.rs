@@ -199,11 +199,16 @@ impl Setup {
     /// Files a report with the reporter token `token` and its `key`, from
     /// [`ORIGIN`].
     async fn file(&self, token: &str, key: &KeyPair) -> Value {
+        self.file_on(token, key, "https://clax.test/a/abc").await
+    }
+
+    /// [`Setup::file`] from the page at `url`.
+    async fn file_on(&self, token: &str, key: &KeyPair, url: &str) -> Value {
         let boundary = "clax-testboundary";
         let mut b = Vec::new();
         let anchor = clax_testkit::element_anchor().to_string();
         for (name, value) in [
-            ("url", "https://clax.test/a/abc"),
+            ("url", url),
             ("title", "Gallery"),
             ("anchor", anchor.as_str()),
             ("body", "The button does nothing"),
@@ -401,6 +406,70 @@ async fn the_owner_files_as_their_public_id() {
     let v: Value = res.json().await.unwrap();
     let filed = s.file(v["token"].as_str().unwrap(), &key).await;
     assert_eq!(filed["report"]["reporter_id"], owner.as_str());
+}
+
+/// The artifact a report is filed on is a record of the queue, read
+/// through the queue alone: no gallery lists it, the filer's or the
+/// owner's (the queue's maker), with or without `?artifact=`, which the
+/// gallery fetches when a stream event names an artifact it does not hold.
+#[tokio::test]
+async fn a_filed_report_adds_no_artifact_to_any_gallery() {
+    let s = Setup::new().await;
+    let ana = s.ts.person("Ana").await;
+    let key = KeyPair::generate();
+    let (status, v) = s.mint_as(&ana, &key).await;
+    assert_eq!(status, 200, "{v}");
+    let token = v["token"].as_str().unwrap().to_string();
+
+    let gallery = |v: &Value| -> Vec<String> {
+        v["artifacts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{v}"))
+            .iter()
+            .map(|a| a["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let ts = &s.ts;
+    let owners = |path: String| async move {
+        let res = ts.get_authed(&path).await;
+        assert_eq!(res.status(), 200);
+        res.json::<Value>().await.unwrap()
+    };
+    let before = gallery(&owners("/api/artifacts".into()).await);
+
+    // Two reports from two pages: two records, one per page path.
+    s.file_on(&token, &key, "https://clax.test/a/abc").await;
+    s.file_on(&token, &key, "https://clax.test/people").await;
+    let reports = s.triage_reports().await;
+    let records: Vec<String> = reports["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["artifact"]["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(records.len(), 2, "{reports}");
+    assert_ne!(records[0], records[1], "{reports}");
+
+    assert_eq!(gallery(&owners("/api/artifacts".into()).await), before);
+    let (status, v) = s
+        .as_browser(Some(&ana), "GET", "/api/artifacts", None)
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let listed = gallery(&v);
+    for record in &records {
+        assert!(!listed.contains(record), "{v}");
+        let one = owners(format!("/api/artifacts?artifact={record}")).await;
+        assert_eq!(one["artifacts"], json!([]), "{one}");
+        let (status, one) = s
+            .as_browser(
+                Some(&ana),
+                "GET",
+                &format!("/api/artifacts?artifact={record}"),
+                None,
+            )
+            .await;
+        assert_eq!((status, &one["artifacts"]), (200, &json!([])), "{one}");
+    }
 }
 
 /// A local daemon (not hosted) configured with none: the integration is

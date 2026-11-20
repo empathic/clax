@@ -3128,7 +3128,8 @@ participant list or event carries them.
 
 `GET /api/artifacts?artifact=<aid>` answers `{"artifacts": [...]}` with that
 artifact's entry alone, as `GET /api/artifacts` lists it, or `[]` when it
-is not live; a malformed ID is 400.
+is not live or is a report queue's record ("The instance's own feedback
+queue"); a malformed ID is 400.
 
 The open gallery fetches the list and this attention in full when it loads,
 when its `gallery` topic on the shared event stream (see "The event
@@ -4730,7 +4731,12 @@ owner and each connected person who is not revoked; agents 403
 | `POST /_app/feedback/token` (same origin) | `{public_key}` (Ed25519, unpadded base64url) | `{token, expires_at}`: a reporter token for `reporter_id` = the person's public ID, the integration's origin and that key, with profile `{name?, github?}` from their GitHub account (`name` their Clax name without one); 404 `not_found` with the integration off; 401 without a credential; 403 `not_a_person` for a viewer; 400 as the public route answers the key (`invalid_key`, or `invalid_args` naming `public_key`); 429 `limit_reached` as it answers one, with its `Retry-After`; 503 `feedback_unavailable` for any other refusal of the public route, which is the integration's own (a revoked grant, an origin the queue no longer lists) and names no credential |
 | `GET /_app/feedback/config` | | `{enabled: true, instance, queue, user, context: {release: {version, commit?, id?, channel}, flags, app: {repo}}}` for a caller who may file: `instance` the instance's base URL to file to, `queue` its ID, `user` the caller's public ID (the reporter ID its tokens carry, and the overlay's `user`, which keeps its reporter key and token per person), `context` what the shell attaches to each report (`release` as `/healthz` reports it, `id` its `build`, `channel` `prod` on `https://clax.dev` and `dev` elsewhere; `flags` the caller's own, as `GET /api/me/flags`; `app.repo` `https://github.com/empathic/clax`); for anyone else, the integration off included, `{enabled: false, instance: null, queue: null, context: null}` |
 
-A report is read and written through its queue alone. The thread listings
+A report is read and written through its queue alone. The artifact it is
+filed on, the queue's record (one per `external_id`, or per page origin
+and path when the report names none), is in no artifact listing: `GET
+/api/artifacts`, with or without `?artifact=`, and so the gallery, `list`,
+`clax list`, the tag counts and the attention listing, leave it out, for
+the filer, the queue's maker and everyone else. The thread listings
 (`GET /api/artifacts/<id>/threads`, `GET /api/threads`, `comments_read`
 without `thread_id`) leave reports out, and every route of one thread
 (`GET`, `DELETE`, `/clip`, `/comments`, `/resolve`, `/reopen`, `/send`,

@@ -9,7 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
-use clax_core::live::KIND_LIVE;
+use clax_core::live::{KIND_EXTERNAL, KIND_LIVE};
 use clax_core::model::{Artifact, Session};
 use clax_core::publish::{PublishRequest, validate};
 use clax_core::rights::RightType;
@@ -302,7 +302,9 @@ pub async fn list(
                 let Some(a) = st.get_artifact(&id)? else {
                     return Ok(vec![]);
                 };
-                if st.is_hidden(&a.id) {
+                // A report queue's record is in no listing
+                // (`Store::list_artifacts`).
+                if st.is_hidden(&a.id) || a.kind == KIND_EXTERNAL {
                     return Ok(vec![]);
                 }
                 if (!local && a.kind == KIND_LIVE) || !reads.allows(&a) {

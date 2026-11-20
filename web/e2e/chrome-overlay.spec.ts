@@ -484,7 +484,10 @@ test("the panel lists the site's other pages, answers and resolves their threads
   await expect.poll(async () => (await threadB()).status).toBe("resolved");
   // Reopening asks for a name, as on the thread's own page: the panel asks for it.
   await expect.poll(() => press(b, "Reopen")).toBe(true);
-  await expect.poll(() => panel.text()).toMatch(/name/i);
+  // The daemon's refusal, in the panel's notice, before the name is given:
+  // the "Your name" field shows all along, and a name saved before the
+  // refused request reached the daemon would let that first Reopen through.
+  await expect.poll(() => panel.eval<string>(`document.querySelector(".notice[role=alert]")?.textContent ?? ""`)).toContain("before reopening");
   await panel.eval(`(() => { const i = document.querySelector("input[aria-label='Your name']"); i.value = "Alex"; i.dispatchEvent(new Event("input", { bubbles: true })); i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); return true; })()`);
   await expect.poll(() => panel.eval<boolean>(`!document.querySelector("input[aria-label='Your name']")`)).toBe(true);
   await expect.poll(() => press(b, "Reopen")).toBe(true);
