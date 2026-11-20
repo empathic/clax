@@ -1759,6 +1759,35 @@ async fn a_goto_in_a_url_session_passes_the_url_rule() {
     );
 }
 
+/// A `goto` out of an artifact session makes a session on a URL, and is
+/// counted against `browser.open.url.max_per_run` as an open on a URL is
+/// (spec §11.1, "gotos out included"): past the cap it is `browser_cap`.
+#[tokio::test]
+async fn a_goto_out_counts_against_the_url_cap() {
+    let env = Env::new().await;
+    opens(&env, || page_of(buttons()));
+    browse_rule(&env, "any_public");
+    env.admin_sets(&[(Setting::BrowserOpenUrlMaxPerRun, json!(1))]);
+    let (run, v) = one_script_with(
+        &env,
+        "browser.open.artifact,browser.open.url",
+        "const codes = [];
+         for (let i = 0; i < 2; i++) {
+           const p = await clax.browser.open({ artifact: 'draft' });
+           try { await p.goto('https://public.example/'); codes.push('went'); }
+           catch (e) { codes.push(e.code); }
+           await p.close();
+         }
+         try { await clax.browser.open({ url: 'https://public.example/' }); codes.push('opened'); }
+         catch (e) { codes.push(e.code); }
+         return codes;",
+    )
+    .await;
+    assert_eq!(v, json!(["went", "browser_cap", "browser_cap"]));
+    let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
+    assert_eq!(counted.get("browser.open.url"), Some(&1), "{counted:?}");
+}
+
 /// A run holds at most `browser.max_open_per_run` sessions at once (1 by
 /// default): another open answers `browser_cap` until one is closed.
 #[tokio::test]

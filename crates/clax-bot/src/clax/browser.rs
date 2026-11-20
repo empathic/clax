@@ -25,7 +25,10 @@
 //!   the run's clax.
 //! - **Cap** (step 7): an open, and a test, are counted against their
 //!   kind's `max_per_run`, under the capability's ID (the entry's
-//!   `count_as`); calls on a session are not counted.
+//!   `count_as`); calls on a session are not counted, but for a `goto` out
+//!   of an artifact or content session, which makes a session on a URL:
+//!   it is counted under `browser.open.url`, and refused `browser_cap`
+//!   once the run has used that capability's `max_per_run`.
 //! - **Price** (step 8): one call's time cap, `browser.call_seconds`.
 //! - **Perform** (step 9): the host's session registry
 //!   ([`crate::browser::live::BrowserSessions`]) opens the session or
@@ -1199,16 +1202,20 @@ impl Performer for SessionOp {
                 v["timeout"] = json!(true);
             }
         }
-        Finish {
+        let f = Finish {
             usage: Some((usage, cost)),
             session: Some(SessionSpend::Call {
                 session: session.to_string(),
                 through_ms: through,
                 kind: a.kind,
             }),
+            // A goto out made the session one on a URL: counted as an
+            // open on one.
+            counted: a.kind == Some(SessionKind::Url),
             audit: vec![("ok", json!(ok)), ("ms", json!(ms))],
             ..Finish::new(Ok(v))
-        }
+        };
+        counted_as(f, Capability::OpenUrl)
     }
 
     async fn out_of_credits(&self, s: &ClaxSession<'_>, call: &Call<'_>) {
@@ -1387,8 +1394,9 @@ impl ClaxSession<'_> {
     /// rule's refusal) and the session keeps its policy (none). Out of an
     /// artifact or content session's origin, the URL session's policy when
     /// the run declared `browser.open.url`, it is live and its rule admits
-    /// the URL (else the rule's refusal); none when the run did not declare
-    /// it or it is not live (the session then refuses it
+    /// the URL (else the rule's refusal) and the run has a session on a URL
+    /// left under its `max_per_run` (else `browser_cap`); none when the run
+    /// did not declare it or it is not live (the session then refuses it
     /// `browser_disabled`), and none for a `goto` within the origin.
     async fn leave_policy(
         &self,
@@ -1427,6 +1435,18 @@ impl ClaxSession<'_> {
         scope.allowed(&target).map_err(|e| from_browser(&e))?;
         if in_url_session {
             return Ok(None);
+        }
+        // A goto out makes a session on a URL: counted as an open on one
+        // (spec §11.1).
+        let max = open_grant(terms).max_per_run;
+        if seen.count(Capability::OpenUrl.id()) >= max {
+            return Err(HostError::new(
+                CODE_BROWSER_CAP,
+                format!(
+                    "this run has used its {max} {}; work with what you have",
+                    sessions_of(SessionKind::Url)
+                ),
+            ));
         }
         Ok(Some(Arc::new(BrowsePolicy::new(scope, source))))
     }
