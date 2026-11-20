@@ -28,8 +28,11 @@ pub struct Turn {
 }
 
 /// What writes a turn's script from the requests the fake has seen.
+type WriteCode = dyn Fn(&[Value]) -> String + Send + Sync;
+
+/// A turn's [`WriteCode`], shared by the turn's clones.
 #[derive(Clone)]
-struct CodeFrom(Arc<dyn Fn(&[Value]) -> String + Send + Sync>);
+struct CodeFrom(Arc<WriteCode>);
 
 impl std::fmt::Debug for CodeFrom {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -522,8 +522,9 @@ impl RestSource {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let unsupported =
-            |media: &str, format: Format| gone(clax_bot::web::page::unsupported(&at, media, format));
+        let unsupported = |media: &str, format: Format| {
+            gone(clax_bot::web::page::unsupported(&at, media, format))
+        };
         // Before the body is read: an error status whose served type is not
         // text has no readable body, and a type the rules refuse is
         // refused. A type that says too little is sniffed from the body.
@@ -1907,9 +1908,14 @@ mod tests {
             max_bytes: 1_000,
             ..FetchLimits::default()
         };
-        let e = fetch(&s, &server.url("site.test", "/big"), Format::Markdown, small)
-            .await
-            .unwrap_err();
+        let e = fetch(
+            &s,
+            &server.url("site.test", "/big"),
+            Format::Markdown,
+            small,
+        )
+        .await
+        .unwrap_err();
         assert_eq!((e.code, e.went_out), (CODE_WEB_TOO_LARGE, true), "{e}");
     }
 

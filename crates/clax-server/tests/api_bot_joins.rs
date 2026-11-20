@@ -482,10 +482,7 @@ async fn with_its_host_away_a_join_binds_nothing() {
     d.clock.advance(20);
     let run = d.send(&aid, &tid).await;
     let row = d.ts.store.run(&run).unwrap().unwrap();
-    assert_eq!(
-        d.bindings(&run),
-        Bindings::clax(&aid, &row.caps)
-    );
+    assert_eq!(d.bindings(&run), Bindings::clax(&aid, &row.caps));
     d.driver.run_until_idle(BUDGET).await;
     let system = &systems(&fake)[0];
     assert!(!system.contains("desk"), "{system}");

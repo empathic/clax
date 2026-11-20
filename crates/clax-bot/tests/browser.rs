@@ -937,11 +937,7 @@ async fn every_call_writes_one_bot_spend() {
             &json!("browser_disabled")
         )
     );
-    assert!(
-        !env.bot_events()
-            .iter()
-            .any(|(k, _)| k == "bot.web")
-    );
+    assert!(!env.bot_events().iter().any(|(k, _)| k == "bot.web"));
 }
 
 /// A failure on the page is an answer: a test whose saved test fails is
@@ -1596,7 +1592,13 @@ async fn a_recording_keeps_its_frames_and_a_manifest() {
     let b = &calls[1]["browser"];
     assert_eq!(
         (&b["kind"], &b["op"], &b["action"], &b["ok"], &b["clip"]),
-        (&json!("content"), &json!("page"), &json!("record"), &json!(true), &clip["clip"]),
+        (
+            &json!("content"),
+            &json!("page"),
+            &json!("record"),
+            &json!(true),
+            &clip["clip"]
+        ),
         "{b}"
     );
     assert_eq!(b["session"], calls[0]["browser"]["session"]);

@@ -1178,7 +1178,11 @@ async fn an_auto_fetch_from_main_answers_from_the_store() {
     )
     .await;
     assert_eq!(v, json!(["# A", "# A", 19]));
-    assert_eq!(env.web().calls(), fetches(&[a]), "the second from the store");
+    assert_eq!(
+        env.web().calls(),
+        fetches(&[a]),
+        "the second from the store"
+    );
     let journal = env.store.bot_web_calls(&run).unwrap();
     let formats: Vec<&str> = journal
         .iter()

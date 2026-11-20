@@ -485,7 +485,10 @@ impl PageModel {
                     .enumerate()
                     .map(|(i, u)| json!({"id": i, "url": u, "userTypedURL": u, "title": "", "transitionType": "link"}))
                     .collect();
-                vec![answer(cmd, json!({"currentIndex": self.at, "entries": entries}))]
+                vec![answer(
+                    cmd,
+                    json!({"currentIndex": self.at, "entries": entries}),
+                )]
             }
             "Page.navigate" | "Page.reload" | "Page.navigateToHistoryEntry" => {
                 let url = match (params["url"].as_str(), params["entryId"].as_u64()) {
@@ -500,7 +503,9 @@ impl PageModel {
                         u.to_string()
                     }
                     (None, Some(id)) => {
-                        let i = usize::try_from(id).unwrap_or(0).min(self.history.len().saturating_sub(1));
+                        let i = usize::try_from(id)
+                            .unwrap_or(0)
+                            .min(self.history.len().saturating_sub(1));
                         self.at = i;
                         self.history.get(i).cloned().unwrap_or_default()
                     }
@@ -559,7 +564,10 @@ impl PageModel {
                         .rfind("})(")
                         .and_then(|at| serde_json::from_str(e[at + 3..].trim_end_matches(')')).ok())
                         .unwrap_or(Value::Null);
-                    let (src, flags) = (args[0].as_str().unwrap_or(""), args[1].as_str().unwrap_or(""));
+                    let (src, flags) = (
+                        args[0].as_str().unwrap_or(""),
+                        args[1].as_str().unwrap_or(""),
+                    );
                     let hits: Vec<bool> = args[2]
                         .as_array()
                         .into_iter()
@@ -783,9 +791,19 @@ impl Dom {
             n["nodeValue"] = json!(t);
         }
         if !f.el.attrs.is_empty() {
-            n["attributes"] = json!(f.el.attrs.iter().flat_map(|(k, v)| [k.clone(), v.clone()]).collect::<Vec<_>>());
+            n["attributes"] = json!(
+                f.el.attrs
+                    .iter()
+                    .flat_map(|(k, v)| [k.clone(), v.clone()])
+                    .collect::<Vec<_>>()
+            );
         }
-        n["children"] = json!(f.children.iter().map(|&c| self.node_json(c)).collect::<Vec<_>>());
+        n["children"] = json!(
+            f.children
+                .iter()
+                .map(|&c| self.node_json(c))
+                .collect::<Vec<_>>()
+        );
         n
     }
 
@@ -828,7 +846,12 @@ impl Dom {
         if e.tag.starts_with('#') {
             return false;
         }
-        let attr = |k: &str| e.attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        let attr = |k: &str| {
+            e.attrs
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.as_str())
+        };
         let mut rest = c;
         let tag_end = rest.find(['#', '.', '[']).unwrap_or(rest.len());
         let (tag, tail) = rest.split_at(tag_end);
@@ -864,12 +887,17 @@ impl Dom {
 
     fn by_id(&self, v: &Value) -> Option<usize> {
         let id = v.as_i64()?;
-        usize::try_from(id - 1).ok().filter(|&i| i < self.flat.len())
+        usize::try_from(id - 1)
+            .ok()
+            .filter(|&i| i < self.flat.len())
     }
 
     fn rect_of(&mut self, i: usize) -> Option<(f64, f64, f64, f64)> {
         let f = &mut self.flat[i];
-        let r = f.el.rects.get(f.boxes_asked.min(f.el.rects.len().saturating_sub(1))).copied();
+        let r =
+            f.el.rects
+                .get(f.boxes_asked.min(f.el.rects.len().saturating_sub(1)))
+                .copied();
         f.boxes_asked += 1;
         r
     }
@@ -896,7 +924,11 @@ impl Dom {
                 let scope = self.by_id(&p["nodeId"]).unwrap_or(0);
                 let sel = p["selector"].as_str().unwrap_or_default();
                 let ids: Vec<usize> = (0..self.flat.len())
-                    .filter(|&i| i != scope && self.inside(scope, i) && sel.split(',').any(|s| self.matches(i, s.trim())))
+                    .filter(|&i| {
+                        i != scope
+                            && self.inside(scope, i)
+                            && sel.split(',').any(|s| self.matches(i, s.trim()))
+                    })
                     .map(|i| i + 1)
                     .collect();
                 json!({"nodeIds": ids})
@@ -934,12 +966,17 @@ impl Dom {
                 }
             }
             "DOM.getNodeForLocation" => {
-                let (x, y) = (p["x"].as_f64().unwrap_or(0.0), p["y"].as_f64().unwrap_or(0.0));
+                let (x, y) = (
+                    p["x"].as_f64().unwrap_or(0.0),
+                    p["y"].as_f64().unwrap_or(0.0),
+                );
                 let hit = (0..self.flat.len())
                     .filter(|&i| {
                         let e = &self.flat[i].el;
                         !e.tag.starts_with('#')
-                            && e.rects.last().is_some_and(|&(rx, ry, w, h)| x >= rx && x <= rx + w && y >= ry && y <= ry + h)
+                            && e.rects.last().is_some_and(|&(rx, ry, w, h)| {
+                                x >= rx && x <= rx + w && y >= ry && y <= ry + h
+                            })
                     })
                     .max_by_key(|&i| (self.flat[i].el.z, i));
                 match hit {
@@ -961,7 +998,11 @@ impl Dom {
                 if let Some(i) = self.focused {
                     let t = p["text"].as_str().unwrap_or_default();
                     let e = &mut self.flat[i].el;
-                    let before = if self.selected { String::new() } else { e.value.clone().unwrap_or_default() };
+                    let before = if self.selected {
+                        String::new()
+                    } else {
+                        e.value.clone().unwrap_or_default()
+                    };
                     e.value = Some(before + t);
                     self.selected = false;
                 }
@@ -982,13 +1023,20 @@ impl Dom {
                         .iter()
                         .filter(|&&c| self.flat[c].el.tag == "option")
                         .map(|&c| {
-                            let v = self.flat[c].el.attrs.iter().find(|(k, _)| k == "value").map(|(_, v)| v.clone());
+                            let v = self.flat[c]
+                                .el
+                                .attrs
+                                .iter()
+                                .find(|(k, _)| k == "value")
+                                .map(|(_, v)| v.clone());
                             let label = self.texts(c);
                             (v.unwrap_or_else(|| label.clone()), label)
                         })
                         .collect();
                     let w = &wanted[0];
-                    match opts.iter().find(|(v, l)| w["value"].as_str() == Some(v) || w["label"].as_str() == Some(l)) {
+                    match opts.iter().find(|(v, l)| {
+                        w["value"].as_str() == Some(v) || w["label"].as_str() == Some(l)
+                    }) {
                         Some((v, _)) => {
                             self.flat[i].el.value = Some(v.clone());
                             value(json!([v]))
@@ -1019,9 +1067,16 @@ impl Dom {
             "Input.dispatchMouseEvent" => {
                 // A press and release on a checkbox toggles it.
                 if p["type"] == "mouseReleased" {
-                    let (x, y) = (p["x"].as_f64().unwrap_or(0.0), p["y"].as_f64().unwrap_or(0.0));
+                    let (x, y) = (
+                        p["x"].as_f64().unwrap_or(0.0),
+                        p["y"].as_f64().unwrap_or(0.0),
+                    );
                     let hit = (0..self.flat.len())
-                        .filter(|&i| self.flat[i].el.rects.last().is_some_and(|&(rx, ry, w, h)| x >= rx && x <= rx + w && y >= ry && y <= ry + h))
+                        .filter(|&i| {
+                            self.flat[i].el.rects.last().is_some_and(|&(rx, ry, w, h)| {
+                                x >= rx && x <= rx + w && y >= ry && y <= ry + h
+                            })
+                        })
                         .max_by_key(|&i| (self.flat[i].el.z, i));
                     if let Some(i) = hit
                         && let Some(c) = self.flat[i].el.checked
@@ -1052,7 +1107,8 @@ fn fake_regex(source: &str, flags: &str, text: &str) -> bool {
         let end = alt.ends_with('$') && !alt.ends_with("\\$");
         let body = alt.trim_start_matches('^');
         let body = if end { &body[..body.len() - 1] } else { body };
-        let at_from = |from: usize| -> Option<usize> { glob_at(body, &text[from..]).map(|n| from + n) };
+        let at_from =
+            |from: usize| -> Option<usize> { glob_at(body, &text[from..]).map(|n| from + n) };
         if start {
             at_from(0).is_some_and(|n| !end || n == text.len())
         } else {
@@ -1071,10 +1127,18 @@ fn glob_at(pat: &str, text: &str) -> Option<usize> {
     fn go(p: &[char], t: &[char], used: usize) -> Option<usize> {
         match p {
             [] => Some(used),
-            ['.', '*', rest @ ..] => (0..=t.len()).rev().find_map(|k| go(rest, &t[k..], used + k)),
-            ['\\', c, rest @ ..] => (t.first() == Some(c)).then(|| go(rest, &t[1..], used + 1)).flatten(),
-            ['.', rest @ ..] => (!t.is_empty()).then(|| go(rest, &t[1..], used + 1)).flatten(),
-            [c, rest @ ..] => (t.first() == Some(c)).then(|| go(rest, &t[1..], used + 1)).flatten(),
+            ['.', '*', rest @ ..] => (0..=t.len())
+                .rev()
+                .find_map(|k| go(rest, &t[k..], used + k)),
+            ['\\', c, rest @ ..] => (t.first() == Some(c))
+                .then(|| go(rest, &t[1..], used + 1))
+                .flatten(),
+            ['.', rest @ ..] => (!t.is_empty())
+                .then(|| go(rest, &t[1..], used + 1))
+                .flatten(),
+            [c, rest @ ..] => (t.first() == Some(c))
+                .then(|| go(rest, &t[1..], used + 1))
+                .flatten(),
         }
     }
     let n = go(&p, &t, 0)?;
@@ -1082,6 +1146,10 @@ fn glob_at(pat: &str, text: &str) -> Option<usize> {
 }
 
 type Opener = Box<dyn FnMut() -> Result<FakeChrome, BrowserError> + Send>;
+
+/// The time [`FakeBrowserSource::fire_until`] reached, and the deadlines
+/// not yet fired, each with what fires it.
+type Pending = (Option<DateTime<Utc>>, Vec<(DateTime<Utc>, CancelToken)>);
 
 /// A [`BrowserSource`] for tests: opens what its opener makes (a
 /// [`FakeChrome`] with one [`PageModel`] page by default), counting each
@@ -1097,7 +1165,7 @@ pub struct FakeBrowserSource {
     deadlines: Mutex<Vec<DateTime<Utc>>>,
     /// The deadlines not yet fired, each with what fires it, and the time
     /// [`FakeBrowserSource::fire_until`] reached.
-    pending: Mutex<(Option<DateTime<Utc>>, Vec<(DateTime<Utc>, CancelToken)>)>,
+    pending: Mutex<Pending>,
     clax_files: Mutex<BTreeMap<String, Served>>,
     site_headers: Mutex<Vec<(String, String)>>,
     site_api: Mutex<BTreeMap<String, Served>>,

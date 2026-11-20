@@ -1115,7 +1115,15 @@ pub(crate) fn charge_in(
     items: &[Metered],
     at: DateTime<Utc>,
 ) -> Result<Vec<UsageRow>> {
-    charge_rows_in(tx, ov, person, run.map(|r| r.0), run.map(|r| r.1), items, at)
+    charge_rows_in(
+        tx,
+        ov,
+        person,
+        run.map(|r| r.0),
+        run.map(|r| r.1),
+        items,
+        at,
+    )
 }
 
 /// [`charge_in`], for run `run` when given and its step `step` when given:

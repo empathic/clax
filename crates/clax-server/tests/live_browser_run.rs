@@ -289,7 +289,10 @@ async fn a_session_outlives_keep_alive_in_real_browser_run() {
     };
     // The heartbeat went out while the model thought.
     assert!(
-        parsed(true).filter(|v| v["method"] == "Browser.getVersion").count() >= 2,
+        parsed(true)
+            .filter(|v| v["method"] == "Browser.getVersion")
+            .count()
+            >= 2,
         "the heartbeat was sent"
     );
     // The stylesheet was asked for and served from the synthetic origin:

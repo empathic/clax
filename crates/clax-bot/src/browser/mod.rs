@@ -64,7 +64,9 @@ pub use layer::{OP_ACT, OP_CLOSE, OP_EXPECT, OP_OPEN, OP_PAGE};
 pub const CODE_BROWSER_DISABLED: &str = "browser_disabled";
 /// The run's tests (or browses) are used up.
 pub const CODE_BROWSER_CAP: &str = "browser_cap";
-pub use crate::capability::{CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED, CODE_URL_NOT_IN_PRIOR_CONTEXT};
+pub use crate::capability::{
+    CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED, CODE_URL_NOT_IN_PRIOR_CONTEXT,
+};
 /// No such version of the artifact, or no such page in the target.
 pub const CODE_BROWSER_TARGET_NOT_FOUND: &str = "browser_target_not_found";
 /// The instance's concurrent browsers are all in use; retryable.

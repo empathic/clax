@@ -59,8 +59,8 @@ use clax_bot::web::page::{
 };
 use clax_bot::web::url::redirect_allowed;
 use clax_bot::web::{
-    CODE_WEB_BLOCKED, CODE_WEB_TOO_LARGE, CODE_WEB_UNAVAILABLE, FetchLimits, FetchedPage, Format, PublicUrl, SearchAnswer, SearchHit, SearchQuery, WebError,
-    WebSource,
+    CODE_WEB_BLOCKED, CODE_WEB_TOO_LARGE, CODE_WEB_UNAVAILABLE, FetchLimits, FetchedPage, Format,
+    PublicUrl, SearchAnswer, SearchHit, SearchQuery, WebError, WebSource,
 };
 use clax_bot_sandbox::{CODE_CANCELLED, CancelToken};
 use serde_json::Value;
@@ -1692,7 +1692,8 @@ mod tests {
             assert_eq!(e, http_error(&u, status), "{status} {content_type}");
         }
         // A readable error page is a page with its status.
-        let p = page_of(read_body(&u, 404, "text/plain", b"gone".to_vec(), Format::Markdown).unwrap());
+        let p =
+            page_of(read_body(&u, 404, "text/plain", b"gone".to_vec(), Format::Markdown).unwrap());
         assert_eq!((p.status, p.text.as_str()), (404, "gone"));
     }
 
@@ -1789,9 +1790,19 @@ mod tests {
         // script, no handler, links absolute.
         let markup = "<p onclick=\"x()\">Hi <a href=\"/next\">next</a></p><script>bad()</script>";
         let p = page_of(
-            read_body(&u, 200, "text/html", markup.as_bytes().to_vec(), Format::Html).unwrap(),
+            read_body(
+                &u,
+                200,
+                "text/html",
+                markup.as_bytes().to_vec(),
+                Format::Html,
+            )
+            .unwrap(),
         );
-        assert_eq!(p.text, "<p>Hi <a href=\"https://a.example/next\">next</a></p>");
+        assert_eq!(
+            p.text,
+            "<p>Hi <a href=\"https://a.example/next\">next</a></p>"
+        );
         assert_eq!(p.links, ["https://a.example/next"]);
         // Another type in Html is refused, naming the formats that read it.
         let Err(e) = read_body(&u, 200, "application/json", b"{}".to_vec(), Format::Html) else {
@@ -1951,8 +1962,16 @@ mod tests {
             assert!(e.went_out);
         }
         // A readable error page is a page with its status.
-        let p =
-            page_of(read_body(&u, 404, "text/plain", b"Not here".to_vec(), Format::Markdown).unwrap());
+        let p = page_of(
+            read_body(
+                &u,
+                404,
+                "text/plain",
+                b"Not here".to_vec(),
+                Format::Markdown,
+            )
+            .unwrap(),
+        );
         assert_eq!((p.status, p.text.as_str()), (404, "Not here"));
         // One with nothing to read is unavailable; a server error may pass.
         let e = read_body(&u, 503, "text/html", Vec::new(), Format::Markdown).unwrap_err();

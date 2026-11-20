@@ -220,7 +220,10 @@ fn capabilities_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<V
     for c in Capability::ALL {
         let (price, per) = match c {
             Capability::WebSearch => (
-                request(format!("web.search.{}", provider.as_str().unwrap_or("ceramic")))?,
+                request(format!(
+                    "web.search.{}",
+                    provider.as_str().unwrap_or("ceramic")
+                ))?,
                 "request",
             ),
             Capability::WebFetch => (request("web.fetch".into())?, "request"),

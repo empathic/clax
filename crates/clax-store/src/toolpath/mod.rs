@@ -780,13 +780,9 @@ impl Event<'_> {
             Some(K::ViewAudit | K::AdminProvider | K::AdminSettings | K::BotGrant) => {
                 Some(Obj::Install)
             }
-            Some(
-                K::AdminRole
-                | K::AdminFlag
-                | K::AdminCredits
-                | K::BotRefused
-                | K::MeWeb,
-            ) => self.str("person").map(Obj::Person),
+            Some(K::AdminRole | K::AdminFlag | K::AdminCredits | K::BotRefused | K::MeWeb) => {
+                self.str("person").map(Obj::Person)
+            }
             Some(K::BotSurfaceRegistered) => self.str("registered_by").map(Obj::Person),
             Some(K::AdminKey) => Some(self.str("person").map_or(Obj::Install, Obj::Person)),
             Some(K::AdminCostLine) => self.str("line").map(Obj::CostLine),

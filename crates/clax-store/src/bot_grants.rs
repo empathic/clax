@@ -537,7 +537,10 @@ impl Store {
             if !ever.is_empty() {
                 continue;
             }
-            issued.push(self.issue_cap_grant(ctx, cap, GRANTER_CONFIG, EVERYONE, None)?.id);
+            issued.push(
+                self.issue_cap_grant(ctx, cap, GRANTER_CONFIG, EVERYONE, None)?
+                    .id,
+            );
         }
         Ok(issued)
     }
@@ -906,9 +909,12 @@ mod tests {
             .unwrap();
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
         let mut ov = Overrides::default();
-        ov.set(Setting::WebFetchEnabled, &json!(true), "file").unwrap();
-        ov.set(Setting::WebSearchEnabled, &json!(false), "file").unwrap();
-        ov.set(Setting::BrowserOpenUrlEnabled, &json!(true), "file").unwrap();
+        ov.set(Setting::WebFetchEnabled, &json!(true), "file")
+            .unwrap();
+        ov.set(Setting::WebSearchEnabled, &json!(false), "file")
+            .unwrap();
+        ov.set(Setting::BrowserOpenUrlEnabled, &json!(true), "file")
+            .unwrap();
         st.set_bot_overrides(ov);
         let issued = st.grant_web_from_config(DAEMON).unwrap();
         assert_eq!(issued.len(), 1);
@@ -919,7 +925,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(g.len(), 1, "{g:?}");
-        assert_eq!((g[0].capability.as_str(), g[0].granter.as_str()), ("web.fetch", GRANTER_CONFIG));
+        assert_eq!(
+            (g[0].capability.as_str(), g[0].granter.as_str()),
+            ("web.fetch", GRANTER_CONFIG)
+        );
         assert!(st.person_caps(OWNER).unwrap()["web.fetch"].reaches_runs());
         // A restart writes nothing more, and after a revoke nothing again.
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());

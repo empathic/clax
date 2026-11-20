@@ -9565,7 +9565,10 @@ mod tests {
             .query_row("SELECT id FROM bot_runs LIMIT 1", [], |r| r.get(0))
             .unwrap();
         let run = st.run(&id).unwrap().unwrap();
-        assert_eq!((run.caps.as_str(), run.web.as_str()), ("web.fetch,web.search", "search,fetch"));
+        assert_eq!(
+            (run.caps.as_str(), run.web.as_str()),
+            ("web.fetch,web.search", "search,fetch")
+        );
     }
 
     /// A database at 66, as main leaves it, from [`at_64_with_runs`], with
@@ -9755,7 +9758,9 @@ mod tests {
         };
         crate::migrate_with(&mut c, &at_66).unwrap();
         let run: String = c
-            .query_row("SELECT id FROM bot_runs ORDER BY id LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT id FROM bot_runs ORDER BY id LIMIT 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         // Four fetches of step 7, each with a page; the last has no entry.
         for (seq, result) in [
@@ -9802,13 +9807,23 @@ mod tests {
             ]
         );
         let after = st
-            .with_read(|c| Ok(c.query_row("SELECT COUNT(*) FROM bot_web_pages", [], |r| r.get::<_, i64>(0))?))
+            .with_read(|c| {
+                Ok(c.query_row("SELECT COUNT(*) FROM bot_web_pages", [], |r| {
+                    r.get::<_, i64>(0)
+                })?)
+            })
             .unwrap();
         assert_eq!(after, before, "every page kept");
         assert_eq!(
-            st.web_page(&run, "https://example.com/1", "raw").unwrap().map(|p| p.text),
+            st.web_page(&run, "https://example.com/1", "raw")
+                .unwrap()
+                .map(|p| p.text),
             Some("page".to_string())
         );
-        assert_eq!(st.web_page(&run, "https://example.com/1", "markdown").unwrap(), None);
+        assert_eq!(
+            st.web_page(&run, "https://example.com/1", "markdown")
+                .unwrap(),
+            None
+        );
     }
 }

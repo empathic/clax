@@ -509,7 +509,10 @@ mod tests {
             let caps = now(&st, OWNER);
             assert_eq!(caps.get(c), Err(Off::PersonOff), "{}", c.id());
             assert_eq!(caps.live().iter().count(), 4, "{}", c.id());
-            assert!(st.set_cap_choice(&AuditCtx::DAEMON, OWNER, c.id(), true).unwrap());
+            assert!(
+                st.set_cap_choice(&AuditCtx::DAEMON, OWNER, c.id(), true)
+                    .unwrap()
+            );
             assert_eq!(now(&st, OWNER).live().iter().count(), 5, "{}", c.id());
         }
     }

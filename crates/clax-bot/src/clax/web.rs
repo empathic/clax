@@ -63,8 +63,8 @@ use crate::surface::Call;
 use crate::web::page::{PAGE_CHARS, SNIPPET_CHARS, STORE_BYTES, snippet, window};
 use crate::web::url::OwnHosts;
 use crate::web::{
-    CODE_URL_NOT_ALLOWED, CODE_WEB_UNAVAILABLE, FetchGrant, Format, OP_FETCH, OP_SEARCH,
-    PublicUrl, SearchAnswer, SearchGrant, SearchQuery, UrlRule, UrlSource, WebError, WebSource,
+    CODE_URL_NOT_ALLOWED, CODE_WEB_UNAVAILABLE, FetchGrant, Format, OP_FETCH, OP_SEARCH, PublicUrl,
+    SearchAnswer, SearchGrant, SearchQuery, UrlRule, UrlSource, WebError, WebSource,
     access::{Refused, admit, sources},
     charged,
 };
@@ -181,7 +181,6 @@ fn from_web(e: &WebError) -> HostError {
         HostError::new(e.code, e.message.clone())
     }
 }
-
 
 /// `clax.web.search`.
 pub(super) struct Search;
@@ -523,7 +522,13 @@ impl Performer for Fetch {
             }
         };
         let got = source
-            .fetch(&args.url, args.format, &args.grant.limits, &hop, s.cx.cancel)
+            .fetch(
+                &args.url,
+                args.format,
+                &args.grant.limits,
+                &hop,
+                s.cx.cancel,
+            )
             .await;
         let (searches, fetches) = (seen.count(OP_SEARCH), seen.count(OP_FETCH));
         match got {

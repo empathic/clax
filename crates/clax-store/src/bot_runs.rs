@@ -256,7 +256,11 @@ pub struct Run {
 }
 
 /// The browser's source capabilities: each opens a session of its kind.
-const OPEN_CAPS: &[&str] = &["browser.open.url", "browser.open.artifact", "browser.open.content"];
+const OPEN_CAPS: &[&str] = &[
+    "browser.open.url",
+    "browser.open.artifact",
+    "browser.open.content",
+];
 
 /// The operations of Clax's own surface the capabilities allow, as
 /// [`Bindings::clax`] grants them: each operation with the capabilities
@@ -3902,7 +3906,14 @@ mod tests {
         let bindings = as_made.bindings().unwrap();
         assert_eq!(
             bindings.bindings[0].granted(),
-            ["browser.open", "browser.page", "browser.act", "browser.expect", "browser.close", "browser.test"]
+            [
+                "browser.open",
+                "browser.page",
+                "browser.act",
+                "browser.expect",
+                "browser.close",
+                "browser.test"
+            ]
         );
         assert_eq!(kept(&st, &run.id).1, bindings, "kept as made");
         // The browser's operations follow the web's, in a fixed order,
@@ -3928,7 +3939,13 @@ mod tests {
         let url = Bindings::clax(&aid, "browser.open.url");
         assert_eq!(
             url.bindings[0].granted(),
-            ["browser.open", "browser.page", "browser.act", "browser.expect", "browser.close"]
+            [
+                "browser.open",
+                "browser.page",
+                "browser.act",
+                "browser.expect",
+                "browser.close"
+            ]
         );
         assert_eq!(url.bindings[0].scope["caps"], "browser.open.url");
         // Content allows the session operations, and the scope names it.

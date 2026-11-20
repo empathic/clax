@@ -8,8 +8,8 @@
 
 use super::tests::host_surface;
 use super::*;
-use crate::golden::golden;
 use crate::capability::Capability as C;
+use crate::golden::golden;
 
 /// The host protocol's contract fixture, whose `files` hold the
 /// surface `desk`.

@@ -135,8 +135,10 @@ pub struct Bot {
     /// its runs share and its grant routes re-evaluate before they answer
     /// (`clax_server::bot::reevaluate_browser`, spec
     /// docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §4.4).
-    /// `None` (the default, the Worker's and every host without a browser
-    /// source): no session is ever open.
+    /// `None` (the default, every host without a browser source): no
+    /// session is ever open. Not on wasm32 (the Worker), which opens no
+    /// browser and whose registry would not be shared between threads.
+    #[cfg(not(target_arch = "wasm32"))]
     pub browser_sessions: Option<Arc<clax_bot::browser::live::BrowserSessions>>,
 }
 
@@ -181,6 +183,7 @@ impl Default for Bot {
             admin_web_check: None,
             joins: None,
             browser: false,
+            #[cfg(not(target_arch = "wasm32"))]
             browser_sessions: None,
         }
     }

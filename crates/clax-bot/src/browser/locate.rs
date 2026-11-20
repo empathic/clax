@@ -82,17 +82,88 @@ pub enum LocatorStep {
 /// The ARIA roles `getByRole` takes (WAI-ARIA 1.2's, abstract ones left
 /// out); another is `invalid_args`.
 pub const ROLES: &[&str] = &[
-    "alert", "alertdialog", "application", "article", "banner", "blockquote", "button",
-    "caption", "cell", "checkbox", "code", "columnheader", "combobox", "complementary",
-    "contentinfo", "definition", "deletion", "dialog", "directory", "document", "emphasis",
-    "feed", "figure", "form", "generic", "grid", "gridcell", "group", "heading", "img",
-    "insertion", "link", "list", "listbox", "listitem", "log", "main", "marquee", "math",
-    "meter", "menu", "menubar", "menuitem", "menuitemcheckbox", "menuitemradio", "navigation",
-    "none", "note", "option", "paragraph", "presentation", "progressbar", "radio",
-    "radiogroup", "region", "row", "rowgroup", "rowheader", "scrollbar", "search",
-    "searchbox", "separator", "slider", "spinbutton", "status", "strong", "subscript",
-    "superscript", "switch", "tab", "table", "tablist", "tabpanel", "term", "textbox", "time",
-    "timer", "toolbar", "tooltip", "tree", "treegrid", "treeitem",
+    "alert",
+    "alertdialog",
+    "application",
+    "article",
+    "banner",
+    "blockquote",
+    "button",
+    "caption",
+    "cell",
+    "checkbox",
+    "code",
+    "columnheader",
+    "combobox",
+    "complementary",
+    "contentinfo",
+    "definition",
+    "deletion",
+    "dialog",
+    "directory",
+    "document",
+    "emphasis",
+    "feed",
+    "figure",
+    "form",
+    "generic",
+    "grid",
+    "gridcell",
+    "group",
+    "heading",
+    "img",
+    "insertion",
+    "link",
+    "list",
+    "listbox",
+    "listitem",
+    "log",
+    "main",
+    "marquee",
+    "math",
+    "meter",
+    "menu",
+    "menubar",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "navigation",
+    "none",
+    "note",
+    "option",
+    "paragraph",
+    "presentation",
+    "progressbar",
+    "radio",
+    "radiogroup",
+    "region",
+    "row",
+    "rowgroup",
+    "rowheader",
+    "scrollbar",
+    "search",
+    "searchbox",
+    "separator",
+    "slider",
+    "spinbutton",
+    "status",
+    "strong",
+    "subscript",
+    "superscript",
+    "switch",
+    "tab",
+    "table",
+    "tablist",
+    "tabpanel",
+    "term",
+    "textbox",
+    "time",
+    "timer",
+    "toolbar",
+    "tooltip",
+    "tree",
+    "treegrid",
+    "treeitem",
 ];
 
 fn text_of_field(v: &Value, field: &str, exact: bool) -> Result<TextMatch, String> {
@@ -203,9 +274,14 @@ fn parse_step(s: &Value) -> Result<LocatorStep, String> {
         return Ok(LocatorStep::TestId(text_of_field(t, "testId", true)?));
     }
     if let Some(n) = o.get("nth") {
-        return Ok(LocatorStep::Nth(n.as_i64().ok_or("nth must be a whole number")?));
+        return Ok(LocatorStep::Nth(
+            n.as_i64().ok_or("nth must be a whole number")?,
+        ));
     }
-    Err("a step names one of css, role, text, label, placeholder, testId, nth, hasText, hasNotText".into())
+    Err(
+        "a step names one of css, role, text, label, placeholder, testId, nth, hasText, hasNotText"
+            .into(),
+    )
 }
 
 /// `s` as a JavaScript string literal in single quotes.
@@ -370,7 +446,10 @@ impl Tree {
                     .map(|kv| {
                         (
                             kv[0].as_str().unwrap_or_default().to_string(),
-                            kv.get(1).and_then(Value::as_str).unwrap_or_default().to_string(),
+                            kv.get(1)
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
                         )
                     })
                     .collect()
@@ -381,7 +460,10 @@ impl Tree {
             backend: v["backendNodeId"].as_i64().unwrap_or(0),
             name: v["nodeName"].as_str().unwrap_or_default().to_lowercase(),
             attrs,
-            value: v["nodeValue"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+            value: v["nodeValue"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             parent,
             children: Vec::new(),
             shadow: Vec::new(),
@@ -417,7 +499,10 @@ impl Tree {
             out.push_str(n.value.as_deref().unwrap_or_default());
             return;
         }
-        if matches!(n.name.as_str(), "script" | "style" | "noscript" | "template" | "head") {
+        if matches!(
+            n.name.as_str(),
+            "script" | "style" | "noscript" | "template" | "head"
+        ) {
             return;
         }
         for &c in n.children.iter().chain(&n.shadow) {
@@ -450,7 +535,8 @@ impl Tree {
 
     /// The element with ID `id`, if any.
     fn by_id(&self, id: &str) -> Option<usize> {
-        (0..self.nodes.len()).find(|&i| self.nodes[i].is_element() && self.nodes[i].attr("id") == Some(id))
+        (0..self.nodes.len())
+            .find(|&i| self.nodes[i].is_element() && self.nodes[i].attr("id") == Some(id))
     }
 
     /// How element `i` is shown in a message: `<div class="overlay">`.
@@ -519,7 +605,10 @@ pub(super) async fn text_matches(
     texts: &[String],
 ) -> Result<Vec<bool>, CdpFail> {
     match t {
-        TextMatch::Text { text, exact } => Ok(texts.iter().map(|s| matches_text(text, *exact, s)).collect()),
+        TextMatch::Text { text, exact } => Ok(texts
+            .iter()
+            .map(|s| matches_text(text, *exact, s))
+            .collect()),
         TextMatch::Regex { source, flags } => {
             let normalised: Vec<String> = texts.iter().map(|s| normalized(s)).collect();
             regex_test(d, source, flags, &normalised).await
@@ -542,7 +631,10 @@ fn kept(items: Vec<usize>, keep: &[bool]) -> Vec<usize> {
 /// # Errors
 /// What ended the wait; the browser's refusal of a command (a selector it
 /// cannot parse among them).
-pub(super) async fn resolve(d: &mut Driver<'_>, steps: &[LocatorStep]) -> Result<Resolved, CdpFail> {
+pub(super) async fn resolve(
+    d: &mut Driver<'_>,
+    steps: &[LocatorStep],
+) -> Result<Resolved, CdpFail> {
     let doc = d
         .page_call("DOM.getDocument", json!({"depth": -1, "pierce": true}))
         .await?;
@@ -552,7 +644,10 @@ pub(super) async fn resolve(d: &mut Driver<'_>, steps: &[LocatorStep]) -> Result
         scope = step_once(d, &tree, &scope, step).await?;
     }
     // The document itself is no match.
-    let found = scope.into_iter().filter(|&i| tree.nodes[i].is_element()).collect();
+    let found = scope
+        .into_iter()
+        .filter(|&i| tree.nodes[i].is_element())
+        .collect();
     Ok(Resolved { tree, found })
 }
 
@@ -627,7 +722,9 @@ async fn step_once(
                     if n["ignored"] == true && !include_hidden {
                         continue;
                     }
-                    let Some(&i) = n["backendDOMNodeId"].as_i64().and_then(|b| tree.by_backend.get(&b))
+                    let Some(&i) = n["backendDOMNodeId"]
+                        .as_i64()
+                        .and_then(|b| tree.by_backend.get(&b))
                     else {
                         continue;
                     };
@@ -650,7 +747,10 @@ async fn step_once(
                     {
                         continue;
                     }
-                    named.push((i, n["name"]["value"].as_str().unwrap_or_default().to_string()));
+                    named.push((
+                        i,
+                        n["name"]["value"].as_str().unwrap_or_default().to_string(),
+                    ));
                 }
             }
             match name {
@@ -658,7 +758,13 @@ async fn step_once(
                 Some(t) => {
                     let texts: Vec<String> = named.iter().map(|(_, n)| n.clone()).collect();
                     let keep = text_matches(d, t, &texts).await?;
-                    found.extend(named.iter().zip(keep).filter(|(_, k)| *k).map(|((i, _), _)| *i));
+                    found.extend(
+                        named
+                            .iter()
+                            .zip(keep)
+                            .filter(|(_, k)| *k)
+                            .map(|((i, _), _)| *i),
+                    );
                 }
             }
             found.into_iter().collect()
@@ -700,7 +806,13 @@ async fn step_once(
                             inside.into_iter().find(|&c| {
                                 matches!(
                                     tree.nodes[c].name.as_str(),
-                                    "input" | "textarea" | "select" | "button" | "meter" | "output" | "progress"
+                                    "input"
+                                        | "textarea"
+                                        | "select"
+                                        | "button"
+                                        | "meter"
+                                        | "output"
+                                        | "progress"
                                 )
                             })
                         }
@@ -732,7 +844,12 @@ async fn step_once(
                 .collect();
             let texts: Vec<String> = all
                 .iter()
-                .map(|&i| tree.nodes[i].attr("placeholder").unwrap_or_default().to_string())
+                .map(|&i| {
+                    tree.nodes[i]
+                        .attr("placeholder")
+                        .unwrap_or_default()
+                        .to_string()
+                })
                 .collect();
             let keep = text_matches(d, t, &texts).await?;
             kept(all, &keep)
@@ -744,13 +861,22 @@ async fn step_once(
                 .collect();
             let texts: Vec<String> = all
                 .iter()
-                .map(|&i| tree.nodes[i].attr("data-testid").unwrap_or_default().to_string())
+                .map(|&i| {
+                    tree.nodes[i]
+                        .attr("data-testid")
+                        .unwrap_or_default()
+                        .to_string()
+                })
                 .collect();
             let keep = text_matches(d, t, &texts).await?;
             kept(all, &keep)
         }
         LocatorStep::Nth(n) => {
-            let elements: Vec<usize> = scope.iter().copied().filter(|&i| tree.nodes[i].is_element()).collect();
+            let elements: Vec<usize> = scope
+                .iter()
+                .copied()
+                .filter(|&i| tree.nodes[i].is_element())
+                .collect();
             let len = i64::try_from(elements.len()).unwrap_or(i64::MAX);
             let at = if *n < 0 { len + n } else { *n };
             usize::try_from(at)
@@ -760,7 +886,11 @@ async fn step_once(
                 .collect()
         }
         LocatorStep::HasText(t) | LocatorStep::HasNotText(t) => {
-            let elements: Vec<usize> = scope.iter().copied().filter(|&i| tree.nodes[i].is_element()).collect();
+            let elements: Vec<usize> = scope
+                .iter()
+                .copied()
+                .filter(|&i| tree.nodes[i].is_element())
+                .collect();
             let texts: Vec<String> = elements.iter().map(|&i| tree.text(i)).collect();
             // A filter's string is a substring, whatever `exact`.
             let t = match t {

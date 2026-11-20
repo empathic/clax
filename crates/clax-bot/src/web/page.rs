@@ -1436,7 +1436,10 @@ pub fn clean_html(html: &str, base: &PublicUrl) -> String {
     }
     impl Cleaner {
         fn base(&self) -> url::Url {
-            self.doc_base.borrow().clone().unwrap_or_else(|| self.base.clone())
+            self.doc_base
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| self.base.clone())
         }
         fn tag(&self, tag: &Tag) {
             let name = &*tag.name;
@@ -1462,7 +1465,11 @@ pub fn clean_html(html: &str, base: &PublicUrl) -> String {
                 }
                 let mut value = a.value.to_string();
                 if URL_ATTRS.contains(&key) {
-                    if value.trim_start().to_ascii_lowercase().starts_with("javascript:") {
+                    if value
+                        .trim_start()
+                        .to_ascii_lowercase()
+                        .starts_with("javascript:")
+                    {
                         continue;
                     }
                     if value.len() <= MAX_TARGET_BYTES
@@ -1701,7 +1708,12 @@ mod tests {
         assert_eq!(handling("text/html", Html), Handling::CleanHtml);
         assert_eq!(handling("application/xhtml+xml", Html), Handling::CleanHtml);
         assert!(Handling::CleanHtml.is_textual());
-        for ct in ["text/markdown", "application/json", "text/csv", "application/pdf"] {
+        for ct in [
+            "text/markdown",
+            "application/json",
+            "text/csv",
+            "application/pdf",
+        ] {
             assert_eq!(handling(ct, Html), Handling::NotHtml, "{ct}");
             let e = unsupported(&base("https://a.example/x"), ct, Html);
             assert_eq!(e.code, crate::web::CODE_WEB_UNSUPPORTED_CONTENT_TYPE);
@@ -1716,14 +1728,26 @@ mod tests {
         assert!(!Handling::NotHtml.is_textual());
         assert_eq!(handling("image/png", Html), Handling::Unsupported);
         // The other formats' words are as they were.
-        let e = unsupported(&base("https://a.example/x"), "application/pdf", crate::web::Format::Raw);
-        assert!(e.message.ends_with("cannot be read as text with format \"raw\"; fetch it without. Use another source."), "{e}");
+        let e = unsupported(
+            &base("https://a.example/x"),
+            "application/pdf",
+            crate::web::Format::Raw,
+        );
+        assert!(
+            e.message.ends_with(
+                "cannot be read as text with format \"raw\"; fetch it without. Use another source."
+            ),
+            "{e}"
+        );
         assert_eq!(
             crate::web::Format::parse(Some("auto")),
             Some(crate::web::Format::Markdown),
             "main's auto"
         );
-        assert_eq!(crate::web::Format::parse(None), Some(crate::web::Format::Markdown));
+        assert_eq!(
+            crate::web::Format::parse(None),
+            Some(crate::web::Format::Markdown)
+        );
         assert_eq!(crate::web::Format::parse(Some("pdf")), None);
     }
 

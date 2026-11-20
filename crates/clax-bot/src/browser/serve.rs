@@ -516,11 +516,18 @@ pub fn content_files(
             let bytes = match f {
                 SuppliedFile::Text(t) => t.into_bytes(),
                 SuppliedFile::Bytes(b) => b,
-                SuppliedFile::Image(id) => image(&id)
-                    .ok_or_else(|| format!("files[{path:?}] names no image of this run's content ({id})"))?,
+                SuppliedFile::Image(id) => image(&id).ok_or_else(|| {
+                    format!("files[{path:?}] names no image of this run's content ({id})")
+                })?,
             };
             let content_type = clax_core::publish::content_type_for(&path);
-            Ok((path, ContentFile { bytes, content_type }))
+            Ok((
+                path,
+                ContentFile {
+                    bytes,
+                    content_type,
+                },
+            ))
         })
         .collect()
 }
@@ -1073,18 +1080,32 @@ mod tests {
         assert_eq!(c.host, "s0123456789a.clax-content.invalid");
         assert_eq!(c.url("/"), "https://s0123456789a.clax-content.invalid/");
         let root = fulfilled(c.answer(&paused("https://s0123456789a.clax-content.invalid/")));
-        assert_eq!((root.status, root.body.as_slice()), (200, b"<h1>Hi</h1>".as_slice()));
-        assert_eq!(header(&root, "content-type"), Some("text/html; charset=utf-8"));
+        assert_eq!(
+            (root.status, root.body.as_slice()),
+            (200, b"<h1>Hi</h1>".as_slice())
+        );
+        assert_eq!(
+            header(&root, "content-type"),
+            Some("text/html; charset=utf-8")
+        );
         assert_eq!(
             header(&root, "content-security-policy"),
             Some("default-src 'self' data: blob:; connect-src 'self'")
         );
         assert_eq!(header(&root, "x-content-type-options"), Some("nosniff"));
-        let css = fulfilled(c.answer(&paused("https://s0123456789a.clax-content.invalid/style.css?v=1")));
-        assert_eq!((css.status, header(&css, "content-type")), (200, Some("text/css")));
-        let png = fulfilled(c.answer(&paused("https://s0123456789a.clax-content.invalid/img/a%20b.png")));
+        let css = fulfilled(c.answer(&paused(
+            "https://s0123456789a.clax-content.invalid/style.css?v=1",
+        )));
+        assert_eq!(
+            (css.status, header(&css, "content-type")),
+            (200, Some("text/css"))
+        );
+        let png = fulfilled(c.answer(&paused(
+            "https://s0123456789a.clax-content.invalid/img/a%20b.png",
+        )));
         assert_eq!(png.body, vec![1, 2, 3]);
-        let missing = fulfilled(c.answer(&paused("https://s0123456789a.clax-content.invalid/nope.js")));
+        let missing =
+            fulfilled(c.answer(&paused("https://s0123456789a.clax-content.invalid/nope.js")));
         assert_eq!(missing.status, 404);
         assert!(header(&missing, "content-security-policy").is_some());
     }
@@ -1099,11 +1120,17 @@ mod tests {
             "https://s0123456789a.clax-content.invalid:8443/",
             "https://other.clax-content.invalid/",
         ] {
-            assert_eq!(c.answer(&paused(url)), Decision::Fail { why: WHY_ORIGIN }, "{url}");
+            assert_eq!(
+                c.answer(&paused(url)),
+                Decision::Fail { why: WHY_ORIGIN },
+                "{url}"
+            );
         }
         // No bridge, no page runtime API, no blob of any artifact.
         for path in ["_clax/bridge.js", "_clax/api/docs", "_clax/blob/x"] {
-            let s = fulfilled(c.answer(&paused(&format!("https://s0123456789a.clax-content.invalid/{path}"))));
+            let s = fulfilled(c.answer(&paused(&format!(
+                "https://s0123456789a.clax-content.invalid/{path}"
+            ))));
             assert_eq!(s.status, 404, "{path}");
         }
     }
@@ -1123,10 +1150,16 @@ mod tests {
         };
         use super::super::session::RequestPolicy as _;
         assert_eq!(
-            left.decide(&paused("https://abcdefghjkmn.clax-test.invalid/_clax/api/docs")).await,
+            left.decide(&paused(
+                "https://abcdefghjkmn.clax-test.invalid/_clax/api/docs"
+            ))
+            .await,
             Decision::Fail { why: WHY_LEFT }
         );
-        assert_eq!(left.decide(&paused("https://example.com/")).await, Decision::Continue);
+        assert_eq!(
+            left.decide(&paused("https://example.com/")).await,
+            Decision::Continue
+        );
     }
 
     #[test]
@@ -1140,8 +1173,13 @@ mod tests {
         assert_eq!(got["a.css"].bytes, b"h1{}".to_vec());
         assert!(got["a.css"].content_type.starts_with("text/css"));
         assert_eq!(got["b.bin"].bytes, vec![7]);
-        assert_eq!((got["c.png"].bytes.clone(), got["c.png"].content_type.as_str()), (vec![9], "image/png"));
+        assert_eq!(
+            (
+                got["c.png"].bytes.clone(),
+                got["c.png"].content_type.as_str()
+            ),
+            (vec![9], "image/png")
+        );
         assert!(content_files(files, |_| None).unwrap_err().contains("c-1"));
     }
-
 }

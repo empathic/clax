@@ -655,11 +655,17 @@ mod tests {
                              "locator": [{"role": "button", "name": "Book"}], "ms": 3100, "ok": true});
         let answer = Answer::written(Ok(Value::Null))
             .charged(2)
-            .showing(Fields::from_iter([("browser".to_string(), summary.clone())]));
+            .showing(Fields::from_iter([(
+                "browser".to_string(),
+                summary.clone(),
+            )]));
         let live = Event::call("browser.act", true, None, 0, answer.note());
-        let Event::Call { ms, .. } = &live else { panic!("a call") };
+        let Event::Call { ms, .. } = &live else {
+            panic!("a call")
+        };
         assert_eq!(*ms, 3100);
-        let mut entry = json!({"op": "browser.act", "target": null, "ok": true, "code": null, "ms": 0});
+        let mut entry =
+            json!({"op": "browser.act", "target": null, "ok": true, "code": null, "ms": 0});
         answer.note().add_to(&mut entry);
         assert_eq!(Event::call_of_entry(&entry), live);
         assert_eq!(call_ms(7, &json!({"web": {"query": "q"}})), 7);

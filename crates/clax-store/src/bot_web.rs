@@ -84,7 +84,11 @@ pub enum SessionKind {
 
 impl SessionKind {
     /// Every kind.
-    pub const ALL: [SessionKind; 3] = [SessionKind::Url, SessionKind::Artifact, SessionKind::Content];
+    pub const ALL: [SessionKind; 3] = [
+        SessionKind::Url,
+        SessionKind::Artifact,
+        SessionKind::Content,
+    ];
 
     /// Its name in `bot_browser_sessions.kind`: `url`, `artifact`, `content`.
     pub fn as_str(self) -> &'static str {
@@ -246,8 +250,7 @@ pub struct Spent {
     pub replayed: bool,
 }
 
-const SESSION_COLS: &str =
-    "run_id, session_id, kind, opened_at, charged_ms, closed_at, reason";
+const SESSION_COLS: &str = "run_id, session_id, kind, opened_at, charged_ms, closed_at, reason";
 
 fn row_to_session(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
     let kind: String = r.get(2)?;
@@ -265,13 +268,12 @@ fn row_to_session(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
 }
 
 fn session_in(c: &Connection, run_id: &str, session: &str) -> Result<Option<SessionRow>> {
-    Ok(c
-        .prepare_cached(&format!(
-            "SELECT {SESSION_COLS} FROM bot_browser_sessions
+    Ok(c.prepare_cached(&format!(
+        "SELECT {SESSION_COLS} FROM bot_browser_sessions
               WHERE run_id = ?1 AND session_id = ?2"
-        ))?
-        .query_row(params![run_id, session], row_to_session)
-        .optional()?)
+    ))?
+    .query_row(params![run_id, session], row_to_session)
+    .optional()?)
 }
 
 fn session_mismatch(run_id: &str, msg: String) -> CoreError {
@@ -299,7 +301,10 @@ fn apply_session(
     let charged = match (s, &row) {
         (SessionSpend::Open { .. }, None) => 0,
         (SessionSpend::Open { .. }, Some(_)) => {
-            return Err(session_mismatch(run_id, format!("session {id} is already open")));
+            return Err(session_mismatch(
+                run_id,
+                format!("session {id} is already open"),
+            ));
         }
         (_, None) => return Err(session_mismatch(run_id, format!("no session {id}"))),
         (_, Some(r)) if !r.is_open() => {
@@ -317,7 +322,9 @@ fn apply_session(
     if !usage.is_some_and(|m| m.line == LINE_BROWSER_TIME && m.qty == segment) {
         return Err(session_mismatch(
             run_id,
-            format!("a call of session {id} through {through} ms charges {segment} ms of {LINE_BROWSER_TIME}"),
+            format!(
+                "a call of session {id} through {through} ms charges {segment} ms of {LINE_BROWSER_TIME}"
+            ),
         ));
     }
     match s {
@@ -327,7 +334,13 @@ fn apply_session(
             c.execute(
                 "INSERT INTO bot_browser_sessions (run_id, session_id, kind, opened_at, charged_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![run_id, id, kind.as_str(), clax_core::time::stamp(*opened_at), through],
+                params![
+                    run_id,
+                    id,
+                    kind.as_str(),
+                    clax_core::time::stamp(*opened_at),
+                    through
+                ],
             )?;
         }
         SessionSpend::Call { kind, .. } => {
@@ -452,7 +465,13 @@ impl Store {
     ///
     /// # Errors
     /// `unknown_capability`; the store's.
-    pub fn set_cap_choice(&self, ctx: &AuditCtx, person: &str, cap: &str, on: bool) -> Result<bool> {
+    pub fn set_cap_choice(
+        &self,
+        ctx: &AuditCtx,
+        person: &str,
+        cap: &str,
+        on: bool,
+    ) -> Result<bool> {
         let Some(cap) = crate::bot_grants::CAPABILITIES.iter().find(|c| **c == cap) else {
             return Err(clax_core::CoreError::invalid(
                 "unknown_capability",
@@ -937,8 +956,15 @@ mod tests {
         let after = st.run(&run.id).unwrap().unwrap();
         assert_eq!(after.credits_milli, run.credits_milli + spent.credits_milli);
 
-        assert_eq!(st.web_page(&run.id, url, "markdown").unwrap(), Some(page(url)));
-        assert_eq!(st.web_page(&run.id, "https://example.com/b", "markdown").unwrap(), None);
+        assert_eq!(
+            st.web_page(&run.id, url, "markdown").unwrap(),
+            Some(page(url))
+        );
+        assert_eq!(
+            st.web_page(&run.id, "https://example.com/b", "markdown")
+                .unwrap(),
+            None
+        );
         let journal = st.bot_calls(&run.id, 1).unwrap();
         assert_eq!(journal, vec![spent.entry.clone()]);
 
@@ -1219,7 +1245,10 @@ mod tests {
             .unwrap();
         let again = fetch(&st, &run, &d, 1, url);
         assert_eq!(refused(&st, &run, &d, again), "page_exists");
-        assert_eq!(st.web_page(&run.id, url, "markdown").unwrap(), Some(page(url)));
+        assert_eq!(
+            st.web_page(&run.id, url, "markdown").unwrap(),
+            Some(page(url))
+        );
     }
 
     #[test]
@@ -1357,7 +1386,15 @@ mod tests {
         s: SessionSpend,
     ) -> Spend {
         let entry = st
-            .call_entry(&run.id, d, step, 1, seq, "browser.page", &format!("h-{step}-{seq}"))
+            .call_entry(
+                &run.id,
+                d,
+                step,
+                1,
+                seq,
+                "browser.page",
+                &format!("h-{step}-{seq}"),
+            )
             .unwrap()
             .answered(true, json!({"value": {"ok": true}}));
         Spend {
@@ -1412,18 +1449,30 @@ mod tests {
     fn segments_of_a_session_sum_to_its_open_time() {
         let (_d, st) = store();
         let (run, d) = running(&st);
-        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 0), 1_200, open(&st, 1_200)))
-            .unwrap();
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 1_200, open(&st, 1_200)),
+        )
+        .unwrap();
         let row = st.bot_browser_session(&run.id, "s1").unwrap().unwrap();
         assert_eq!(
             (row.kind, row.charged_ms, row.is_open()),
             (SessionKind::Artifact, 1_200, true)
         );
-        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 1), 3_800, call(5_000)))
-            .unwrap();
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 1), 3_800, call(5_000)),
+        )
+        .unwrap();
         // A call that took no time charges an empty segment.
-        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 2), 0, call(5_000)))
-            .unwrap();
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 2), 0, call(5_000)),
+        )
+        .unwrap();
         // A goto out makes it a URL session.
         let out = SessionSpend::Call {
             session: "s1".into(),
@@ -1459,7 +1508,8 @@ mod tests {
         assert_eq!(st.run(&run.id).unwrap().unwrap().credits_milli, charged);
         // The host's end of a closed session charges nothing.
         assert_eq!(
-            st.end_bot_browser_session(&run.id, "s1", 20_000, SessionEnd::Idle).unwrap(),
+            st.end_bot_browser_session(&run.id, "s1", 20_000, SessionEnd::Idle)
+                .unwrap(),
             0
         );
         assert_eq!(browser_ms(&st, &run), (9_000, 5));
@@ -1469,20 +1519,38 @@ mod tests {
     fn a_replayed_call_charges_nothing() {
         let (_d, st) = store();
         let (run, d) = running(&st);
-        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 0), 1_000, open(&st, 1_000)))
-            .unwrap();
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 1_000, open(&st, 1_000)),
+        )
+        .unwrap();
         let first = st
-            .spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 1), 2_000, call(3_000)))
+            .spend_journaled(
+                &run,
+                &d,
+                session_spend(&st, &run, &d, (1, 1), 2_000, call(3_000)),
+            )
             .unwrap();
         // The same call again, as a step run again makes it: the journal
         // answers, though its segment no longer fits the session's row.
         let again = st
-            .spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 1), 2_000, call(3_000)))
+            .spend_journaled(
+                &run,
+                &d,
+                session_spend(&st, &run, &d, (1, 1), 2_000, call(3_000)),
+            )
             .unwrap();
         assert!(again.replayed);
         assert_eq!((again.entry, again.credits_milli), (first.entry, 0));
         assert_eq!(browser_ms(&st, &run), (3_000, 2));
-        assert_eq!(st.bot_browser_session(&run.id, "s1").unwrap().unwrap().charged_ms, 3_000);
+        assert_eq!(
+            st.bot_browser_session(&run.id, "s1")
+                .unwrap()
+                .unwrap()
+                .charged_ms,
+            3_000
+        );
         assert_eq!(spend_events(&st).len(), 2);
     }
 
@@ -1490,8 +1558,12 @@ mod tests {
     fn a_host_end_with_no_open_step_charges_once() {
         let (_d, st) = store();
         let (run, d) = running(&st);
-        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 0), 1_500, open(&st, 1_500)))
-            .unwrap();
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 1_500, open(&st, 1_500)),
+        )
+        .unwrap();
         st.commit_bot_step(&bot(), &run.id, &d, 1, StepCommit::default())
             .unwrap();
         let before = st.run(&run.id).unwrap().unwrap().credits_milli;
@@ -1507,10 +1579,17 @@ mod tests {
             .collect();
         assert_eq!(tail.len(), 1);
         assert_eq!(
-            (tail[0].run_id.as_deref(), tail[0].step_n, tail[0].credits_milli),
+            (
+                tail[0].run_id.as_deref(),
+                tail[0].step_n,
+                tail[0].credits_milli
+            ),
             (Some(run.id.as_str()), None, credits)
         );
-        assert_eq!(st.run(&run.id).unwrap().unwrap().credits_milli, before + credits);
+        assert_eq!(
+            st.run(&run.id).unwrap().unwrap().credits_milli,
+            before + credits
+        );
         let row = st.bot_browser_session(&run.id, "s1").unwrap().unwrap();
         assert_eq!(
             (row.charged_ms, row.reason, row.is_open()),
@@ -1531,7 +1610,10 @@ mod tests {
                 &json!("artifact")
             )
         );
-        assert_eq!((&e["step"], &e["ms"], &e["run"]), (&json!(null), &json!(301_500), &json!(run.id)));
+        assert_eq!(
+            (&e["step"], &e["ms"], &e["run"]),
+            (&json!(null), &json!(301_500), &json!(run.id))
+        );
         assert_eq!(e["credits_milli"], credits);
 
         // An end while a step is open charges on that step.
@@ -1560,18 +1642,32 @@ mod tests {
     fn a_second_end_charges_nothing() {
         let (_d, st) = store();
         let (run, d) = running(&st);
-        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 0), 100, open(&st, 100)))
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 100, open(&st, 100)),
+        )
+        .unwrap();
+        let first = st
+            .end_bot_browser_session(&run.id, "s1", 60_100, SessionEnd::Revoked)
             .unwrap();
-        let first = st.end_bot_browser_session(&run.id, "s1", 60_100, SessionEnd::Revoked).unwrap();
         assert!(first > 0);
-        assert_eq!(st.end_bot_browser_session(&run.id, "s1", 90_000, SessionEnd::Idle).unwrap(), 0);
         assert_eq!(
-            st.end_bot_browser_session(&run.id, "no-such", 90_000, SessionEnd::Idle).unwrap(),
+            st.end_bot_browser_session(&run.id, "s1", 90_000, SessionEnd::Idle)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            st.end_bot_browser_session(&run.id, "no-such", 90_000, SessionEnd::Idle)
+                .unwrap(),
             0
         );
         assert_eq!(browser_ms(&st, &run), (60_100, 2));
         assert_eq!(
-            st.bot_browser_session(&run.id, "s1").unwrap().unwrap().reason,
+            st.bot_browser_session(&run.id, "s1")
+                .unwrap()
+                .unwrap()
+                .reason,
             Some(SessionEnd::Revoked)
         );
         let ends = spend_events(&st)
@@ -1588,8 +1684,12 @@ mod tests {
     fn a_point_before_the_charged_one_is_refused() {
         let (_d, st) = store();
         let (run, d) = running(&st);
-        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 0), 5_000, open(&st, 5_000)))
-            .unwrap();
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 5_000, open(&st, 5_000)),
+        )
+        .unwrap();
         let before = browser_ms(&st, &run);
         let back = session_spend(&st, &run, &d, (1, 1), 0, call(4_000));
         assert_eq!(refused(&st, &run, &d, back), "session_mismatch");
@@ -1607,7 +1707,13 @@ mod tests {
         let twice = session_spend(&st, &run, &d, (1, 1), 6_000, open(&st, 6_000));
         assert_eq!(refused(&st, &run, &d, twice), "session_mismatch");
         assert_eq!(browser_ms(&st, &run), before);
-        assert_eq!(st.bot_browser_session(&run.id, "s1").unwrap().unwrap().charged_ms, 5_000);
+        assert_eq!(
+            st.bot_browser_session(&run.id, "s1")
+                .unwrap()
+                .unwrap()
+                .charged_ms,
+            5_000
+        );
     }
 
     #[test]
@@ -1615,8 +1721,12 @@ mod tests {
         let (_d, st) = store();
         let (run, d) = running(&st);
         let (other, d2) = running(&st);
-        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 0), 10, open(&st, 10)))
-            .unwrap();
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 10, open(&st, 10)),
+        )
+        .unwrap();
         let closed = SessionSpend::Open {
             session: "s2".into(),
             kind: SessionKind::Url,
@@ -1625,10 +1735,16 @@ mod tests {
         };
         st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 1), 10, closed))
             .unwrap();
-        st.end_bot_browser_session(&run.id, "s2", 20, SessionEnd::Closed).unwrap();
-        st.spend_journaled(&other, &d2, session_spend(&st, &other, &d2, (1, 0), 10, open(&st, 10)))
+        st.end_bot_browser_session(&run.id, "s2", 20, SessionEnd::Closed)
             .unwrap();
-        let usage = st.usage_of_run(&run.id).unwrap().len() + st.usage_of_run(&other.id).unwrap().len();
+        st.spend_journaled(
+            &other,
+            &d2,
+            session_spend(&st, &other, &d2, (1, 0), 10, open(&st, 10)),
+        )
+        .unwrap();
+        let usage =
+            st.usage_of_run(&run.id).unwrap().len() + st.usage_of_run(&other.id).unwrap().len();
         assert_eq!(st.lose_open_bot_browser_sessions(st.now_utc()).unwrap(), 2);
         for r in [&run, &other] {
             let row = st.bot_browser_session(&r.id, "s1").unwrap().unwrap();
@@ -1636,7 +1752,10 @@ mod tests {
             assert!(!row.is_open());
         }
         assert_eq!(
-            st.bot_browser_session(&run.id, "s2").unwrap().unwrap().reason,
+            st.bot_browser_session(&run.id, "s2")
+                .unwrap()
+                .unwrap()
+                .reason,
             Some(SessionEnd::Closed)
         );
         assert_eq!(
@@ -1653,7 +1772,10 @@ mod tests {
             .collect();
         assert_eq!(
             listed,
-            [("s1".to_string(), Some(SessionEnd::Lost)), ("s2".to_string(), Some(SessionEnd::Closed))]
+            [
+                ("s1".to_string(), Some(SessionEnd::Lost)),
+                ("s2".to_string(), Some(SessionEnd::Closed))
+            ]
         );
     }
 
@@ -1663,8 +1785,12 @@ mod tests {
             std::sync::Arc::new(clax_core::working::ManualClock::at("2026-11-19T10:00:00Z"));
         let (_d, st) = crate::test_util::store_with_clock(clock.clone());
         let (run, d) = running(&st);
-        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 0), 10, open(&st, 10)))
-            .unwrap();
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 10, open(&st, 10)),
+        )
+        .unwrap();
         st.commit_bot_step(&bot(), &run.id, &d, 1, StepCommit::default())
             .unwrap();
         st.begin_step(&run.id, &d, 2, StepKind::GiveUp).unwrap();
@@ -1674,5 +1800,4 @@ mod tests {
         assert_eq!(st.prune_ended_runs().unwrap().browser_sessions, 1);
         assert_eq!(st.bot_browser_session(&run.id, "s1").unwrap(), None);
     }
-
 }

@@ -118,6 +118,14 @@ test("an admin turns web on and a run searches, fetches a fixture page and lists
     await fetchSw.click();
     await page.getByRole("button", { name: "Save" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Saved." })).toBeVisible();
+    // A switch offers a capability and grants it to no one: the admin
+    // grants each to everyone on this instance.
+    const grant = page.getByRole("button", { name: "Grant", exact: true });
+    const granted = page.getByRole("button", { name: /from everyone on this instance$/ });
+    await grant.nth(0).click();
+    await expect(granted).toHaveCount(1);
+    await grant.nth(1).click();
+    await expect(granted).toHaveCount(2);
 
     // A thread sent to ClaxBot runs a script that searches and fetches.
     const { artifact } = await publish(d.base, d.token, "Web run", { "index.html": "<main><h2>Runes</h2></main>" });

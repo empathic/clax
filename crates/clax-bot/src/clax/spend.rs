@@ -78,6 +78,8 @@ use clax_store::credits::{Applies, KeySource, Metered, Rate, row_credits_milli};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+/// Named fields a record or an entry adds: `(name, value)`, in order.
+type Noted = Vec<(&'static str, Value)>;
 /// The family's name: its namespace, the prefix of its codes and the
 /// field of a journal entry that keeps what the run shows of a call.
 pub(super) fn family_name(f: Family) -> &'static str {
@@ -262,7 +264,7 @@ pub(super) trait Performer: Sync {
 
     /// The fields every record and entry of a call with `args` adds once
     /// they are read: its audit fields, then its entry fields.
-    fn noted(&self, _args: &Self::Args) -> (Vec<(&'static str, Value)>, Vec<(&'static str, Value)>) {
+    fn noted(&self, _args: &Self::Args) -> (Noted, Noted) {
         (Vec::new(), Vec::new())
     }
 
@@ -388,7 +390,10 @@ pub(super) async fn run<P: Performer>(s: &ClaxSession<'_>, call: &Call<'_>, p: &
         None
     };
     let f = fresh(s, call, p, c, &mut shown).await;
-    if f.res.as_ref().is_err_and(|e| e.code == CODE_CREDITS_EXHAUSTED) {
+    if f.res
+        .as_ref()
+        .is_err_and(|e| e.code == CODE_CREDITS_EXHAUSTED)
+    {
         p.out_of_credits(s, call).await;
     }
     write(s, call, c, p.audit_shown(), shown, f)
@@ -600,8 +605,14 @@ pub(super) async fn perform(s: &ClaxSession<'_>, call: &Call<'_>) -> Option<Answ
 pub(super) fn undeclared(op: &str, args: &[Value]) -> Option<Answer> {
     use crate::{browser, web};
     let (c, shown) = match op {
-        web::OP_SEARCH => (super::web::Search.capability(args), super::web::Search.shown(args)),
-        web::OP_FETCH => (super::web::Fetch.capability(args), super::web::Fetch.shown(args)),
+        web::OP_SEARCH => (
+            super::web::Search.capability(args),
+            super::web::Search.shown(args),
+        ),
+        web::OP_FETCH => (
+            super::web::Fetch.capability(args),
+            super::web::Fetch.shown(args),
+        ),
         browser::OP_TEST => (
             super::browser::Test.capability(args),
             super::browser::Test.shown(args),
@@ -639,11 +650,21 @@ impl ClaxSession<'_> {
     /// source's, [`crate::browser::BrowserSource::configured`]).
     fn configured(&self, c: Capability) -> bool {
         match c {
-            Capability::WebSearch => self.provider.web.as_ref().is_some_and(|w| w.configured().search),
-            Capability::WebFetch => self.provider.web.as_ref().is_some_and(|w| w.configured().fetch),
-            Capability::OpenUrl | Capability::OpenArtifact | Capability::OpenContent => {
-                self.provider.browser.as_ref().is_some_and(|b| b.configured())
-            }
+            Capability::WebSearch => self
+                .provider
+                .web
+                .as_ref()
+                .is_some_and(|w| w.configured().search),
+            Capability::WebFetch => self
+                .provider
+                .web
+                .as_ref()
+                .is_some_and(|w| w.configured().fetch),
+            Capability::OpenUrl | Capability::OpenArtifact | Capability::OpenContent => self
+                .provider
+                .browser
+                .as_ref()
+                .is_some_and(|b| b.configured()),
         }
     }
 

@@ -1300,6 +1300,17 @@ fn browser_sessions(
     sessions
 }
 
+/// [`reevaluate_browser`] on wasm32 (the Worker), which holds no browser
+/// session: nothing.
+///
+/// # Errors
+/// Never.
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::unused_async)]
+pub async fn reevaluate_browser(_s: &AppState) -> Result<(), clax_http::error::ApiError> {
+    Ok(())
+}
+
 /// Closes, `revoked`, every open browser session whose run no longer
 /// holds its kind's capability now, each one's tail charged by the
 /// registry's charger (`browser_sessions`), before the caller answers (spec
@@ -1310,6 +1321,7 @@ fn browser_sessions(
 ///
 /// # Errors
 /// The store's, before any session is closed.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn reevaluate_browser(s: &AppState) -> Result<(), clax_http::error::ApiError> {
     use clax_bot::capability::{CapSet, Capability};
     let Some(sessions) = s.bot.browser_sessions.clone() else {

@@ -507,13 +507,18 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
     // A web switch on only in the configuration gets the instance-wide
     // grant migration 67 writes for a stored one, once
     // (`Store::grant_web_from_config`).
-    match s.store.grant_web_from_config(&clax_core::audit::AuditCtx::DAEMON) {
+    match s
+        .store
+        .grant_web_from_config(&clax_core::audit::AuditCtx::DAEMON)
+    {
         Ok(issued) if !issued.is_empty() => tracing::info!(
             grants = ?issued,
             "granted the web capabilities config.toml turns on to everyone on this instance"
         ),
         Ok(_) => {}
-        Err(e) => tracing::warn!(error = %e, "could not grant the web capabilities config.toml turns on"),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not grant the web capabilities config.toml turns on")
+        }
     }
     bot.enabled = enabled;
     if let Ok(b) = cfg.bot()

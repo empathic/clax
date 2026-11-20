@@ -588,12 +588,18 @@ pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
             format!("web.search.{}", provider.as_str().unwrap_or("ceramic")),
             configured.search,
         ),
-        ("fetch", clax_store::credits::LINE_WEB_FETCH.to_string(), configured.fetch),
+        (
+            "fetch",
+            clax_store::credits::LINE_WEB_FETCH.to_string(),
+            configured.fetch,
+        ),
     ];
     for (group, line, on) in lines {
         let g = groups.entry(group.to_string()).or_insert_with(|| json!({}));
         g["price_milli"] = match st.cost_line(&line)? {
-            Some(_) => json!(st.one_request_milli(&line, clax_store::credits::KeySource::Instance)?),
+            Some(_) => {
+                json!(st.one_request_milli(&line, clax_store::credits::KeySource::Instance)?)
+            }
             None => Value::Null,
         };
         g["configured"] = json!(on);
@@ -757,9 +763,17 @@ const BROWSER: &[(&str, &str, Setting)] = &[
     ("url", "allowlist", Setting::BrowserOpenUrlAllowlist),
     ("url", "max_per_run", Setting::BrowserOpenUrlMaxPerRun),
     ("artifact", "enabled", Setting::BrowserOpenArtifactEnabled),
-    ("artifact", "max_per_run", Setting::BrowserOpenArtifactMaxPerRun),
+    (
+        "artifact",
+        "max_per_run",
+        Setting::BrowserOpenArtifactMaxPerRun,
+    ),
     ("content", "enabled", Setting::BrowserOpenContentEnabled),
-    ("content", "max_per_run", Setting::BrowserOpenContentMaxPerRun),
+    (
+        "content",
+        "max_per_run",
+        Setting::BrowserOpenContentMaxPerRun,
+    ),
     ("", "call_seconds", Setting::BrowserCallSeconds),
     ("", "idle_seconds", Setting::BrowserSessionIdleSeconds),
     ("", "max_seconds", Setting::BrowserSessionMaxSeconds),
@@ -968,10 +982,7 @@ pub fn grants_view(st: &Store) -> clax_core::Result<Value> {
 }
 
 /// `GET /api/admin/bot/grants` (see the module documentation).
-pub async fn grants(
-    State(s): State<AppState>,
-    d: DeniedToGrants,
-) -> Result<Json<Value>, ApiError> {
+pub async fn grants(State(s): State<AppState>, d: DeniedToGrants) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     admin(&s, &d).await?;
     Ok(Json(s.store_call(grants_view).await?))

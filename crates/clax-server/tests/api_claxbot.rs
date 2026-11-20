@@ -3225,11 +3225,16 @@ async fn admin_browser_round_trips_each_capability() {
     .await;
     assert_eq!(s, 200, "an admin reads it: {v}");
     let settings = |g: &Value, keys: &[&str]| -> Value {
-        keys.iter().map(|k| ((*k).to_string(), g[*k].clone())).collect()
+        keys.iter()
+            .map(|k| ((*k).to_string(), g[*k].clone()))
+            .collect()
     };
     assert_eq!(
         (
-            settings(&v["url"], &["enabled", "url_rule", "allowlist", "max_per_run"]),
+            settings(
+                &v["url"],
+                &["enabled", "url_rule", "allowlist", "max_per_run"]
+            ),
             settings(&v["artifact"], &["enabled", "max_per_run"]),
             settings(&v["content"], &["enabled", "max_per_run"]),
         ),
@@ -3243,7 +3248,13 @@ async fn admin_browser_round_trips_each_capability() {
     assert_eq!(
         settings(
             &v,
-            &["call_seconds", "idle_seconds", "max_seconds", "max_open_per_run", "max_concurrent"]
+            &[
+                "call_seconds",
+                "idle_seconds",
+                "max_seconds",
+                "max_open_per_run",
+                "max_concurrent"
+            ]
         ),
         json!({"call_seconds": 60, "idle_seconds": 300, "max_seconds": 1800,
                "max_open_per_run": 1, "max_concurrent": 2}),
@@ -3330,7 +3341,10 @@ async fn admin_browser_round_trips_each_capability() {
     assert_eq!((s, code(&v)), (409, "setting_overridden"), "{v}");
     let (_, v) = call(ts, &owner, Method::GET, "/api/admin/browser", Value::Null).await;
     assert_eq!(
-        (&v["artifact"]["max_per_run"], &v["sources"]["artifact.max_per_run"]),
+        (
+            &v["artifact"]["max_per_run"],
+            &v["sources"]["artifact.max_per_run"]
+        ),
         (&json!(4), &json!("file"))
     );
     // Configured once the Cloudflare account ID and token are set.
@@ -3392,7 +3406,14 @@ async fn me_bot_has_no_browser_switch_of_its_own() {
         .filter_map(|c| c["id"].as_str())
         .collect();
     assert!(ids.contains(&"browser.open.artifact"), "{v}");
-    let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"browser": false})).await;
+    let (s, v) = call(
+        ts,
+        &sam,
+        Method::PUT,
+        "/api/me/bot",
+        json!({"browser": false}),
+    )
+    .await;
     assert_eq!(s, 400, "{v}");
     for cap in clax_store::bot_grants::BROWSER_CAPABILITIES {
         assert!(
@@ -3528,7 +3549,13 @@ async fn a_frame_manifest_is_served_as_json_to_the_runs_viewers() {
     configured(ts).await;
     let rid = queued_run(ts).await;
     let manifest = br#"{"width":390,"height":844,"frames":[{"item":"f1","at_ms":0}]}"#;
-    keep(ts, &rid, "clip1", "application/vnd.clax.frames+json", manifest);
+    keep(
+        ts,
+        &rid,
+        "clip1",
+        "application/vnd.clax.frames+json",
+        manifest,
+    );
     let path = format!("/api/bot/runs/{rid}/content/clip1");
     for who in [Who::OwnerBrowser, Who::Person(p.ana.0.clone())] {
         let (s, h, body) = fetch(ts, &who, &path).await;
@@ -3596,7 +3623,10 @@ async fn admin_web_keeps_its_fields_and_adds_the_cards() {
                 "max_per_run",
             ][..],
         ),
-        ("fetch", &["enabled", "url_rule", "allowlist", "max_per_run"][..]),
+        (
+            "fetch",
+            &["enabled", "url_rule", "allowlist", "max_per_run"][..],
+        ),
     ] {
         for k in keys {
             assert!(!v[group][k].is_null(), "{group}.{k}: {v}");
@@ -3604,7 +3634,10 @@ async fn admin_web_keeps_its_fields_and_adds_the_cards() {
         assert!(v[group]["price_milli"].as_i64().is_some(), "{group}: {v}");
         assert!(v[group]["unavailable"].is_null(), "{group}: {v}");
     }
-    assert_eq!(v["search"]["configured"], false, "no Cloudflare account: {v}");
+    assert_eq!(
+        v["search"]["configured"], false,
+        "no Cloudflare account: {v}"
+    );
     assert_eq!(v["fetch"]["configured"], true, "{v}");
     assert_eq!(v["configured"], json!({"search": false, "fetch": true}));
     let (s, v) = call(
@@ -3627,7 +3660,14 @@ async fn admin_grants_to_everyone_and_revokes() {
     let ts = &p.ts;
     let owner = Who::OwnerBrowser;
     let sam = p.sam.1.clone();
-    let (s, v) = call(ts, &owner, Method::GET, "/api/admin/bot/grants", Value::Null).await;
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::GET,
+        "/api/admin/bot/grants",
+        Value::Null,
+    )
+    .await;
     assert_eq!((s, &v["grants"]), (200, &json!([])), "{v}");
     let (s, v) = call(
         ts,
@@ -3651,14 +3691,25 @@ async fn admin_grants_to_everyone_and_revokes() {
     assert_eq!(
         grants
             .iter()
-            .map(|g| (g["capability"].clone(), g["grantee"].clone(), g["person"].clone()))
+            .map(|g| (
+                g["capability"].clone(),
+                g["grantee"].clone(),
+                g["person"].clone()
+            ))
             .collect::<Vec<_>>(),
         [
-            (json!("browser.open.content"), json!("everyone"), Value::Null),
+            (
+                json!("browser.open.content"),
+                json!("everyone"),
+                Value::Null
+            ),
             (json!("browser.open.content"), json!("person"), json!(sam)),
         ]
     );
-    assert!(grants.iter().all(|g| g["granter"] == "instance"), "{grants:?}");
+    assert!(
+        grants.iter().all(|g| g["granter"] == "instance"),
+        "{grants:?}"
+    );
     // Refusals: a second grant to the same grantee, an unknown capability,
     // a person the instance does not have, not everyone.
     for (body, want) in [
@@ -3679,7 +3730,14 @@ async fn admin_grants_to_everyone_and_revokes() {
             "invalid_grantee",
         ),
     ] {
-        let (s, v) = call(ts, &owner, Method::POST, "/api/admin/bot/grants", body.clone()).await;
+        let (s, v) = call(
+            ts,
+            &owner,
+            Method::POST,
+            "/api/admin/bot/grants",
+            body.clone(),
+        )
+        .await;
         assert_eq!((s, code(&v)), (400, want), "{body}: {v}");
     }
     // Revoking everyone's grant ends what it issued, and leaves Sam's.
@@ -3699,7 +3757,8 @@ async fn admin_grants_to_everyone_and_revokes() {
         "Sam's own grant still reaches their runs"
     );
     assert!(
-        !ts.store.person_caps(clax_store::roles::OWNER).unwrap()["browser.open.content"].reaches_runs(),
+        !ts.store.person_caps(clax_store::roles::OWNER).unwrap()["browser.open.content"]
+            .reaches_runs(),
         "the owner's came from everyone's, and ended with it"
     );
     let ops = grant_ops(ts, "browser.open.content");
@@ -3729,7 +3788,14 @@ async fn admin_grants_to_everyone_and_revokes() {
     )
     .await;
     assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
-    let (s, v) = call(ts, &Who::Agent, Method::GET, "/api/admin/bot/grants", Value::Null).await;
+    let (s, v) = call(
+        ts,
+        &Who::Agent,
+        Method::GET,
+        "/api/admin/bot/grants",
+        Value::Null,
+    )
+    .await;
     assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
 }
 
@@ -3816,8 +3882,20 @@ async fn me_bot_lists_each_capability_and_whether_it_is_granted() {
     );
     let fetch = &caps[1];
     assert_eq!(
-        (&fetch["offered"], &fetch["granted"], &fetch["on"], &fetch["why_off"], &fetch["per"]),
-        (&json!(true), &json!(true), &json!(true), &Value::Null, &json!("request")),
+        (
+            &fetch["offered"],
+            &fetch["granted"],
+            &fetch["on"],
+            &fetch["why_off"],
+            &fetch["per"]
+        ),
+        (
+            &json!(true),
+            &json!(true),
+            &json!(true),
+            &Value::Null,
+            &json!("request")
+        ),
         "{fetch}"
     );
     assert!(fetch["price_milli"].as_i64().is_some(), "{fetch}");
@@ -3825,8 +3903,18 @@ async fn me_bot_lists_each_capability_and_whether_it_is_granted() {
     assert_eq!(caps[0]["why_off"], "not_configured", "{v}");
     // Browser kinds: granted, not offered.
     assert_eq!(
-        (&caps[4]["granted"], &caps[4]["offered"], &caps[4]["why_off"], &caps[4]["per"]),
-        (&json!(true), &json!(false), &json!("not_offered"), &json!("minute")),
+        (
+            &caps[4]["granted"],
+            &caps[4]["offered"],
+            &caps[4]["why_off"],
+            &caps[4]["per"]
+        ),
+        (
+            &json!(true),
+            &json!(false),
+            &json!("not_offered"),
+            &json!("minute")
+        ),
         "{v}"
     );
     let (s, v) = call(
@@ -3839,7 +3927,10 @@ async fn me_bot_lists_each_capability_and_whether_it_is_granted() {
     .await;
     assert_eq!(s, 200, "{v}");
     let caps = v["capabilities"].as_array().unwrap();
-    assert_eq!((&caps[1]["on"], &caps[1]["why_off"]), (&json!(false), &json!("person_off")));
+    assert_eq!(
+        (&caps[1]["on"], &caps[1]["why_off"]),
+        (&json!(false), &json!("person_off"))
+    );
     assert!(
         ts.store.person_caps(&p.sam.1).unwrap()["web.search"]
             .runs_grant
@@ -3885,7 +3976,10 @@ async fn me_put_web_sets_both_web_capabilities() {
     assert_eq!(v["web"]["on"], false, "{v}");
     let held = ts.store.person_caps(&p.sam.1).unwrap();
     assert!(held["web.search"].runs_grant.is_none() && held["web.fetch"].runs_grant.is_none());
-    assert!(held["browser.open.url"].runs_grant.is_some(), "the browser left as it was");
+    assert!(
+        held["browser.open.url"].runs_grant.is_some(),
+        "the browser left as it was"
+    );
     let (_, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"web": true})).await;
     assert_eq!(v["web"]["on"], true, "{v}");
     let held = ts.store.person_caps(&p.sam.1).unwrap();

@@ -63,8 +63,8 @@
 //! `browser_session_lost`, for a lost one).
 
 use super::cdp::{Cdp, CdpFail};
-use super::opts::{MAX_EVAL_BYTES, Viewport};
 use super::opts::Tests;
+use super::opts::{MAX_EVAL_BYTES, Viewport};
 use super::serve::{Decision, Left, Pages, Paused};
 use super::session::{Driver, RequestPolicy, SessionLimits, Start};
 use super::{
@@ -264,7 +264,8 @@ impl std::fmt::Debug for BrowserSessions {
 }
 
 fn lock(reg: &Mutex<Registry>) -> MutexGuard<'_, Registry> {
-    reg.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    reg.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// `browser_session_lost`, not retryable.
@@ -364,7 +365,9 @@ impl BrowserSessions {
                 synthetic,
             },
         );
-        drop(clax_rt::spawn(task.run(cdp, start, viewport, policy, open_tx, rx)));
+        drop(clax_rt::spawn(
+            task.run(cdp, start, viewport, policy, open_tx, rx),
+        ));
         match open_rx.await {
             Ok(r) => r,
             Err(_) => Err(lost(&id, "its task ended before the page opened").opened(true)),
@@ -455,11 +458,16 @@ impl BrowserSessions {
         self.sender(run, session)?;
         let reg = lock(&self.reg);
         let Some(e) = reg.sessions.get(session) else {
-            return Err(lost(session, "this process holds no such session for this run"));
+            return Err(lost(
+                session,
+                "this process holds no such session for this run",
+            ));
         };
         Ok(match &e.synthetic {
             None => false,
-            Some(host) => resolve_url(&e.url, url).as_deref().and_then(host_of) != Some(host.as_str()),
+            Some(host) => {
+                resolve_url(&e.url, url).as_deref().and_then(host_of) != Some(host.as_str())
+            }
         })
     }
 
@@ -538,7 +546,10 @@ impl BrowserSessions {
                 Some(reason) => Err(ended_error(session, reason)),
                 None => Ok(e.tx.clone()),
             },
-            _ => Err(lost(session, "this process holds no such session for this run")),
+            _ => Err(lost(
+                session,
+                "this process holds no such session for this run",
+            )),
         }
     }
 
@@ -610,7 +621,10 @@ impl Swap {
     }
 
     fn replace(&self, p: Arc<dyn RequestPolicy>) {
-        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = p;
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = p;
     }
 }
 
@@ -677,7 +691,13 @@ impl Task {
     ) {
         let policy = Swap(Mutex::new(policy));
         let mut synthetic = start.synthetic_host();
-        let mut d = Driver::new(&mut cdp, &policy, &*self.clock, start.mode(), self.opened_at);
+        let mut d = Driver::new(
+            &mut cdp,
+            &policy,
+            &*self.clock,
+            start.mode(),
+            self.opened_at,
+        );
         let opened = self.open(&mut d, &start, &viewport).await;
         let ok = opened.is_ok();
         if !ok {
@@ -749,7 +769,8 @@ impl Task {
                 Woke::Msg(Some(Msg::Call { call, ctx, reply })) => {
                     let until = ctx.deadline.min(self.lifetime);
                     let started = self.clock.now();
-                    d.cdp.rebound(self.source.deadline(until), ctx.cancel.clone());
+                    d.cdp
+                        .rebound(self.source.deadline(until), ctx.cancel.clone());
                     if let Some(pages) = ctx.pages.clone() {
                         policy.set_pages(pages);
                     }
@@ -843,23 +864,28 @@ impl Task {
                                 kind: converted,
                             })
                         }
-                        Err(CdpFail::Cancelled) => Err(BrowserError::new(
-                            CODE_CANCELLED,
-                            "the run was cancelled",
-                            false,
-                        )
-                        .opened(true)),
+                        Err(CdpFail::Cancelled) => {
+                            Err(
+                                BrowserError::new(CODE_CANCELLED, "the run was cancelled", false)
+                                    .opened(true),
+                            )
+                        }
                         Err(CdpFail::Protocol(m)) => Ok(Answered {
                             ok: false,
                             value: Value::Null,
-                            error: Some(format!("{}: the browser refused it: {m}", call_name(&call))),
+                            error: Some(format!(
+                                "{}: the browser refused it: {m}",
+                                call_name(&call)
+                            )),
                             timeout: false,
                             url: d.url.clone(),
                             at_ms,
                             shots: std::mem::take(&mut d.shots),
                             kind: converted,
                         }),
-                        Err(fail @ (CdpFail::Lost(_) | CdpFail::Closed | CdpFail::Transport(_))) => {
+                        Err(
+                            fail @ (CdpFail::Lost(_) | CdpFail::Closed | CdpFail::Transport(_)),
+                        ) => {
                             d.close_page().await;
                             self.mark(SessionEnd::Lost, at_ms);
                             let _ = reply.send(Err(lost(&self.id, &fail.to_string())));
@@ -872,7 +898,8 @@ impl Task {
                 Woke::Event(Ok(e)) => {
                     // The host's answer to a paused request is held to a
                     // call's time.
-                    let by = self.clock.now() + Duration::seconds(i64::from(self.times.call_seconds));
+                    let by =
+                        self.clock.now() + Duration::seconds(i64::from(self.times.call_seconds));
                     d.cdp.rebound(self.source.deadline(by), CancelToken::new());
                     if let Err(fail) = d.handle(e).await
                         && let Some(reason) = self.ended_by(&fail)
@@ -1010,10 +1037,12 @@ async fn perform(
     timing: &super::act::Timing<'_>,
 ) -> Result<Answered, CdpFail> {
     let mut a = match call {
-        SessionCall::Page { action, args } => match super::act::page(d, timing, action, args).await? {
-            Some(a) => a,
-            None => page(d, action, args, timing.times).await?,
-        },
+        SessionCall::Page { action, args } => {
+            match super::act::page(d, timing, action, args).await? {
+                Some(a) => a,
+                None => page(d, action, args, timing.times).await?,
+            }
+        }
         SessionCall::Act {
             locator,
             action,
@@ -1076,10 +1105,18 @@ async fn page(
         "evaluate" => evaluate(d, args).await?,
         "runTests" => {
             let which = match args.get("paths").and_then(Value::as_array) {
-                Some(p) => Tests::Paths(p.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+                Some(p) => Tests::Paths(
+                    p.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect(),
+                ),
                 None => Tests::All,
             };
-            answered(d.run_saved(&which, u64::from(times.call_seconds) * 1_000).await?)
+            answered(
+                d.run_saved(&which, u64::from(times.call_seconds) * 1_000)
+                    .await?,
+            )
         }
         other => failed(format!("page.{other} is not an action")),
     })
@@ -1108,12 +1145,12 @@ async fn evaluate(d: &mut Driver<'_>, args: &Value) -> Result<Answered, CdpFail>
         (None, None) => return Ok(failed("page.evaluate: nothing to evaluate".into())),
     };
     Ok(match d.evaluate(&expression).await? {
-        Ok(v) if serde_json::to_string(&v).map_or(0, |s| s.len()) > MAX_EVAL_BYTES => failed(
-            format!(
+        Ok(v) if serde_json::to_string(&v).map_or(0, |s| s.len()) > MAX_EVAL_BYTES => {
+            failed(format!(
                 "page.evaluate: the value is over {} KiB as JSON",
                 MAX_EVAL_BYTES / 1024
-            ),
-        ),
+            ))
+        }
         Ok(v) => answered(v),
         Err(e) => failed(format!("page.evaluate: {e}")),
     })
@@ -1123,10 +1160,10 @@ async fn evaluate(d: &mut Driver<'_>, args: &Value) -> Result<Answered, CdpFail>
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use crate::browser::Served;
     use crate::browser::fake::{ChromeLog, FakeBrowserSource, FakeChrome, PageModel, event, value};
     use crate::browser::serve::{Decision, Origin, Paused, WHY_ORIGIN};
     use crate::browser::session::{WHY_POPUP, WHY_TARGET, WORKER_PREAMBLE_JS};
-    use crate::browser::Served;
     use clax_core::ArtifactId;
     use clax_core::working::ManualClock;
 
@@ -1235,7 +1272,8 @@ mod tests {
             pages: Option<Pages>,
             leave: Option<Arc<dyn RequestPolicy>>,
         ) -> Result<Answered, BrowserError> {
-            let mut ctx = CallCtx::new(self.clock.now() + Duration::seconds(60), CancelToken::new());
+            let mut ctx =
+                CallCtx::new(self.clock.now() + Duration::seconds(60), CancelToken::new());
             ctx.pages = pages;
             ctx.leave = leave;
             self.sessions
@@ -1261,13 +1299,25 @@ mod tests {
         let w = World::new();
         let (o, log) = w.open(TIMES).await;
         assert_eq!(
-            (o.session.as_str(), o.url.as_str(), o.title.as_str(), o.status, o.error),
+            (
+                o.session.as_str(),
+                o.url.as_str(),
+                o.title.as_str(),
+                o.status,
+                o.error
+            ),
             ("s1", ORIGIN, "Hello", 200, None)
         );
-        assert_eq!(w.sessions.open_sessions("run-1"), [("s1".to_string(), SessionKind::Artifact)]);
+        assert_eq!(
+            w.sessions.open_sessions("run-1"),
+            [("s1".to_string(), SessionKind::Artifact)]
+        );
         w.clock.advance_millis(1_500);
         let t = w.page("title", json!({})).await.unwrap();
-        assert_eq!((t.ok, &t.value, t.at_ms, t.url.as_str()), (true, &json!("Hello"), 1_500, ORIGIN));
+        assert_eq!(
+            (t.ok, &t.value, t.at_ms, t.url.as_str()),
+            (true, &json!("Hello"), 1_500, ORIGIN)
+        );
         let g = w.page("goto", json!({"url": "/b.html"})).await.unwrap();
         let b = format!("{ORIGIN}b.html");
         assert_eq!(g.value, json!({"url": b, "status": 200, "ok": true}));
@@ -1276,7 +1326,10 @@ mod tests {
         assert!(r.ok, "{r:?}");
         assert_eq!(log.sent("Page.reload").len(), 1);
         let e = w
-            .page("evaluate", json!({"source": "(a) => a.n + 1", "arg": {"n": 1}}))
+            .page(
+                "evaluate",
+                json!({"source": "(a) => a.n + 1", "arg": {"n": 1}}),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1298,9 +1351,18 @@ mod tests {
             )
             .await;
         assert_eq!(code(theirs), CODE_BROWSER_SESSION_LOST);
-        assert_eq!(w.sessions.close("run-1", "s1", SessionEnd::Closed).await, Ok(1_500));
-        assert_eq!(code(w.page("title", json!({})).await), CODE_BROWSER_SESSION_CLOSED);
-        assert!(w.sessions.ended().is_empty(), "the script's close is charged by its call");
+        assert_eq!(
+            w.sessions.close("run-1", "s1", SessionEnd::Closed).await,
+            Ok(1_500)
+        );
+        assert_eq!(
+            code(w.page("title", json!({})).await),
+            CODE_BROWSER_SESSION_CLOSED
+        );
+        assert!(
+            w.sessions.ended().is_empty(),
+            "the script's close is charged by its call"
+        );
         assert_eq!(log.sent("Browser.close").len(), 1);
         assert_eq!(log.closes(), 1);
     }
@@ -1326,7 +1388,10 @@ mod tests {
             (&failed[0]["params"]["requestId"], &failed[0]["sessionId"]),
             (&json!("away"), &json!("S"))
         );
-        assert_eq!(log.sent("Fetch.fulfillRequest").last().unwrap()["params"]["requestId"], "late");
+        assert_eq!(
+            log.sent("Fetch.fulfillRequest").last().unwrap()["params"]["requestId"],
+            "late"
+        );
     }
 
     #[tokio::test]
@@ -1341,7 +1406,11 @@ mod tests {
         log.wait_sent("Browser.getVersion", 1).await;
         w.advance(19);
         w.page("title", json!({})).await.unwrap();
-        assert_eq!(log.sent("Browser.getVersion").len(), 1, "the call was heard");
+        assert_eq!(
+            log.sent("Browser.getVersion").len(),
+            1,
+            "the call was heard"
+        );
         w.advance(20);
         log.wait_sent("Browser.getVersion", 2).await;
         w.advance(20);
@@ -1364,11 +1433,19 @@ mod tests {
         log.wait_sent("Browser.getVersion", 1).await;
         assert!(w.sessions.ended().is_empty());
         w.advance(300);
-        assert_eq!(code(w.page("title", json!({})).await), CODE_BROWSER_SESSION_CLOSED);
+        assert_eq!(
+            code(w.page("title", json!({})).await),
+            CODE_BROWSER_SESSION_CLOSED
+        );
         let ended = w.sessions.ended();
         assert_eq!(ended.len(), 1);
         assert_eq!(
-            (ended[0].reason, ended[0].kind, ended[0].session.as_str(), ended[0].run.as_str()),
+            (
+                ended[0].reason,
+                ended[0].kind,
+                ended[0].session.as_str(),
+                ended[0].run.as_str()
+            ),
             (SessionEnd::Idle, SessionKind::Artifact, "s1", "run-1")
         );
         assert!(ended[0].at_ms >= 400_000, "{:?}", ended[0]);
@@ -1424,7 +1501,10 @@ mod tests {
         assert_eq!(code(call.await), CODE_BROWSER_SESSION_CLOSED);
         let ended = w.sessions.ended();
         assert_eq!(
-            ended.iter().map(|e| (e.reason, e.at_ms)).collect::<Vec<_>>(),
+            ended
+                .iter()
+                .map(|e| (e.reason, e.at_ms))
+                .collect::<Vec<_>>(),
             [(SessionEnd::Lifetime, 60_000)]
         );
         assert_eq!(log.sent("Browser.close").len(), 1);
@@ -1444,7 +1524,11 @@ mod tests {
         let a = call.await.unwrap();
         assert_eq!(
             (a.ok, a.timeout, a.error.as_deref()),
-            (false, true, Some("page.evaluate: Timeout 60000ms exceeded."))
+            (
+                false,
+                true,
+                Some("page.evaluate: Timeout 60000ms exceeded.")
+            )
         );
         assert!(w.page("title", json!({})).await.unwrap().ok);
     }
@@ -1453,17 +1537,30 @@ mod tests {
     async fn a_crashed_page_ends_the_session_as_lost() {
         for frame in [
             event("Inspector.targetCrashed", json!({}), Some("S")),
-            event("Target.detachedFromTarget", json!({"sessionId": "S", "targetId": "T"}), None),
+            event(
+                "Target.detachedFromTarget",
+                json!({"sessionId": "S", "targetId": "T"}),
+                None,
+            ),
         ] {
             let w = World::new();
             let (_, log) = w.open(TIMES).await;
             w.clock.advance(5);
             log.emit(frame);
-            assert_eq!(code(w.page("title", json!({})).await), CODE_BROWSER_SESSION_LOST);
-            assert_eq!(code(w.page("title", json!({})).await), CODE_BROWSER_SESSION_LOST);
+            assert_eq!(
+                code(w.page("title", json!({})).await),
+                CODE_BROWSER_SESSION_LOST
+            );
+            assert_eq!(
+                code(w.page("title", json!({})).await),
+                CODE_BROWSER_SESSION_LOST
+            );
             let ended = w.sessions.ended();
             assert_eq!(
-                ended.iter().map(|e| (e.reason, e.at_ms)).collect::<Vec<_>>(),
+                ended
+                    .iter()
+                    .map(|e| (e.reason, e.at_ms))
+                    .collect::<Vec<_>>(),
                 [(SessionEnd::Lost, 0)],
                 "a lost session charges nothing past its calls"
             );
@@ -1494,7 +1591,11 @@ mod tests {
         };
         assert_eq!(
             on("IF"),
-            ["Fetch.enable", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger"]
+            [
+                "Fetch.enable",
+                "Target.setAutoAttach",
+                "Runtime.runIfWaitingForDebugger"
+            ]
         );
         assert_eq!(
             on("W"),
@@ -1569,23 +1670,41 @@ mod tests {
         let w = World::new();
         let (_, _) = w.open(TIMES).await;
         w.clock.advance(7);
-        w.sessions.reevaluate(&|_, k| k != SessionKind::Artifact).await;
-        assert_eq!(code(w.page("title", json!({})).await), CODE_BROWSER_SESSION_CLOSED);
+        w.sessions
+            .reevaluate(&|_, k| k != SessionKind::Artifact)
+            .await;
+        assert_eq!(
+            code(w.page("title", json!({})).await),
+            CODE_BROWSER_SESSION_CLOSED
+        );
         let ended = w.sessions.ended();
         assert_eq!(
-            ended.iter().map(|e| (e.reason, e.at_ms)).collect::<Vec<_>>(),
+            ended
+                .iter()
+                .map(|e| (e.reason, e.at_ms))
+                .collect::<Vec<_>>(),
             [(SessionEnd::Revoked, 7_000)]
         );
         let w = World::new();
         let (_, log) = w.open(TIMES).await;
         w.sessions.reevaluate(&|_, _| true).await;
-        assert!(w.sessions.ended().is_empty(), "a session still covered stays");
+        assert!(
+            w.sessions.ended().is_empty(),
+            "a session still covered stays"
+        );
         w.sessions.end_run("run-1").await;
         assert_eq!(
-            w.sessions.ended().iter().map(|e| e.reason).collect::<Vec<_>>(),
+            w.sessions
+                .ended()
+                .iter()
+                .map(|e| e.reason)
+                .collect::<Vec<_>>(),
             [SessionEnd::RunEnded]
         );
-        assert_eq!(code(w.page("title", json!({})).await), CODE_BROWSER_SESSION_LOST);
+        assert_eq!(
+            code(w.page("title", json!({})).await),
+            CODE_BROWSER_SESSION_LOST
+        );
         assert_eq!(log.closes(), 1);
     }
 
@@ -1604,10 +1723,16 @@ mod tests {
         let w = World::new();
         let (_, log) = w.open(TIMES).await;
         assert_eq!(w.sessions.leaves("run-1", "s1", "/about.html"), Ok(false));
-        assert_eq!(w.sessions.leaves("run-1", "s1", &format!("{ORIGIN}a?b#c")), Ok(false));
+        assert_eq!(
+            w.sessions.leaves("run-1", "s1", &format!("{ORIGIN}a?b#c")),
+            Ok(false)
+        );
         let g = w.page("goto", json!({"url": "about.html"})).await.unwrap();
         assert!(g.ok, "{g:?}");
-        assert_eq!((g.url.as_str(), g.kind), (format!("{ORIGIN}about.html").as_str(), None));
+        assert_eq!(
+            (g.url.as_str(), g.kind),
+            (format!("{ORIGIN}about.html").as_str(), None)
+        );
         assert!(log.sent("Fetch.continueRequest").is_empty());
     }
 
@@ -1619,14 +1744,20 @@ mod tests {
         assert_eq!(w.sessions.leaves("run-1", "s1", out), Ok(true));
         // Without the URL policy browser.open.url gives, it is refused.
         let refused = w.page("goto", json!({"url": out})).await;
-        assert_eq!(refused.unwrap_err().code, crate::browser::CODE_BROWSER_DISABLED);
+        assert_eq!(
+            refused.unwrap_err().code,
+            crate::browser::CODE_BROWSER_DISABLED
+        );
         let g = w
             .call_with("goto", json!({"url": out}), None, Some(Arc::new(Web)))
             .await
             .unwrap();
         assert!(g.ok, "{g:?}");
         assert_eq!((g.url.as_str(), g.kind), (out, Some(SessionKind::Url)));
-        assert_eq!(w.sessions.open_sessions("run-1"), [("s1".to_string(), SessionKind::Url)]);
+        assert_eq!(
+            w.sessions.open_sessions("run-1"),
+            [("s1".to_string(), SessionKind::Url)]
+        );
         // The synthetic origin is no longer served: a request to it fails,
         // why left; the web is the URL policy's.
         log.emit(event(
@@ -1635,15 +1766,29 @@ mod tests {
             Some("S"),
         ));
         log.wait_sent("Fetch.failRequest", 1).await;
-        assert_eq!(log.sent("Fetch.failRequest")[0]["params"]["requestId"], "back");
-        assert!(!log.sent("Fetch.continueRequest").is_empty(), "the page out went to the web");
+        assert_eq!(
+            log.sent("Fetch.failRequest")[0]["params"]["requestId"],
+            "back"
+        );
+        assert!(
+            !log.sent("Fetch.continueRequest").is_empty(),
+            "the page out went to the web"
+        );
         // Converted once: a second goto elsewhere changes no kind.
         let again = w
-            .call_with("goto", json!({"url": "https://example.org/"}), None, Some(Arc::new(Web)))
+            .call_with(
+                "goto",
+                json!({"url": "https://example.org/"}),
+                None,
+                Some(Arc::new(Web)),
+            )
             .await
             .unwrap();
         assert_eq!(again.kind, None);
-        assert_eq!(w.sessions.leaves("run-1", "s1", "https://example.org/x"), Ok(false));
+        assert_eq!(
+            w.sessions.leaves("run-1", "s1", "https://example.org/x"),
+            Ok(false)
+        );
         // A URL session runs no saved tests.
         let t = w.page("runTests", json!({})).await;
         assert_eq!(t.unwrap_err().code, crate::browser::CODE_BROWSER_DISABLED);
@@ -1656,7 +1801,8 @@ mod tests {
         use crate::draft::DraftEntry;
         use base64::Engine as _;
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(clax_store::Store::open(&clax_core::Home::at(dir.path().join("ax"))).unwrap());
+        let store =
+            Arc::new(clax_store::Store::open(&clax_core::Home::at(dir.path().join("ax"))).unwrap());
         let draft = |body: &str| {
             let mut files = std::collections::BTreeMap::new();
             files.insert(
@@ -1670,7 +1816,12 @@ mod tests {
         };
         let w = World::new();
         let aid = ArtifactId::parse(AID).unwrap();
-        let policy = ArtifactPolicy::new(Site::new(&aid, draft("<h1>One</h1>")), w.src.clone(), store, "owner");
+        let policy = ArtifactPolicy::new(
+            Site::new(&aid, draft("<h1>One</h1>")),
+            w.src.clone(),
+            store,
+            "owner",
+        );
         let start = Start::Test {
             origin: Origin::new(&aid),
             path: "index.html".into(),
@@ -1704,7 +1855,10 @@ mod tests {
         assert!(bodies()[0].contains("<h1>One</h1>"));
         // The draft changed between the calls: the reload is served what
         // the call saw.
-        let r = w.call_with("reload", json!({}), Some(draft("<h1>Two</h1>")), None).await.unwrap();
+        let r = w
+            .call_with("reload", json!({}), Some(draft("<h1>Two</h1>")), None)
+            .await
+            .unwrap();
         assert!(r.ok, "{r:?}");
         assert!(bodies()[1].contains("<h1>Two</h1>"), "{:?}", bodies());
         // A call that brings no draft keeps the last one.
@@ -1717,14 +1871,20 @@ mod tests {
         use crate::browser::serve::{ContentFile, ContentSite};
         use crate::browser::session::ContentPolicy;
         let w = World::new();
-        let site = ContentSite::new("s0123456789a", b"<h1>Mine</h1>".to_vec(), std::collections::BTreeMap::<String, ContentFile>::new());
+        let site = ContentSite::new(
+            "s0123456789a",
+            b"<h1>Mine</h1>".to_vec(),
+            std::collections::BTreeMap::<String, ContentFile>::new(),
+        );
         let o = w
             .sessions
             .open(
                 "run-1",
                 "s1".into(),
                 SessionKind::Content,
-                Start::Content { host: site.host.clone() },
+                Start::Content {
+                    host: site.host.clone(),
+                },
                 Arc::new(ContentPolicy(site)),
                 Viewport::desktop(),
                 TIMES,
@@ -1733,9 +1893,15 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!((o.url.as_str(), o.status), ("https://s0123456789a.clax-content.invalid/", 200));
-        assert_eq!(w.sessions.leaves("run-1", "s1", "https://abcdefghjkmn.clax-test.invalid/"), Ok(true));
+        assert_eq!(
+            (o.url.as_str(), o.status),
+            ("https://s0123456789a.clax-content.invalid/", 200)
+        );
+        assert_eq!(
+            w.sessions
+                .leaves("run-1", "s1", "https://abcdefghjkmn.clax-test.invalid/"),
+            Ok(true)
+        );
         assert_eq!(w.sessions.leaves("run-1", "s1", "/b.css"), Ok(false));
     }
-
 }

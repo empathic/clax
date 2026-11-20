@@ -1025,9 +1025,18 @@ impl<'a> Driver<'a> {
     }
 
     /// Goes to history entry `id` (at `url`) and waits for its load.
-    pub(super) async fn history(&mut self, id: i64, url: &str) -> Result<Result<(), String>, CdpFail> {
-        self.navigation("Page.navigateToHistoryEntry", json!({"entryId": id}), Some(url), true)
-            .await
+    pub(super) async fn history(
+        &mut self,
+        id: i64,
+        url: &str,
+    ) -> Result<Result<(), String>, CdpFail> {
+        self.navigation(
+            "Page.navigateToHistoryEntry",
+            json!({"entryId": id}),
+            Some(url),
+            true,
+        )
+        .await
     }
 
     /// A screenshot of `clip` `(x, y, width, height)` of the page (beyond
@@ -1177,7 +1186,11 @@ impl<'a> Driver<'a> {
     /// Runs the saved tests `which` names within `left_ms` (see the
     /// module docs): the harness's `TestResults`, or the failure that
     /// ended the call.
-    pub(super) async fn run_saved(&mut self, which: &Tests, left_ms: u64) -> Result<Value, CdpFail> {
+    pub(super) async fn run_saved(
+        &mut self,
+        which: &Tests,
+        left_ms: u64,
+    ) -> Result<Value, CdpFail> {
         let mut files = match self.policy.saved_tests(which).await {
             Ok(f) => f,
             Err(e) => {
@@ -1815,7 +1828,10 @@ mod tests {
         }
         let attach = log.sent("Target.setAutoAttach");
         assert_eq!(
-            attach.iter().map(|c| c.get("sessionId").cloned()).collect::<Vec<_>>(),
+            attach
+                .iter()
+                .map(|c| c.get("sessionId").cloned())
+                .collect::<Vec<_>>(),
             [None, Some(json!("S"))]
         );
         for c in &attach {

@@ -141,7 +141,9 @@ fn lost_by(e: &CdpEvent, target: Option<&str>, session: Option<&str>) -> Option<
             Some("the page crashed")
         }
         "Target.targetCrashed" if is(&p["targetId"], target) => Some("the page crashed"),
-        "Target.detachedFromTarget" if is(&p["sessionId"], session) || is(&p["targetId"], target) => {
+        "Target.detachedFromTarget"
+            if is(&p["sessionId"], session) || is(&p["targetId"], target) =>
+        {
             Some("the page was detached")
         }
         _ => None,
@@ -784,7 +786,11 @@ mod tests {
                 "the page crashed",
             ),
             (
-                event("Target.targetCrashed", json!({"targetId": "T", "status": "crashed"}), None),
+                event(
+                    "Target.targetCrashed",
+                    json!({"targetId": "T", "status": "crashed"}),
+                    None,
+                ),
                 "the page crashed",
             ),
             (
@@ -798,11 +804,28 @@ mod tests {
             cdp.watch(Some("T".into()), Some("S".into()));
             // Another target's crash and another session's detach are
             // events like any other.
-            log.emit(event("Target.targetCrashed", json!({"targetId": "W"}), None));
-            log.emit(event("Target.detachedFromTarget", json!({"sessionId": "S2"}), None));
-            assert_eq!(cdp.next_event().await.unwrap().method, "Target.targetCrashed");
-            assert_eq!(cdp.next_event().await.unwrap().method, "Target.detachedFromTarget");
-            let id = cdp.send(Some("S"), "Runtime.evaluate", json!({})).await.unwrap();
+            log.emit(event(
+                "Target.targetCrashed",
+                json!({"targetId": "W"}),
+                None,
+            ));
+            log.emit(event(
+                "Target.detachedFromTarget",
+                json!({"sessionId": "S2"}),
+                None,
+            ));
+            assert_eq!(
+                cdp.next_event().await.unwrap().method,
+                "Target.targetCrashed"
+            );
+            assert_eq!(
+                cdp.next_event().await.unwrap().method,
+                "Target.detachedFromTarget"
+            );
+            let id = cdp
+                .send(Some("S"), "Runtime.evaluate", json!({}))
+                .await
+                .unwrap();
             log.emit(frame);
             assert_eq!(cdp.wait(id).await, Err(CdpFail::Lost(why.into())));
             assert_eq!(cdp.lost(), Some(why));
@@ -816,16 +839,28 @@ mod tests {
     async fn a_new_bound_lifts_a_passed_deadline_and_a_cancellation() {
         let chrome = FakeChrome::new(|cmd: &Value| vec![answer(cmd, json!({"ok": 1}))]);
         let cancel = CancelToken::new();
-        let mut cdp = Cdp::new(Box::new(chrome), futures::future::ready(()).boxed(), cancel.clone());
+        let mut cdp = Cdp::new(
+            Box::new(chrome),
+            futures::future::ready(()).boxed(),
+            cancel.clone(),
+        );
         assert_eq!(cdp.next_event().await, Err(CdpFail::Deadline));
         cdp.rebound(never(), CancelToken::new());
-        assert_eq!(cdp.call(None, "A.b", json!({})).await.unwrap(), json!({"ok": 1}));
+        assert_eq!(
+            cdp.call(None, "A.b", json!({})).await.unwrap(),
+            json!({"ok": 1})
+        );
         let cancelled = CancelToken::new();
         cancelled.cancel();
         cdp.rebound(never(), cancelled);
-        assert_eq!(cdp.call(None, "A.b", json!({})).await, Err(CdpFail::Cancelled));
+        assert_eq!(
+            cdp.call(None, "A.b", json!({})).await,
+            Err(CdpFail::Cancelled)
+        );
         cdp.rebound(never(), CancelToken::new());
-        assert_eq!(cdp.call(None, "A.b", json!({})).await.unwrap(), json!({"ok": 1}));
+        assert_eq!(
+            cdp.call(None, "A.b", json!({})).await.unwrap(),
+            json!({"ok": 1})
+        );
     }
-
 }
