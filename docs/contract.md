@@ -11906,8 +11906,9 @@ was made; and a run's end, sent until it is acknowledged.
   its /64) past 30 reports at once, one more every 2 s. A timing outside 0
   to 600 000 is dropped and the view counted without it. A referring host
   that is not a lowercase host name of letters, digits, `-` and `.` of at
-  most 253 bytes, or that is the site's own, the public origin's or
-  another site host's, is counted as `""` (no referring site). The daemon
+  most 253 bytes, that is an IP address, or that is the site's own, the
+  public origin's or another site host's, is counted as `""` (no referring
+  site). The daemon
   counts, per artifact and UTC day, page views, visitors and the views
   made in Clax's frame; per page, referring host, country, device
   (`phone`, `tablet` or `desktop`, from `Sec-CH-UA-Mobile` and the

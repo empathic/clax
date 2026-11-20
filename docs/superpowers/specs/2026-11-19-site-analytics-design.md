@@ -209,7 +209,9 @@ not in `inner_path`):
   normalized: `file` at most 512 bytes with no control characters;
   `version` an integer from 1 to the artifact's `current_version` (else
   the view is not counted); `referrer` a lowercase host name of at most
-  253 bytes of letters, digits, `-` and `.` (anything else, the site's own
+  253 bytes of letters, digits, `-` and `.` (anything else, an IP address
+  (an IPv4 address in any form, a host whose last label is all digits; an
+  IPv6 literal fails the characters), the site's own
   host, the public origin's host and any site host under the site domain
   become `""`, "no referring site"); `load_ms` and `lcp_ms` integers from
   0 to 600 000 or null. A field of the wrong type, or a missing `file` or

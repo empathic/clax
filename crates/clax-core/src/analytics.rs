@@ -156,8 +156,11 @@ pub const REFERRER_MAX: usize = 253;
 
 /// The referring host under [`Dim::Referrer`] for a report's `referrer`:
 /// the host name in lower case when it is at most [`REFERRER_MAX`] bytes
-/// of letters, digits, `-` and `.` and not a host of this Clax, else `""`
-/// ("no referring site"). A host of this Clax is one of `own` (the site's
+/// of letters, digits, `-` and `.` and neither an IP address nor a host of
+/// this Clax, else `""` ("no referring site"). An IP address is never kept:
+/// an IPv6 literal fails the characters (its brackets and colons), and a
+/// host whose last label is all digits is an IPv4 address in one of its
+/// forms (no top-level domain is numeric). A host of this Clax is one of `own` (the site's
 /// own host and the public origin's host, without ports) or a host under
 /// `site_domain` (any artifact's site).
 pub fn referrer(raw: &str, own: &[&str], site_domain: Option<&str>) -> String {
@@ -169,7 +172,11 @@ pub fn referrer(raw: &str, own: &[&str], site_domain: Option<&str>) -> String {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
         && !host.starts_with('.')
         && !host.ends_with('.')
-        && !host.contains("..");
+        && !host.contains("..")
+        && !host
+            .rsplit('.')
+            .next()
+            .is_some_and(|tld| tld.bytes().all(|b| b.is_ascii_digit()));
     if !well_formed {
         return String::new();
     }
@@ -701,7 +708,6 @@ mod tests {
         assert_eq!(r("News.Example.COM"), "news.example.com");
         assert_eq!(r("xn--bcher-kva.example"), "xn--bcher-kva.example");
         assert_eq!(r("localhost"), "localhost");
-        assert_eq!(r("10.0.0.1"), "10.0.0.1");
         let longest = format!("{}.com", "a".repeat(REFERRER_MAX - 4));
         assert_eq!(r(&longest), longest);
         for none in [
@@ -715,6 +721,12 @@ mod tests {
             "example.com.",
             "a..b",
             "[::1]",
+            "::1",
+            "[2001:db8::1]",
+            "10.0.0.1",
+            "203.0.113.7",
+            "3232235777",
+            "0x7f.1",
             "bücher.example",
             "notes.sites.clax.example",
             "NOTES.sites.clax.example",

@@ -637,6 +637,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!((v.referrer.as_str(), v.load_ms, v.lcp_ms), ("", None, None));
+        // An IP address is no referring site: it is never stored.
+        for ip in ["192.0.2.1", "[2001:db8::1]"] {
+            let v = view_of(
+                &r(serde_json::json!({"file": "a.html", "version": 1, "referrer": ip})),
+                &cx,
+            )
+            .unwrap();
+            assert_eq!(v.referrer, "", "{ip}");
+        }
         for bad in [
             serde_json::json!({"file": "", "version": 1}),
             serde_json::json!({"file": "a\nb.html", "version": 1}),
