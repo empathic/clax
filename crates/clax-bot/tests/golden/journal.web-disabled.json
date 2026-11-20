@@ -32,7 +32,7 @@
             "ok": false,
             "op": "web.search",
             "result": {
-              "capability": "web.search",
+              "capability": "clax-web:search",
               "code": "web_disabled",
               "message": "clax.web.search is not available to this run"
             },
@@ -44,7 +44,7 @@
             "ok": false,
             "op": "web.fetch",
             "result": {
-              "capability": "web.fetch",
+              "capability": "clax-web:fetch",
               "code": "web_disabled",
               "message": "clax.web.fetch is not available to this run"
             },
@@ -123,7 +123,7 @@
             "ok": false,
             "op": "web.search",
             "result": {
-              "capability": "web.search",
+              "capability": "clax-web:search",
               "code": "web_disabled",
               "message": "clax.web.search is not available to this run"
             },
@@ -135,7 +135,7 @@
             "ok": false,
             "op": "web.fetch",
             "result": {
-              "capability": "web.fetch",
+              "capability": "clax-web:fetch",
               "code": "web_disabled",
               "message": "clax.web.fetch is not available to this run"
             },

@@ -1,6 +1,6 @@
 //! Browser sessions on a public URL (spec
 //! 2026-11-19-claxbot-browser-design §4.5, §8.4): which URLs a session
-//! may open and go to, by `browser.open.url`'s [`UrlRule`] and the one
+//! may open and go to, by `clax-browser:open-url`'s [`UrlRule`] and the one
 //! URL check [`admit`], and what the page's own requests may reach
 //! ([`BrowsePolicy`]).
 //!

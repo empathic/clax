@@ -1080,7 +1080,7 @@ interface Done {
     }
 
     /// The system prompt of a thread request holding
-    /// `browser.open.artifact`, and holding it and `browser.open.url`,
+    /// `clax-browser:open-artifact`, and holding it and `clax-browser:open-url`,
     /// without web, against their goldens.
     #[test]
     fn the_system_prompt_with_the_browser_is_pinned() {

@@ -526,8 +526,8 @@ describe("Admin › Web", () => {
 });
 
 describe("Admin › Browser", () => {
-  const GRANT = { id: "g1", capability: "browser.open.artifact" as const, grantee: "everyone" as const, person: null, issued_at: "2026-10-21T09:00:00Z" };
-  const SAMS = { id: "g2", capability: "browser.open.artifact" as const, grantee: "person" as const, person: "p_sam", issued_at: "2026-10-21T09:05:00Z" };
+  const GRANT = { id: "g1", capability: "clax-browser:open-artifact" as const, grantee: "everyone" as const, person: null, issued_at: "2026-10-21T09:00:00Z" };
+  const SAMS = { id: "g2", capability: "clax-browser:open-artifact" as const, grantee: "person" as const, person: "p_sam", issued_at: "2026-10-21T09:05:00Z" };
 
   it("the_browser_page_shows_and_saves_its_settings", async () => {
     const calls = stubFetch({
@@ -591,30 +591,30 @@ describe("Admin › Browser", () => {
       "GET /api/admin/bot/grants": { grants: [SAMS, GRANT] },
       "GET /api/admin/people": [SAM, MIA],
       "DELETE /api/admin/bot/grants/g1": { grants: [SAMS] },
-      "POST /api/admin/bot/grants": { grants: [SAMS, { ...SAMS, id: "g3", capability: "browser.open.content" }] },
+      "POST /api/admin/bot/grants": { grants: [SAMS, { ...SAMS, id: "g3", capability: "clax-browser:open-content" }] },
     });
     const m = mount(AdminBrowser, {});
     await settle();
-    const card = m.root.querySelector<HTMLElement>("#cap-browser-open-artifact-h")!.closest("section")!;
+    const card = m.root.querySelector<HTMLElement>("#cap-clax-browser-open-artifact-h")!.closest("section")!;
     // Everyone on this instance first, then each person by name.
     expect([...card.querySelectorAll(".capgrants li span")].map(x => x.textContent)).toEqual(["Everyone on this instance", "Sam"]);
     // The other cards show none of this card's grants.
-    const content = m.root.querySelector<HTMLElement>("#cap-browser-open-content-h")!.closest("section")!;
+    const content = m.root.querySelector<HTMLElement>("#cap-clax-browser-open-content-h")!.closest("section")!;
     expect(content.querySelectorAll(".capgrants li").length).toBe(0);
     click(card.querySelector<HTMLElement>('button[aria-label="Revoke the run\'s clax from everyone on this instance"]')!);
     await settle();
     expect(calls.find(c => c.method === "DELETE")!.url).toBe("/api/admin/bot/grants/g1");
     expect([...card.querySelectorAll(".capgrants li span")].map(x => x.textContent)).toEqual(["Sam"]);
     // Granting to a person names them.
-    choose(content.querySelector<HTMLSelectElement>("#cap-browser-open-content-to")!, "p_sam");
+    choose(content.querySelector<HTMLSelectElement>("#cap-clax-browser-open-content-to")!, "p_sam");
     click([...content.querySelectorAll("button")].find(b => b.textContent === "Grant")!);
     await settle();
-    expect(calls.find(c => c.method === "POST")!.body).toEqual({ capability: "browser.open.content", grantee: { person: "p_sam" } });
+    expect(calls.find(c => c.method === "POST")!.body).toEqual({ capability: "clax-browser:open-content", grantee: { person: "p_sam" } });
     expect([...content.querySelectorAll(".capgrants li span")].map(x => x.textContent)).toEqual(["Sam"]);
   });
 
   it("a grant config.toml made says so and is revoked like any other", async () => {
-    const FETCH = { id: "g9", capability: "web.fetch" as const, grantee: "everyone" as const, person: null, granter: "config" as const, issued_at: "2026-10-21T09:00:00Z" };
+    const FETCH = { id: "g9", capability: "clax-web:fetch" as const, grantee: "everyone" as const, person: null, granter: "config" as const, issued_at: "2026-10-21T09:00:00Z" };
     const calls = stubFetch({
       "GET /api/admin/web": webSettings(),
       "GET /api/admin/bot/grants": { grants: [FETCH] },
@@ -623,7 +623,7 @@ describe("Admin › Browser", () => {
     });
     const m = mount(AdminWeb, {});
     await settle();
-    const card = m.root.querySelector<HTMLElement>("#cap-web-fetch-h")!.closest("section")!;
+    const card = m.root.querySelector<HTMLElement>("#cap-clax-web-fetch-h")!.closest("section")!;
     expect(card.querySelector(".capgrants li span")!.textContent).toBe("Everyone on this instance · from config.toml");
     click(card.querySelector<HTMLElement>('button[aria-label="Revoke web fetch from everyone on this instance"]')!);
     await settle();

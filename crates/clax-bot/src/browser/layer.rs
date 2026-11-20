@@ -268,7 +268,7 @@ pub const ROWS: &[Row] = &[
         "share",
         O,
         &[
-            opt("ops", Kind::Any),
+            opt("actions", Kind::Any),
             opt("expires", Kind::Int),
             opt("origins", Kind::Any),
         ],
@@ -684,7 +684,7 @@ pub const DECLS: &[Decl] = &[
     d(
         "Page",
         "share",
-        "share(opts?: { ops?: (\"read\" | \"act\" | \"navigate\" | \"record\" | \"close\")[]; expires?: number; origins?: string[] }): Promise<Page>;",
+        "share(opts?: { actions?: (\"read\" | \"act\" | \"navigate\" | \"record\" | \"close\")[]; expires?: number; origins?: string[] }): Promise<Page>;",
         "Clax's own: a new page of this session that allows only `ops`, for `expires` seconds, navigating only to `origins`, and nothing this page does not; its other calls throw `browser_forbidden`.",
     ),
     d(
@@ -1059,7 +1059,7 @@ pub fn row(op: Op, action: &str, on_page: bool) -> Option<&'static Row> {
 }
 
 /// The class a call of `row` is of (spec §18.3), which a capability's
-/// `ops` caveat holds; `None` for `share` and `revoke`, which need none.
+/// `actions` caveat holds; `None` for `share` and `revoke`, which need none.
 #[must_use]
 pub fn class(row: &Row) -> Option<Class> {
     const READS: &[&str] = &[

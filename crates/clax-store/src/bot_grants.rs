@@ -37,21 +37,21 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Every capability a grant may name, in the order they are shown.
 pub const CAPABILITIES: [&str; 5] = [
-    "web.search",
-    "web.fetch",
-    "browser.open.url",
-    "browser.open.artifact",
-    "browser.open.content",
+    "clax-web:search",
+    "clax-web:fetch",
+    "clax-browser:open-url",
+    "clax-browser:open-artifact",
+    "clax-browser:open-content",
 ];
 
 /// The retrieval capabilities.
-pub const WEB_CAPABILITIES: [&str; 2] = ["web.search", "web.fetch"];
+pub const WEB_CAPABILITIES: [&str; 2] = ["clax-web:search", "clax-web:fetch"];
 
 /// The running browser's capabilities, one per source kind.
 pub const BROWSER_CAPABILITIES: [&str; 3] = [
-    "browser.open.url",
-    "browser.open.artifact",
-    "browser.open.content",
+    "clax-browser:open-url",
+    "clax-browser:open-artifact",
+    "clax-browser:open-content",
 ];
 
 /// The grantee of an instance-wide grant.
@@ -323,8 +323,8 @@ pub(crate) fn grants_from_main(tx: &Transaction<'_>) -> Result<()> {
     let off_people = web_off_people_in(tx)?;
     let people = person_keys_in(tx)?;
     for (cap, key) in [
-        ("web.search", "web.search.enabled"),
-        ("web.fetch", "web.fetch.enabled"),
+        ("clax-web:search", "web.search.enabled"),
+        ("clax-web:fetch", "web.fetch.enabled"),
     ] {
         if !on(key)? {
             continue;
@@ -565,8 +565,8 @@ impl Store {
         use crate::bot_settings::{Setting, SettingSource};
         let eff = self.effective_bot_settings()?;
         let caps: Vec<&str> = [
-            ("web.search", Setting::WebSearchEnabled),
-            ("web.fetch", Setting::WebFetchEnabled),
+            ("clax-web:search", Setting::WebSearchEnabled),
+            ("clax-web:fetch", Setting::WebFetchEnabled),
         ]
         .into_iter()
         .filter(|(_, switch)| {
@@ -772,13 +772,13 @@ mod tests {
     fn an_instance_wide_grant_issues_a_child_to_each_person_and_to_a_new_one() {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
-        let root = admin_everyone(&st, "browser.open.content");
+        let root = admin_everyone(&st, "clax-browser:open-content");
         for p in [OWNER, sam.as_str()] {
             let caps = st.person_caps(p).unwrap();
-            let c = &caps["browser.open.content"];
+            let c = &caps["clax-browser:open-content"];
             assert_eq!(c.granted_by.as_deref(), Some(root.id.as_str()), "{p}");
             assert!(c.reaches_runs(), "{p}");
-            assert!(!caps["browser.open.url"].reaches_runs(), "{p}");
+            assert!(!caps["clax-browser:open-url"].reaches_runs(), "{p}");
         }
         let child = st
             .cap_grants(&GrantFilter {
@@ -792,7 +792,7 @@ mod tests {
 
         let mia = person(&st, "Mia", 2);
         assert!(
-            st.person_caps(&mia).unwrap()["browser.open.content"].reaches_runs(),
+            st.person_caps(&mia).unwrap()["clax-browser:open-content"].reaches_runs(),
             "a person who joins later gets the child"
         );
     }
@@ -801,20 +801,20 @@ mod tests {
     fn revoking_a_grant_ends_its_children_transitively() {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
-        let root = admin_everyone(&st, "web.fetch");
-        let other = admin_everyone(&st, "web.search");
+        let root = admin_everyone(&st, "clax-web:fetch");
+        let other = admin_everyone(&st, "clax-web:search");
         let ended = st.revoke_cap_grant(DAEMON, &root.id).unwrap();
         assert_eq!(ended.len(), 3, "the root and two children: {ended:?}");
         assert_eq!(ended[0], root.id);
         for p in [OWNER, sam.as_str()] {
             let caps = st.person_caps(p).unwrap();
-            assert_eq!(caps["web.fetch"], PersonCap::default(), "{p}");
-            assert!(caps["web.search"].reaches_runs(), "{p}");
+            assert_eq!(caps["clax-web:fetch"], PersonCap::default(), "{p}");
+            assert!(caps["clax-web:search"].reaches_runs(), "{p}");
         }
         assert!(st.revoke_cap_grant(DAEMON, &root.id).unwrap().is_empty());
         assert!(
             st.cap_grants(&GrantFilter {
-                capability: Some("web.fetch".into()),
+                capability: Some("clax-web:fetch".into()),
                 live: true,
                 ..GrantFilter::default()
             })
@@ -832,40 +832,40 @@ mod tests {
     fn a_person_revokes_and_reissues_only_their_own() {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
-        let root = admin_everyone(&st, "browser.open.artifact");
-        let mine = st.person_caps(&sam).unwrap()["browser.open.artifact"]
+        let root = admin_everyone(&st, "clax-browser:open-artifact");
+        let mine = st.person_caps(&sam).unwrap()["clax-browser:open-artifact"]
             .runs_grant
             .clone()
             .unwrap();
         assert_eq!(st.revoke_cap_grant(DAEMON, &mine).unwrap(), [mine.as_str()]);
-        assert!(!st.person_caps(&sam).unwrap()["browser.open.artifact"].reaches_runs());
+        assert!(!st.person_caps(&sam).unwrap()["clax-browser:open-artifact"].reaches_runs());
         assert!(
-            st.person_caps(OWNER).unwrap()["browser.open.artifact"].reaches_runs(),
+            st.person_caps(OWNER).unwrap()["clax-browser:open-artifact"].reaches_runs(),
             "the owner's is their own"
         );
         assert!(root.live());
         let again = st
             .issue_cap_grant(
                 DAEMON,
-                "browser.open.artifact",
+                "clax-browser:open-artifact",
                 &sam,
                 &runs(&sam),
                 Some(&root.id),
             )
             .unwrap();
         assert_eq!(again.granter, sam);
-        assert!(st.person_caps(&sam).unwrap()["browser.open.artifact"].reaches_runs());
+        assert!(st.person_caps(&sam).unwrap()["clax-browser:open-artifact"].reaches_runs());
         let e = st
             .issue_cap_grant(
                 DAEMON,
-                "browser.open.artifact",
+                "clax-browser:open-artifact",
                 &sam,
                 &runs(&sam),
                 Some(&root.id),
             )
             .unwrap_err();
         assert_eq!(code(&e), "grant_exists");
-        let mine = st.person_caps(OWNER).unwrap()["browser.open.artifact"]
+        let mine = st.person_caps(OWNER).unwrap()["clax-browser:open-artifact"]
             .runs_grant
             .clone()
             .unwrap();
@@ -873,7 +873,7 @@ mod tests {
         let e = st
             .issue_cap_grant(
                 DAEMON,
-                "browser.open.artifact",
+                "clax-browser:open-artifact",
                 &sam,
                 &runs(OWNER),
                 Some(&root.id),
@@ -887,10 +887,10 @@ mod tests {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
         let to_sam = |parent: Option<&str>| {
-            st.issue_cap_grant(DAEMON, "browser.open.url", &sam, &runs(&sam), parent)
+            st.issue_cap_grant(DAEMON, "clax-browser:open-url", &sam, &runs(&sam), parent)
         };
         assert_eq!(code(&to_sam(None).unwrap_err()), "not_held");
-        let search = admin_everyone(&st, "web.search");
+        let search = admin_everyone(&st, "clax-web:search");
         assert_eq!(
             code(&to_sam(Some(&search.id)).unwrap_err()),
             "not_held",
@@ -900,7 +900,7 @@ mod tests {
         let to_mia = st
             .issue_cap_grant(
                 DAEMON,
-                "browser.open.url",
+                "clax-browser:open-url",
                 GRANTER_INSTANCE,
                 &Grantee::Person(mia.clone()).as_text(),
                 None,
@@ -911,12 +911,12 @@ mod tests {
             "not_held",
             "another person's grant"
         );
-        assert!(st.person_caps(&mia).unwrap()["browser.open.url"].reaches_runs());
+        assert!(st.person_caps(&mia).unwrap()["clax-browser:open-url"].reaches_runs());
         st.revoke_cap_grant(DAEMON, &to_mia.id).unwrap();
         let e = st
             .issue_cap_grant(
                 DAEMON,
-                "browser.open.url",
+                "clax-browser:open-url",
                 &mia,
                 &runs(&mia),
                 Some(&to_mia.id),
@@ -924,7 +924,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(code(&e), "not_held", "a revoked parent");
         let e = st
-            .issue_cap_grant(DAEMON, "browser.open.url", &sam, EVERYONE, None)
+            .issue_cap_grant(DAEMON, "clax-browser:open-url", &sam, EVERYONE, None)
             .unwrap_err();
         assert_eq!(code(&e), "not_held", "only the instance grants to people");
         let e = st
@@ -937,14 +937,14 @@ mod tests {
     fn every_issue_and_revoke_is_one_bot_grant() {
         let (_d, st) = store();
         let sam = person(&st, "Sam", 1);
-        let root = admin_everyone(&st, "web.search");
+        let root = admin_everyone(&st, "clax-web:search");
         let events = grant_events(&st);
         assert_eq!(events.len(), 3, "the root and a child each: {events:?}");
         assert_eq!(events[0]["op"], "issue");
         assert_eq!(events[0]["grant"], root.id.as_str());
         assert_eq!(events[0]["grantee"], EVERYONE);
         assert_eq!(events[0]["granter"], GRANTER_INSTANCE);
-        assert_eq!(events[0]["capability"], "web.search");
+        assert_eq!(events[0]["capability"], "clax-web:search");
         assert!(events[0].get("parent").is_none());
         assert!(
             events[1..]
@@ -992,14 +992,14 @@ mod tests {
         assert_eq!(g.len(), 1, "{g:?}");
         assert_eq!(
             (g[0].capability.as_str(), g[0].granter.as_str()),
-            ("web.fetch", GRANTER_CONFIG)
+            ("clax-web:fetch", GRANTER_CONFIG)
         );
-        assert!(st.person_caps(OWNER).unwrap()["web.fetch"].reaches_runs());
+        assert!(st.person_caps(OWNER).unwrap()["clax-web:fetch"].reaches_runs());
         // A restart writes nothing more, and after a revoke nothing again.
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
         st.revoke_cap_grant(DAEMON, &g[0].id).unwrap();
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
-        assert!(!st.person_caps(OWNER).unwrap()["web.fetch"].reaches_runs());
+        assert!(!st.person_caps(OWNER).unwrap()["clax-web:fetch"].reaches_runs());
         for cap in BROWSER_CAPABILITIES {
             assert!(
                 st.cap_grants(&GrantFilter {
@@ -1044,11 +1044,11 @@ mod tests {
         assert_eq!(st.grant_web_from_config(DAEMON).unwrap().len(), 1);
         for p in [OWNER, sam.as_str()] {
             assert!(
-                st.person_caps(p).unwrap()["web.fetch"].reaches_runs(),
+                st.person_caps(p).unwrap()["clax-web:fetch"].reaches_runs(),
                 "{p}"
             );
         }
-        let mias = st.person_caps(&mia).unwrap()["web.fetch"].clone();
+        let mias = st.person_caps(&mia).unwrap()["clax-web:fetch"].clone();
         assert!(mias.granted_by.is_some(), "the admin grant covers her");
         assert_eq!(mias.runs_grant, None, "her runs are not granted it");
         let events = grant_events(&st);
@@ -1065,7 +1065,7 @@ mod tests {
         let to_sam = st
             .issue_cap_grant(
                 DAEMON,
-                "web.fetch",
+                "clax-web:fetch",
                 GRANTER_INSTANCE,
                 &Grantee::Person(sam.clone()).as_text(),
                 None,
@@ -1075,7 +1075,7 @@ mod tests {
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
         st.revoke_cap_grant(DAEMON, &to_sam.id).unwrap();
         assert!(st.grant_web_from_config(DAEMON).unwrap().is_empty());
-        assert!(!st.person_caps(OWNER).unwrap()["web.fetch"].reaches_runs());
+        assert!(!st.person_caps(OWNER).unwrap()["clax-web:fetch"].reaches_runs());
         assert!(
             st.cap_grants(&GrantFilter {
                 grantee: Some(EVERYONE.into()),
@@ -1097,7 +1097,7 @@ mod tests {
             let to_ben = || {
                 st.issue_cap_grant(
                     DAEMON,
-                    "browser.open.url",
+                    "clax-browser:open-url",
                     GRANTER_INSTANCE,
                     &Grantee::Person(ben.clone()).as_text(),
                     None,
@@ -1105,18 +1105,18 @@ mod tests {
                 .unwrap()
             };
             let (first, second) = if everyone_first {
-                let e = admin_everyone(&st, "browser.open.url");
+                let e = admin_everyone(&st, "clax-browser:open-url");
                 (e, to_ben())
             } else {
                 let p = to_ben();
-                (p, admin_everyone(&st, "browser.open.url"))
+                (p, admin_everyone(&st, "clax-browser:open-url"))
             };
-            let before = st.person_caps(&ben).unwrap()["browser.open.url"].clone();
+            let before = st.person_caps(&ben).unwrap()["clax-browser:open-url"].clone();
             assert!(before.reaches_runs());
             let old_runs = before.runs_grant.clone().unwrap();
             let n = grant_events(&st).len();
             st.revoke_cap_grant(DAEMON, &first.id).unwrap();
-            let after = st.person_caps(&ben).unwrap()["browser.open.url"].clone();
+            let after = st.person_caps(&ben).unwrap()["clax-browser:open-url"].clone();
             assert_eq!(
                 after.granted_by.as_deref(),
                 Some(second.id.as_str()),
@@ -1143,13 +1143,13 @@ mod tests {
             if everyone_first {
                 // The owner held it only from everyone's grant: it ends.
                 assert_eq!(
-                    st.person_caps(OWNER).unwrap()["browser.open.url"],
+                    st.person_caps(OWNER).unwrap()["clax-browser:open-url"],
                     PersonCap::default()
                 );
             }
             // A person's own revoke is their choice: nothing is reissued.
             st.revoke_cap_grant(DAEMON, &new_runs).unwrap();
-            assert!(!st.person_caps(&ben).unwrap()["browser.open.url"].reaches_runs());
+            assert!(!st.person_caps(&ben).unwrap()["clax-browser:open-url"].reaches_runs());
         }
     }
 }

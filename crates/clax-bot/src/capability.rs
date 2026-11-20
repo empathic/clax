@@ -71,11 +71,11 @@ impl Capability {
     #[must_use]
     pub fn id(self) -> &'static str {
         match self {
-            Capability::WebSearch => "web.search",
-            Capability::WebFetch => "web.fetch",
-            Capability::OpenUrl => "browser.open.url",
-            Capability::OpenArtifact => "browser.open.artifact",
-            Capability::OpenContent => "browser.open.content",
+            Capability::WebSearch => "clax-web:search",
+            Capability::WebFetch => "clax-web:fetch",
+            Capability::OpenUrl => "clax-browser:open-url",
+            Capability::OpenArtifact => "clax-browser:open-artifact",
+            Capability::OpenContent => "clax-browser:open-content",
         }
     }
 
@@ -197,7 +197,7 @@ pub struct OpenGrant {
     /// too).
     pub max_per_run: u32,
     /// For [`Capability::OpenUrl`], which URLs a session may open and go
-    /// to (`browser.open.url.url_rule`).
+    /// to (`browser.open-url.url_rule`).
     pub url_rule: Option<UrlRule>,
 }
 
@@ -231,7 +231,7 @@ pub struct Capabilities {
 
 /// Which URLs a capability that takes one admits (spec §4.5), granted
 /// separately to `web.fetch` (`web.fetch.url_rule`) and
-/// `browser.open.url` (`browser.open.url.url_rule`, which also governs
+/// `clax-browser:open-url` (`browser.open-url.url_rule`, which also governs
 /// every `goto` out of a session's origin). [`crate::web::access::admit`]
 /// applies it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -550,7 +550,7 @@ mod tests {
         }
         let fetch_only = |c: Capability| c == Capability::WebFetch;
         let caps = Capabilities::now(&st, OWNER, &fetch_only).unwrap();
-        assert_eq!(caps.live(), CapSet::parse("web.fetch"));
+        assert_eq!(caps.live(), CapSet::parse("clax-web:fetch"));
         for c in Capability::ALL
             .into_iter()
             .filter(|c| *c != Capability::WebFetch)
@@ -611,20 +611,20 @@ mod tests {
         let all: CapSet = Capability::ALL.into_iter().collect();
         assert_eq!(
             all.as_str(),
-            "browser.open.artifact,browser.open.content,browser.open.url,web.fetch,web.search"
+            "clax-browser:open-artifact,clax-browser:open-content,clax-browser:open-url,clax-web:fetch,clax-web:search"
         );
         assert_eq!(CapSet::parse(&all.as_str()), all);
         assert_eq!(
-            CapSet::parse("web.search,web.crawl,,browser.open.url,web.search").as_str(),
-            "browser.open.url,web.search",
+            CapSet::parse("clax-web:search,web.crawl,,clax-browser:open-url,clax-web:search").as_str(),
+            "clax-browser:open-url,clax-web:search",
             "unknown parts ignored, each once"
         );
         assert_eq!(CapSet::parse("").as_str(), "");
         for c in Capability::ALL {
             assert_eq!(Capability::parse(c.id()), Some(c));
         }
-        assert!(CapSet::parse("browser.open.content").any_of(Family::Browser));
-        assert!(!CapSet::parse("browser.open.content").any_of(Family::Web));
+        assert!(CapSet::parse("clax-browser:open-content").any_of(Family::Browser));
+        assert!(!CapSet::parse("clax-browser:open-content").any_of(Family::Web));
     }
 
     #[test]
@@ -640,7 +640,7 @@ mod tests {
         let caps = now(&st, OWNER);
         assert_eq!(
             caps.live(),
-            CapSet::parse("browser.open.artifact,browser.open.content")
+            CapSet::parse("clax-browser:open-artifact,clax-browser:open-content")
         );
         assert_eq!(
             caps.get(Capability::OpenArtifact),

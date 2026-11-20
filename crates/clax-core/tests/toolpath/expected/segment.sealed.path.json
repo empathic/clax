@@ -6144,7 +6144,7 @@
           "change": {
             "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
               "structural": {
-                "capability": "browser.open.content",
+                "capability": "clax-browser:open-content",
                 "grant": "01JBCB0T000000000000000G02",
                 "grantee": "runs_of:u_77c0zz",
                 "granter": "u_77c0zz",
@@ -6165,7 +6165,7 @@
               "v": 1,
               "via": "shell"
             },
-            "description": "Granted browser.open.content to runs_of:u_77c0zz (grant 01JBCB0T000000000000000G02, under grant 01JBCB0T000000000000000G01)"
+            "description": "Granted clax-browser:open-content to runs_of:u_77c0zz (grant 01JBCB0T000000000000000G02, under grant 01JBCB0T000000000000000G01)"
           },
           "step": {
             "actor": "human:clax-owner",
@@ -6180,7 +6180,7 @@
           "change": {
             "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/run/01JBCB0T000000000000000R01": {
               "structural": {
-                "capability": "browser.open.content",
+                "capability": "clax-browser:open-content",
                 "credits_milli": 13,
                 "kind": "content",
                 "ms": 300000,
@@ -6205,7 +6205,7 @@
               "v": 1,
               "via": "daemon"
             },
-            "description": "ClaxBot run 01JBCB0T000000000000000R01 ended browser session bs-7a2c91 (idle) (browser.open.content, step 4, 0.013 credits)",
+            "description": "ClaxBot run 01JBCB0T000000000000000R01 ended browser session bs-7a2c91 (idle) (clax-browser:open-content, step 4, 0.013 credits)",
             "refs": [
               {
                 "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",

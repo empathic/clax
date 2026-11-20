@@ -1377,8 +1377,8 @@ impl Default for BotWebFetch {
 /// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §11.1),
 /// the stored `browser.*` settings of the same names that the file or the
 /// environment overrides (`[bot.browser] call_seconds` is
-/// `browser.call_seconds`, `[bot.browser.open.url] url_rule` is
-/// `browser.open.url.url_rule`). Each `browser.open` kind is offered on
+/// `browser.call_seconds`, `[bot.browser.open-url] url_rule` is
+/// `browser.open-url.url_rule`). Each `open-*` action of `clax-browser` is offered on
 /// its own; none is granted to anyone here (grants are the admin page's).
 /// The Cloudflare account and token are the web tools' (`[bot.web]`), set
 /// at `/admin`.
@@ -1392,7 +1392,15 @@ pub struct BotBrowser {
     /// A run's browser sessions open at once: 1 to 4 (default 1).
     pub max_open_per_run: u64,
     pub session: BotBrowserSession,
-    pub open: BotBrowserOpen,
+    /// `[bot.browser.open-url]`.
+    #[serde(rename = "open-url")]
+    pub open_url: BotBrowserOpenUrl,
+    /// `[bot.browser.open-artifact]`.
+    #[serde(rename = "open-artifact")]
+    pub open_artifact: BotBrowserOpenKind,
+    /// `[bot.browser.open-content]`.
+    #[serde(rename = "open-content")]
+    pub open_content: BotBrowserOpenKind,
 }
 
 impl Default for BotBrowser {
@@ -1402,7 +1410,9 @@ impl Default for BotBrowser {
             max_concurrent: 2,
             max_open_per_run: 1,
             session: BotBrowserSession::default(),
-            open: BotBrowserOpen::default(),
+            open_url: BotBrowserOpenUrl::default(),
+            open_artifact: BotBrowserOpenKind::default(),
+            open_content: BotBrowserOpenKind::default(),
         }
     }
 }
@@ -1428,17 +1438,8 @@ impl Default for BotBrowserSession {
     }
 }
 
-/// `[bot.browser.open]`: the three source kinds a browser opens on, each
-/// a capability of its own.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct BotBrowserOpen {
-    pub url: BotBrowserOpenUrl,
-    pub artifact: BotBrowserOpenKind,
-    pub content: BotBrowserOpenKind,
-}
-
-/// `[bot.browser.open.url]`: sessions on a public URL.
+/// `[bot.browser.open-url]`: sessions on a public URL, the
+/// `clax-browser` action `open-url`.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct BotBrowserOpenUrl {
@@ -1465,7 +1466,7 @@ impl Default for BotBrowserOpenUrl {
     }
 }
 
-/// `[bot.browser.open.artifact]` and `[bot.browser.open.content]`:
+/// `[bot.browser.open-artifact]` and `[bot.browser.open-content]`:
 /// sessions on the run's clax, and on content the script supplies.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -1536,20 +1537,20 @@ fn bot_browser_problem(b: &BotBrowser) -> Option<(&'static str, String)> {
             7_200,
         ),
         (
-            "browser.open.url.max_per_run",
-            b.open.url.max_per_run,
+            "browser.open-url.max_per_run",
+            b.open_url.max_per_run,
             1,
             ANY,
         ),
         (
-            "browser.open.artifact.max_per_run",
-            b.open.artifact.max_per_run,
+            "browser.open-artifact.max_per_run",
+            b.open_artifact.max_per_run,
             1,
             ANY,
         ),
         (
-            "browser.open.content.max_per_run",
-            b.open.content.max_per_run,
+            "browser.open-content.max_per_run",
+            b.open_content.max_per_run,
             1,
             ANY,
         ),
@@ -1564,18 +1565,18 @@ fn bot_browser_problem(b: &BotBrowser) -> Option<(&'static str, String)> {
         }
     }
     if !matches!(
-        b.open.url.url_rule.trim(),
+        b.open_url.url_rule.trim(),
         "sender" | "sourced" | "allowlist" | "any_public"
     ) {
         return Some((
-            "browser.open.url.url_rule",
+            "browser.open-url.url_rule",
             format!(
-                "browser.open.url.url_rule must be sender, sourced, allowlist or any_public, not \"{}\"",
-                b.open.url.url_rule
+                "browser.open-url.url_rule must be sender, sourced, allowlist or any_public, not \"{}\"",
+                b.open_url.url_rule
             ),
         ));
     }
-    allowlist_problem("browser.open.url.allowlist", &b.open.url.allowlist)
+    allowlist_problem("browser.open-url.allowlist", &b.open_url.allowlist)
 }
 
 /// Why `[bot.web]` `w` is refused, as (key under `[bot]`, message); `None`
@@ -2722,36 +2723,36 @@ mod tests {
         );
         assert_eq!(
             (
-                b.open.url.enabled,
-                b.open.url.url_rule.as_str(),
-                b.open.url.max_per_run
+                b.open_url.enabled,
+                b.open_url.url_rule.as_str(),
+                b.open_url.max_per_run
             ),
             (false, "sender", 5)
         );
         assert_eq!(
-            (b.open.artifact.enabled, b.open.artifact.max_per_run),
+            (b.open_artifact.enabled, b.open_artifact.max_per_run),
             (false, 10)
         );
         assert_eq!(
-            (b.open.content.enabled, b.open.content.max_per_run),
+            (b.open_content.enabled, b.open_content.max_per_run),
             (false, 10)
         );
         let c = under(
-            "[bot.browser]\ncall_seconds = 90\n[bot.browser.open.artifact]\nenabled = true\n[bot.browser.open.url]\nurl_rule = \"allowlist\"\nallowlist = [\"*.example.com\"]\n[bot.browser.session]\nidle_seconds = 600\n",
+            "[bot.browser]\ncall_seconds = 90\n[bot.browser.open-artifact]\nenabled = true\n[bot.browser.open-url]\nurl_rule = \"allowlist\"\nallowlist = [\"*.example.com\"]\n[bot.browser.session]\nidle_seconds = 600\n",
             &[("CLAX_BOT__BROWSER__MAX_CONCURRENT", "5")],
         );
         let b = c.bot().unwrap().browser;
-        assert!(b.open.artifact.enabled && !b.open.content.enabled);
+        assert!(b.open_artifact.enabled && !b.open_content.enabled);
         assert_eq!((b.call_seconds, b.max_concurrent), (90, 5));
         assert_eq!(b.session.idle_seconds, 600);
-        assert_eq!(b.open.url.allowlist, vec!["*.example.com".to_string()]);
+        assert_eq!(b.open_url.allowlist, vec!["*.example.com".to_string()]);
         assert_eq!(c.source("bot.browser.call_seconds"), Source::File);
-        assert_eq!(c.source("bot.browser.open.artifact.enabled"), Source::File);
+        assert_eq!(c.source("bot.browser.open-artifact.enabled"), Source::File);
         assert_eq!(
             c.source("bot.browser.max_concurrent"),
             Source::Env("CLAX_BOT__BROWSER__MAX_CONCURRENT".into())
         );
-        assert_eq!(c.source("bot.browser.open.url.enabled"), Source::Default);
+        assert_eq!(c.source("bot.browser.open-url.enabled"), Source::Default);
     }
 
     #[test]
@@ -2813,9 +2814,9 @@ mod tests {
             "[bot.browser]\nmax_open_per_run = 5\n",
             "[bot.browser.session]\nidle_seconds = 59\n",
             "[bot.browser.session]\nmax_seconds = 7201\n",
-            "[bot.browser.open.artifact]\nmax_per_run = 0\n",
-            "[bot.browser.open.url]\nurl_rule = \"open\"\n",
-            "[bot.browser.open.url]\nallowlist = [\"Example.com\"]\n",
+            "[bot.browser.open-artifact]\nmax_per_run = 0\n",
+            "[bot.browser.open-url]\nurl_rule = \"open\"\n",
+            "[bot.browser.open-url]\nallowlist = [\"Example.com\"]\n",
             "[bot.browser.browse]\nenabled = true\n",
         ] {
             let c = with(&format!("{t}[serve]\nport = 7481\n"));

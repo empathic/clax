@@ -107,9 +107,9 @@ impl SessionKind {
     /// The capability a session of this kind needs: `browser.open.<kind>`.
     pub fn capability(self) -> &'static str {
         match self {
-            SessionKind::Url => "browser.open.url",
-            SessionKind::Artifact => "browser.open.artifact",
-            SessionKind::Content => "browser.open.content",
+            SessionKind::Url => "clax-browser:open-url",
+            SessionKind::Artifact => "clax-browser:open-artifact",
+            SessionKind::Content => "clax-browser:open-content",
         }
     }
 }
@@ -852,7 +852,7 @@ impl Store {
     /// true: the call reached its source), by op, or by the entry's
     /// `count_as` when it has one (a browser session's open and a test
     /// are counted under the capability of their source kind,
-    /// `browser.open.url`); a key with none is absent. Counted in the
+    /// `clax-browser:open-url`); a key with none is absent. Counted in the
     /// database, without reading the entries' results out. `namespace` is
     /// one of the crate's callers' names, never a script's: it holds no
     /// `%` or `_`.
@@ -929,7 +929,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    caps: "web.fetch,web.search".into(),
+                    caps: "clax-web:fetch,clax-web:search".into(),
                 },
             )
             .unwrap();
@@ -1150,20 +1150,20 @@ mod tests {
         journal(
             5,
             "browser.open",
-            json!({"value": {}, "counted": true, "count_as": "browser.open.url"}),
+            json!({"value": {}, "counted": true, "count_as": "clax-browser:open-url"}),
         );
         journal(
             6,
             "browser.test",
-            json!({"value": {}, "counted": true, "count_as": "browser.open.artifact"}),
+            json!({"value": {}, "counted": true, "count_as": "clax-browser:open-artifact"}),
         );
         let pairs = |m: BTreeMap<String, u32>| m.into_iter().collect::<Vec<_>>();
         assert_eq!(
             pairs(st.bot_spend_counts(&run.id, "browser").unwrap()),
             vec![
-                ("browser.open.artifact".to_string(), 1),
-                ("browser.open.url".to_string(), 1),
-                ("browser.test".to_string(), 2)
+                ("browser.test".to_string(), 2),
+                ("clax-browser:open-artifact".to_string(), 1),
+                ("clax-browser:open-url".to_string(), 1)
             ]
         );
         assert_eq!(
@@ -1404,9 +1404,9 @@ mod tests {
             !st.set_web_choice(DAEMON, OWNER, true).unwrap(),
             "nothing held to turn on"
         );
-        everyone(&st, &["web.search"]);
+        everyone(&st, &["clax-web:search"]);
         assert!(!st.web_choice(OWNER).unwrap(), "fetch is not granted");
-        everyone(&st, &["web.fetch"]);
+        everyone(&st, &["clax-web:fetch"]);
         assert!(st.web_choice(OWNER).unwrap());
         let before = grant_ops(&st).len();
         assert!(!st.set_web_choice(DAEMON, OWNER, true).unwrap());
@@ -1416,8 +1416,8 @@ mod tests {
         assert_eq!(
             grant_ops(&st)[before..],
             [
-                ("revoke".to_string(), "web.search".to_string()),
-                ("revoke".to_string(), "web.fetch".to_string())
+                ("revoke".to_string(), "clax-web:search".to_string()),
+                ("revoke".to_string(), "clax-web:fetch".to_string())
             ],
             "each runs grant revoked, recorded once"
         );
@@ -1454,7 +1454,7 @@ mod tests {
             page: None,
             session: Some(s),
             audit: AuditRecord::new(AuditKind::BotSpend, st.now())
-                .with("capability", "browser.open.artifact")
+                .with("capability", "clax-browser:open-artifact")
                 .with("op", "browser.page"),
         }
     }
@@ -1655,7 +1655,7 @@ mod tests {
         assert_eq!(
             (&e["capability"], &e["reason"], &e["session"], &e["kind"]),
             (
-                &json!("browser.open.artifact"),
+                &json!("clax-browser:open-artifact"),
                 &json!("idle"),
                 &json!("s1"),
                 &json!("artifact")

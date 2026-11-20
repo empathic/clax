@@ -145,7 +145,7 @@
         <input id="aw-max-search" type="number" min="1" step="1" inputmode="numeric" bind:value={maxSearch} readonly={ro("search.max_per_run")} />
       </div>
     </div>
-    <CapabilityCard capability="web.search" label="web search" {grants} {people} onchange={g => { grants = g; }} />
+    <CapabilityCard capability="clax-web:search" label="web search" {grants} {people} onchange={g => { grants = g; }} />
   </section>
   <section class="bcard" aria-labelledby="aw-f">
     <h3 id="aw-f">Fetch</h3>
@@ -169,7 +169,7 @@
         <input id="aw-max-fetch" type="number" min="1" step="1" inputmode="numeric" bind:value={maxFetch} readonly={ro("fetch.max_per_run")} />
       </div>
     </div>
-    <CapabilityCard capability="web.fetch" label="web fetch" {grants} {people} onchange={g => { grants = g; }} />
+    <CapabilityCard capability="clax-web:fetch" label="web fetch" {grants} {people} onchange={g => { grants = g; }} />
   </section>
   {#if local}
     <section class="bcard" aria-labelledby="aw-cf">

@@ -105,9 +105,9 @@ describe("You", () => {
 
   const USAGE = { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] };
   const cap = (o: Partial<MeCapability> & { id: MeCapability["id"] }): MeCapability => ({
-    offered: true, granted: true, on: true, why_off: null, price_milli: o.id.startsWith("web.") ? 50 : 150, per: o.id.startsWith("web.") ? "request" : "minute", ...o,
+    offered: true, granted: true, on: true, why_off: null, price_milli: o.id.startsWith("clax-web:") ? 50 : 150, per: o.id.startsWith("clax-web:") ? "request" : "minute", ...o,
   });
-  const ALL: MeCapability["id"][] = ["web.search", "web.fetch", "browser.open.url", "browser.open.artifact", "browser.open.content"];
+  const ALL: MeCapability["id"][] = ["clax-web:search", "clax-web:fetch", "clax-browser:open-url", "clax-browser:open-artifact", "clax-browser:open-content"];
 
   it("the_me_page_switches_one_capability", async () => {
     let caps = ALL.map(id => cap({ id }));
@@ -130,7 +130,7 @@ describe("You", () => {
     click(m.root.querySelector<HTMLElement>(content)!);
     await settle();
     // One capability alone, by its ID.
-    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ capabilities: { "browser.open.content": false } });
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ capabilities: { "clax-browser:open-content": false } });
     const off = m.root.querySelector<HTMLElement>(content)!;
     expect([off.getAttribute("aria-checked"), off.getAttribute("aria-disabled")]).toEqual(["false", null]);
     expect(m.root.querySelector('[role="switch"][aria-label="Read web pages"]')!.getAttribute("aria-checked")).toBe("true");
@@ -139,10 +139,10 @@ describe("You", () => {
   it("an_offered_capability_not_granted_shows_not_granted_to_you", async () => {
     stubFetch({
       "GET /api/me/bot": meBot({ capabilities: [
-        cap({ id: "web.fetch", granted: false, on: false, why_off: "not_granted" }),
-        cap({ id: "browser.open.url", offered: false, granted: false, on: false, why_off: "not_offered" }),
-        cap({ id: "browser.open.artifact", offered: false, granted: true, on: false, why_off: "not_offered" }),
-        cap({ id: "browser.open.content", granted: true, on: false, why_off: "not_configured" }),
+        cap({ id: "clax-web:fetch", granted: false, on: false, why_off: "not_granted" }),
+        cap({ id: "clax-browser:open-url", offered: false, granted: false, on: false, why_off: "not_offered" }),
+        cap({ id: "clax-browser:open-artifact", offered: false, granted: true, on: false, why_off: "not_offered" }),
+        cap({ id: "clax-browser:open-content", granted: true, on: false, why_off: "not_configured" }),
       ] }),
       "GET /api/me/usage": USAGE,
     });

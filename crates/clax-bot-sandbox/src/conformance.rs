@@ -1715,9 +1715,9 @@ pub fn layer_calls() -> Vec<LayerCall> {
         ),
         page(
             "share",
-            "page.share({ ops: ['read'], expires: 60 })",
+            "page.share({ actions: ['read'], expires: 60 })",
             "share",
-            json!({"ops": ["read"], "expires": 60}),
+            json!({"actions": ["read"], "expires": 60}),
         ),
         page("revoke", "page.revoke()", "revoke", json!({})),
         key(
@@ -2216,7 +2216,7 @@ return [page, l, JSON.stringify({ page }), String(JSON.stringify(page.keyboard))
                 open(),
                 call(
                     "browser.page",
-                    json!(["s1", "share", {"ops": ["read"]}]),
+                    json!(["s1", "share", {"actions": ["read"]}]),
                     answered(json!({"page": "s2", "shown": "<browser page: read>"})),
                 ),
                 call("browser.page", json!(["s2", "title", {}]), answered(json!("T"))),
@@ -2234,7 +2234,7 @@ return [page, l, JSON.stringify({ page }), String(JSON.stringify(page.keyboard))
             ..case(
                 "a_shared_page_shows_its_classes",
                 "const page = await clax.browser.open({ url: 'https://x.test/' });
-const ro = await page.share({ ops: ['read'] });
+const ro = await page.share({ actions: ['read'] });
 state.ro = ro;
 return [ro, JSON.stringify({ ro }), await ro.title(), await ro.revoke(), page];",
                 none(),

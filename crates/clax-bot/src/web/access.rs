@@ -874,7 +874,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    caps: "web.fetch,web.search".into(),
+                    caps: "clax-web:fetch,clax-web:search".into(),
                 },
             )
             .unwrap();

@@ -67,7 +67,7 @@ export type MeBot = {
   capabilities?: MeCapability[];
 };
 /** The five capabilities, each granted, priced and turned off on its own (spec 2026-11-19-claxbot-browser §4.2). */
-export type CapabilityId = "web.search" | "web.fetch" | "browser.open.url" | "browser.open.artifact" | "browser.open.content";
+export type CapabilityId = "clax-web:search" | "clax-web:fetch" | "clax-browser:open-url" | "clax-browser:open-artifact" | "clax-browser:open-content";
 /** One capability as `GET /api/me/bot` shows it to the person: `offered` the admin's switch is on and the host can perform it, `granted` an admin grant gives it to them, `on` it reaches their runs now, `why_off` why not, and what one `per` costs them in milli-credits (null without its line). */
 export type MeCapability = {
   id: CapabilityId; offered: boolean; granted: boolean; on: boolean;

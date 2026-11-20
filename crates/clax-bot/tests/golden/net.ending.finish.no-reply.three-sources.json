@@ -90,7 +90,7 @@
         },
         "at": "2026-10-21T10:00:00.000Z",
         "body": {
-          "capability": "web.search",
+          "capability": "clax-web:search",
           "clax_commit": "<commit>",
           "clax_version": "<version>",
           "credits_milli": 50,
@@ -127,7 +127,7 @@
         },
         "at": "2026-10-21T10:00:00.000Z",
         "body": {
-          "capability": "web.fetch",
+          "capability": "clax-web:fetch",
           "clax_commit": "<commit>",
           "clax_version": "<version>",
           "credits_milli": 100,
@@ -159,7 +159,7 @@
         },
         "at": "2026-10-21T10:00:00.000Z",
         "body": {
-          "capability": "web.fetch",
+          "capability": "clax-web:fetch",
           "clax_commit": "<commit>",
           "clax_version": "<version>",
           "credits_milli": 100,
@@ -191,7 +191,7 @@
         },
         "at": "2026-10-21T10:00:00.000Z",
         "body": {
-          "capability": "web.fetch",
+          "capability": "clax-web:fetch",
           "clax_commit": "<commit>",
           "clax_version": "<version>",
           "credits_milli": 100,
@@ -223,7 +223,7 @@
         },
         "at": "2026-10-21T10:00:00.000Z",
         "body": {
-          "capability": "web.fetch",
+          "capability": "clax-web:fetch",
           "clax_commit": "<commit>",
           "clax_version": "<version>",
           "credits_milli": 0,
@@ -255,7 +255,7 @@
         },
         "at": "2026-10-21T10:00:00.000Z",
         "body": {
-          "capability": "web.fetch",
+          "capability": "clax-web:fetch",
           "clax_commit": "<commit>",
           "clax_version": "<version>",
           "code": "url_not_in_prior_context",
@@ -729,7 +729,7 @@
       "ok": false,
       "op": "web.fetch",
       "result": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "code": "url_not_in_prior_context",
         "cost_milli": 0,
         "message": "https://elsewhere.example/x is not in the sender's words, a search result or a page you fetched; fetch only URLs from those",

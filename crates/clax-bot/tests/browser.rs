@@ -313,7 +313,7 @@ async fn a_version_target_loads_that_version() {
     assert_eq!(audit[1]["credits_milli"], 0);
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
     assert_eq!(
-        counted.get("browser.open.artifact"),
+        counted.get("clax-browser:open-artifact"),
         Some(&1),
         "{counted:?}"
     );
@@ -411,7 +411,7 @@ async fn a_failure_before_opening_is_not_charged_but_counts() {
     // Busy is not counted; Browser Run's refusal is.
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
     assert_eq!(
-        counted.get("browser.open.artifact"),
+        counted.get("clax-browser:open-artifact"),
         Some(&1),
         "{counted:?}"
     );
@@ -433,7 +433,7 @@ async fn a_mid_run_opt_out_answers_browser_disabled() {
     let d = DriverId::mint();
     assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
     env.store
-        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "browser.open.artifact", false)
+        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "clax-browser:open-artifact", false)
         .unwrap();
     env.drive(&deps, &run, &d).await;
     assert_eq!(script_result(&env, &run, 0)["value"], "browser_disabled");
@@ -463,7 +463,7 @@ return [typeof expect, code];";
     let env = Env::new().await;
     let (_, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "return [typeof expect, typeof clax.browser.page];",
     )
     .await;
@@ -565,7 +565,7 @@ async fn a_failure_after_opening_is_charged_at_most_the_time_cap_and_counts() {
     assert_eq!(browser_rows(&env), [60_000]);
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
     assert_eq!(
-        counted.get("browser.open.artifact"),
+        counted.get("clax-browser:open-artifact"),
         Some(&1),
         "{counted:?}"
     );
@@ -601,7 +601,7 @@ async fn an_open_that_stalls_ends_at_the_calls_deadline() {
     assert_eq!(browser_rows(&env), Vec::<i64>::new());
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
     assert_eq!(
-        counted.get("browser.open.artifact"),
+        counted.get("clax-browser:open-artifact"),
         Some(&1),
         "{counted:?}"
     );
@@ -663,7 +663,7 @@ async fn a_run_cancelled_while_the_browser_is_open_is_charged_its_time() {
     assert_eq!(browser_rows(&env), [2_500]);
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
     assert_eq!(
-        counted.get("browser.open.artifact"),
+        counted.get("clax-browser:open-artifact"),
         Some(&1),
         "{counted:?}"
     );
@@ -943,14 +943,14 @@ async fn every_call_writes_one_bot_spend() {
         json!([
             "ok",
             "browser_target_not_found",
-            "browser_disabled browser.open.url",
-            "web_disabled web.fetch"
+            "browser_disabled clax-browser:open-url",
+            "web_disabled clax-web:fetch"
         ])
     );
     let records = browser_events(&env);
     assert_eq!(records.len(), 3, "{records:?}");
     for r in &records[..2] {
-        assert_eq!(r["capability"], "browser.open.artifact", "{r}");
+        assert_eq!(r["capability"], "clax-browser:open-artifact", "{r}");
         assert_eq!(r["op"], "browser.test", "{r}");
     }
     assert_eq!(records[0]["ok"], true);
@@ -962,7 +962,7 @@ async fn every_call_writes_one_bot_spend() {
             &records[2]["code"]
         ),
         (
-            &json!("browser.open.url"),
+            &json!("clax-browser:open-url"),
             &json!("browser.open"),
             &json!("browser_disabled")
         )
@@ -1077,7 +1077,7 @@ async fn an_open_answers_a_handle_no_record_names() {
     opens(&env, || page_of(buttons()));
     let (run, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "state.page = await clax.browser.open({ artifact: 'draft' });
          console.log(state.page);
          await state.page.title();
@@ -1121,7 +1121,7 @@ async fn a_page_only_returned_closes_dropped_when_its_step_commits() {
     opens(&env, || page_of(buttons()));
     let (run, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "const page = await clax.browser.open({ artifact: 'draft' }); return page;",
     )
     .await;
@@ -1138,7 +1138,7 @@ async fn a_page_only_returned_closes_dropped_when_its_step_commits() {
 async fn a_page_in_state_lives_into_the_next_script() {
     let env = Env::new().await;
     opens(&env, || page_of(buttons()));
-    let run = env.run_with_caps("browser.open.artifact");
+    let run = env.run_with_caps("clax-browser:open-artifact");
     let deps = env.deps();
     let d = DriverId::mint();
     next_script(
@@ -1190,7 +1190,7 @@ async fn a_replayed_step_drops_the_same_sessions() {
         "const page = await clax.browser.open({ artifact: 'draft' }); return await page.title();",
     ));
     env.api.push(finish_turn("done"));
-    let run = env.run_with_caps("browser.open.artifact");
+    let run = env.run_with_caps("clax-browser:open-artifact");
     let mut a = env.deps();
     crash_once(
         &mut a,
@@ -1229,14 +1229,14 @@ async fn a_shared_read_only_page_reads_and_cannot_click() {
     opens(&env, || page_of(buttons()));
     let (run, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "const page = await clax.browser.open({ artifact: 'draft' });
-         const ro = await page.share({ ops: ['read'] });
+         const ro = await page.share({ actions: ['read'] });
          const out = [await ro.title(), ro, JSON.stringify({ ro })];
          try { await ro.getByRole('button', { name: 'Book' }).click(); out.push('clicked'); } catch (e) { out.push(e.code); }
          try { await ro.goto('/x'); out.push('went'); } catch (e) { out.push(e.code); }
          try { await ro.close(); out.push('closed'); } catch (e) { out.push(e.code); }
-         try { await page.share({ ops: ['write'] }); } catch (e) { out.push(e.code); }
+         try { await page.share({ actions: ['write'] }); } catch (e) { out.push(e.code); }
          await page.getByRole('button', { name: 'Book' }).click();
          await ro.revoke();
          try { await ro.title(); } catch (e) { out.push(e.code + ': ' + e.message); }
@@ -1273,7 +1273,7 @@ async fn a_shared_read_only_page_reads_and_cannot_click() {
     let id = shares[0]["capability"].as_str().unwrap();
     assert_eq!(id.len(), 22);
     assert_eq!(shares[0]["parent"].as_str().map(str::len), Some(22));
-    assert_eq!(shares[0]["ops"], json!(["read"]));
+    assert_eq!(shares[0]["actions"], json!(["read"]));
     assert_eq!(revokes[0]["capability"], id);
     assert_eq!(shares[0]["credits_milli"], 0, "{}", shares[0]);
     let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
@@ -1302,11 +1302,11 @@ async fn a_replayed_share_answers_the_same_capability() {
         "tu_1",
         "Share",
         "const page = await clax.browser.open({ artifact: 'draft' });
-         state.ro = await page.share({ ops: ['read'], expires: 600 });
+         state.ro = await page.share({ actions: ['read'], expires: 600 });
          return String(state.ro.toJSON());",
     ));
     env.api.push(finish_turn("done"));
-    let run = env.run_with_caps("browser.open.artifact");
+    let run = env.run_with_caps("clax-browser:open-artifact");
     let mut a = env.deps();
     crash_once(
         &mut a,
@@ -1373,7 +1373,7 @@ fn session_row(env: &Env, run: &str, id: &str) -> clax_store::bot_web::SessionRo
 async fn a_session_lives_across_steps_and_its_time_is_charged_once() {
     let env = Env::new().await;
     opens(&env, || page_of(buttons()));
-    let run = env.run_with_caps("browser.open.artifact");
+    let run = env.run_with_caps("clax-browser:open-artifact");
     let deps = env.deps();
     let d = DriverId::mint();
     let r = next_script(
@@ -1439,7 +1439,7 @@ async fn a_replay_after_a_restart_answers_lost() {
          catch (e) { return [t, e.code]; }",
     ));
     env.api.push(finish_turn("done"));
-    let run = env.run_with_caps("browser.open.artifact");
+    let run = env.run_with_caps("clax-browser:open-artifact");
     let first = {
         let (env, run) = (env.clone(), run.clone());
         tokio::spawn(async move {
@@ -1505,7 +1505,7 @@ async fn a_replayed_expect_answers_at_once() {
          return 'seen';",
     ));
     env.api.push(finish_turn("done"));
-    let run = env.run_with_caps("browser.open.artifact");
+    let run = env.run_with_caps("clax-browser:open-artifact");
     let mut a = env.deps();
     crash_once(
         &mut a,
@@ -1538,7 +1538,7 @@ async fn a_replayed_expect_answers_at_once() {
 async fn an_idle_session_answers_closed_idle() {
     let env = Env::new().await;
     opens(&env, || page_of(buttons()));
-    let run = env.run_with_caps("browser.open.artifact");
+    let run = env.run_with_caps("clax-browser:open-artifact");
     let deps = env.deps();
     let d = DriverId::mint();
     next_script(
@@ -1583,7 +1583,7 @@ async fn two_matches_are_a_strict_mode_violation() {
     opens(&env, || page_of(buttons()));
     let (run, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "const page = await clax.browser.open({ artifact: 'draft' });
          let caught;
          try { await page.getByRole('button', { name: 'Save' }).click(); }
@@ -1620,7 +1620,7 @@ async fn a_failed_click_is_journaled_and_thrown() {
          catch (e) { return [e.name, e.message.split('\\n')[0]]; }",
     ));
     env.api.push(finish_turn("done"));
-    let run = env.run_with_caps("browser.open.artifact");
+    let run = env.run_with_caps("clax-browser:open-artifact");
     let task = {
         let (env, run) = (env.clone(), run.clone());
         tokio::spawn(async move { env.drive(&env.deps(), &run, &DriverId::mint()).await })
@@ -1649,7 +1649,7 @@ async fn a_failed_click_is_journaled_and_thrown() {
 }
 
 /// Supplied content opens with neither web capability nor
-/// `browser.open.url`, and its page reaches nothing else.
+/// `clax-browser:open-url`, and its page reaches nothing else.
 #[tokio::test]
 async fn content_opens_without_any_web_capability() {
     let env = Env::new().await;
@@ -1658,7 +1658,7 @@ async fn content_opens_without_any_web_capability() {
     });
     let (_, v) = one_script_with(
         &env,
-        "browser.open.content",
+        "clax-browser:open-content",
         "const page = await clax.browser.open({ html: '<p>hi</p><script src=\"https://evil.example/x.js\"></script>' });
          const r = await page.failedRequests();
          await page.close();
@@ -1681,7 +1681,7 @@ async fn an_open_of_a_kind_the_run_lacks_is_disabled() {
     let env = Env::new().await;
     let (_, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "const codes = [];
          for (const s of [{ url: 'https://public.example/' }, { html: '<p>x</p>' }]) {
            try { await clax.browser.open(s); codes.push('opened'); }
@@ -1693,15 +1693,15 @@ async fn an_open_of_a_kind_the_run_lacks_is_disabled() {
     assert_eq!(
         v,
         json!([
-            ["browser_disabled", "browser.open.url"],
-            ["browser_disabled", "browser.open.content"]
+            ["browser_disabled", "clax-browser:open-url"],
+            ["browser_disabled", "clax-browser:open-content"]
         ])
     );
     assert_eq!(env.browser.opened(), 0);
 }
 
 /// A browser capability granted after the run was made is not added to
-/// it (spec §4.3, §4.4): with `browser.open.url` live for the person and
+/// it (spec §4.3, §4.4): with `clax-browser:open-url` live for the person and
 /// not declared by the run, an open on a URL and a `goto` out of an
 /// artifact session are both `browser_disabled`.
 #[tokio::test]
@@ -1712,7 +1712,7 @@ async fn a_kind_granted_mid_run_is_not_added_to_it() {
     env.admin_sets(&[(Setting::BrowserOpenUrlEnabled, json!(true))]);
     let (_, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "const codes = [];
          try { await clax.browser.open({ url: 'https://public.example/' }); codes.push('opened'); }
          catch (e) { codes.push(e.code); }
@@ -1727,7 +1727,7 @@ async fn a_kind_granted_mid_run_is_not_added_to_it() {
     assert_eq!(env.browser.opened(), 1);
 }
 
-/// Each `goto` of a URL session passes `browser.open.url`'s URL rule, as
+/// Each `goto` of a URL session passes `clax-browser:open-url`'s URL rule, as
 /// its open did: a URL the sender did not write is refused with the
 /// rule's code, and the page does not go there.
 #[tokio::test]
@@ -1737,7 +1737,7 @@ async fn a_goto_in_a_url_session_passes_the_url_rule() {
     sender_says(&env, "See https://a.example/one");
     let (_, v) = one_script_with(
         &env,
-        "browser.open.url",
+        "clax-browser:open-url",
         "const p = await clax.browser.open({ url: 'https://a.example/one' });
          const codes = [];
          for (const u of ['https://a.example/one', 'https://b.example/two']) {
@@ -1761,7 +1761,7 @@ async fn a_goto_in_a_url_session_passes_the_url_rule() {
 }
 
 /// A `goto` out of an artifact session makes a session on a URL, and is
-/// counted against `browser.open.url.max_per_run` as an open on a URL is
+/// counted against `browser.open-url.max_per_run` as an open on a URL is
 /// (spec §11.1, "gotos out included"): past the cap it is `browser_cap`.
 #[tokio::test]
 async fn a_goto_out_counts_against_the_url_cap() {
@@ -1771,7 +1771,7 @@ async fn a_goto_out_counts_against_the_url_cap() {
     env.admin_sets(&[(Setting::BrowserOpenUrlMaxPerRun, json!(1))]);
     let (run, v) = one_script_with(
         &env,
-        "browser.open.artifact,browser.open.url",
+        "clax-browser:open-artifact,clax-browser:open-url",
         "const codes = [];
          for (let i = 0; i < 2; i++) {
            const p = await clax.browser.open({ artifact: 'draft' });
@@ -1786,7 +1786,7 @@ async fn a_goto_out_counts_against_the_url_cap() {
     .await;
     assert_eq!(v, json!(["went", "browser_cap", "browser_cap"]));
     let counted = env.store.bot_spend_counts(&run, "browser").unwrap();
-    assert_eq!(counted.get("browser.open.url"), Some(&1), "{counted:?}");
+    assert_eq!(counted.get("clax-browser:open-url"), Some(&1), "{counted:?}");
 }
 
 /// An open whose browser opened and failed before its page loaded is
@@ -1812,7 +1812,7 @@ async fn a_failed_open_is_charged_its_milliseconds_from_the_browsers_open() {
     });
     let (_, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "try { await clax.browser.open({ artifact: 'draft' }); return 'opened'; }
          catch (e) { return e.code; }",
     )
@@ -1844,11 +1844,11 @@ fn stealing_page(env: &Env, method: &'static str, ms: i64, run: Arc<Mutex<String
     });
 }
 
-/// Ticks run `run` (made with `browser.open.artifact`) through its turn,
+/// Ticks run `run` (made with `clax-browser:open-artifact`) through its turn,
 /// then its script `code`, whose writes may be refused.
 async fn steal_during(env: &Env, run: &Arc<Mutex<String>>, code: &str) -> String {
     env.api.push(env.script_turn("tu_1", "Step", code));
-    let id = env.run_with_caps("browser.open.artifact");
+    let id = env.run_with_caps("clax-browser:open-artifact");
     *run.lock().unwrap() = id.clone();
     let deps = env.deps();
     let d = DriverId::mint();
@@ -1917,7 +1917,7 @@ async fn a_second_open_past_the_runs_limit_is_capped() {
     opens(&env, || page_of(buttons()));
     let (_, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "const a = await clax.browser.open({ artifact: 'draft' });
          let capped;
          try { await clax.browser.open({ artifact: 'draft' }); } catch (e) { capped = e.code; }
@@ -1936,7 +1936,7 @@ async fn a_second_open_past_the_runs_limit_is_capped() {
 async fn credits_running_out_close_the_session() {
     let env = Env::new().await;
     opens(&env, || page_of(buttons()));
-    let run = env.run_with_caps("browser.open.artifact");
+    let run = env.run_with_caps("clax-browser:open-artifact");
     let deps = env.deps();
     let d = DriverId::mint();
     next_script(
@@ -1990,7 +1990,7 @@ async fn the_run_end_closes_its_sessions() {
     opens(&env, || page_of(buttons()));
     let (run, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "state.page = await clax.browser.open({ artifact: 'draft' }); return state.page;",
     )
     .await;
@@ -2010,7 +2010,7 @@ async fn an_unknown_action_is_invalid_args() {
     opens(&env, || page_of(buttons()));
     let (_, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "const page = await clax.browser.open({ artifact: 'draft' });
          const codes = [];
          try { await page.getByRole('button', { name: 'Book' }).click({ force: true }); }
@@ -2034,7 +2034,7 @@ async fn two_calls_in_one_promise_all_run_in_order() {
     opens(&env, || page_of(buttons()));
     let (run, v) = one_script_with(
         &env,
-        "browser.open.artifact",
+        "clax-browser:open-artifact",
         "const page = await clax.browser.open({ artifact: 'draft' });
          const [t, n] = await Promise.all([page.title(), page.getByRole('button').count()]);
          await page.close();
@@ -2089,7 +2089,7 @@ async fn a_recording_keeps_its_frames_and_a_manifest() {
     });
     let (run, v) = one_script_with(
         &env,
-        "browser.open.content",
+        "clax-browser:open-content",
         "const page = await clax.browser.open({ html: '<p>moving</p>' });
          const clip = await page.record({ seconds: 2 });
          let refused;

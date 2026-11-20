@@ -6,10 +6,10 @@
 //! What each answers to the sequence's steps:
 //!
 //! - **Live** (step 3): an open needs the capability of its source's
-//!   kind (`browser.open.url`, `.artifact`, `.content`); a call on a
+//!   kind (`clax-browser:open-url`, `.artifact`, `.content`); a call on a
 //!   session needs its session's kind's, as the registry holds it (a
 //!   `goto` out of its origin made it a URL session), else as the store
-//!   does; a test needs `browser.open.artifact`.
+//!   does; a test needs `clax-browser:open-artifact`.
 //! - **Arguments** (step 4): an open's source and viewport
 //!   ([`crate::browser::opts::parse_source`], with spec §6.2's caps); a
 //!   session call's action, locator and `args`, by its row of the layer's
@@ -27,16 +27,16 @@
 //!   kind's `max_per_run`, under the capability's ID (the entry's
 //!   `count_as`); calls on a session are not counted, but for a `goto` out
 //!   of an artifact or content session, which makes a session on a URL:
-//!   it is counted under `browser.open.url`, and refused `browser_cap`
+//!   it is counted under `clax-browser:open-url`, and refused `browser_cap`
 //!   once the run has used that capability's `max_per_run`.
 //! - **Price** (step 8): one call's time cap, `browser.call_seconds`.
 //! - **Perform** (step 9): the host's session registry
 //!   ([`crate::browser::live::BrowserSessions`]) opens the session or
 //!   performs the call; each `goto` of a URL session passes
-//!   `browser.open.url`'s URL rule, as its open did, else the rule's
+//!   `clax-browser:open-url`'s URL rule, as its open did, else the rule's
 //!   refusal; a `goto` out of an artifact or content session is
 //!   given the URL session's policy when the run declared
-//!   `browser.open.url`, it is live and its rule admits the URL, and is refused `browser_disabled` by the
+//!   `clax-browser:open-url`, it is live and its rule admits the URL, and is refused `browser_disabled` by the
 //!   session otherwise.
 //!
 //! # What is charged
@@ -262,16 +262,17 @@ pub(super) struct CallArgs {
 
 /// What a `share` or `revoke` asks of the page's capability (spec §18.4).
 enum CapCall {
-    /// A share: its classes, its lifetime in seconds, its origins.
+    /// A share: its session actions, its lifetime in seconds, its
+    /// origins.
     Share {
-        ops: Option<Vec<Class>>,
+        actions: Option<Vec<Class>>,
         expires: Option<u32>,
         origins: Option<Vec<String>>,
     },
     Revoke,
 }
 
-/// `args` of a `share`, checked (spec §18.4): `ops` a list of class
+/// `args` of a `share`, checked (spec §18.4): `actions` a list of
 /// names, `expires` seconds (1 or more), `origins` a non-empty list of
 /// origins.
 fn share_of(args: &Value) -> Result<CapCall, HostError> {
@@ -287,14 +288,14 @@ fn share_of(args: &Value) -> Result<CapCall, HostError> {
             Some(_) => Err(bad(format!("args.{k}: must be a list of strings"))),
         }
     };
-    let ops = strings("ops")?
+    let actions = strings("actions")?
         .map(|names| {
             names
                 .iter()
                 .map(|n| {
                     Class::parse(n).ok_or_else(|| {
                         bad(format!(
-                            "args.ops: `{n}` is not one of read, act, navigate, record, close"
+                            "args.actions: `{n}` is not one of read, act, navigate, record, close"
                         ))
                     })
                 })
@@ -323,7 +324,7 @@ fn share_of(args: &Value) -> Result<CapCall, HostError> {
         })
         .transpose()?;
     Ok(CapCall::Share {
-        ops,
+        actions,
         expires,
         origins,
     })
@@ -1307,13 +1308,13 @@ fn cap_call(
     let answer = |value: Value| json!({"ok": true, "url": "", "ms": 0, "cost": 0, "value": value});
     match cc {
         CapCall::Share {
-            ops,
+            actions,
             expires,
             origins,
         } => {
             let mut more = Vec::new();
-            if let Some(ops) = ops {
-                more.push(Caveat::Ops(ops.iter().copied().collect()));
+            if let Some(actions) = actions {
+                more.push(Caveat::Actions(actions.iter().copied().collect()));
             }
             let expires_ms =
                 expires.map(|secs| sessions.now_ms().saturating_add(i64::from(secs) * 1000));
@@ -1335,9 +1336,9 @@ fn cap_call(
                     ("capability", json!(child.id())),
                     ("parent", json!(parent)),
                     (
-                        "ops",
+                        "actions",
                         json!(
-                            ops.as_ref()
+                            actions.as_ref()
                                 .map(|o| o.iter().map(|c| c.as_str()).collect::<Vec<_>>())
                         ),
                     ),
@@ -1482,10 +1483,10 @@ impl ClaxSession<'_> {
 
     /// What a `goto` of `url` in session `session`, of kind `kind`, is
     /// given (spec §6.3). In a URL session the URL, resolved against the
-    /// page's, passes `browser.open.url`'s rule as an open's does (else the
+    /// page's, passes `clax-browser:open-url`'s rule as an open's does (else the
     /// rule's refusal) and the session keeps its policy (none). Out of an
     /// artifact or content session's origin, the URL session's policy when
-    /// the run declared `browser.open.url`, it is live and its rule admits
+    /// the run declared `clax-browser:open-url`, it is live and its rule admits
     /// the URL (else the rule's refusal) and the run has a session on a URL
     /// left under its `max_per_run` (else `browser_cap`); none when the run
     /// did not declare it or it is not live (the session then refuses it

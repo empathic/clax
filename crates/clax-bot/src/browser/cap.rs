@@ -13,8 +13,8 @@
 //!
 //! # Caveats
 //!
-//! Each caveat is `name=value` ([`Caveat`], §18.3): `ops` (the classes a
-//! call may be of, [`Class`]), `expires` (Unix milliseconds on the
+//! Each caveat is `name=value` ([`Caveat`], §18.3): `actions` (the
+//! `clax-browser` session actions a call may be of, [`Class`]), `expires` (Unix milliseconds on the
 //! registry's clock), `holder` (`run:<ID>` or `grant:<ID>`) and `origin`
 //! (the origins a `navigate` call may reach). [`Cap::check`] holds every
 //! caveat against one call ([`Use`]); a caveat it does not understand
@@ -106,8 +106,8 @@ impl Holder {
 /// One first-party caveat (§18.3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Caveat {
-    /// The classes a call may be of.
-    Ops(BTreeSet<Class>),
+    /// The session actions a call may be of.
+    Actions(BTreeSet<Class>),
     /// The Unix time, in milliseconds, from which every call is refused.
     Expires(i64),
     /// Who may make a call.
@@ -129,8 +129,8 @@ impl Caveat {
     #[must_use]
     pub fn render(&self) -> String {
         match self {
-            Caveat::Ops(ops) => format!(
-                "ops={}",
+            Caveat::Actions(ops) => format!(
+                "actions={}",
                 ops.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(" ")
             ),
             Caveat::Expires(ms) => format!("expires={ms}"),
@@ -148,10 +148,10 @@ impl Caveat {
         let (name, value) = s.split_once('=')?;
         let words = || value.split(' ').filter(|w| !w.is_empty());
         match name {
-            "ops" => words()
+            "actions" => words()
                 .map(Class::parse)
                 .collect::<Option<BTreeSet<_>>>()
-                .map(Caveat::Ops),
+                .map(Caveat::Actions),
             "expires" => value
                 .parse::<i64>()
                 .ok()
@@ -343,7 +343,7 @@ impl Cap {
                 Caveat::Holder(_) => {}
                 Caveat::Expires(at) if u.now_ms >= *at => return Err(Refusal::Expired(*at)),
                 Caveat::Expires(_) => {}
-                Caveat::Ops(ops) => {
+                Caveat::Actions(ops) => {
                     if let Some(class) = u.class
                         && !ops.contains(&class)
                     {
@@ -377,7 +377,7 @@ impl Cap {
             .into_iter()
             .filter(|c| {
                 cs.iter()
-                    .all(|cv| !matches!(cv, Caveat::Ops(ops) if !ops.contains(c)))
+                    .all(|cv| !matches!(cv, Caveat::Actions(ops) if !ops.contains(c)))
             })
             .collect()
     }
@@ -405,7 +405,7 @@ impl Cap {
             return "<browser page: nothing>".into();
         };
         let mut parts = Vec::new();
-        if cs.iter().any(|c| matches!(c, Caveat::Ops(_))) {
+        if cs.iter().any(|c| matches!(c, Caveat::Actions(_))) {
             let classes = self.classes(&cs);
             parts.push(if classes.is_empty() {
                 "nothing".to_string()
@@ -570,7 +570,7 @@ mod tests {
     }
 
     fn ops(cs: &[Class]) -> Caveat {
-        Caveat::Ops(cs.iter().copied().collect())
+        Caveat::Actions(cs.iter().copied().collect())
     }
 
     fn origins(os: &[&str]) -> Caveat {
@@ -658,7 +658,7 @@ mod tests {
             json(&|v| {
                 v["c"].as_array_mut().unwrap().pop();
             }),
-            json(&|v| v["c"][1] = "ops=read act".into()),
+            json(&|v| v["c"][1] = "actions=read act".into()),
             json(&|v| v["i"] = v["i"].as_str().unwrap().replace("run-1", "run-2").into()),
             "cxk_".into(),
             root.encode()[..root.encode().len() - 2].to_string(),
@@ -709,8 +709,9 @@ mod tests {
         let r1 = run("run-1");
         for c in [
             "budget=10",
-            "ops=read write",
-            "ops",
+            "actions=read write",
+            "actions",
+            "ops=read",
             "expires=soon",
             "expires=-1",
             "expires=+5",

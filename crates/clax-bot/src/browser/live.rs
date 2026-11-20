@@ -46,7 +46,7 @@
 //! each call sees it ([`CallCtx::pages`]). A `goto` within the session's
 //! synthetic origin needs nothing more; a `goto` elsewhere from an
 //! artifact or content session needs the URL session's policy the caller
-//! gives once `browser.open.url` and its rule admit the URL
+//! gives once `clax-browser:open-url` and its rule admit the URL
 //! ([`CallCtx::leave`], [`BrowserSessions::leaves`]), and makes the
 //! session a URL session for the rest of its life, once (spec §8.5): the
 //! synthetic origin is no longer served ([`super::serve::Left`]: every
@@ -168,7 +168,7 @@ pub struct Answered {
 /// What a call is given beside itself: its deadline (at most the
 /// session's lifetime) and the run's cancellation; for an artifact session
 /// of the draft, the draft as the call sees it; and, when the run may
-/// leave the session's origin by this call (`browser.open.url` live, the
+/// leave the session's origin by this call (`clax-browser:open-url` live, the
 /// URL admitted by its rule), the URL session's policy it would then
 /// have; and the capability that authorized the call, with the run that
 /// holds it, whose `origin` caveat the session's task holds a `goto` or
@@ -557,7 +557,7 @@ impl BrowserSessions {
 
     /// Whether a `goto` of `url` (resolved against the page's URL after
     /// the last call) leaves session `session` of run `run`'s synthetic
-    /// origin: what needs `browser.open.url` and makes it a URL session.
+    /// origin: what needs `clax-browser:open-url` and makes it a URL session.
     /// A URL session leaves nothing.
     ///
     /// # Errors
@@ -1047,7 +1047,7 @@ impl Task {
                             if host_of(&target) != Some(host.as_str()) {
                                 let Some(leave) = ctx.leave.clone() else {
                                     let _ = reply.send(Err(disabled(format!(
-                                        "page.goto: {target} is outside this session's origin; going there needs browser.open.url"
+                                        "page.goto: {target} is outside this session's origin; going there needs clax-browser:open-url"
                                     ))));
                                     last_call = self.clock.now();
                                     continue;
@@ -1996,7 +1996,7 @@ mod tests {
     }
 
     fn ops(cs: &[Class]) -> Caveat {
-        Caveat::Ops(cs.iter().copied().collect())
+        Caveat::Actions(cs.iter().copied().collect())
     }
 
     /// A read-only share reads and cannot act, navigate, record or close;
@@ -2352,7 +2352,7 @@ mod tests {
         let (_, log) = w.open(TIMES).await;
         let out = "https://example.com/page";
         assert_eq!(w.sessions.leaves("run-1", "s1", out), Ok(true));
-        // Without the URL policy browser.open.url gives, it is refused.
+        // Without the URL policy clax-browser:open-url gives, it is refused.
         let refused = w.page("goto", json!({"url": out})).await;
         assert_eq!(
             refused.unwrap_err().code,

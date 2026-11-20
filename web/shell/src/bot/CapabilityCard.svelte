@@ -21,7 +21,7 @@
   let to = $state("everyone");
   let busy = $state(false);
   let err = $state<string | null>(null);
-  const id = $derived(`cap-${capability.replaceAll(".", "-")}`);
+  const id = $derived(`cap-${capability.replace(/[.:]/g, "-")}`);
   const mine = $derived(grants.filter(g => g.capability === capability).sort((a, b) => Number(a.grantee === "person") - Number(b.grantee === "person")));
   const nameOf = (person: string | null) => people.find(p => p.person === person)?.name ?? person ?? "";
   const held = (key: string) => mine.some(g => (key === "everyone" ? g.grantee === "everyone" : g.person === key));

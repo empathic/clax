@@ -994,11 +994,14 @@ return out;"#,
     // Each of the two `web_disabled` rows is the run loop's own form:
     // the failure naming its capability, and neither `cost_milli` nor
     // `web`.
-    for (at, op) in [(1, "web.search"), (2, "web.fetch")] {
+    for (at, op, cap) in [
+        (1, "web.search", "clax-web:search"),
+        (2, "web.fetch", "clax-web:fetch"),
+    ] {
         assert_eq!(
             seam.journal[at],
             json!({"step": 2, "attempt": 1, "seq": at, "op": op, "ok": false,
-                   "result": {"code": "web_disabled", "capability": op,
+                   "result": {"code": "web_disabled", "capability": cap,
                               "message": format!("clax.{op} is not available to this run")}})
         );
     }
@@ -1187,7 +1190,7 @@ catch (e) { return [e.code, e.message]; }"#,
     assert_eq!(
         seam.journal,
         json!([{"step": 2, "attempt": 1, "seq": 0, "op": "web.search", "ok": false,
-                "result": {"code": "web_disabled", "capability": "web.search",
+                "result": {"code": "web_disabled", "capability": "clax-web:search",
                            "message": "clax.web.search is not available to this run"}}])
     );
 }

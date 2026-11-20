@@ -9567,7 +9567,7 @@ mod tests {
         let run = st.run(&id).unwrap().unwrap();
         assert_eq!(
             (run.caps.as_str(), run.web.as_str()),
-            ("web.fetch,web.search", "search,fetch")
+            ("clax-web:fetch,clax-web:search", "search,fetch")
         );
     }
 
@@ -9620,7 +9620,7 @@ mod tests {
                             ('web.fetch.enabled', 'true', '*owner', 'x');"
             ),
         );
-        for cap in ["web.search", "web.fetch"] {
+        for cap in ["clax-web:search", "clax-web:fetch"] {
             let grants = grants_of(&st, cap);
             let root: Vec<_> = grants.iter().filter(|g| g.grantee == EVERYONE).collect();
             assert_eq!(root.len(), 1, "{cap}: {grants:?}");
@@ -9642,7 +9642,7 @@ mod tests {
         }
         assert!(!st.web_choice("u_ana").unwrap(), "Ana chose off");
         assert!(
-            st.person_caps("u_ana").unwrap()["web.fetch"]
+            st.person_caps("u_ana").unwrap()["clax-web:fetch"]
                 .granted_by
                 .is_some()
         );
@@ -9670,8 +9670,8 @@ mod tests {
                             ('web.fetch.enabled', 'true', '*owner', 'x');"
             ),
         );
-        assert!(grants_of(&st, "web.search").is_empty());
-        assert_eq!(grants_of(&st, "web.fetch").len(), 4);
+        assert!(grants_of(&st, "clax-web:search").is_empty());
+        assert_eq!(grants_of(&st, "clax-web:fetch").len(), 4);
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let st = opened_from_66_with(&home, PEOPLE_AT_66);
@@ -9739,7 +9739,7 @@ mod tests {
             .take(4)
             .map(|id| st.run(id).unwrap().unwrap().caps)
             .collect();
-        assert_eq!(caps, ["web.fetch,web.search", "web.fetch", "", ""]);
+        assert_eq!(caps, ["clax-web:fetch,clax-web:search", "clax-web:fetch", "", ""]);
         let run = st.run(&ids[0]).unwrap().unwrap();
         assert_eq!(run.web, "search,fetch", "read as it was");
     }

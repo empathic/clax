@@ -70,7 +70,7 @@
       },
       "at": "2026-10-21T10:00:00.000Z",
       "body": {
-        "capability": "web.search",
+        "capability": "clax-web:search",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "credits_milli": 48,
@@ -105,7 +105,7 @@
       },
       "at": "2026-10-21T10:00:00.000Z",
       "body": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "credits_milli": 95,
@@ -137,7 +137,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "credits_milli": 0,
@@ -169,7 +169,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "url_not_in_prior_context",
@@ -200,7 +200,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "invalid_args",
@@ -231,7 +231,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
-        "capability": "web.search",
+        "capability": "clax-web:search",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "invalid_args",
@@ -262,7 +262,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "invalid_args",
@@ -293,7 +293,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "web_unavailable",
@@ -326,7 +326,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
-        "capability": "web.search",
+        "capability": "clax-web:search",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "web_unavailable",
@@ -1196,7 +1196,7 @@
       "ok": false,
       "op": "web.fetch",
       "result": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "code": "url_not_in_prior_context",
         "cost_milli": 0,
         "message": "https://example.com/unnamed is not in the sender's words, a search result or a page you fetched; fetch only URLs from those",
@@ -1213,7 +1213,7 @@
       "ok": false,
       "op": "web.fetch",
       "result": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "code": "invalid_args",
         "cost_milli": 0,
         "message": "clax.web.fetch: offset must be at least 0, got -1",
@@ -1230,7 +1230,7 @@
       "ok": false,
       "op": "web.search",
       "result": {
-        "capability": "web.search",
+        "capability": "clax-web:search",
         "code": "invalid_args",
         "cost_milli": 0,
         "message": "clax.web.search: query must be 1 to 1024 characters, got 0",
@@ -1247,7 +1247,7 @@
       "ok": false,
       "op": "web.fetch",
       "result": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "code": "invalid_args",
         "cost_milli": 0,
         "message": "not an absolute URL (relative URL without a base)",
@@ -1264,7 +1264,7 @@
       "ok": false,
       "op": "web.fetch",
       "result": {
-        "capability": "web.fetch",
+        "capability": "clax-web:fetch",
         "code": "web_unavailable",
         "cost_milli": 0,
         "counted": true,
@@ -1291,7 +1291,7 @@
       "ok": false,
       "op": "web.search",
       "result": {
-        "capability": "web.search",
+        "capability": "clax-web:search",
         "code": "web_unavailable",
         "cost_milli": 0,
         "counted": true,

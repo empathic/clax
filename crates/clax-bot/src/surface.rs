@@ -3255,11 +3255,11 @@ mod tests {
         assert_eq!(plain.operations.len(), 22);
         assert!(plain.has("draft.publish") && !plain.has("web.search") && !plain.has("web.fetch"));
         assert!(!plain.has("browser.test") && !plain.has("browser.browse"));
-        let fetch = of("web.fetch");
+        let fetch = of("clax-web:fetch");
         assert!(fetch.has("web.fetch") && !fetch.has("web.search"));
-        let test = of("browser.open.artifact");
+        let test = of("clax-browser:open-artifact");
         assert!(test.has("browser.test") && !test.has("browser.browse"));
-        let both = of("web.search,web.fetch,browser.open.artifact,browser.open.url");
+        let both = of("clax-web:search,clax-web:fetch,clax-browser:open-artifact,clax-browser:open-url");
         let names: Vec<&str> = crate::api::definition()
             .operations()
             .map(|o| o.name)

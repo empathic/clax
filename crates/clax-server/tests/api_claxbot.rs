@@ -3059,7 +3059,7 @@ async fn me_turns_web_off() {
     assert_eq!(v["web"]["on"], false);
     let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(v["web"]["on"], false);
-    for cap in ["web.search", "web.fetch"] {
+    for cap in ["clax-web:search", "clax-web:fetch"] {
         assert_eq!(
             grant_ops(ts, cap).iter().filter(|o| *o == "revoke").count(),
             1,
@@ -3405,7 +3405,7 @@ async fn me_bot_has_no_browser_switch_of_its_own() {
         .iter()
         .filter_map(|c| c["id"].as_str())
         .collect();
-    assert!(ids.contains(&"browser.open.artifact"), "{v}");
+    assert!(ids.contains(&"clax-browser:open-artifact"), "{v}");
     let (s, v) = call(
         ts,
         &sam,
@@ -3674,7 +3674,7 @@ async fn admin_grants_to_everyone_and_revokes() {
         &owner,
         Method::POST,
         "/api/admin/bot/grants",
-        json!({"capability": "browser.open.content", "grantee": {"person": sam}}),
+        json!({"capability": "clax-browser:open-content", "grantee": {"person": sam}}),
     )
     .await;
     assert_eq!(s, 200, "{v}");
@@ -3683,7 +3683,7 @@ async fn admin_grants_to_everyone_and_revokes() {
         &owner,
         Method::POST,
         "/api/admin/bot/grants",
-        json!({"capability": "browser.open.content", "grantee": "everyone"}),
+        json!({"capability": "clax-browser:open-content", "grantee": "everyone"}),
     )
     .await;
     assert_eq!(s, 200, "{v}");
@@ -3699,11 +3699,11 @@ async fn admin_grants_to_everyone_and_revokes() {
             .collect::<Vec<_>>(),
         [
             (
-                json!("browser.open.content"),
+                json!("clax-browser:open-content"),
                 json!("everyone"),
                 Value::Null
             ),
-            (json!("browser.open.content"), json!("person"), json!(sam)),
+            (json!("clax-browser:open-content"), json!("person"), json!(sam)),
         ]
     );
     assert!(
@@ -3714,7 +3714,7 @@ async fn admin_grants_to_everyone_and_revokes() {
     // a person the instance does not have, not everyone.
     for (body, want) in [
         (
-            json!({"capability": "browser.open.content", "grantee": "everyone"}),
+            json!({"capability": "clax-browser:open-content", "grantee": "everyone"}),
             "grant_exists",
         ),
         (
@@ -3722,11 +3722,11 @@ async fn admin_grants_to_everyone_and_revokes() {
             "unknown_capability",
         ),
         (
-            json!({"capability": "web.fetch", "grantee": {"person": "u_nobody"}}),
+            json!({"capability": "clax-web:fetch", "grantee": {"person": "u_nobody"}}),
             "invalid_grantee",
         ),
         (
-            json!({"capability": "web.fetch", "grantee": "anyone"}),
+            json!({"capability": "clax-web:fetch", "grantee": "anyone"}),
             "invalid_grantee",
         ),
     ] {
@@ -3753,19 +3753,19 @@ async fn admin_grants_to_everyone_and_revokes() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["grants"].as_array().unwrap().len(), 1, "{v}");
     assert!(
-        ts.store.person_caps(&sam).unwrap()["browser.open.content"].reaches_runs(),
+        ts.store.person_caps(&sam).unwrap()["clax-browser:open-content"].reaches_runs(),
         "Sam's own grant still reaches their runs"
     );
     assert!(
-        !ts.store.person_caps(clax_store::roles::OWNER).unwrap()["browser.open.content"]
+        !ts.store.person_caps(clax_store::roles::OWNER).unwrap()["clax-browser:open-content"]
             .reaches_runs(),
         "the owner's came from everyone's, and ended with it"
     );
-    let ops = grant_ops(ts, "browser.open.content");
+    let ops = grant_ops(ts, "clax-browser:open-content");
     assert!(ops.iter().filter(|o| *o == "issue").count() >= 3, "{ops:?}");
     assert!(ops.iter().any(|o| o == "revoke"), "{ops:?}");
     // A person's own grant to their runs is not the admin's to revoke here.
-    let runs = ts.store.person_caps(&sam).unwrap()["browser.open.content"]
+    let runs = ts.store.person_caps(&sam).unwrap()["clax-browser:open-content"]
         .runs_grant
         .clone()
         .unwrap();
@@ -3821,7 +3821,7 @@ async fn a_browser_kind_is_granted_to_no_one_until_the_admin_grants_it() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|c| c["id"] == "browser.open.content")
+            .find(|c| c["id"] == "clax-browser:open-content")
             .unwrap()
             .clone()
     };
@@ -3834,14 +3834,14 @@ async fn a_browser_kind_is_granted_to_no_one_until_the_admin_grants_it() {
         &owner,
         Method::POST,
         "/api/admin/bot/grants",
-        json!({"capability": "browser.open.content", "grantee": "everyone"}),
+        json!({"capability": "clax-browser:open-content", "grantee": "everyone"}),
     )
     .await;
     assert_eq!(s, 200, "{v}");
     let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(content(&v)["granted"], true, "{v}");
     assert!(
-        ts.store.person_caps(&p.sam.1).unwrap()["browser.open.content"].reaches_runs(),
+        ts.store.person_caps(&p.sam.1).unwrap()["clax-browser:open-content"].reaches_runs(),
         "{v}"
     );
 }
@@ -3872,11 +3872,11 @@ async fn me_bot_lists_each_capability_and_whether_it_is_granted() {
     assert_eq!(
         caps.iter().map(|c| c["id"].clone()).collect::<Vec<_>>(),
         [
-            "web.search",
-            "web.fetch",
-            "browser.open.url",
-            "browser.open.artifact",
-            "browser.open.content"
+            "clax-web:search",
+            "clax-web:fetch",
+            "clax-browser:open-url",
+            "clax-browser:open-artifact",
+            "clax-browser:open-content"
         ]
         .map(|c| json!(c))
     );
@@ -3922,7 +3922,7 @@ async fn me_bot_lists_each_capability_and_whether_it_is_granted() {
         &sam,
         Method::PUT,
         "/api/me/bot",
-        json!({"capabilities": {"web.fetch": false}}),
+        json!({"capabilities": {"clax-web:fetch": false}}),
     )
     .await;
     assert_eq!(s, 200, "{v}");
@@ -3932,7 +3932,7 @@ async fn me_bot_lists_each_capability_and_whether_it_is_granted() {
         (&json!(false), &json!("person_off"))
     );
     assert!(
-        ts.store.person_caps(&p.sam.1).unwrap()["web.search"]
+        ts.store.person_caps(&p.sam.1).unwrap()["clax-web:search"]
             .runs_grant
             .is_some(),
         "search left as it was"
@@ -3942,7 +3942,7 @@ async fn me_bot_lists_each_capability_and_whether_it_is_granted() {
         &sam,
         Method::PUT,
         "/api/me/bot",
-        json!({"capabilities": {"web.fetch": true}}),
+        json!({"capabilities": {"clax-web:fetch": true}}),
     )
     .await;
     assert_eq!(v["capabilities"][1]["on"], true, "{v}");
@@ -3951,12 +3951,12 @@ async fn me_bot_lists_each_capability_and_whether_it_is_granted() {
         &sam,
         Method::PUT,
         "/api/me/bot",
-        json!({"capabilities": {"web.fetch": false, "web.crawl": true}}),
+        json!({"capabilities": {"clax-web:fetch": false, "web.crawl": true}}),
     )
     .await;
     assert_eq!((s, code(&v)), (400, "unknown_capability"), "{v}");
     assert!(
-        ts.store.person_caps(&p.sam.1).unwrap()["web.fetch"]
+        ts.store.person_caps(&p.sam.1).unwrap()["clax-web:fetch"]
             .runs_grant
             .is_some(),
         "a refused request changes nothing"
@@ -3975,13 +3975,13 @@ async fn me_put_web_sets_both_web_capabilities() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["web"]["on"], false, "{v}");
     let held = ts.store.person_caps(&p.sam.1).unwrap();
-    assert!(held["web.search"].runs_grant.is_none() && held["web.fetch"].runs_grant.is_none());
+    assert!(held["clax-web:search"].runs_grant.is_none() && held["clax-web:fetch"].runs_grant.is_none());
     assert!(
-        held["browser.open.url"].runs_grant.is_some(),
+        held["clax-browser:open-url"].runs_grant.is_some(),
         "the browser left as it was"
     );
     let (_, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"web": true})).await;
     assert_eq!(v["web"]["on"], true, "{v}");
     let held = ts.store.person_caps(&p.sam.1).unwrap();
-    assert!(held["web.search"].reaches_runs() && held["web.fetch"].reaches_runs());
+    assert!(held["clax-web:search"].reaches_runs() && held["clax-web:fetch"].reaches_runs());
 }

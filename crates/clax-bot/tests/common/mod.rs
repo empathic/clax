@@ -700,8 +700,8 @@ impl Env {
     }
 
     /// A thread run holding the browser capabilities `shape` names
-    /// (`"test"` for `browser.open.artifact`, `"browse"` for
-    /// `browser.open.url`, or both, comma-separated), the admin offering
+    /// (`"test"` for `clax-browser:open-artifact`, `"browse"` for
+    /// `clax-browser:open-url`, or both, comma-separated), the admin offering
     /// them.
     pub fn run_with_browser(&self, shape: &str) -> String {
         self.run_shaped(
@@ -715,17 +715,18 @@ impl Env {
     }
 
     /// A thread run holding the browser capabilities `caps` (IDs,
-    /// comma-separated: `browser.open.url`, `.artifact`, `.content`),
+    /// comma-separated: `clax-browser:open-url`, `open-artifact`,
+    /// `open-content`),
     /// each turned on by the admin.
     pub fn run_with_caps(&self, caps: &str) -> String {
         let on: Vec<(Setting, Value)> = caps
             .split(',')
             .filter_map(|c| match c {
-                "browser.open.url" => Some(Setting::BrowserOpenUrlEnabled),
-                "browser.open.artifact" => Some(Setting::BrowserOpenArtifactEnabled),
-                "browser.open.content" => Some(Setting::BrowserOpenContentEnabled),
-                "web.search" => Some(Setting::WebSearchEnabled),
-                "web.fetch" => Some(Setting::WebFetchEnabled),
+                "clax-browser:open-url" => Some(Setting::BrowserOpenUrlEnabled),
+                "clax-browser:open-artifact" => Some(Setting::BrowserOpenArtifactEnabled),
+                "clax-browser:open-content" => Some(Setting::BrowserOpenContentEnabled),
+                "clax-web:search" => Some(Setting::WebSearchEnabled),
+                "clax-web:fetch" => Some(Setting::WebFetchEnabled),
                 _ => None,
             })
             .map(|s| (s, json!(true)))
@@ -810,8 +811,8 @@ impl Env {
                     caps: clax_store::bot_runs::caps_text(
                         clax_store::bot_runs::caps_of_web(shape.as_str())
                             .split(',')
-                            .chain(has("test").then_some("browser.open.artifact"))
-                            .chain(has("browse").then_some("browser.open.url")),
+                            .chain(has("test").then_some("clax-browser:open-artifact"))
+                            .chain(has("browse").then_some("clax-browser:open-url")),
                     ),
                 },
             )

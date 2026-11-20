@@ -208,7 +208,7 @@ pub(crate) fn declared(name: &str, caps: &CapSet) -> bool {
 /// browser's source kinds share the session operations, so a binding
 /// names them in its scope instead (`clax_store::bot_runs::Bindings::clax`,
 /// [`crate::prompt`]'s reading of it); here they show only as
-/// `browser.test`'s `browser.open.artifact`.
+/// `browser.test`'s `clax-browser:open-artifact`.
 #[must_use]
 pub(crate) fn caps_of(has: &dyn Fn(&str) -> bool) -> CapSet {
     GRANTED
@@ -554,7 +554,7 @@ mod tests {
 
     /// The `browser` namespace is declared only in a run holding a
     /// capability that allows one of its operations: any source kind
-    /// declares the session operations, `browser.open.artifact` also
+    /// declares the session operations, `clax-browser:open-artifact` also
     /// `test`; what the head says of charged calls names it.
     #[test]
     fn browser_namespace_needs_an_open_capability() {
@@ -613,7 +613,7 @@ mod tests {
         assert_eq!(granted[..2], [web::OP_SEARCH, web::OP_FETCH]);
     }
 
-    /// `browser.test` is declared only with `browser.open.artifact`, and
+    /// `browser.test` is declared only with `clax-browser:open-artifact`, and
     /// `declared` says what the declaration does, operation by operation.
     #[test]
     fn test_needs_the_artifact_capability() {

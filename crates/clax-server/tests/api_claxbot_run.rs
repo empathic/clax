@@ -1988,7 +1988,7 @@ async fn a_run_started_with_browser_on_declares_it() {
     // The daemon's own bot, whose driver gave its runs a browser source.
     let run = start(&ts.state.bot, &threads[0]);
     assert!(ts.state.bot.browser);
-    assert_eq!(run.caps, "browser.open.artifact");
+    assert_eq!(run.caps, "clax-browser:open-artifact");
     let (_, as_made) = ts.store.run_as_made(&run.id).unwrap().unwrap();
     let granted = as_made.bindings().unwrap().all()[0].granted().to_vec();
     assert!(granted.iter().any(|o| o == "browser.test"), "{granted:?}");
@@ -2005,11 +2005,11 @@ async fn a_run_started_with_browser_on_declares_it() {
     assert_eq!(start(&no_source, &threads[1]).caps, "");
     // A person who turned the capability off gets a run without it.
     ts.store
-        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "browser.open.artifact", false)
+        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "clax-browser:open-artifact", false)
         .unwrap();
     assert_eq!(start(&ts.state.bot, &threads[2]).caps, "");
     ts.store
-        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "browser.open.artifact", true)
+        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "clax-browser:open-artifact", true)
         .unwrap();
     // Without the Cloudflare token, not configured.
     let res = ts
@@ -2068,7 +2068,7 @@ async fn a_run_made_with_the_url_switch_on_holds_browser_open_url() {
         .unwrap();
     assert_eq!(res.status(), 200);
     let run = start(&threads[0]);
-    assert_eq!(run.caps, "browser.open.artifact,browser.open.url");
+    assert_eq!(run.caps, "clax-browser:open-artifact,clax-browser:open-url");
     let (_, as_made) = ts.store.run_as_made(&run.id).unwrap().unwrap();
     let granted = as_made.bindings().unwrap().all()[0].granted().to_vec();
     assert!(granted.iter().any(|o| o == "browser.open"), "{granted:?}");
@@ -2078,7 +2078,7 @@ async fn a_run_made_with_the_url_switch_on_holds_browser_open_url() {
         .set_web_choice(&AuditCtx::DAEMON, OWNER, false)
         .unwrap();
     let both = start(&threads[1]);
-    assert_eq!(both.caps, "browser.open.artifact,browser.open.url");
+    assert_eq!(both.caps, "clax-browser:open-artifact,clax-browser:open-url");
     // Testing off, browsing on: a run that browses alone.
     ts.store
         .set_bot_settings(
@@ -2086,7 +2086,7 @@ async fn a_run_made_with_the_url_switch_on_holds_browser_open_url() {
             &[(Setting::BrowserOpenArtifactEnabled, Some(json!(false)))],
         )
         .unwrap();
-    assert_eq!(start(&threads[2]).caps, "browser.open.url");
+    assert_eq!(start(&threads[2]).caps, "clax-browser:open-url");
 }
 
 /// A fake Browser Run on 127.0.0.1: each WebSocket it accepts is a
@@ -2249,7 +2249,7 @@ async fn a_whole_browser_test_through_the_daemon() {
         .to_string();
     assert_eq!(
         ts.store.run(&rid).unwrap().unwrap().caps,
-        "browser.open.artifact"
+        "clax-browser:open-artifact"
     );
     let all = events(&ts, &rid, None).await;
     assert_eq!(all.last().map(|(_, e, _)| e.as_str()), Some("run_end"));
@@ -2611,7 +2611,7 @@ fn session_state(ts: &TestServer, rid: &str, session: &str) -> Option<(String, S
         .map(|e| (e.code.to_string(), e.message.clone()))
 }
 
-/// The person turning `browser.open.content` off on the Me page closes
+/// The person turning `clax-browser:open-content` off on the Me page closes
 /// their runs' content sessions before `PUT /api/me/bot` answers; their
 /// next call meets `browser_session_closed`, `revoked`.
 #[tokio::test]
@@ -2624,7 +2624,7 @@ async fn a_revoke_closes_the_session_before_it_answers() {
         ))
     });
     let ts = registry_daemon(source.clone()).await;
-    let rid = run_with_caps(&ts, "browser.open.artifact,browser.open.content").await;
+    let rid = run_with_caps(&ts, "clax-browser:open-artifact,clax-browser:open-content").await;
     let content = open_in_registry(&ts, &rid, SessionKind::Content).await;
     let artifact = open_in_registry(&ts, &rid, SessionKind::Artifact).await;
     assert_eq!(session_state(&ts, &rid, &content), None);
@@ -2632,7 +2632,7 @@ async fn a_revoke_closes_the_session_before_it_answers() {
         .client
         .put(format!("{}/api/me/bot", ts.base))
         .header("cookie", ts.owner_cookie())
-        .json(&json!({"capabilities": {"browser.open.content": false}}))
+        .json(&json!({"capabilities": {"clax-browser:open-content": false}}))
         .send()
         .await
         .unwrap();
@@ -2661,7 +2661,7 @@ async fn an_admin_switch_off_closes_every_session_of_its_kind() {
         ))
     });
     let ts = registry_daemon(source.clone()).await;
-    let caps = "browser.open.artifact,browser.open.content";
+    let caps = "clax-browser:open-artifact,clax-browser:open-content";
     let (one, two) = (
         run_with_caps(&ts, caps).await,
         run_with_caps(&ts, caps).await,
@@ -2695,7 +2695,7 @@ async fn a_restart_marks_sessions_lost() {
     use clax_store::credits::{KeySource, LINE_BROWSER_TIME, Metered};
     let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
     let ts = registry_daemon(source.clone()).await;
-    let rid = run_with_caps(&ts, "browser.open.content").await;
+    let rid = run_with_caps(&ts, "clax-browser:open-content").await;
     let d = DriverId::mint();
     ts.store.claim_run(&rid, &d, 60).unwrap().unwrap();
     ts.store
@@ -2725,7 +2725,7 @@ async fn a_restart_marks_sessions_lost() {
                     clax_core::audit::AuditKind::BotSpend,
                     ts.store.now(),
                 )
-                .with("capability", "browser.open.content")
+                .with("capability", "clax-browser:open-content")
                 .with("op", "browser.open"),
             },
         )

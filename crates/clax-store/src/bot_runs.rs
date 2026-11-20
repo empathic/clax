@@ -257,37 +257,37 @@ pub struct Run {
 
 /// The browser's source capabilities: each opens a session of its kind.
 const OPEN_CAPS: &[&str] = &[
-    "browser.open.url",
-    "browser.open.artifact",
-    "browser.open.content",
+    "clax-browser:open-url",
+    "clax-browser:open-artifact",
+    "clax-browser:open-content",
 ];
 
 /// The operations of Clax's own surface the capabilities allow, as
 /// [`Bindings::clax`] grants them: each operation with the capabilities
 /// any one of which allows it, in the order a binding lists them (spec
 /// 2026-11-19-claxbot-browser §4.2, §6.9): the session operations with
-/// any `browser.open.*`, `browser.test` with `browser.open.artifact`.
+/// any `clax-browser:open-*`, `browser.test` with `clax-browser:open-artifact`.
 pub const CLAX_GRANTED: [(&str, &[&str]); 8] = [
-    ("web.search", &["web.search"]),
-    ("web.fetch", &["web.fetch"]),
+    ("web.search", &["clax-web:search"]),
+    ("web.fetch", &["clax-web:fetch"]),
     ("browser.open", OPEN_CAPS),
     ("browser.page", OPEN_CAPS),
     ("browser.act", OPEN_CAPS),
     ("browser.expect", OPEN_CAPS),
     ("browser.close", OPEN_CAPS),
-    ("browser.test", &["browser.open.artifact"]),
+    ("browser.test", &["clax-browser:open-artifact"]),
 ];
 
 /// The capabilities text (`bot_runs.caps`) of a run whose web shape (main's
-/// `bot_runs.web`) is `web`: `search` for `web.search`, `fetch` for
-/// `web.fetch`, comma-separated; any other part names nothing. Sorted,
+/// `bot_runs.web`) is `web`: `search` for `clax-web:search`, `fetch` for
+/// `clax-web:fetch`, comma-separated; any other part names nothing. Sorted,
 /// each once.
 pub fn caps_of_web(web: &str) -> String {
     let mut caps: Vec<&str> = web
         .split(',')
         .filter_map(|p| match p {
-            "search" => Some("web.search"),
-            "fetch" => Some("web.fetch"),
+            "search" => Some("clax-web:search"),
+            "fetch" => Some("clax-web:fetch"),
             _ => None,
         })
         .collect();
@@ -308,11 +308,11 @@ pub fn caps_text<'a>(caps: impl IntoIterator<Item = &'a str>) -> String {
     caps.join(",")
 }
 
-/// The web shape of capabilities text `caps`: `search` for `web.search`,
-/// `fetch` for `web.fetch`, in that order.
+/// The web shape of capabilities text `caps`: `search` for
+/// `clax-web:search`, `fetch` for `clax-web:fetch`, in that order.
 pub fn web_shape(caps: &str) -> String {
     let has = |c: &str| caps.split(',').any(|p| p == c);
-    [("web.search", "search"), ("web.fetch", "fetch")]
+    [("clax-web:search", "search"), ("clax-web:fetch", "fetch")]
         .into_iter()
         .filter(|(c, _)| has(c))
         .map(|(_, s)| s)
@@ -3883,7 +3883,7 @@ mod tests {
                     base_version: 1,
                     agent_grant: None,
                     caps:
-                        "browser.open.content,browser.open.artifact,web.crawl,browser.open.content"
+                        "clax-browser:open-content,clax-browser:open-artifact,web.crawl,clax-browser:open-content"
                             .into(),
                 },
             )
@@ -3891,15 +3891,15 @@ mod tests {
             .unwrap();
         let (run, as_made) = st.run_as_made(&made.id).unwrap().unwrap();
         assert_eq!(
-            run.caps, "browser.open.artifact,browser.open.content",
+            run.caps, "clax-browser:open-artifact,clax-browser:open-content",
             "known capabilities, sorted, each once"
         );
         assert_eq!(run.web, "");
         assert_eq!(st.run(&run.id).unwrap().unwrap().caps, run.caps);
-        assert_eq!(caps_of_web("fetch,search,search,x"), "web.fetch,web.search");
+        assert_eq!(caps_of_web("fetch,search,search,x"), "clax-web:fetch,clax-web:search");
         assert_eq!(caps_of_web(" search"), "");
         assert_eq!(
-            web_shape("web.fetch,web.search"),
+            web_shape("clax-web:fetch,clax-web:search"),
             "search,fetch",
             "in main's order"
         );
@@ -3921,7 +3921,7 @@ mod tests {
         assert_eq!(
             Bindings::clax(
                 &aid,
-                "web.fetch,browser.open.url,web.search,browser.open.artifact"
+                "clax-web:fetch,clax-browser:open-url,clax-web:search,clax-browser:open-artifact"
             )
             .bindings[0]
                 .granted(),
@@ -3936,7 +3936,7 @@ mod tests {
                 "browser.test"
             ]
         );
-        let url = Bindings::clax(&aid, "browser.open.url");
+        let url = Bindings::clax(&aid, "clax-browser:open-url");
         assert_eq!(
             url.bindings[0].granted(),
             [
@@ -3947,14 +3947,14 @@ mod tests {
                 "browser.close"
             ]
         );
-        assert_eq!(url.bindings[0].scope["caps"], "browser.open.url");
+        assert_eq!(url.bindings[0].scope["caps"], "clax-browser:open-url");
         // Content allows the session operations, and the scope names it.
-        let content = Bindings::clax(&aid, "browser.open.content,Test,web,search");
+        let content = Bindings::clax(&aid, "clax-browser:open-content,Test,web,search");
         assert_eq!(content.bindings[0].granted().len(), 5);
-        assert_eq!(content.bindings[0].scope["caps"], "browser.open.content");
+        assert_eq!(content.bindings[0].scope["caps"], "clax-browser:open-content");
         // A web run's scope is the artifact alone.
         assert_eq!(
-            Bindings::clax(&aid, "web.search").bindings[0].scope,
+            Bindings::clax(&aid, "clax-web:search").bindings[0].scope,
             serde_json::json!({"artifact": aid})
         );
     }
@@ -4290,7 +4290,7 @@ mod tests {
 
     #[test]
     fn bindings_are_read_only_at_the_version_this_build_knows() {
-        let made = Bindings::clax("7q3k9mzx2b4t", "web.search,web.fetch");
+        let made = Bindings::clax("7q3k9mzx2b4t", "clax-web:search,clax-web:fetch");
         let text = made.to_json();
         assert_eq!(
             text,
@@ -4311,7 +4311,7 @@ mod tests {
         assert!(read.of("shell").is_none());
         assert_eq!(read.all(), std::slice::from_ref(clax));
         assert!(
-            Bindings::clax("a", "web.fetch,other,web.Search")
+            Bindings::clax("a", "clax-web:fetch,other,web.Search")
                 .of("clax")
                 .unwrap()
                 .granted()
@@ -6072,7 +6072,7 @@ mod tests {
 
         // A binding of version 1 says no operations, no registration and
         // no prompt file, whatever its text holds.
-        let v1 = Bindings::clax("7q3k9mzx2b4t", "web.fetch");
+        let v1 = Bindings::clax("7q3k9mzx2b4t", "clax-web:fetch");
         assert_eq!(v1.version(), 1);
         let clax = v1.of("clax").unwrap();
         assert_eq!((clax.operations(), clax.registration()), (None, None));

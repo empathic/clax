@@ -97,14 +97,14 @@ settings! {
     WebFetchAllowlist = "web.fetch.allowlist", Hosts, Vec::<String>::new();
     WebCloudflareAccountId = "web.cloudflare.account_id", AccountId, "";
     BrowserMaxConcurrent = "browser.max_concurrent", OneTo50, 2;
-    BrowserOpenUrlEnabled = "browser.open.url.enabled", Bool, false;
-    BrowserOpenUrlUrlRule = "browser.open.url.url_rule", UrlRule, "sender";
-    BrowserOpenUrlAllowlist = "browser.open.url.allowlist", Hosts, Vec::<String>::new();
-    BrowserOpenUrlMaxPerRun = "browser.open.url.max_per_run", Positive, 5;
-    BrowserOpenArtifactEnabled = "browser.open.artifact.enabled", Bool, false;
-    BrowserOpenArtifactMaxPerRun = "browser.open.artifact.max_per_run", Positive, 10;
-    BrowserOpenContentEnabled = "browser.open.content.enabled", Bool, false;
-    BrowserOpenContentMaxPerRun = "browser.open.content.max_per_run", Positive, 10;
+    BrowserOpenUrlEnabled = "browser.open-url.enabled", Bool, false;
+    BrowserOpenUrlUrlRule = "browser.open-url.url_rule", UrlRule, "sender";
+    BrowserOpenUrlAllowlist = "browser.open-url.allowlist", Hosts, Vec::<String>::new();
+    BrowserOpenUrlMaxPerRun = "browser.open-url.max_per_run", Positive, 5;
+    BrowserOpenArtifactEnabled = "browser.open-artifact.enabled", Bool, false;
+    BrowserOpenArtifactMaxPerRun = "browser.open-artifact.max_per_run", Positive, 10;
+    BrowserOpenContentEnabled = "browser.open-content.enabled", Bool, false;
+    BrowserOpenContentMaxPerRun = "browser.open-content.max_per_run", Positive, 10;
     BrowserCallSeconds = "browser.call_seconds", TenTo120, 60;
     BrowserSessionIdleSeconds = "browser.session.idle_seconds", SixtyTo1200, 300;
     BrowserSessionMaxSeconds = "browser.session.max_seconds", SixtyTo7200, 1_800;
@@ -1252,14 +1252,14 @@ mod tests {
     fn the_capability_settings_default_off() {
         let (_d, st) = store();
         let want = [
-            ("browser.open.url.enabled", json!(false)),
-            ("browser.open.url.url_rule", json!("sender")),
-            ("browser.open.url.allowlist", json!([])),
-            ("browser.open.url.max_per_run", json!(5)),
-            ("browser.open.artifact.enabled", json!(false)),
-            ("browser.open.artifact.max_per_run", json!(10)),
-            ("browser.open.content.enabled", json!(false)),
-            ("browser.open.content.max_per_run", json!(10)),
+            ("browser.open-url.enabled", json!(false)),
+            ("browser.open-url.url_rule", json!("sender")),
+            ("browser.open-url.allowlist", json!([])),
+            ("browser.open-url.max_per_run", json!(5)),
+            ("browser.open-artifact.enabled", json!(false)),
+            ("browser.open-artifact.max_per_run", json!(10)),
+            ("browser.open-content.enabled", json!(false)),
+            ("browser.open-content.max_per_run", json!(10)),
             ("browser.call_seconds", json!(60)),
             ("browser.session.idle_seconds", json!(300)),
             ("browser.session.max_seconds", json!(1_800)),

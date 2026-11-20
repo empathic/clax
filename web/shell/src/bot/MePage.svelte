@@ -38,11 +38,11 @@
   const WHY: Record<string, string> = { not_offered: "Off on this instance", not_configured: "Not configured", not_granted: "Not granted to you" };
   // What each capability lets ClaxBot do, and what it can carry out of Clax.
   const CAPS: Record<CapabilityId, { label: string; note: string }> = {
-    "web.search": { label: "Search the web", note: "What a run searches for can carry data out." },
-    "web.fetch": { label: "Read web pages", note: "The pages a run reads can carry data out." },
-    "browser.open.url": { label: "Open public pages in a browser", note: "A page it opens can steer it, and what it types into a page leaves Clax." },
-    "browser.open.artifact": { label: "Open the pages it builds in a browser", note: "To look at them and run their tests; a page reaches nothing but itself." },
-    "browser.open.content": { label: "Open content it makes in a browser", note: "To render and record a proposed direction; a page reaches nothing but itself." },
+    "clax-web:search": { label: "Search the web", note: "What a run searches for can carry data out." },
+    "clax-web:fetch": { label: "Read web pages", note: "The pages a run reads can carry data out." },
+    "clax-browser:open-url": { label: "Open public pages in a browser", note: "A page it opens can steer it, and what it types into a page leaves Clax." },
+    "clax-browser:open-artifact": { label: "Open the pages it builds in a browser", note: "To look at them and run their tests; a page reaches nothing but itself." },
+    "clax-browser:open-content": { label: "Open content it makes in a browser", note: "To render and record a proposed direction; a page reaches nothing but itself." },
   };
   // The capabilities shown: those the admin offers, or grants to them.
   const caps = $derived((me?.capabilities ?? []).filter(c => c.offered || c.granted));

@@ -140,7 +140,7 @@ interface Page {
   /** Clax's own: what the page shows for 1 to 10 seconds, as frames; return `frames` to see them. */
   record(opts: { seconds: number }): Promise<BrowserClip>;
   /** Clax's own: a new page of this session that allows only `ops`, for `expires` seconds, navigating only to `origins`, and nothing this page does not; its other calls throw `browser_forbidden`. */
-  share(opts?: { ops?: ("read" | "act" | "navigate" | "record" | "close")[]; expires?: number; origins?: string[] }): Promise<Page>;
+  share(opts?: { actions?: ("read" | "act" | "navigate" | "record" | "close")[]; expires?: number; origins?: string[] }): Promise<Page>;
   /** Clax's own: ends this shared page's capability and every page shared from it; the session stays open for the others. */
   revoke(): Promise<void>;
   /** Ends the session, which costs by the second while open; a page no script's `state` holds is closed when its script ends. */

@@ -59,10 +59,10 @@ fn run_of(kind: &str, bindings: Vec<Binding>) -> RunInfo {
 fn shapes() -> [(&'static str, CapSet); 4] {
     [
         ("", CapSet::default()),
-        ("web.search", [C::WebSearch].into_iter().collect()),
-        ("web.fetch", [C::WebFetch].into_iter().collect()),
+        ("clax-web:search", [C::WebSearch].into_iter().collect()),
+        ("clax-web:fetch", [C::WebFetch].into_iter().collect()),
         (
-            "web.search,web.fetch",
+            "clax-web:search,clax-web:fetch",
             [C::WebSearch, C::WebFetch].into_iter().collect(),
         ),
     ]

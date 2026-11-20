@@ -996,7 +996,7 @@ pub enum SuppliedFile {
 /// What `clax.browser.open` opens (spec §6.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceSpec {
-    /// `{url}`: a public URL, which `browser.open.url`'s rule admits.
+    /// `{url}`: a public URL, which `clax-browser:open-url`'s rule admits.
     Url(String),
     /// `{artifact: "draft" | version, path?}`: the run's draft (`None`)
     /// or that version of its artifact, at `path`.

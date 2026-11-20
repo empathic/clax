@@ -168,8 +168,8 @@ fetches through it, across the restart, and a fetch of a page that
 redirects to itself; `smoke-remote.mjs` makes one real search and one real
 fetch when the deployed instance has web search on.
 
-ClaxBot's browser capabilities (`browser.open.url`, `browser.open.artifact`
-and `browser.open.content`: `clax.browser.open` and `clax.browser.test`,
+ClaxBot's browser capabilities (`clax-browser:open-url`, `clax-browser:open-artifact`
+and `clax-browser:open-content`: `clax.browser.open` and `clax.browser.test`,
 spec `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md`) are
 not configured on the Worker: it has no browser source, so a run never
 declares `clax.browser`, `GET /api/admin/browser` answers `configured:
