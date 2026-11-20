@@ -82,8 +82,15 @@
 
   // clax: one null-prototype namespace per segment, one function per op.
   const segment = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-  const opFunction = (op) => (...args) =>
-    new PromiseCtor((resolve, reject) => {
+  // A host call, its arguments sent from a null-prototype array so that
+  // no Array.prototype.toJSON sees them. With a box (the browser layer's
+  // calls), the answer lands in box.v, its own prototype null, and the
+  // promise resolves to undefined with an own constructor: neither
+  // Object.prototype.then nor Promise.prototype.then or constructor, which
+  // a script can set, is consulted on it.
+  const hostCall = (op, args, box) => {
+    setPrototypeOf(args, null);
+    const q = new PromiseCtor((resolve, reject) => {
       if (finished) {
         reject(hostError("script_finished", "the script has finished; this call was not made"));
         return;
@@ -99,8 +106,15 @@
       const p = create(null);
       p.resolve = resolve;
       p.reject = reject;
+      p.box = box;
       pending[id] = p;
     });
+    if (box !== undefined) defineProperty(q, "constructor", { value: PromiseCtor });
+    return q;
+  };
+  const opFunction = (op) => (...args) => hostCall(op, args);
+  // For the browser layer: (box, ...args), the answer in box.v.
+  const boxedOp = (op) => (box, ...args) => hostCall(op, args, box);
   // The segments no operation name may have (RESERVED_SEGMENTS in
   // lib.rs): names JavaScript calls on an object by itself.
   const reservedSegment = (part) => {
@@ -438,7 +452,13 @@
     if (p === undefined) return;
     delete pending[id];
     if (ok) {
-      p.resolve(parse(json));
+      const v = parse(json);
+      if (p.box === undefined) p.resolve(v);
+      else {
+        if (v !== null && typeof v === "object") setPrototypeOf(v, null);
+        p.box.v = v;
+        p.resolve(undefined);
+      }
       return;
     }
     const h = parse(json);

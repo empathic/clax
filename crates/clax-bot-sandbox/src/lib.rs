@@ -945,7 +945,13 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 /// names its session by the capability `browser.open` answered
 /// (`page`), which no script reads: a `Page` returned or logged shows
 /// `"<browser page>"`, a `Locator` `"<browser locator>"`, and no `Page` is
-/// made from a string. `page.share(opts)` answers a new `Page` whose
+/// made from a string. Nor does a hook a script sets on a built-in
+/// prototype see it: every call's arguments are sent from an array of no
+/// prototype (no `Array.prototype.toJSON`), and the layer's five calls
+/// answer into a record only the layer holds, through a promise that
+/// resolves to `undefined` and carries its own `constructor`, so neither
+/// `Object.prototype.then` nor `Promise.prototype.then` or `constructor`
+/// is consulted on the answer. `page.share(opts)` answers a new `Page` whose
 /// capability is the `share` call's answer `{page, shown}` (spec §18.4),
 /// shown as its `shown` (`"<browser page: read>"`, say), which its
 /// handle entry keeps. A later script reaches a session only through

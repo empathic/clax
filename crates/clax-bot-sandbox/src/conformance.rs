@@ -974,18 +974,23 @@ return out"#,
                 ),
             )
         },
+        // A call's arguments are sent from an array of no prototype, so
+        // a script's Array.prototype.toJSON neither sees nor changes them.
         Case {
-            records: Records::Exactly(vec![refused("echo"), refused("echo")]),
+            calls: vec![
+                call("echo", json!([1]), json!(1)),
+                call("echo", json!([2]), json!(2)),
+            ],
             ..case(
-                "arguments_whose_json_is_not_an_array_are_refused",
+                "array_to_json_changes_no_arguments",
                 r#"Array.prototype.toJSON = function () { return "not an array" };
 const out = [];
-try { await clax.echo(1) } catch (e) { out.push(e.name) }
+out.push(await clax.echo(1));
 Array.prototype.toJSON = function () { return undefined };
-try { await clax.echo(1) } catch (e) { out.push(e.name) }
+out.push(await clax.echo(2));
 delete Array.prototype.toJSON;
 return out"#,
-                ok(json!(["TypeError", "TypeError"])),
+                ok(json!([1, 2])),
             )
         },
         Case {
@@ -1938,7 +1943,7 @@ fn browser_layer() -> Vec<Case> {
         browser: true,
         ..c
     };
-    vec![
+    let mut cases = vec![
         layered(Case {
             calls: each,
             ..case("each_method_makes_its_one_flat_call", each_method_code(), ok(json!(PAGE_URL)))
@@ -2347,7 +2352,71 @@ return { msgs, first: [msgs[0].type(), msgs[0].text(), msgs[0].location().url],
                 })),
             )
         }),
-    ]
+    ];
+    // A hook a script installs on a built-in prototype sees neither a
+    // Page's capability nor its answers: the page in state is the
+    // answered one, and the script returns `null`.
+    let hooked = |name: &'static str, code: &'static str| {
+        layered(Case {
+            calls: vec![
+                open(),
+                call(
+                    "browser.page",
+                    json!(["s1", "goto", {"url": "/b"}]),
+                    answered(Value::Null),
+                ),
+            ],
+            expect: Expect {
+                state: Some(left(
+                    json!({"page": {"$clax": 0}}),
+                    json!([{"page": "s1", "url": PAGE_URL, "of": "Page"}]),
+                    json!([]),
+                    0,
+                )),
+                ..ok(Value::Null)
+            },
+            ..case(name, code, none())
+        })
+    };
+    cases.extend([
+        hooked(
+            "array_to_json_sees_no_capability",
+            "let leak = null;
+Array.prototype.toJSON = function () { if (typeof this[0] === 'string') leak = this[0]; return this; };
+const page = await clax.browser.open({ url: 'https://x.test/' });
+await page.goto('/b');
+delete Array.prototype.toJSON;
+state.page = page;
+return leak;",
+        ),
+        hooked(
+            "object_then_sees_no_answer_and_forges_no_page",
+            "let leak = null;
+Object.prototype.then = function (r) { delete Object.prototype.then; leak = this.page; r({ page: 'FORGED', url: 'u' }); };
+const page = await clax.browser.open({ url: 'https://x.test/' });
+delete Object.prototype.then;
+await page.goto('/b');
+state.page = page;
+return leak === undefined ? null : leak;",
+        ),
+        hooked(
+            "promise_then_and_constructor_see_no_answer",
+            "let leak = null;
+const then = Promise.prototype.then;
+const ctor = Promise.prototype.constructor;
+Promise.prototype.then = function (f, g) {
+  return then.call(this, (v) => { if (v && typeof v.page === 'string') leak = v.page; return f ? f(v) : v; }, g);
+};
+Object.defineProperty(Promise.prototype, 'constructor', { value: function () {}, writable: true, configurable: true });
+const page = await clax.browser.open({ url: 'https://x.test/' });
+await page.goto('/b');
+Promise.prototype.then = then;
+Object.defineProperty(Promise.prototype, 'constructor', { value: ctor, writable: true, configurable: true });
+state.page = page;
+return leak;",
+        ),
+    ]);
+    cases
 }
 
 /// A [`Host`] that answers a case's calls in order and notes any call it

@@ -180,9 +180,17 @@
       }
       if (s.not === true) args.not = true;
       if (withTimeout && args.timeout === undefined && p.timeout !== undefined) args.timeout = p.timeout;
-      if (op === "page") return shape(action, answer(p, await flat.page(p.session, action, args)));
-      if (op === "act") return answer(p, await flat.act(p.session, s.steps, action, args));
-      return answer(p, await flat.expect(p.session, s.steps || [], action, args), "Expected");
+      const r = create(null);
+      if (op === "page") {
+        await flat.page(r, p.session, action, args);
+        return shape(action, answer(p, r.v));
+      }
+      if (op === "act") {
+        await flat.act(r, p.session, s.steps, action, args);
+        return answer(p, r.v);
+      }
+      await flat.expect(r, p.session, s.steps || [], action, args);
+      return answer(p, r.v, "Expected");
     };
   }
   P.Page.evaluate = async function (fn, arg) {
@@ -197,13 +205,21 @@
       if (arg !== undefined) args.arg = arg;
     } else if (typeof fn === "string") args.expression = fn;
     else throw new TypeErrorCtor("page.evaluate: expects a function or a string");
-    return answer(p, await flat.page(p.session, "evaluate", args));
+    const r = create(null);
+    await flat.page(r, p.session, "evaluate", args);
+    return answer(p, r.v);
   };
-  P.Page.close = function () { return flat.close(S(this).p.session); };
+  P.Page.close = async function () {
+    const r = create(null);
+    await flat.close(r, S(this).p.session);
+    return r.v;
+  };
   // A narrowed page of the same session (spec §18.4), shown by what it allows.
   P.Page.share = async function (opts) {
     const p = S(this).p;
-    const v = answer(p, await flat.page(p.session, "share", spread(create(null), opts)));
+    const r = create(null);
+    await flat.page(r, p.session, "share", spread(create(null), opts));
+    const v = answer(p, r.v);
     const n = pageOf(v.page, p.url);
     S(n).shown = toText(v.shown);
     return n;
@@ -298,8 +314,9 @@
     return make(P[h.of], n);
   };
   const open = async (source, opts) => {
-    const r = await (opts === undefined ? flat.open(source) : flat.open(source, opts));
-    return pageOf(r.page, r.url);
+    const r = create(null);
+    await (opts === undefined ? flat.open(r, source) : flat.open(r, source, opts));
+    return pageOf(r.v.page, r.v.url);
   };
   for (const c of ["LocatorAssertions", "PageAssertions"]) {
     defineProperty(P[c], "not", {
@@ -377,8 +394,9 @@
     return values(actual, false);
   };
   if (B !== undefined && flatNames.every((n) => typeof B[n] === "function")) {
+    // Through boxedOp: the answers reach the layer alone (prelude.js).
     for (const n of flatNames) {
-      flat[n] = B[n];
+      flat[n] = boxedOp("browser." + n);
       delete B[n];
     }
     B.open = open;
