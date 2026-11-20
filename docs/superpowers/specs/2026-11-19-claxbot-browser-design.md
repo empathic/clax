@@ -2,9 +2,13 @@
 
 Status: design for the owner's review (2026-11-19), revised the same day
 after the owner's direction below, and again for its sixth item, a
-Playwright-shaped script API (§6.1, §6.5, §6.9 to §6.12), and again for run state and session capabilities (§17), and again for browser capabilities as macaroons (§18). Builds on
+Playwright-shaped script API (§6.1, §6.5, §6.9 to §6.12), and again for run state and session capabilities (§17), and again for browser capabilities as macaroons (§18), and on 2026-11-20
+to reconcile its grants with the zero-capability design (§4.2 to §4.4,
+§4.8, §4.10, §11.2, §18). Builds on
 `2026-11-02-claxbot-web-tools-design.md` ("web §n"),
-`2026-11-10-claxbot-surfaces-design.md` ("surfaces") and the code they
+`2026-11-10-claxbot-surfaces-design.md` ("surfaces"),
+`2026-11-17-zero-capability-gnap-design.md` ("gnap", empathic/clax#120,
+a design with no code yet) and the code they
 became (`crates/clax-bot`, `crates/clax-store`, `crates/clax-server`),
 including this branch's first version of browser testing (the plan
 `docs/superpowers/plans/2026-11-19-claxbot-browser.md`, built in full).
@@ -86,8 +90,8 @@ seconds of each animating, and replies with the clips.
 Goals
 
 - G1. Five capabilities, each granted, capped, priced, revoked and shown
-  on its own **(owner)**: `web.search`, `web.fetch`, `browser.open.url`,
-  `browser.open.artifact`, `browser.open.content` (§4.2).
+  on its own **(owner)**: `clax-web:search`, `clax-web:fetch`, `clax-browser:open-url`,
+  `clax-browser:open-artifact`, `clax-browser:open-content` (§4.2).
 - G2. One mechanism under all five **(owner)**: capabilities computed one
   way from live grants (§4.3), one URL rule type (§4.5), one Spend path
   (§4.6), one error vocabulary style (§4.7), one audit kind (§4.8), one
@@ -99,7 +103,7 @@ Goals
   journaled call, so a step executed again answers from the journal and
   opens nothing (§6).
 - G5. `open` of the run's clax or of supplied content needs neither
-  `web.fetch` nor `browser.open.url`, and such a page reaches its
+  `clax-web:fetch` nor `clax-browser:open-url`, and such a page reaches its
   synthetic origin alone (§8) **(owner)**.
 - G6. Every millisecond a browser is open is charged once, to the person
   the run acts for, under the Spend rule (web §4.2), whatever ends the
@@ -212,110 +216,168 @@ every item below is in the tree.
 The namespaces follow the billing, so a model reading the declaration
 knows which calls cost per request and which cost by the second.
 
-### 4.2 Five capabilities **(owner)**
+### 4.2 Five capabilities, two access types **(owner)**
+
+Each capability is an action of a GNAP (RFC 9635 §8) access type, as in
+the zero-capability design (`2026-11-17-zero-capability-gnap-design.md`,
+"gnap", its "Access types"): `clax-web` for retrieval, `clax-browser` for
+a running browser **(owner)**. Where a key names one action of one type
+(a run's declared set, the Me page's switches, an error's `capability`)
+it is `<type>:<action>` **(design)**.
 
 | Capability | Operations it allows | Price line | Per-run cap | URL rule |
 |---|---|---|---|---|
-| `web.search` | `web.search` | `web.search.<provider>`, per request | searches | none |
-| `web.fetch` | `web.fetch` | `web.fetch`, per request | fetches | its own |
-| `browser.open.url` | `browser.open({url})`; a `page.goto` that leaves a session's origin (§8.5) | `browser.time`, per second | sessions on a URL | its own |
-| `browser.open.artifact` | `browser.open({artifact})`, `browser.test` | `browser.time` | sessions on the clax | none |
-| `browser.open.content` | `browser.open({html})` | `browser.time` | sessions on content | none |
+| `clax-web:search` | `clax.web.search` | `web.search.<provider>`, per request | searches | none |
+| `clax-web:fetch` | `clax.web.fetch` | `web.fetch`, per request | fetches | its own |
+| `clax-browser:open-url` | `browser.open({url})`; a `page.goto` that leaves a session's origin (§8.5) | `browser.time`, per second | sessions on a URL | its own |
+| `clax-browser:open-artifact` | `browser.open({artifact})`, `browser.test` | `browser.time` | sessions on the clax | none |
+| `clax-browser:open-content` | `browser.open({html})` | `browser.time` | sessions on content | none |
 
-A session's other calls (every method of its `Page`, its `Locator`s and
-`expect`, through `browser.page`, `browser.act`, `browser.expect` and
-`browser.close`, §6.9; a `goto` within its origin included) need the
-capability its source needed, re-evaluated at each call. Each
-capability is shown on its own switch to the admin and to the person,
-with its own cap and price, and revoked on its own. None needs another: `browser.open.artifact` and
-`browser.open.content` stand alone **(owner)**.
+`clax-browser` has five more actions, a session's: `read`, `act`,
+`navigate`, `record` and `close` (§18.3 says which call is which). They
+have no switch, cap or price of their own: a session's time is charged
+by the second whatever its calls are. A grant of an `open-*` action
+lists them beside it (§4.3), so a run that opens a session holds them on
+the sessions it opens. A session's call needs its action and the open
+action its source needed, re-evaluated at each call (§4.4); a `goto`
+within its origin is `navigate` and needs nothing more.
+
+Locations **(owner: origins, hosts or artifact IDs)**: a `clax-browser`
+access object's locations are origins (`scheme://host[:port]`, where a
+`navigate` may go), hosts (where `open-url` may open) or artifact IDs
+(what `open-artifact` may open); a `clax-web` object's are hosts. An
+object without locations applies everywhere. In this version only a
+page's share carries locations (its origins, §18.4); a grant the admin or
+the person issues carries none, and is refused at issue with any
+(`unsupported_location`), so no row holds a location no check reads.
+Expiry is a condition of a grant (`conditions.expires_at`, gnap "The
+evaluation rule"), never an access field.
+
+Each `open-*` action and each `clax-web` action is shown on its own
+switch to the admin and to the person, with its own cap and price, and
+revoked on its own. None needs another: `clax-browser:open-artifact` and
+`clax-browser:open-content` stand alone **(owner)**.
 
 The three `browser.open` kinds share the `browser.time` line, as one
 price per browser second **(design: the owner named two price lines)**.
 
-### 4.3 How a run's capabilities are computed **(owner: zero-capability; design: the grants)**
+### 4.3 How a run's capabilities are computed **(owner: zero-capability, gnap's rule; design: the rows)**
 
 The owner's standing rule: sessions start at zero; capabilities are the
-union of live grants; revoke re-evaluates transitively. A run starts with
-no capability, and nothing is implied: every capability a run holds traces
-to recorded grants, each intersected with its granter's own, as in the
-zero-capability design (§3).
+union of live grants; revoke re-evaluates transitively. It is gnap's
+evaluation rule ("The evaluation rule"), applied to these two types:
 
 ```
-offered(c)     = the admin's switch for c is on        -- the instance's terms for c
-caps(person)   = ∪ { c : a live admin grant of c to everyone, or to the person }
-caps(run)      = { c in declared(run) :
-                     offered(c)
-                   ∧ c in caps(person)
-                   ∧ a live grant of c from the person to their runs
-                   ∧ source(c) is configured }         -- the host can perform c now
+caps(x)  = ∪ { conv(g) ∩ caps(g.granter) : g live, g.grantee = x }
+conv(g)  = g.access ∩ conv(g.parent)          (g.access when g has no parent)
+
+caps(granter of an admin's grant)
+         = ⊤ while the granter is the owner or an admin, else ∅
+caps(migration) = caps(config) = ⊤             -- the instance's own acts
+caps(run R)
+         = { a in caps(runs_of:<R's person>) :
+               a's capability in declared(R)
+             ∧ offered(a)                          -- the admin's switch
+             ∧ configured(a) }                     -- the host can perform it
 ```
 
-Grants are rows of one table, `bot_cap_grants` (§11.2): an ID, the
-granter, the grantee (`everyone`, a person, or a person's runs), the
-capability, the parent grant, the status (`issued`, `revoked`), and who
-issued and revoked it when.
+A grant is **live** while its status is `issued`, its parent (if any) is
+live and its conditions hold (`expires_at` after now), as gnap says.
+The rows are one table, `bot_cap_grants` (§11.2), each shaped as gnap's
+grant, `{id, granter, grantee, access, parent?, conditions, status,
+version, event, issued_at}`, so it can move into gnap's store unchanged.
 
-- **The admin's switch** for `c` says the instance offers it, with its
-  terms: its per-run cap, its URL rule (for `web.fetch` and
-  `browser.open.url`), and its family's settings (§11.1). It grants it to
-  no one.
-- **The admin's grants** of `c` say who holds it: an instance-wide grant
-  to **everyone** on this instance, or a grant to one person. The
-  admin page shows each and revokes it.
-- **The person's grant** of `c` to their own runs is what reaches a run.
-  An instance-wide grant issues it to every person as its child, in the
-  same transaction for the people there are and when a person joins
-  after; each child is a row, recorded. The person's switch on the Me
-  page revokes their grant or issues it again, which they may do while
-  `c` is in `caps(person)`.
-- **The source** says per capability whether it can perform it now
+- **The admin's switch** for an action says the instance offers it, with
+  its terms: its per-run cap, its URL rule (for `clax-web:fetch` and
+  `clax-browser:open-url`), and its family's settings (§11.1). It grants
+  it to no one.
+- **The admin's grants** say who holds it. The granter is the admin who
+  issued it, by person key, never the instance: it conveys while that
+  person is the owner or an admin, so an admin who loses the role stops
+  conveying at once, without a row changing, and conveys again if the
+  role comes back (gnap's dynamic intersection, its question Q1). Two
+  grantees:
+  - **one person**, `person:<key>`;
+  - **everyone on this instance**, a gnap **selector grant**
+    ("Terms"), `people_of:instance` **(design: gnap names no selector for
+    a whole instance; this one follows its `<set>_of:<x>` names)**. It
+    conveys nothing itself; it issues each person a child grant
+    (`person:<key>`, parent the selector, the same access, event
+    `admin`), in the same transaction for the people there are and when
+    a person joins after.
+- **The person's grant** to their own runs is the selector grant
+  `runs_of:<key>` (granter the person, no parent, event `bot`): what
+  reaches their runs, conveying `conv(g) ∩ caps(person)`. An admin's
+  grant issues it, in the same transaction, to each person it gives the
+  action to who holds no live one; the person's switch on the Me page
+  revokes it or issues it again, which they may do while the action is in
+  `caps(person)`. A runs grant does not issue a child per run: a run is
+  reached by its person's selector at evaluation, and keeps what it
+  declared (§4.4) **(design: gnap's "person → run (per run)" bootstrap
+  row; recorded as an alternative)**.
+- **The source** says per action whether the host can perform it now
   (credentials present, a browser source at all).
 - **No grant is implied.** Main's behaviour, web on for everyone the
-  admin offers it to, is an explicit instance-wide grant of `web.search`
-  and `web.fetch` that migration 67 writes on an instance whose web
-  switches were on (§11.2), shown and revocable on the admin page. The
-  three `browser.open` kinds get no instance-wide grant: the admin
-  grants each explicitly.
-- **Revoking re-evaluates transitively**: an admin grant revoked ends its
-  children; a switch turned off leaves every grant of `c` conveying
-  nothing; either re-evaluates every run and session under them (§4.4).
-  A person's own revoke ends only their grant. A new instance-wide grant
-  issues new children to everyone, those who revoked an earlier one's
-  included.
+  admin offers it to, is an explicit selector grant of `clax-web`
+  `search` and `fetch` (granter `migration`) that migration 67 writes on
+  an instance whose web switches were on (§11.2), shown and revocable
+  on the admin page; a daemon whose config.toml turns a web switch on
+  writes the same once (granter `config`). The three `open-*` actions get
+  no grant to everyone: the admin grants each explicitly.
+- **Revoking re-evaluates transitively**: an admin grant revoked ends
+  its children (gnap "Revocation and re-evaluation", `parent_ended`); a
+  granter losing the role, or a switch turned off, leaves every grant
+  under it conveying nothing; each re-evaluates every run and session
+  under them (§4.4). A person's own revoke ends only their grant. A
+  person's runs grant is not a child of the admin's: it conveys whatever
+  the person holds, so a person holding an action from two admin grants
+  keeps it in their runs when either is revoked.
 
 One function computes it, `capability::Capabilities::now(store, person,
-configured)`, answering per capability either its terms or why it is off
-(`not_offered`, `not_granted`, `person_off`, `not_configured`).
-`WebAccess` and `BrowserAccess` are replaced by it. When the GNAP store
-lands, its grant graph replaces `bot_cap_grants` and other grants (an
-artifact's owner granting `browser.open.artifact` to runs on it, say)
-join the union without changing a caller.
+configured)`, answering per action either its terms or why it is off
+(`not_offered`, `not_granted`, `person_off`, `not_configured`), from
+`Store::person_caps`, which evaluates the rows. `WebAccess` and
+`BrowserAccess` are replaced by it. When gnap's store lands, its grant
+graph takes these rows, and other grants (an artifact's owner granting
+`clax-browser:open-artifact` at that artifact to runs on it, say) join
+the union without changing a caller. What gnap has and this table does
+not (holders, the `grants_epoch`, `grant.update`, `grant.reevaluate`,
+requests and approvals) is left for it (§4.10).
 
-### 4.4 Declared at the start, re-evaluated at each call, revoked at once **(design)**
+### 4.4 Declared at the start, re-evaluated at each call, revoked at once **(design; owner: a revoke stops the run)**
 
 - **Declared.** When a run is made, the capabilities live for it then
-  are kept on it (`bot_runs.caps`, a comma-separated list of capability
-  IDs). The system prompt and its API declaration are generated from
-  them and stay the same every turn (the prompt cache, web §4.4). A
-  capability granted mid-run is not added.
+  are kept on it (`bot_runs.caps`, a comma-separated list of
+  `<type>:<action>` keys). The system prompt and its API declaration are
+  generated from them and stay the same every turn (the prompt cache,
+  web §4.4). A capability granted mid-run is not added.
 - **Re-evaluated.** Each call computes `caps(run)` again and refuses one
   that lost the capability it needs (`web_disabled`, `browser_disabled`,
   naming the capability).
-- **Revoked at once.** A revoke (the admin turns a switch off or revokes
-  a grant, the person revokes theirs, the credentials are removed)
-  re-evaluates every open browser session before the revoking request
-  answers: a session whose run no longer holds its capability is
-  closed, its time charged
-  (§10.3), and its next call answers `browser_session_closed` with the
-  reason `revoked`. A session is state held under a capability, as the
-  zero-capability design requires of watches and leases.
+- **A revoke stops the run** **(owner; gnap "Revocation and
+  re-evaluation": "ClaxBot runs acting for the holder | Stopped,
+  `bot.run_end` `reason: grant_revoked`")**. A grant revoked (by the
+  admin, by the person, or a parent's end) or an admin's role removed
+  re-evaluates, before the revoking request answers, every run not yet
+  ended: a run whose person no longer holds, by grants, a capability it
+  declared is asked to stop as a cancel is, with the reason
+  `grant_revoked`, and ends `stopped` with it at its next boundary. A
+  switch turned off or credentials removed are the instance's terms, not
+  a grant: the run keeps running and each call that needs the capability
+  is refused, as before.
+- **Sessions are closed at once.** Every change above, and a switch or
+  the credentials, re-evaluates every open browser session before the
+  request answers: a session whose run no longer holds its capability is
+  closed, its time charged (§10.3), and its next call answers
+  `browser_session_closed` with the reason `revoked`. A session is state
+  held under a capability, as the zero-capability design requires of
+  watches and leases.
 
 ### 4.5 One URL rule **(owner: one type; design: its values)**
 
 One type, `UrlRule`, granted separately to each capability that takes a
-URL: `web.fetch` (`web.fetch.url_rule`) and `browser.open.url`
-(`browser.open.url.url_rule`), whose rule also governs every `goto` out
+URL: `clax-web:fetch` (`web.fetch.url_rule`) and `clax-browser:open-url`
+(`browser.open-url.url_rule`), whose rule also governs every `goto` out
 of a session's origin (§8.5).
 
 | Value | A URL is admitted when |
@@ -334,7 +396,7 @@ allowlist refuses, `url_not_allowed`.
 
 Main's values keep their meaning: `web.fetch.url_rule` gains `sender`
 and nothing else changes, and its default stays `sourced`. The
-`browser.open.url` rule defaults to `sender`: a browser types, clicks
+`clax-browser:open-url` rule defaults to `sender`: a browser types, clicks
 and runs a page's scripts, so the stricter default **(design)**. The
 first version's browse `allowlist` (hosts alone, no source) is not kept;
 `sender` and `any_public` are. Links in pages a browser session showed
@@ -418,9 +480,21 @@ source, and the call's `ms`). A session closed by the host, not by a
 call (§6.4), writes one `bot.spend` with `op: "browser.session.end"`
 and the reason. `bot.web` records already written stay as they are and
 are read as `bot.spend` by the audit page's filter; nothing writes
-`bot.web` any more. A grant issued or revoked is `bot.grant {grant,
-capability, granter, grantee, parent, op}`; main's `me.web` records stay
-readable.
+`bot.web` any more. Main's `me.web` records stay readable.
+
+A grant issued is gnap's `grant.issue {grant_id, granter, grantee,
+access, parent?, event, expires_at?}` ("Journal records"), `event` one of
+`admin` (an admin's grant, and a selector's child), `bot` (a person's
+grant to their runs), `share` (a page's share or export, §18.4, §18.5)
+and `migration`/`config` (§4.3); one revoked is `grant.revoke {grant_id,
+by, reason}`, `reason` one of gnap's: `granter` (its granter revoked
+it), `controller` (its grantee's controller, the person, revoked it),
+`owner` (an admin who is not its granter), `parent_ended` (an ancestor
+ended). `grant.issue` and `grant.revoke` are the kinds the grant flow
+already writes for machine grants, widened as gnap widens them; a grant
+row of this table is told from a machine grant's by its `access` and its
+`grantee`. `bot.grant`, which an earlier build of this branch wrote, is
+not kept (the branch is unmerged).
 
 ### 4.9 One Cloudflare credential **(design, kept)**
 
@@ -430,6 +504,29 @@ for `DaemonWeb` and `DaemonBrowser` alike. The token needs Workers AI
 Read and AI Gateway Read for retrieval and **Browser Rendering – Edit**
 for the browser; the admin page says which capability needs which.
 Renaming the key to `cloudflare.account_id` stays a separate change.
+
+### 4.10 What gnap has that this does not **(design)**
+
+This branch builds gnap's grant row and its evaluation for two access
+types and leaves the rest of gnap's store to gnap's stage 0
+("Migration"):
+
+- **Holders.** A run, a person and an agent's grant are named in
+  `grantee` text (`run:<ID>`, `person:<key>`, `runs_of:<key>`,
+  `people_of:instance`, `grant:<ID>`); gnap's `holders` table, with a
+  holder's controller and its end, is not built, so a holder that ends
+  (a run ending, a machine grant revoked) ends its grants only as far as
+  each check reads them (§18.6).
+- **`grants_epoch`** and the cached capability set: `Store::person_caps`
+  reads the rows each time; the table is small (an instance's admin
+  grants and each person's few).
+- **`grant.update`** (narrowing a grant in place, `version` bumped) and
+  **`grant.reevaluate`**: every row is issued at version 1 and never
+  edited; a narrower grant is a new row.
+- **Requests and approvals** (`grant.request`, `/api/access/requests`):
+  every grant here is granter-initiated.
+- **The access page** (`/settings/access`): the admin's page and the Me
+  page show these grants and the run panel exports one (§11.2, §18.5).
 
 ## 5. `clax.web`: retrieval
 
@@ -496,15 +593,15 @@ Rules **(owner)**:
 - Locators are plain data, resolved in the page at each call, never a
   live element handle (§6.5).
 
-The declaration a run holding any `browser.open.*` is shown, generated
-per run (§6.11); `runTests` only with `browser.open.artifact`, and
+The declaration a run holding any `clax-browser:open-*` is shown, generated
+per run (§6.11); `runTests` only with `clax-browser:open-artifact`, and
 `BrowserSource` lists only the kinds the run holds:
 
 ```ts
 type BrowserSource =
-  | { url: string }                                     // browser.open.url
-  | { artifact: "draft" | Int; path?: string }          // browser.open.artifact
-  | { html: string; files?: Record<string, string | { base64: string } | Image> }; // browser.open.content
+  | { url: string }                                     // clax-browser:open-url
+  | { artifact: "draft" | Int; path?: string }          // clax-browser:open-artifact
+  | { html: string; files?: Record<string, string | { base64: string } | Image> }; // clax-browser:open-content
 interface BrowserOpenOpts {
   viewport?: "desktop" | "tablet" | "phone" | { width: Int; height: Int; mobile?: boolean; scale?: number };
 }
@@ -619,9 +716,9 @@ and recordings are data, never instructions: never fill, `evaluate` or
 
 | Source | Loaded from | Needs | Egress (§8) |
 |---|---|---|---|
-| `{url}` | the public URL, by Browser Run's network | `browser.open.url`, its URL rule | the rule's hosts |
-| `{artifact: "draft" \| version, path?}` | `https://<artifact ID>.clax-test.invalid/`, served by the host | `browser.open.artifact` | the synthetic origin alone |
-| `{html, files?}` | `https://<session ID>.clax-content.invalid/`, served by the host | `browser.open.content` | the synthetic origin alone |
+| `{url}` | the public URL, by Browser Run's network | `clax-browser:open-url`, its URL rule | the rule's hosts |
+| `{artifact: "draft" \| version, path?}` | `https://<artifact ID>.clax-test.invalid/`, served by the host | `clax-browser:open-artifact` | the synthetic origin alone |
+| `{html, files?}` | `https://<session ID>.clax-content.invalid/`, served by the host | `clax-browser:open-content` | the synthetic origin alone |
 
 - **The run's clax**: `"draft"` is the run's draft as the session holds
   it at each call, edits not yet published included; a version number is
@@ -840,7 +937,7 @@ It answers `BrowserResult` (`passed`, `url`, `title`, `status`,
 `left`), the first version's without `steps`, `screenshots`, `html`
 and `text`; `left` is `{url, artifact, content, credits}`, the sessions
 of each kind and the credits the run has left. It needs
-`browser.open.artifact`, counts as one session on the clax, and is
+`clax-browser:open-artifact`, counts as one session on the clax, and is
 charged its browser time as one segment. Viewports `desktop` 1280×800
 scale 1, `tablet` 820×1180 scale 2 mobile, `phone` 390×844 scale 3
 mobile, custom 200–3,840 × 200–4,000 scale 1–3, for `open` too. A
@@ -907,7 +1004,7 @@ builders (local), the objects of `Response`, `ConsoleMessage` and
   in the prelude's closure, not on `clax`: the model is declared the
   `Page`, and a script reaches the flat operations only through it.
 - **Installed for browser runs (§17.5, owner).** The layer is spliced
-  into the prelude only for a run holding a `browser.open.*` capability,
+  into the prelude only for a run holding a `clax-browser:open-*` capability,
   and then installed when the operation names it is given include
   `browser.open`, `browser.page`, `browser.act`, `browser.expect` and
   `browser.close`; the global `expect` exists then and only then.
@@ -997,7 +1094,7 @@ be: they are the prelude's, not operations.
   and `PageAssertions` with its TypeScript signature, its one-line doc,
   its flat operation and action (none for a local method), its
   parameter names, its `args` check, and the capability it needs beyond
-  any `browser.open.*` (`runTests`: `browser.open.artifact`).
+  any `clax-browser:open-*` (`runTests`: `clax-browser:open-artifact`).
 - **Generated.** `api::dts` writes the `browser` namespace of a run
   holding a browser capability from this table (§6.1's declaration,
   with only the methods and source kinds the run holds) instead of the
@@ -1220,7 +1317,7 @@ is recorded as a path not taken (§15).
 
 A `page.goto` to a path of the session's own origin needs nothing more.
 A `page.goto` to a URL elsewhere, from a session of any kind, needs
-`browser.open.url` live and the URL to pass its rule (§4.5). From an
+`clax-browser:open-url` live and the URL to pass its rule (§4.5). From an
 artifact or content session it also turns the session into a URL
 session for the rest of its life, **once**: it counts as one session on
 a URL (§4.6 check 7), its egress becomes §8.4's URL egress, and its
@@ -1332,17 +1429,17 @@ it migrated is reset, not upgraded).
 
 | Capability or family | Setting | Default | Notes |
 |---|---|---|---|
-| `web.search` | `web.search.enabled` | off | main's, unchanged, with `.provider`, `.gateway`, `.byok_alias`, `.limit`, `web.max_searches_per_run` |
-| `web.fetch` | `web.fetch.enabled` | off | main's, unchanged, with `web.max_fetches_per_run`, `web.fetch.allowlist` |
-| `web.fetch` | `web.fetch.url_rule` | `sourced` | main's; gains `sender` |
-| `browser.open.url` | `browser.open.url.enabled` | off | was `browser.browse.enabled` |
-| `browser.open.url` | `browser.open.url.url_rule` | `sender` | `sender`, `sourced`, `allowlist`, `any_public` |
-| `browser.open.url` | `browser.open.url.allowlist` | empty | hosts for `allowlist` |
-| `browser.open.url` | `browser.open.url.max_per_run` | 5 | sessions on a URL, `goto`s out included |
-| `browser.open.artifact` | `browser.open.artifact.enabled` | off | was `browser.enabled` |
-| `browser.open.artifact` | `browser.open.artifact.max_per_run` | 10 | sessions and tests |
-| `browser.open.content` | `browser.open.content.enabled` | off | new |
-| `browser.open.content` | `browser.open.content.max_per_run` | 10 | |
+| `clax-web:search` | `web.search.enabled` | off | main's, unchanged, with `.provider`, `.gateway`, `.byok_alias`, `.limit`, `web.max_searches_per_run` |
+| `clax-web:fetch` | `web.fetch.enabled` | off | main's, unchanged, with `web.max_fetches_per_run`, `web.fetch.allowlist` |
+| `clax-web:fetch` | `web.fetch.url_rule` | `sourced` | main's; gains `sender` |
+| `clax-browser:open-url` | `browser.open-url.enabled` | off | was `browser.browse.enabled` |
+| `clax-browser:open-url` | `browser.open-url.url_rule` | `sender` | `sender`, `sourced`, `allowlist`, `any_public` |
+| `clax-browser:open-url` | `browser.open-url.allowlist` | empty | hosts for `allowlist` |
+| `clax-browser:open-url` | `browser.open-url.max_per_run` | 5 | sessions on a URL, `goto`s out included |
+| `clax-browser:open-artifact` | `browser.open-artifact.enabled` | off | was `browser.enabled` |
+| `clax-browser:open-artifact` | `browser.open-artifact.max_per_run` | 10 | sessions and tests |
+| `clax-browser:open-content` | `browser.open-content.enabled` | off | new |
+| `clax-browser:open-content` | `browser.open-content.max_per_run` | 10 | |
 | browser | `browser.call_seconds` | 60 | 10 to 120; was `browser.test_seconds` |
 | browser | `browser.session.idle_seconds` | 300 | 60 to 1,200 |
 | browser | `browser.session.max_seconds` | 1,800 | 60 to 7,200 |
@@ -1351,45 +1448,68 @@ it migrated is reset, not upgraded).
 | Cloudflare | `web.cloudflare.account_id`, sealed token | unset | shared (§4.9) |
 
 The daemon's `[bot.browser]` table lays over the browser keys as
-`[bot.web]` does over the web keys. `GET/PUT /api/admin/web` keeps its
+`[bot.web]` does over the web keys, each `open-*` action a table of its
+own (`[bot.browser.open-url]`, `[bot.browser.open-artifact]`,
+`[bot.browser.open-content]`). `GET/PUT /api/admin/web` keeps its
 shape; `GET/PUT /api/admin/browser` answers the three open capabilities
 and the browser settings, each capability as `{enabled, max_per_run,
 url_rule?, allowlist?, price, configured, unavailable}`, the same shape
 `/api/admin/web` gains for `search` and `fetch`.
 
-### 11.2 Grants: the admin's and the person's **(owner: each on its own, none implied; design: storage)**
+### 11.2 Grants: the admin's and the person's **(owner: each on its own, none implied, gnap's grant row; design: storage)**
 
-`bot_cap_grants (id, capability, granter, grantee, parent, status,
-issued_at, issued_by, revoked_at, revoked_by)`, written only by
-`Store::issue_cap_grant` and `Store::revoke_cap_grant`, each recorded as
-`bot.grant`. A grantee is `everyone`, `person:<key>` or
-`runs_of:<key>`; a child names its parent.
+`bot_cap_grants` holds gnap's grant row ("Terms": `{id, granter,
+grantee, access, parent?, conditions, status, version, issued_at,
+event}`), with who issued and revoked it, when and why:
 
-- **The admin page** lists, per capability, its switch and terms, then
-  its grants: the instance-wide one ("Everyone on this instance") if
-  any, and each person's, each with a Revoke button, and a way to grant
-  to everyone or to a person.
-- **The Me page** shows one switch per capability in `caps(person)`,
-  with its price: on while the person's grant to their runs is live.
-  Turning it off revokes that grant; on issues a new one (granter the
-  person, parent the admin grant that gives them the capability). A
-  capability the admin offers but has not granted the person is shown
-  off with "not granted to you".
+| Column | Holds |
+|---|---|
+| `id` | a ULID; a share's is its capability's ID (§18.4) |
+| `access_json` | the access array, RFC 9635 §8 objects of `clax-web` or `clax-browser` (§4.2) |
+| `granter` | a person key (the admin, or the person), `run:<ID>` for a share, or `migration`, `config` |
+| `grantee` | `person:<key>`, `people_of:instance`, `runs_of:<key>`, `run:<ID>`, `grant:<ID>` |
+| `parent` | the grant it is a child of: a selector's child, a share's sharer's grant |
+| `conditions_json` | `{}`, or `{"expires_at": <RFC 3339>}` |
+| `status` | `issued`, `revoked` |
+| `version` | 1; gnap's `grant.update` would bump it (§4.10) |
+| `event` | `admin`, `bot`, `share`, `migration`, `config` (§4.8) |
+| `issued_at`, `issued_by` | when, and who (`set_by`, the store's actor column) |
+| `revoked_at`, `revoked_by`, `revoke_reason` | gnap's `grant.revoke` reason (§4.8) |
+
+Written only by `crate::bot_grants` (`Store::issue_cap_grant`,
+`Store::revoke_cap_grant`, a share's write in the Spend transaction,
+§18.4), each recorded as `grant.issue` or `grant.revoke`.
+
+- **The admin page** lists, per action, its switch and terms, then its
+  grants: the selector grant to everyone ("Everyone on this instance")
+  if any, and each person's, each with who granted it and a Revoke
+  button, and a way to grant to everyone or to a person. A grant whose
+  granter is no longer an admin is shown "conveys nothing: <name> is no
+  longer an admin". Under the browser it lists the live **shared pages**
+  (§18.4) and **exports** (§18.5): the run, the session, the actions,
+  the expiry, with a Revoke button each.
+- **The Me page** shows one switch per action in `caps(person)`, with
+  its price: on while the person's grant to their runs conveys it.
+  Turning it off revokes that grant (reason `controller`); on issues a
+  new one (granter the person, event `bot`). An action the admin offers
+  but has not granted the person is shown off with "not granted to you".
 - **Migration 67** keeps main's behaviour with explicit rows: for each of
-  `web.search` and `web.fetch` whose `web.<op>.enabled` was on, an
-  instance-wide grant (granter `migration`), and its child for every
-  person of the instance (the owner and every person row) except those whose `bot_person_prefs.web` was off;
-  on an instance where it was off, nothing, and turning the switch on
-  later grants it to no one until the admin grants it. No grant of a
-  `browser.open` kind is written.
+  `clax-web:search` and `clax-web:fetch` whose `web.<op>.enabled` was on,
+  a selector grant to everyone (granter `migration`), its child for every
+  person of the instance (the owner and every person row), and each
+  person's grant to their runs, except those whose `bot_person_prefs.web`
+  was off; on an instance where it was off, nothing, and turning the
+  switch on later grants it to no one until the admin grants it. No
+  `clax-browser` grant is written.
 - `GET /api/me/bot` answers `capabilities: [{id, offered, granted, on,
-  why_off, price}]` and still answers main's `web` (on when both web
-  capabilities are) for older clients; `PUT /api/me/bot` takes
-  `{capabilities: {<id>: bool}}`, and main's `web: bool` sets both.
-  `GET/POST/DELETE /api/admin/bot/grants` lists, issues and revokes the
-  admin's grants. The first version's browser switch
-  (`bot_person_prefs.browser`) and `bot_person_prefs.web` are no longer
-  read.
+  why_off, price}]` (`id` a `<type>:<action>` key) and still answers
+  main's `web` (on when both web actions are) for older clients; `PUT
+  /api/me/bot` takes `{capabilities: {<id>: bool}}`, and main's `web:
+  bool` sets both. `GET/POST/DELETE /api/admin/bot/grants` lists, issues
+  and revokes the admin's grants (`POST {capability, grantee}`), and
+  lists and revokes shares and exports. The first version's browser
+  switch (`bot_person_prefs.browser`) and `bot_person_prefs.web` are no
+  longer read.
 
 ### 11.3 What a run shows **(design)**
 
@@ -1427,7 +1547,7 @@ choice", "off on this instance", "not configured").
   `Content-Security-Policy: sandbox; default-src 'none'` and `nosniff`,
   to the person the run acts for and admins who read its artifact.
 - **Audit**: `bot.spend` per call; `browser.session.end` per host end;
-  `bot.grant` per grant issued or revoked.
+  `grant.issue` and `grant.revoke` per grant issued or revoked.
 - **Usage**: `web.search`, `web.fetch` and `browser.time` are their own
   lines on the person's "This week" and the admin's Usage page.
 
@@ -1442,7 +1562,7 @@ deadlines, no network but the opt-in live test.
   switches and choices migrated to rows;
   `caps(run)` declared at the start and re-evaluated per call.
 - **URL rule**: every value against sender, search and fetched URLs, for
-  `web.fetch`, `open({url})` and a `goto` out.
+  `clax-web:fetch`, `open({url})` and a `goto` out.
 - **Spend path**: the check order is the same for every performer; one
   `bot.spend` per call.
 - **Fetch**: `markdown`, `html` (scripts, styles, handlers removed,
@@ -1717,7 +1837,7 @@ of where a handle is shown, and never shown, stands.
   `clax_bot_sandbox::prelude_source`). The run loop asks for it when one
   of the run's bindings has the five session operations among its own
   (`Binding::operations`), which `Bindings::clax` grants only with a
-  `browser.open.*` capability. Another run has neither `Page` nor the
+  `clax-browser:open-*` capability. Another run has neither `Page` nor the
   global `expect`; its `clax.browser.open`, the plain operation, is
   refused `browser_disabled` as before.
 - **Budgets** **(owner: raised for browser runs alone; design: the
@@ -1771,6 +1891,21 @@ re-evaluates transitively). Plan: Phase G of
 This section replaces §17.3's handle and §17.4's test of which handles
 are held; §17.1, §17.2 and the rest of §17 stand.
 
+Reconciled on 2026-11-20 with the zero-capability design
+(`2026-11-17-zero-capability-gnap-design.md`, "gnap"), so this branch
+lands no second permission system **(owner)**: every capability but a
+session's root is a grant row of §11.2 whose token is its macaroon; a
+call needs both the macaroon (its MAC and every caveat) and
+`caps(holder)` containing the call's action (gnap "Terms": a holder
+proof and a capability proof); revocation lives in the store; a share
+narrows only within the run's own holder; and an external agent receives
+a page's capability only as a grant row to its machine grant, exported
+by the person (§18.5). Gnap lists macaroons as an alternative it did not
+take, to revisit "when a resource server runs apart from the store"
+("Alternatives considered"): here the macaroon is the holder proof and
+the store the capability proof, so revocation stays a store lookup as
+gnap requires.
+
 ### 18.1 The handle is a macaroon **(owner: macaroons; design: the format)**
 
 - **Its parts.** An identifier, a list of first-party caveats, and a
@@ -1799,13 +1934,17 @@ are held; §17.1, §17.2 and the rest of §17 stand.
 
 ### 18.2 The key **(design)**
 
-- **The instance key** is derived from the key-encryption key (§3,
-  `clax_store::secrets::Kek`): `K_i = HMAC-SHA256(KEK,
-  "clax-browser-capabilities/v1")`. It is never stored: the host derives
-  it when it makes its session registry.
-- **A session's root key** is derived from it, `K_s = HMAC-SHA256(K_i,
-  "session/" + session ID)`, so every capability of one session is
-  checked with that session's key alone.
+- **Instance keys** are derived from the key-encryption key (§3,
+  `clax_store::secrets::Kek`), one per purpose: `K_purpose =
+  HMAC-SHA256(KEK, "clax-instance-key/v1/" + purpose)`
+  (`Kek::instance_key`). Each is never stored: its user derives it when
+  it needs it. The browser's capabilities take the purpose
+  `browser-capabilities` **(design: a general instance-key derivation,
+  so another signed token, a Worker's or a remote's, takes a purpose of
+  its own rather than a slot)**.
+- **A session's root key** is derived from the browser's,
+  `K_s = HMAC-SHA256(K_browser, "session/" + session ID)`, so every
+  capability of one session is checked with that session's key alone.
 - Derived, not drawn and sealed in a slot of its own: a sealed key needs
   a slot, a row and a migration to keep a value that nothing at rest
   depends on (every session ends with its process, §6.4), while the
@@ -1826,13 +1965,15 @@ capability is never read as wider than its caveats.
 
 | Caveat | Holds when |
 |---|---|
-| `ops=<class> …` | the call's class is listed: `read`, `act`, `navigate`, `record`, `close` |
+| `actions=<action> …` | the call's `clax-browser` session action is listed: `read`, `act`, `navigate`, `record`, `close` (§4.2) |
 | `expires=<ms>` | the registry's clock (injected, §13) is before this Unix time in milliseconds |
 | `holder=run:<run ID>` | the call is a call of that run |
 | `holder=grant:<grant ID>` | the call is made under that grant (the grant flow's, `GrantCaller::grant_id`); no run's call is |
 | `origin=<origin> …` | a `navigate` call's target is of a listed origin (`scheme://host[:port]`) |
 
-- **The classes** of the layer's rows (`browser::layer::class`):
+- **The actions** of the layer's rows (`browser::layer::class`), the
+  `clax-browser` session actions **(owner: the macaroon's op classes
+  become these actions)**:
   - `read`: `title`, `content`, both `screenshot`s, `consoleMessages`,
     `pageErrors`, `failedRequests`, `waitForLoadState`, `waitForURL`, a
     locator's reads (`textContent`, `innerText`, `inputValue`,
@@ -1844,51 +1985,74 @@ capability is never read as wider than its caveats.
     `runTests`;
   - `navigate`: `goto`, `reload`, `goBack`, `goForward`;
   - `record`: `record`; `close`: `close`.
-  - `share` and `revoke` (§18.4) need no class: one only narrows, the
+  - `share` and `revoke` (§18.4) need no action: one only narrows, the
     other only gives up.
 - **`origin`** governs `navigate` alone: `goto`'s URL resolved against
   the page's, `reload`'s current URL; `goBack` and `goForward`, whose
   target is not known before the call, are refused under it. A click
   that follows a link is `act`, not `navigate`.
 - **The root** a `browser.open` answers carries one caveat,
-  `holder=run:<the opening run>`: what §17.3 bound a handle to.
+  `holder=run:<the opening run>`: what §17.3 bound a handle to. Its grant
+  is the run's own (the person's `runs_of` grant of the session's open
+  action, §4.3); it has no row of its own.
 - **No ceiling** of browser time or credits per capability: every
   millisecond is the session's payer's (§18.8), and the session's own
   idle time and lifetime bound it. Recorded as an alternative, as are
   third-party caveats.
 
-### 18.4 Narrowing: `page.share` and `page.revoke` **(design)**
+### 18.4 Narrowing: `page.share` and `page.revoke` **(design; owner: a share is a child grant row)**
 
 - **`page.share(opts?)`** answers a new `Page` of the same session whose
-  capability is this page's narrowed: `{ops?: ("read" | "act" |
+  capability is this page's narrowed: `{actions?: ("read" | "act" |
   "navigate" | "record" | "close")[], expires?: seconds, origins?:
   string[]}`. The host mints it: it verifies this page's capability,
   extends its chain with a new capability ID, copies its caveats and
-  appends `ops`, `expires` (the registry's clock plus the seconds) and
-  `origin` as given. Its caveats are its parent's and more, so it allows
-  no call its parent does not. Each share is a capability of its own,
-  revocable on its own, also when two have the same caveats.
-- **`page.revoke()`** revokes this page's capability and every
-  capability shared from it, at once and for every holder: each of
-  their calls answers `browser_forbidden` ("revoked"). The session stays
-  open while another capability holds it (§18.6). On a session's root it
-  is `invalid_args`: close the page instead.
+  appends `actions`, `expires` (the registry's clock plus the seconds)
+  and `origin` as given. Its caveats are its parent's and more, so it
+  allows no call its parent does not. Each share is a capability of its
+  own, revocable on its own, also when two have the same caveats.
+- **Every share is a child grant row** **(owner)** of §11.2, written in
+  the share's Spend transaction (§4.6 check 10), so a share whose call
+  was not journaled has no row and allows nothing:
+  - `id` the new capability's ID; its macaroon is the row's token;
+  - `granter` and `grantee` `run:<the run>`: a share narrows only within
+    the run's own holder **(owner: the model naming another holder in
+    `page.share` is dropped)**;
+  - `parent` the sharer's grant: the parent page's share row, or, for a
+    share of a session's root, the person's `runs_of` grant that conveys
+    the session's open action;
+  - `access` `[{type: "clax-browser", actions: <the share's actions, or
+    the five session actions>, locations?: <its origins>}]`;
+  - `conditions` `{expires_at}` when it expires; `event` `share`.
+- **A call with a shared page** needs both **(owner)**: the macaroon
+  verifies and every caveat holds (§18.1, §18.3), and the store says the
+  capability's grant is live (its row and every row of its chain
+  `issued`, its conditions holding at the registry's clock) and conveys
+  the call's action, within `caps(run)` (§4.3). The second refuses
+  `browser_forbidden` ("revoked") for a row revoked, missing or ended
+  with its parent.
+- **`page.revoke()`** revokes this page's grant and every grant under it
+  (reason `granter`, its descendants `parent_ended`), at once and for
+  every holder: each of their calls answers `browser_forbidden`
+  ("revoked"). The session stays open while another capability holds it
+  (§18.6). On a session's root it is `invalid_args`: close the page
+  instead.
 - **Both are calls** of `browser.page` (actions `share`, `revoke`) on
   the Spend path, so each is journaled: a replayed share answers the
-  capability it minted (its IDs and its expiry), and a replayed revoke
-  revokes nothing twice. Neither reaches the browser, and neither is
-  charged: the session's time is charged by its next call or its end.
-- **A holder of another identity** is not a `share` option in this
-  version (§18.5). When one is, the host's mint for a new holder copies
-  the parent's caveats but its `holder` and appends the new one: the
-  current holder moves its own authority, narrowed, to the next. It is
-  the one caveat a mint replaces, and only the host mints.
+  capability it minted (its IDs and its expiry) and writes no row, and a
+  replayed revoke revokes nothing twice. Neither reaches the browser, and
+  neither is charged: the session's time is charged by its next call or
+  its end.
+- **Listed and revoked by people**: the admin's page lists every live
+  share and export (§11.2) and revokes one, which ends it and every
+  grant under it as `page.revoke` does (reason `owner`, or `granter` for
+  the person who exported it).
 
-### 18.5 How a capability travels **(owner: never to the model; design: the channels)**
+### 18.5 How a capability travels **(owner: never to the model; option A for external agents; design: the channels)**
 
 - **Never shown.** A shared `Page` in a returned value, a log line or
   `JSON.stringify` is `"<browser page: read; expires
-  2026-11-19T10:42:00Z>"` (its classes and expiry, from the share's
+  2026-11-19T10:42:00Z>"` (its actions and expiry, from the share's
   answer), a root `"<browser page>"`; the run panel shows every page in a
   step's state as `"<browser page>"` (§17.1). The serialized macaroon is
   in the journal, the committed state's handle entries and the prelude's
@@ -1897,28 +2061,52 @@ capability is never read as wider than its caveats.
   page's display beside its capability (`shown` in its handle entry).
 - **To another run**: Clax has no channel from one run to another yet
   (no handoff, no spawned run, no document field typed as a capability).
-  The holder caveat and the host's mint for a new holder (§18.4) are the
-  mechanism such a channel will use; it is recorded as deferred.
-- **To an external agent** (Claude Code, through the grant flow or MCP):
-  `holder=grant:<ID>` is in the vocabulary and checked, and no run's
-  call satisfies it, but no route serves a browser call to a grant
-  holder, and no export hands one the serialized macaroon. Its shape is
-  a question for the owner, recorded `status:needs-decision`.
+  A share names its own run as holder; a channel will need a grant row to
+  the other run (the export's shape below). Recorded as deferred.
+- **To an external agent** (Claude Code, through the grant flow)
+  **(owner: option A)**: the person, not the model, exports a page from
+  the run panel. They pick a page of the run's last committed `state`
+  (by its path, `state.page`), one of their own live machine grants, the
+  actions and an expiry; the host verifies the page's capability, mints
+  a child whose caveats are the page's, its `holder` replaced by
+  `holder=grant:<the machine grant's ID>` (the one caveat a mint for a
+  new holder replaces, and only the host mints), `actions`, `expires`,
+  and writes its grant row: granter the person, grantee `grant:<ID>`,
+  parent the page's grant (its share row, or the run's `runs_of` grant),
+  `event` `share`, `access` the actions, `conditions` the expiry
+  (`POST /api/bot/runs/<id>/exports {path, grant, actions?,
+  expires_s?}`; `GET` lists the run's live exports; `DELETE
+  /api/bot/runs/<id>/exports/<eid>` revokes one, reason `granter`). The
+  grant conveys `conv(g) ∩ caps(person)`. The model never sees it, and
+  `page.share` cannot make one.
+- **The transport is deferred** **(design)**: the serialized macaroon is
+  released only to its authenticated holder, through the grant flow
+  (`clax-http::grant_auth`, `routes/grants.rs`), and no route yet serves
+  a browser call to a grant holder, so no export is released and no
+  call is made under one; the row, its listing and its revocation exist
+  so the transport adds a route and nothing else. Until then an export
+  does not keep its session open (§18.7).
 
-### 18.6 Revocation **(owner: transitive; design: how)**
+### 18.6 Revocation **(owner: transitive, in the store; design: how)**
 
 - **Closing the session** (by `close`, its idle time, its lifetime, a
   grant revoked, credits, the run's end, or `dropped`) ends every
   capability of it: each answers `browser_session_closed` with the
   reason, as §6.3 says.
-- **Revoking one capability** adds its ID to its session's revoked set,
-  in the registry; a capability whose chain holds a revoked ID is
-  refused, so revoking a parent revokes every capability derived from
-  it, and nothing else. The set lives as long as the session, as every
-  capability of it does.
+- **Revoking one capability** revokes its grant row and every row under
+  it, in the store **(owner)**; a call checks its grant there (§18.4),
+  so revoking a parent refuses every capability derived from it, and
+  nothing else, whoever revoked it (the run's `page.revoke`, the
+  admin's page, the person's export list). The registry keeps no
+  revoked set of its own.
 - **Revoking a grant** (§4.4) closes the sessions of every run that no
-  longer holds the capability, and with them their capabilities, as
-  before.
+  longer holds the capability, and with them their capabilities, and
+  stops the run.
+- **A holder that ends** (a run ending, a machine grant revoked) leaves
+  its share and export rows `issued`: a run's end closes its sessions,
+  so their capabilities answer `browser_session_closed`, and an export to
+  a revoked machine grant can make no call. gnap's `holder_ended` sweep
+  is left for its holders table (§4.10).
 
 ### 18.7 A session lives as long as a capability to it **(owner: §17.4; design: precisely)**
 
@@ -1927,26 +2115,27 @@ open while the state the step committed (§17.4) holds a capability that:
 
 1. verifies (§18.1) and names that session;
 2. admits `R` by its holder caveats;
-3. has no revoked ID in its chain;
+3. has a live grant: the root's, or a share row live in the store
+   (§18.4), its expiry not read;
 
-and is closed `dropped` otherwise. Expiry and classes are not read: a
+and is closed `dropped` otherwise. Expiry and actions are not read: a
 read-only capability keeps its session open, and one that expired keeps
 it open until the session's idle time ends it, since it can make no call
 to keep it awake. The decision reads the committed state and the
-revocations made by the run's journaled calls, never the clock or a
-script's own objects, so a step executed again makes the same decision.
-A capability held by an external holder through the grant flow, once
-§18.5's export exists, will hold its session as a live grant with its
-expiry, re-evaluated when the grant ends.
+store's revocations, never the clock or a script's own objects, so a
+step executed again decides the same unless a revoke came between, in
+which case it closes a session no call could use. An export, once §18.5's
+transport exists, will hold its session as a live grant with its expiry,
+re-evaluated when the grant ends.
 
 ### 18.8 Charging **(design)**
 
 Browser time is the session's, charged to the person the opening run
 acts for, whichever capability's call made it (§10.3: each millisecond
-once). In this version every capability of a session is its own run's,
-so nothing changes. When §18.5's channels exist, a delegatee's calls are
-charged to the same person: the delegation is the payer's own act, and
-`expires`, the session's idle time and its lifetime bound what it costs.
+once). In this version every call is its own run's, so nothing changes.
+When §18.5's transport exists, an export's calls are charged to the same
+person: the export is the payer's own act, and `expires`, the session's
+idle time and its lifetime bound what it costs.
 
 ### 18.9 Audit **(design)**
 
@@ -1954,19 +2143,22 @@ A share and a revoke are `bot.spend` records as every call (§4.8), with
 the session's ID and, never the macaroon or its signature:
 
 - a share: `action: "share"`, `capability` (the new ID), `parent` (the
-  page's), `ops`, `expires`, `origins`;
+  page's), `actions`, `expires`, `origins`;
 - a revoke: `action: "revoke"`, `capability`.
 
-A refusal `browser_forbidden` is recorded as any refusal, with its code.
+Each also writes its grant's `grant.issue` (`event: share`) or
+`grant.revoke` in the same transaction (§4.8); an export and a revoke on
+the admin's page write theirs alone. A refusal `browser_forbidden` is
+recorded as any refusal, with its code.
 
 ### 18.10 What ClaxBot is told **(design)**
 
-The browser namespace's rules gain: `page.share({ops, expires,
-origins})` gives a narrowed page of the same session (`ops` of `read`,
-`act`, `navigate`, `record`, `close`; `expires` in seconds); its calls
-outside them answer `browser_forbidden`; `shared.revoke()` ends it and
-every page shared from it; a page shows as `"<browser page…>"` and its
-capability is never shown. The declaration declares `share` and
+The browser namespace's rules gain: `page.share({actions, expires,
+origins})` gives a narrowed page of the same session (`actions` of
+`read`, `act`, `navigate`, `record`, `close`; `expires` in seconds); its
+calls outside them answer `browser_forbidden`; `shared.revoke()` ends it
+and every page shared from it; a page shows as `"<browser page…>"` and
+its capability is never shown. The declaration declares `share` and
 `revoke` on `Page`, and `browser_forbidden` on the session operations.
 
 ### 18.11 Paths not taken **(design)**
@@ -1980,6 +2172,12 @@ capability is never shown. The declaration declares `share` and
   one yet.
 - **Expiry in the liveness test** (§18.7): it makes the decision depend
   on the commit's time, so a step executed again could decide otherwise.
+- **The model naming a holder in `page.share`** (option B): dropped by
+  the owner; a share narrows only within the run's own holder, and an
+  external holder gets a page only from the person's export (§18.5).
+- **The macaroon alone, its revocations in the registry**: the build
+  before the reconciliation; a revoke then lived only as long as the
+  process and no page listed it (§18.6).
 
 ### 18.12 Tests **(design)**
 
@@ -1988,17 +2186,26 @@ capability is never shown. The declaration declares `share` and
   a caveat removed or reordered, a truncated or undecodable string each
   fail; appending a caveat verifies.
 - **The caveats** (`browser::cap`): adding any caveat never admits a
-  call its parent refused (every class, holder, origin and time); an
+  call its parent refused (every action, holder, origin and time); an
   unknown caveat and a malformed value refuse every call; `expires`
   on the injected clock, just before and at its time; a read-only
-  capability cannot act, navigate, record or close.
-- **The registry**: a forged and a tampered capability are lost and not
-  echoed; revoking a parent refuses its children and not its siblings or
-  its parent; closing a session refuses every capability of it; a
-  session held only by a revoked capability closes `dropped` at the next
-  commit.
+  capability cannot act, navigate, record or close; a mint for a new
+  holder keeps every caveat but the holder.
+- **The grants** (`clax_store::bot_grants`): an admin's grant conveys
+  while its granter is an admin and not after the role is removed, and
+  again when it comes back; a selector's children; a revoked parent
+  ending its children with `parent_ended`; a person's runs grant
+  keeping an action held from a second grant; a share live only while
+  its chain is and before its `expires_at`; `grant.issue` and
+  `grant.revoke` per row.
+- **The registry and the store**: a forged and a tampered capability are
+  lost and not echoed; revoking a parent refuses its children and not its
+  siblings or its parent, also when revoked from the admin's page;
+  closing a session refuses every capability of it; a session held only
+  by a revoked capability closes `dropped` at the next commit.
 - **The run** (`tests/browser.rs`): a delegated read-only page reads and
   cannot click; a step executed again answers the same shared
-  capability from the journal and makes the same liveness decision; the
-  `bot.spend` records of a share and a revoke carry their IDs and no
-  macaroon.
+  capability from the journal, writes no second row, and makes the same
+  liveness decision; the `bot.spend` records of a share and a revoke
+  carry their IDs and no macaroon; a revoke of the person's grant stops
+  the run with `grant_revoked`.
