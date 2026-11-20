@@ -18,8 +18,10 @@
 //!   (`clax_server::routes::site`), the UI's files under `/_clax/` from the
 //!   static assets as the site routes serve them, with the headers the site
 //!   layer gives every site response (`site_access::site_headers`) and no
-//!   `Access-Control-Allow-Origin`. No path-first route below is reached
-//!   on a site host: `/git/`, `/_diag/`, `/_dev/repos/` and `/do/` are the
+//!   `Access-Control-Allow-Origin`. A page view's report there (`POST
+//!   /_clax/api/analytics`) goes to the instance with `CF-IPCountry` set
+//!   from `request.cf.country`, replacing the client's ([`with_country`]).
+//!   No path-first route below is reached on a site host: `/git/`, `/_diag/`, `/_dev/repos/` and `/do/` are the
 //!   site's own paths, as `/mcp` and `/api/` are;
 //! - with `CLAX_TEST_ROUTES` = `1` (`0` in `wrangler.jsonc`), `/do/{name}/…`
 //!   goes to the spike object named `name` (below), whose routes check no
@@ -201,8 +203,10 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
                 .headers()
                 .get("service-worker")?
                 .is_some_and(|v| v.eq_ignore_ascii_case("script"));
-            if worker_script {
-                return to_instance(&env, req).await;
+            match site_first(&path, worker_script) {
+                SiteFirst::PageView => return to_instance(&env, with_country(req)?).await,
+                SiteFirst::Instance => return to_instance(&env, req).await,
+                SiteFirst::Files => {}
             }
             if let Some(mut res) = static_asset(&env, &path, false).await? {
                 let hosted = env.var("HOSTED").is_ok_and(|v| v.to_string() == "1");
@@ -225,6 +229,68 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
         return Response::try_from(res);
     }
     to_instance(&env, req).await
+}
+
+/// A page view's report on a site host (`POST /_clax/api/analytics`,
+/// `clax_server::routes::site_api`).
+const PAGE_VIEW_PATH: &str = "/_clax/api/analytics";
+
+/// Where a site host's request goes before the static files are looked in.
+#[derive(Debug, PartialEq, Eq)]
+enum SiteFirst {
+    /// A page view's report: to the instance with Cloudflare's country
+    /// ([`with_country`]).
+    PageView,
+    /// A service worker's script: to the instance as it came.
+    Instance,
+    /// The static files, then the instance.
+    Files,
+}
+
+/// Where a site host's request for `path` goes first, `worker_script` when
+/// it carries `Service-Worker: script`. A page view's report goes with
+/// Cloudflare's country whatever else it carries: anyone may send a
+/// `Service-Worker` header, and a report sent with one must not take the
+/// client's own `CF-IPCountry` to the instance.
+fn site_first(path: &str, worker_script: bool) -> SiteFirst {
+    if path == PAGE_VIEW_PATH {
+        SiteFirst::PageView
+    } else if worker_script {
+        SiteFirst::Instance
+    } else {
+        SiteFirst::Files
+    }
+}
+
+/// The header a page view's country is forwarded in.
+const COUNTRY_HEADER: &str = "cf-ipcountry";
+
+/// `req`, a page view's report, with `CF-IPCountry` set to the country
+/// Cloudflare places the client in (`request.cf.country`,
+/// [`forwarded_country`]), replacing whatever the client sent, and removed
+/// where Cloudflare names none: the instance's object, whose request has no
+/// `cf` of its own, takes the header as given
+/// (`clax_http::hosted::Hosted::country`). The runtime's request cannot be
+/// changed, so it is made anew over the same body.
+fn with_country(req: Request) -> Result<Request> {
+    let headers = req.headers().clone();
+    match forwarded_country(req.cf().and_then(worker::Cf::country)) {
+        Some(c) => headers.set(COUNTRY_HEADER, &c)?,
+        None => headers.delete(COUNTRY_HEADER)?,
+    }
+    let init = worker::web_sys::RequestInit::new();
+    init.set_headers(headers.as_ref());
+    let made = worker::web_sys::Request::new_with_request_and_init(req.inner(), &init)?;
+    Ok(Request::from(made))
+}
+
+/// The `CF-IPCountry` the Worker forwards for a client Cloudflare places
+/// in `cf` (`request.cf.country`: two letters, `T1` for Tor, `XX` for
+/// unknown): the code as given when it is letters and digits alone, else
+/// `None`, no header.
+fn forwarded_country(cf: Option<String>) -> Option<String> {
+    cf.map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty() && c.len() <= 8 && c.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
 /// `req` for the instance's object, unless its declared body is too large;
@@ -1143,6 +1209,47 @@ mod tests {
             ),
             Route::Site
         );
+    }
+
+    /// A page view's report goes to the instance on a site host, with the
+    /// country Cloudflare names, never the client's.
+    #[test]
+    fn a_page_views_country_is_cloudflares_alone() {
+        assert_eq!(
+            super::PAGE_VIEW_PATH,
+            format!("{}analytics", clax_server::routes::site_api::PREFIX)
+        );
+        let sites = SiteHosts::new("clax.run").unwrap();
+        assert_eq!(
+            route(super::PAGE_VIEW_PATH, Some(SITE), SITE, &sites, false),
+            Route::Site
+        );
+        // A report with a service worker's header still takes Cloudflare's
+        // country, never the one it sent.
+        assert_eq!(
+            super::site_first(super::PAGE_VIEW_PATH, true),
+            super::SiteFirst::PageView
+        );
+        assert_eq!(
+            super::site_first(super::PAGE_VIEW_PATH, false),
+            super::SiteFirst::PageView
+        );
+        assert_eq!(
+            super::site_first("/sw.js", true),
+            super::SiteFirst::Instance
+        );
+        assert_eq!(
+            super::site_first("/_clax/bridge.js", false),
+            super::SiteFirst::Files
+        );
+        let fwd = |c: Option<&str>| super::forwarded_country(c.map(String::from));
+        assert_eq!(fwd(Some("DE")).as_deref(), Some("DE"));
+        assert_eq!(fwd(Some("T1")).as_deref(), Some("T1"));
+        assert_eq!(fwd(Some(" XX ")).as_deref(), Some("XX"));
+        // None, or nothing a header could carry: the client's is removed.
+        for c in [None, Some(""), Some("D\nE"), Some("DE, US"), Some("ÄÖ")] {
+            assert_eq!(fwd(c), None, "{c:?}");
+        }
     }
 
     #[test]

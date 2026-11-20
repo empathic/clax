@@ -7,7 +7,8 @@
 // scripts, and each page with the scripts and stylesheets it names), of the
 // question module (`questions`: the `q` chunk, which the gallery loads
 // through its lazy module, with what it imports that the gallery has not
-// loaded by then), of Settings' People screen and the Queues page (`people`, `queues`: the
+// loaded by then), of the artifact view's Analytics panel (`analytics`: its chunk with
+// what it imports beyond the artifact entry and the more menu), of Settings' People screen and the Queues page (`people`, `queues`: the
 // chunks the gallery loads at `/settings/people` (Settings and its People screen) and `/queues`
 // through its lazy module, with what they import that the gallery has not loaded by then), and of app mode's host chunk (`host`:
 // what the artifact entry loads for `?app=1` beyond itself),
@@ -21,7 +22,7 @@
 // content script, and its build may carry no key file and no test hook.
 // --record lowers the shell's and the bridge's budgets to the measured
 // sizes plus 10%, never raising one, and adds one that is missing; the
-// extension's, the question module's, the People and Queues pages' and the
+// extension's, the question module's, the Analytics panel's, the People and Queues pages' and the
 // SDK overlay's budgets are ceilings set by hand and are never recorded.
 //
 // Sizes are deflated by pako (a pinned JavaScript port of reference zlib), not
@@ -147,6 +148,18 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
     sizes[key] = [...new Set(pages.flatMap(page => [...closure(page)].map(k => manifest[k].file)))].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
   }
 }
+// The Analytics panel (`analytics`): its chunk and what it imports beyond
+// what the artifact entry has loaded by the time it is opened (the entry and
+// the more menu and roster it loads after its first paint). The top bar
+// loads it for whoever administers a hosted clax.
+{
+  const key = k => Object.keys(manifest).find(m => m.endsWith(k));
+  const panel = key("src/ui/AnalyticsPanel.svelte") ?? Object.keys(manifest).find(m => manifest[m].isDynamicEntry && manifest[m].name === "AnalyticsPanel");
+  const painted = ["artifact.html", "src/ui/MoreMenu.svelte", "src/ui/Who.svelte"].map(k => k.endsWith(".html") ? k : key(k));
+  if (!panel || painted.some(k => !k)) throw new Error("dist has no AnalyticsPanel, MoreMenu or Who chunk");
+  const loaded = new Set(painted.flatMap(h => [...closure(h)].map(k => manifest[k].file)));
+  sizes.analytics = [...closure(panel)].map(k => manifest[k].file).filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
+}
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
 // The embeddable overlay (`overlay`): one classic script, loaded whole, and
 // its ES module twin, which must be one file too (no import of its own).
@@ -212,10 +225,10 @@ for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidep
   walk("overlay.js");
   sizes.sdkOverlay = [...seen].reduce((n, f) => n + pako.gzip(readFileSync(new URL(f, sdk)), { level: 9 }).length, 0);
 }
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, queues ${sizes.queues}, eager bridge ${sizes.bridge}, app host ${sizes.host}, transport ${sizes.transport}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, origin ${sizes.partOrigin}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, embed ${sizes.overlay}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}, sdk package: overlay entry ${sizes.sdkOverlay}`);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, queues ${sizes.queues}, analytics ${sizes.analytics}, eager bridge ${sizes.bridge}, app host ${sizes.host}, transport ${sizes.transport}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, origin ${sizes.partOrigin}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, embed ${sizes.overlay}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}, sdk package: overlay entry ${sizes.sdkOverlay}`);
 
 const RECORDED = ["gallery", "artifact", "host", "bridge", "transport", "overlay", ...Object.values(partKeys)];
-const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues", "sdkOverlay"];
+const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues", "analytics", "sdkOverlay"];
 const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;

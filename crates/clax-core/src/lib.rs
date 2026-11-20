@@ -5,6 +5,7 @@
 //! store is `clax-store`'s; the one query run here is the latency
 //! calibration's, on its own in-memory database (`perf`).
 
+pub mod analytics;
 pub mod anchor;
 pub mod audit;
 pub mod brief;

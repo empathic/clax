@@ -577,17 +577,42 @@ pub(crate) async fn stop_store(store: Arc<Store>, within: Duration) -> bool {
     }
 }
 
-/// One wake-up of the core's pruner: prune passes one after another
-/// while each leaves more, [`PRUNE_PASSES_PER_WAKE`] at the most and none
-/// begun [`PRUNE_WAKE_BUDGET`] after the first by the store's clock,
-/// logged. How long until the next wake-up: [`PRUNE_AGAIN`] while the
-/// last pass left more, else [`DRAFT_SWEEP_INTERVAL`].
+/// One wake-up of the core's pruner: prune passes of ended ClaxBot runs
+/// one after another while each leaves more, [`PRUNE_PASSES_PER_WAKE`] at
+/// the most and none begun [`PRUNE_WAKE_BUDGET`] after the first by the
+/// store's clock, then as many retention passes of site analytics' daily
+/// totals ([`clax_http::analytics::retention`]), logged. How long until
+/// the next wake-up: [`PRUNE_AGAIN`] while either left more, else
+/// [`DRAFT_SWEEP_INTERVAL`].
 fn prune_wake(st: &Store) -> Duration {
     prune_wake_within(st, PRUNE_PASSES_PER_WAKE, PRUNE_WAKE_BUDGET)
 }
 
 /// [`prune_wake`] with `passes` and `budget` for its bounds.
 fn prune_wake_within(st: &Store, passes: usize, budget: Duration) -> Duration {
+    let analytics_more = match clax_http::analytics::retention(st, passes) {
+        Ok(p) => {
+            if p.deleted > 0 {
+                tracing::info!(
+                    rows = p.deleted,
+                    more = p.more,
+                    "deleted old site analytics"
+                );
+            }
+            p.more
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "site analytics retention failed");
+            false
+        }
+    };
+    let again = |more: bool| {
+        if more || analytics_more {
+            PRUNE_AGAIN
+        } else {
+            DRAFT_SWEEP_INTERVAL
+        }
+    };
     let until = st.now_utc() + chrono::Duration::from_std(budget).unwrap_or(chrono::Duration::MAX);
     match st.prune_ended_runs_while(passes, Some(until)) {
         Ok((p, passes)) => {
@@ -606,15 +631,11 @@ fn prune_wake_within(st: &Store, passes: usize, budget: Duration) -> Duration {
                     "pruned ended ClaxBot runs"
                 );
             }
-            if p.more {
-                PRUNE_AGAIN
-            } else {
-                DRAFT_SWEEP_INTERVAL
-            }
+            again(p.more)
         }
         Err(e) => {
             tracing::warn!(error = %e, "ClaxBot run prune failed");
-            DRAFT_SWEEP_INTERVAL
+            again(false)
         }
     }
 }
@@ -873,6 +894,60 @@ mod tests {
         // until the next interval.
         assert_eq!(super::prune_wake(&st), super::DRAFT_SWEEP_INTERVAL);
         assert_eq!(held(), 0);
+    }
+
+    /// The pruner deletes site analytics' daily totals past their keep, as
+    /// an instance with no views (and so no rollover) still must.
+    #[test]
+    fn the_pruner_deletes_site_analytics_past_their_keep() {
+        use clax_core::analytics::{Batch, DaySums, Device, Seen, View, parse_day};
+        let dir = tempfile::tempdir().unwrap();
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-11-19T10:00:00Z"));
+        let st =
+            clax_store::Store::open_with_clock(&clax_core::Home::at(dir.path().join("c")), clock)
+                .unwrap();
+        let p = clax_core::publish::validate(
+            serde_json::from_value(serde_json::json!({
+                "title": "Doc",
+                "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (a, _) = st
+            .create_artifact(&clax_core::audit::AuditCtx::DAEMON, p, None)
+            .unwrap();
+        let aid = clax_core::ArtifactId::parse(&a.id).unwrap();
+        let mut batch = Batch::default();
+        for d in ["2025-10-18", "2025-10-19"] {
+            let mut sums = DaySums::default();
+            sums.add(
+                &View {
+                    path: "index.html".into(),
+                    referrer: String::new(),
+                    country: "XX".into(),
+                    device: Device::Desktop,
+                    version: 1,
+                    framed: false,
+                    load_ms: None,
+                    lcp_ms: None,
+                },
+                Seen::default(),
+            );
+            batch.sums.insert((a.id.to_string(), d.into()), sums);
+        }
+        st.analytics_record(&batch).unwrap();
+        assert_eq!(super::prune_wake(&st), super::DRAFT_SWEEP_INTERVAL);
+        let r = st
+            .analytics_range(
+                &aid,
+                parse_day("2025-10-18").unwrap(),
+                parse_day("2025-10-19").unwrap(),
+            )
+            .unwrap();
+        let views: Vec<u64> = r.days.iter().map(|d| d.views).collect();
+        assert_eq!(views, vec![0, 1], "2025-10-19 is the oldest day kept");
     }
 
     #[cfg(unix)]

@@ -154,14 +154,18 @@ enum Served {
 /// content type is `text/html`, through the wrap cache, which also remembers
 /// a file that is not UTF-8 (served raw); a page the cache holds is not
 /// read again. `NotFound` when the artifact, the version, or the file is
-/// gone. Beside it, the artifact's `content_security_policy`.
+/// gone. Beside it, the artifact's `content_security_policy`, and whether
+/// its page views are counted: `counting` (a hosted Clax's own page, not a
+/// live page's snapshot nor the Clax app's) and its analytics setting on
+/// (`clax_store::Store::analytics_on`, never for a draft).
 async fn lookup(
     s: &AppState,
     id: ArtifactId,
     n: u32,
     file: String,
     always_wrap: bool,
-) -> Result<(Served, ContentSecurityPolicy), ApiError> {
+    counting: bool,
+) -> Result<(Served, ContentSecurityPolicy, bool), ApiError> {
     let cache = s.wrap_cache.clone();
     let bridge = bridge_version(&*s.web);
     // A page wrapped concurrently with a debug rebuild may keep the old
@@ -183,8 +187,10 @@ async fn lookup(
             return Ok((
                 Served::Raw(read_bytes(&st, &id, n, &file).await?, meta),
                 csp,
+                false,
             ));
         }
+        let count = counting && st.analytics_on(&id)?;
         // Read ahead of the cache, which wraps synchronously; a page it
         // holds is not read. One evicted between the check and the wrap is
         // read on the next pass.
@@ -216,7 +222,7 @@ async fn lookup(
                 })
             });
             return match wrapped {
-                Ok(Some(html)) => Ok((Served::Page(html), csp)),
+                Ok(Some(html)) => Ok((Served::Page(html), csp, count)),
                 Ok(None) => Ok((
                     Served::Raw(
                         match unwrapped.or(bytes) {
@@ -226,6 +232,7 @@ async fn lookup(
                         meta,
                     ),
                     csp,
+                    false,
                 )),
                 Err(e) if e.to_string() == EVICTED => continue,
                 Err(e) => Err(CoreError::Io(e)),
@@ -285,6 +292,13 @@ fn tagged_by_policy(source: &[u8], unrestricted: bool) -> Vec<u8> {
 /// with the lockdown. A `self` site's files are cached as above; one a
 /// browser keeps immutable from while `self` keeps the lockdown until it
 /// expires, after a change to `unrestricted` too.
+///
+/// A page whose views are counted (a hosted Clax's, its analytics setting
+/// on: [`lookup`]) is served with its bridge tag marked
+/// ([`clax_core::wrap::with_count`]) after the wrap cache, whose entries
+/// stay the same for both; its `ETag` is of the bytes sent, mark included,
+/// so a page a browser revalidates after the setting changes is answered
+/// `200` with the right tag, never `304`.
 pub(crate) async fn serve_version(
     s: &AppState,
     id: ArtifactId,
@@ -297,7 +311,12 @@ pub(crate) async fn serve_version(
     let own = own_host(s);
     let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
     let index = rel == INDEX;
-    let (served, csp) = lookup(s, id, n, rel, index).await?;
+    let counting = s.hosted.is_some() && s.embed.is_none() && live.is_none();
+    let (served, csp, count) = lookup(s, id, n, rel, index, counting).await?;
+    let served = match served {
+        Served::Page(html) if count => Served::Page(Arc::new(clax_core::wrap::with_count(&html))),
+        other => other,
+    };
     // Whether the response carries an `unrestricted` site's policy, not the
     // lockdown.
     let unrestricted = csp == ContentSecurityPolicy::Unrestricted && live.is_none();

@@ -461,7 +461,8 @@ fn fields_class(field: &str) -> Class {
         | "link_listed"
         | "db_read_grants"
         | "colour"
-        | "content_security_policy" => Class::Safe,
+        | "content_security_policy"
+        | "analytics" => Class::Safe,
         // A cost line's figures (`admin.cost_line`).
         "unit"
         | "cost_micro_usd"

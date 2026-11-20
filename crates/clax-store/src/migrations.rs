@@ -2466,6 +2466,48 @@ pub const MIGRATIONS: &[&str] = &[
     // administrator chose.
     "ALTER TABLE artifacts ADD COLUMN content_security_policy TEXT NOT NULL DEFAULT 'self'
         CHECK (content_security_policy IN ('self','unrestricted'));",
+    // 68: site analytics on a hosted Clax (`crate::analytics`): each
+    // artifact's setting (`artifacts.analytics`, `on` until its
+    // administrator turns it off), its daily totals, totals per dimension
+    // value and load timing histograms, and the current day's secret and
+    // seen set, which the day's rollover deletes. `analytics_dims.dim` has
+    // no CHECK: the dimensions are `clax_core::analytics::Dim`'s.
+    //
+    // `analytics_days` is the migration's mark (`MARKS_AFTER_APP`).
+    "ALTER TABLE artifacts ADD COLUMN analytics TEXT NOT NULL DEFAULT 'on'
+        CHECK (analytics IN ('on','off'));
+    CREATE TABLE analytics_days (
+        artifact_id TEXT NOT NULL,
+        day TEXT NOT NULL,
+        views INTEGER NOT NULL DEFAULT 0,
+        visitors INTEGER NOT NULL DEFAULT 0,
+        framed INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (artifact_id, day)
+    ) WITHOUT ROWID;
+    CREATE TABLE analytics_dims (
+        artifact_id TEXT NOT NULL,
+        day TEXT NOT NULL,
+        dim TEXT NOT NULL,
+        value TEXT NOT NULL,
+        views INTEGER NOT NULL DEFAULT 0,
+        visitors INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (artifact_id, day, dim, value)
+    ) WITHOUT ROWID;
+    CREATE TABLE analytics_timings (
+        artifact_id TEXT NOT NULL,
+        day TEXT NOT NULL,
+        metric TEXT NOT NULL CHECK (metric IN ('load','lcp')),
+        bucket INTEGER NOT NULL,
+        n INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (artifact_id, day, metric, bucket)
+    ) WITHOUT ROWID;
+    CREATE TABLE analytics_day_secrets (day TEXT PRIMARY KEY, secret BLOB NOT NULL);
+    CREATE TABLE analytics_seen (
+        day TEXT NOT NULL,
+        visitor BLOB NOT NULL,
+        path TEXT NOT NULL,
+        PRIMARY KEY (day, visitor, path)
+    ) WITHOUT ROWID;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2550,8 +2592,12 @@ pub const SURFACES_MIGRATION: u32 = RUN_BINDINGS_MIGRATION + 1;
 pub const KEY_PROBLEM_MIGRATION: u32 = SURFACES_MIGRATION + 1;
 
 /// The migration that adds `artifacts.content_security_policy`, as a
-/// schema version, and this build's last.
+/// schema version.
 pub const CONTENT_SECURITY_POLICY_MIGRATION: u32 = KEY_PROBLEM_MIGRATION + 1;
+
+/// The migration that adds site analytics (`artifacts.analytics` and the
+/// `analytics_*` tables), as a schema version, and this build's last.
+pub const ANALYTICS_MIGRATION: u32 = CONTENT_SECURITY_POLICY_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2711,11 +2757,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`CONTENT_SECURITY_POLICY_MIGRATION`]. They follow the app's in every
+/// [`ANALYTICS_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 18] = [
+const MARKS_AFTER_APP: [Mark<'static>; 19] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2734,6 +2780,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 18] = [
     Mark::Table("bot_surface_defs"),
     Mark::Column("sealed_secrets", "last_problem_json"),
     Mark::Column("artifacts", "content_security_policy"),
+    Mark::Table("analytics_days"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5801,9 +5848,11 @@ mod tests {
         );
         assert!(MIGRATIONS[first + 25].contains("ADD COLUMN content_security_policy"));
         assert_eq!(
-            MIGRATIONS.len() as u32,
-            super::CONTENT_SECURITY_POLICY_MIGRATION
+            super::ANALYTICS_MIGRATION,
+            super::CONTENT_SECURITY_POLICY_MIGRATION + 1
         );
+        assert!(MIGRATIONS[first + 26].contains("CREATE TABLE analytics_days ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::ANALYTICS_MIGRATION);
     }
 
     #[test]
@@ -5964,6 +6013,66 @@ mod tests {
     }
 
     #[test]
+    fn migration_68_turns_analytics_on_for_every_artifact_at_67() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            // The schema as it was at 67, with an artifact.
+            c.execute_batch(
+                "ALTER TABLE artifacts DROP COLUMN analytics;
+                 DROP TABLE analytics_days;
+                 DROP TABLE analytics_dims;
+                 DROP TABLE analytics_timings;
+                 DROP TABLE analytics_day_secrets;
+                 DROP TABLE analytics_seen;
+                 INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                 VALUES ('abcdefghjkmn', 'Plan', 'x', 'x', 1, '1');
+                 PRAGMA user_version = 67;",
+            )
+            .unwrap();
+        }
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        let setting: String = c
+            .query_row("SELECT analytics FROM artifacts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(setting, "on");
+        assert!(
+            c.execute("UPDATE artifacts SET analytics = 'maybe'", [])
+                .is_err(),
+            "the setting is on or off"
+        );
+        c.execute("UPDATE artifacts SET analytics = 'off'", [])
+            .unwrap();
+        for table in [
+            "analytics_days",
+            "analytics_dims",
+            "analytics_timings",
+            "analytics_day_secrets",
+            "analytics_seen",
+        ] {
+            assert_eq!(table_count(&c, table), 1, "{table}");
+        }
+        assert!(
+            c.execute(
+                "INSERT INTO analytics_timings (artifact_id, day, metric, bucket) VALUES ('a', 'd', 'fcp', 1)",
+                [],
+            )
+            .is_err(),
+            "the metrics are load and lcp"
+        );
+        // A dimension is any text: the set is Rust's.
+        c.execute(
+            "INSERT INTO analytics_dims (artifact_id, day, dim, value) VALUES ('a', 'd', 'event:signup', '')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn a_fresh_database_reaches_64() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
@@ -5990,7 +6099,8 @@ mod tests {
         assert_eq!(super::SURFACES_MIGRATION, 65);
         assert_eq!(super::KEY_PROBLEM_MIGRATION, 66);
         assert_eq!(super::CONTENT_SECURITY_POLICY_MIGRATION, 67);
-        assert_eq!(user_version(&c), super::CONTENT_SECURITY_POLICY_MIGRATION);
+        assert_eq!(super::ANALYTICS_MIGRATION, 68);
+        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -6770,7 +6880,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::CONTENT_SECURITY_POLICY_MIGRATION);
+        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -7267,14 +7377,14 @@ mod tests {
         // approvals' to 58, the queues' to 59, the browser login's to 60,
         // the feedback loop's to 61, the price catalog's to 62, the web lines' to 63,
         // the run bindings' to 64, the surfaces' to 65, the key problem's
-        // to 66 and the Content Security Policy's to 67.
+        // to 66, the Content Security Policy's to 67 and analytics' to 68.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::CONTENT_SECURITY_POLICY_MIGRATION);
+            assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -7282,8 +7392,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::CONTENT_SECURITY_POLICY_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 67 after it are one later now"
+            super::ANALYTICS_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 68 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -7302,10 +7412,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(
-            user_version(&copied),
-            super::CONTENT_SECURITY_POLICY_MIGRATION
-        );
+        assert_eq!(user_version(&copied), super::ANALYTICS_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -7319,7 +7426,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::CONTENT_SECURITY_POLICY_MIGRATION + 1, schema, rows)
+            (super::ANALYTICS_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7593,7 +7700,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::CONTENT_SECURITY_POLICY_MIGRATION);
+        assert_eq!(last, super::ANALYTICS_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -8214,7 +8321,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::CONTENT_SECURITY_POLICY_MIGRATION);
+        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             run_indexes(&c),
@@ -8490,7 +8597,7 @@ mod tests {
         );
         drop(opened_after_the_runs(&home));
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::CONTENT_SECURITY_POLICY_MIGRATION);
+        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
         let before = every_row(&c);
         let set = |sql: &str| {
             c.execute(
@@ -8580,7 +8687,7 @@ mod tests {
             .query_row([], |r| r.get::<_, i64>(0))
             .unwrap();
         crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
-        assert_eq!(user_version(&c), super::CONTENT_SECURITY_POLICY_MIGRATION);
+        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
         let finished: i64 = c
             .prepare_cached("SELECT count(*) FROM bot_runs WHERE status = 'finished'")
             .unwrap()
@@ -8902,7 +9009,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::CONTENT_SECURITY_POLICY_MIGRATION);
+        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             rows_in(&c, &cols),
@@ -9162,7 +9269,7 @@ mod tests {
         drop(at_64_with_runs(&home));
         drop(opened_after_the_runs(&home));
         let mut c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::CONTENT_SECURITY_POLICY_MIGRATION);
+        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
         let (schema, rows) = (schema_of(&c), every_row(&c));
         let before = super::Numbering {
             migrations: &MIGRATIONS[..super::RUN_BINDINGS_MIGRATION as usize],
@@ -9173,7 +9280,7 @@ mod tests {
             matches!(
                 refused,
                 Err(clax_core::CoreError::SchemaNewer { found, known })
-                    if found == super::CONTENT_SECURITY_POLICY_MIGRATION
+                    if found == super::ANALYTICS_MIGRATION
                         && known == super::RUN_BINDINGS_MIGRATION
             ),
             "{refused:?}"

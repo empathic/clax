@@ -358,6 +358,10 @@ pub struct AppState {
     /// ([`InstanceFeedback`]), which the host sets after
     /// [`AppState::assemble`]; [`InstanceFeedback::Own`] by default.
     pub feedback: InstanceFeedback,
+    /// The page views not yet written and the day's seen set
+    /// ([`crate::analytics`]); it counts, sweeps and is due only while
+    /// [`AppState::hosted`] is set.
+    pub analytics: Arc<crate::analytics::Analytics>,
 }
 
 /// [`AppState::sites`] without a site domain.
@@ -497,6 +501,7 @@ impl AppState {
                 },
             )),
             feedback: InstanceFeedback::Own,
+            analytics: Arc::default(),
             home: p.home,
             token: p.token,
             require_credential: p.require_credential,
@@ -582,9 +587,22 @@ impl AppState {
     /// The in-memory sweeps, due every [`clax_realtime::working::SWEEP_INTERVAL`]:
     /// stale working records, presence and idle drafts (announced), streams
     /// detached past their grace, and live seats gone idle. Live layers
-    /// need none: each flush is a timer its own edit starts. The daemon runs
-    /// it on a loop; a Durable Object from its alarm.
+    /// need none: each flush is a timer its own edit starts. On a hosted
+    /// Clax, the page views' batch and the day's rollover when due
+    /// ([`crate::analytics::Analytics::sweep`]). The daemon runs it on a
+    /// loop; a Durable Object from its alarm.
     pub async fn sweep(&self) {
+        if self.hosted.is_some()
+            && self
+                .analytics
+                .next_due_in(self.question_clock.now())
+                .is_some_and(|d| d.is_zero())
+        {
+            let a = self.analytics.clone();
+            if let Err(e) = self.store.call(move |st| a.sweep(st)).await {
+                tracing::warn!(error = %e, "writing the page views failed");
+            }
+        }
         clax_realtime::working::sweep_and_announce(&self.store, &self.working, &self.events).await;
         clax_realtime::presence::sweep_and_announce(&self.presence, &self.events);
         clax_realtime::drafts::sweep_and_announce(&self.drafts, &self.events);
@@ -637,7 +655,9 @@ impl AppState {
     /// detached stream's grace ending, a live seat going idle, and a
     /// question's swept grace ending
     /// ([`clax_realtime::questions::Sleeper::times_graces`]), and a git token
-    /// revocation the host failed ([`crate::git_remotes::RETRY_AFTER`]).
+    /// revocation the host failed ([`crate::git_remotes::RETRY_AFTER`]), and
+    /// on a hosted Clax the page views' batch or the day's rollover
+    /// ([`crate::analytics::Analytics::next_due_in`]).
     /// `None` when none of them holds
     /// anything that will need it. A host whose sweeps run from a timer it
     /// sets itself (a Durable Object's alarm) sets it for then.
@@ -655,6 +675,9 @@ impl AppState {
             self.git_remotes
                 .due()
                 .then_some(crate::git_remotes::RETRY_AFTER),
+            self.hosted
+                .as_ref()
+                .and_then(|_| self.analytics.next_due_in(now)),
         ]
         .into_iter()
         .flatten()

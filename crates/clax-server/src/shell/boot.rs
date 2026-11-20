@@ -316,6 +316,14 @@ pub async fn assemble(
                 Err(_) => false,
             };
             artifact["may_tag"] = json!(may_tag);
+            // Whether a hosted Clax counts visits to its site, for a caller
+            // who administers it, as `GET /api/artifacts/<id>` says: the top
+            // bar offers Analytics… where it is.
+            if let Ok(c) = &caller
+                && let Some(on) = crate::routes::analytics::field(st, c, &lookup, hosted)?
+            {
+                artifact["analytics"] = json!(on);
+            }
             let may_approve = caller
                 .as_ref()
                 .is_ok_and(|c| crate::routes::permissions::may_approve(c, may_tag, hosted));

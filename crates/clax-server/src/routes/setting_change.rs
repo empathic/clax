@@ -2,8 +2,10 @@
 //! approval to make, and the one way it is made: who may load its site
 //! (`site_access`, [`super::world`]) and the `Content-Security-Policy` Clax
 //! sends on its own content (`content_security_policy`,
-//! [`super::content_security_policy`]), each a field of `PATCH
-//! /api/artifacts/<aid>` ([`super::artifacts::patch`]).
+//! [`super::content_security_policy`]), and whether a hosted Clax counts
+//! visits to its site (`analytics`, `on` or `off`, which never needs
+//! approval), each a field of `PATCH /api/artifacts/<aid>`
+//! ([`super::artifacts::patch`]).
 //!
 //! A change is admitted first ([`admit`]) and applied only with what
 //! admitting it returned ([`apply`] takes an [`Admitted`], which nothing
@@ -13,14 +15,14 @@
 //! - Who may manage the artifact makes a change
 //!   ([`clax_http::agent::administers`]); anyone else 403 `admin_only`.
 //! - An agent (the owner's with a session, or a person's) makes a change
-//!   that needs approval ([`SettingChange::needs_approval`]: `site_access:
+//!   that needs approval ([`SettingChange::approval`]: `site_access:
 //!   world`, `content_security_policy: unrestricted`) only with its
 //!   person's approval: its first call asks them a question this daemon
 //!   writes and answers 202 `{status: "approval_pending", question_id,
 //!   inbox_url}`; called again with that `question_id`, the change is
 //!   admitted once they chose to, from Clax's browser or the extension,
 //!   and is 403 `not_approved` when they did not. An approval is a
-//!   `push_approvals` row of `remote_id` [`SettingChange::approval_kind`],
+//!   `push_approvals` row of `remote_id` [`Approval::kind`],
 //!   spent once used (409 `approval_used`). An agent without a session is
 //!   400 `no_session`.
 //! - Any other change, and one to the value the setting already has, asks
@@ -50,13 +52,24 @@ pub enum SettingChange {
     /// The `Content-Security-Policy` Clax sends on its own content becomes
     /// this (`content_security_policy`).
     ContentSecurityPolicy(ContentSecurityPolicy),
+    /// Whether a hosted Clax counts visits to its site (`analytics`: `on`
+    /// when true). Never needs approval; what was counted is kept either
+    /// way.
+    Analytics(bool),
+}
+
+/// The approval a change needs: its approvals' `remote_id`
+/// (`clax_store::site_sessions`) and what its setting says to the people
+/// it asks and refuses.
+#[derive(Clone, Copy)]
+struct Approval {
+    kind: &'static str,
+    wording: &'static Wording,
 }
 
 /// What the settings whose changes may need approval say to the people
 /// they refuse and ask.
 struct Wording {
-    /// 403 `admin_only`'s message.
-    admin_only: &'static str,
     /// 400 `no_session`'s message, for an agent without a session.
     no_session: &'static str,
     /// The question's header.
@@ -72,7 +85,6 @@ struct Wording {
 }
 
 const SITE_ACCESS: Wording = Wording {
-    admin_only: "only the page's maker (on a local Clax, the owner too) opens its site to the world or closes it",
     no_session: "an agent opens a site to the world with publish_public's site_access, which asks the person first",
     header: "Open site",
     approve: (
@@ -85,7 +97,6 @@ const SITE_ACCESS: Wording = Wording {
 };
 
 const CONTENT_SECURITY_POLICY: Wording = Wording {
-    admin_only: "only the page's maker (on a local Clax, the owner too) sets its site's Content Security Policy",
     no_session: "an agent serves a site without Clax's Content Security Policy with publish_public's content_security_policy, which asks the person first",
     header: "Content Security Policy",
     approve: (
@@ -101,22 +112,38 @@ const CONTENT_SECURITY_POLICY: Wording = Wording {
 };
 
 impl SettingChange {
-    /// Whether it is one an agent needs its person's approval to make, and
-    /// the owner's token alone a browser confirmation: opening a site to
-    /// the world, and serving it unrestricted.
-    const fn needs_approval(self) -> bool {
-        matches!(
-            self,
-            SettingChange::SiteAccess(SiteAccess::World)
-                | SettingChange::ContentSecurityPolicy(ContentSecurityPolicy::Unrestricted)
-        )
+    /// The approval it needs, if it is one an agent needs its person's
+    /// approval to make, and the owner's token alone a browser
+    /// confirmation: opening a site to the world, and serving it
+    /// unrestricted.
+    const fn approval(self) -> Option<Approval> {
+        match self {
+            SettingChange::SiteAccess(SiteAccess::World) => Some(Approval {
+                kind: OPEN_TO_WORLD,
+                wording: &SITE_ACCESS,
+            }),
+            SettingChange::ContentSecurityPolicy(ContentSecurityPolicy::Unrestricted) => {
+                Some(Approval {
+                    kind: UNRESTRICT_CSP,
+                    wording: &CONTENT_SECURITY_POLICY,
+                })
+            }
+            _ => None,
+        }
     }
 
-    /// Its setting's approvals' `remote_id` (`clax_store::site_sessions`).
-    const fn approval_kind(self) -> &'static str {
+    /// 403 `admin_only`'s message.
+    const fn admin_only(self) -> &'static str {
         match self {
-            SettingChange::SiteAccess(_) => OPEN_TO_WORLD,
-            SettingChange::ContentSecurityPolicy(_) => UNRESTRICT_CSP,
+            SettingChange::SiteAccess(_) => {
+                "only the page's maker (on a local Clax, the owner too) opens its site to the world or closes it"
+            }
+            SettingChange::ContentSecurityPolicy(_) => {
+                "only the page's maker (on a local Clax, the owner too) sets its site's Content Security Policy"
+            }
+            SettingChange::Analytics(_) => {
+                "only those who administer the page turn the counting of its visits on or off"
+            }
         }
     }
 
@@ -127,6 +154,8 @@ impl SettingChange {
             SettingChange::SiteAccess(SiteAccess::World) => "world",
             SettingChange::SiteAccess(SiteAccess::Private) => "private",
             SettingChange::ContentSecurityPolicy(p) => p.as_str(),
+            SettingChange::Analytics(true) => "on",
+            SettingChange::Analytics(false) => "off",
         }
     }
 
@@ -135,11 +164,12 @@ impl SettingChange {
         Ok(match self {
             SettingChange::SiteAccess(a) => st.site_open_to_world(id)? == (a == SiteAccess::World),
             SettingChange::ContentSecurityPolicy(p) => st.content_security_policy(id)? == p,
+            SettingChange::Analytics(on) => st.analytics_on(id)? == on,
         })
     }
 
     /// The question an agent's person is asked about the artifact titled
-    /// `title`.
+    /// `title`, for a change that needs approval.
     fn question(self, title: &str) -> String {
         match self {
             SettingChange::SiteAccess(_) => format!(
@@ -148,13 +178,8 @@ impl SettingChange {
             SettingChange::ContentSecurityPolicy(_) => format!(
                 "Serve \"{title}\" without Clax's Content Security Policy? Its pages may then load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website."
             ),
-        }
-    }
-
-    const fn wording(self) -> &'static Wording {
-        match self {
-            SettingChange::SiteAccess(_) => &SITE_ACCESS,
-            SettingChange::ContentSecurityPolicy(_) => &CONTENT_SECURITY_POLICY,
+            // Never asked: it needs no approval.
+            SettingChange::Analytics(_) => format!("Change how \"{title}\" counts visits?"),
         }
     }
 }
@@ -175,7 +200,7 @@ pub enum Admission {
 }
 
 /// Holds the owner's `change` of `id` that needs approval
-/// ([`SettingChange::needs_approval`]), made with the token alone while an
+/// ([`SettingChange::approval`]), made with the token alone while an
 /// agent session is live, for a click in their browser
 /// ([`clax_http::confirm::require_confirmation`], decision 4), unless the
 /// setting already has that value. Any other change passes.
@@ -190,7 +215,7 @@ pub async fn confirm(
     id: &ArtifactId,
     change: SettingChange,
 ) -> Result<(), ApiError> {
-    if !change.needs_approval() {
+    if change.approval().is_none() {
         return Ok(());
     }
     let i2 = id.clone();
@@ -235,29 +260,26 @@ pub async fn admit(
         })
         .await?;
     if !manages {
-        return Err(ApiError::forbidden(
-            "admin_only",
-            change.wording().admin_only,
-        ));
+        return Err(ApiError::forbidden("admin_only", change.admin_only()));
     }
     let agent = match caller {
         Caller::OwnerAgent { session } => Some(session.clone()),
         Caller::PersonAgent { session, .. } => Some(session.clone()),
         _ => None,
     };
-    if change.needs_approval()
+    if let Some(approval) = change.approval()
         && !already
         && let Some(session) = agent
     {
         let Some(sid) = session else {
             return Err(ApiError::bad_request(
                 "no_session",
-                change.wording().no_session,
+                approval.wording.no_session,
             ));
         };
         let waiting = match qid {
-            None => Some(ask(s, audit, id, &sid, change).await?),
-            Some(q) => approved(s, id, &sid, q, change).await?,
+            None => Some(ask(s, audit, id, &sid, change, approval).await?),
+            Some(q) => approved(s, id, &sid, q, approval).await?,
         };
         if let Some(body) = waiting {
             return Ok(Admission::Pending(body));
@@ -269,8 +291,8 @@ pub async fn admit(
     }))
 }
 
-/// Makes the change `admitted` names. A Content Security Policy change is
-/// recorded as `ctx`'s; a site's opening or closing publishes
+/// Makes the change `admitted` names. A Content Security Policy or
+/// analytics change is recorded as `ctx`'s; a site's opening or closing publishes
 /// `Event::SiteAccess`, on which its room sockets of visitors close when it
 /// closes.
 ///
@@ -293,6 +315,10 @@ pub async fn apply(s: &AppState, ctx: AuditCtx, admitted: Admitted) -> Result<()
             s.store_call(move |st| st.set_content_security_policy(&ctx, &artifact, policy))
                 .await?;
         }
+        SettingChange::Analytics(on) => {
+            s.store_call(move |st| st.set_analytics(&ctx, &artifact, on))
+                .await?;
+        }
     }
     Ok(())
 }
@@ -306,15 +332,16 @@ async fn ask(
     aid: &ArtifactId,
     sid: &str,
     change: SettingChange,
+    approval: Approval,
 ) -> Result<Value, ApiError> {
     let (id, sid, st8) = (aid.clone(), sid.to_string(), s.clone());
     let qid = s
         .store_call(move |db| {
-            if let Some(q) = db.open_push_approval(&sid, id.as_str(), change.approval_kind())? {
+            if let Some(q) = db.open_push_approval(&sid, id.as_str(), approval.kind)? {
                 return Ok(q);
             }
             let a = db.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let w = change.wording();
+            let w = approval.wording;
             let opt = |(label, description): (&str, &str)| QOption {
                 label: label.to_string(),
                 description: Some(description.to_string()),
@@ -342,13 +369,7 @@ async fn ask(
                     in_terminal: false,
                 },
             )?;
-            db.create_push_approval(
-                &row.id,
-                id.as_str(),
-                change.approval_kind(),
-                &sid,
-                a.current_version,
-            )?;
+            db.create_push_approval(&row.id, id.as_str(), approval.kind, &sid, a.current_version)?;
             let v = clax_http::views::question::view(db, &row)?;
             clax_http::views::question::announce(&st8, db, &row, v);
             Ok(row.id)
@@ -364,7 +385,7 @@ async fn approved(
     aid: &ArtifactId,
     sid: &str,
     qid: String,
-    change: SettingChange,
+    approval: Approval,
 ) -> Result<Option<Value>, ApiError> {
     use axum::http::StatusCode;
     let (q2, sid2) = (qid.clone(), sid.to_string());
@@ -376,7 +397,7 @@ async fn approved(
             ))
         })
         .await?;
-    let (Some(pa), Some(q)) = (pa.filter(|p| p.remote_id == change.approval_kind()), q) else {
+    let (Some(pa), Some(q)) = (pa.filter(|p| p.remote_id == approval.kind), q) else {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "unknown_question",
@@ -406,7 +427,7 @@ async fn approved(
     if !s.store_call(move |st| st.use_push_approval(&q3)).await? {
         return Err(used());
     }
-    let w = change.wording();
+    let w = approval.wording;
     let refuse = |why: &str| {
         Err(ApiError::forbidden(
             "not_approved",

@@ -6500,6 +6500,7 @@ router), and a test fails when it differs:
 | `POST /api/approvals` | Denied | yes: 403 `browser_required` |
 | `POST /api/approvals/requests/{rid}/decide` | Denied | yes: 403 `browser_required` |
 | `DELETE /api/approvals/{id}` | Denied | yes: 403 `browser_required` |
+| `GET /api/artifacts/{aid}/analytics` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/approves-first` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/artifacts/{aid}/capability-approval` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/artifacts/{aid}/capability-approval/{name}` | Denied | yes: 403 `not_for_agents` |
@@ -7458,6 +7459,8 @@ dark mode, and on a phone:
   `publish_public`'s `content_security_policy`): its pages may then load
   from, connect to and post to any site, and register a service worker of
   their own.
+- On a hosted Clax the bridge reports one page view per page load to the
+  site's own `/_clax/api/analytics`; a page needs to do nothing.
 - `icon.svg` at the top of the files is the app's icon, a square
   full-bleed design. Every publish refuses one that breaks these rules
   (`invalid_icon`), and a version a git push makes leaves it out, naming
@@ -11739,6 +11742,50 @@ was made; and a run's end, sent until it is acknowledged.
   others are ("Browser confirmations"); turning it off sends `self` at
   once. Anyone else who opens the panel reads that the clax is served
   without Clax's Content Security Policy, while it is.
+- On a hosted Clax an artifact counts visits to its site (site analytics,
+  below) until whoever administers it sends `PATCH /api/artifacts/<id>
+  {"analytics": "off"}` (`"on"` counts again; anything else is 400
+  `invalid_argument`; anyone else 403 `admin_only`, after the 403
+  `not_permitted` of a person who may not update it). Either change needs
+  no approval: their browser may send it alone without the token, an
+  agent's change asks no one, and a page never may (403 `not_for_pages`).
+  One request changes one of `site_access`, `content_security_policy` and
+  `analytics` (400 `invalid_args`). On a local Clax, which counts nothing,
+  it is 400 `invalid_argument`; a draft artifact takes none (403 `draft`).
+  The answer adds `artifact.analytics` (`on` or `off`), as `GET
+  /api/artifacts/<id>` says it to a caller who administers the artifact on
+  a hosted Clax; it is left out for anyone else, for a draft and on a
+  local Clax. Either change holds from the next request, and is recorded
+  as `artifact.update` with `fields.analytics`. Turning it off stops the
+  counting and keeps what was counted. It does not travel: a push to a
+  public Clax, a fork, a clone and a bundle each start at `on`, with no
+  totals.
+- `GET /api/artifacts/<id>/analytics?from=YYYY-MM-DD&to=YYYY-MM-DD` reads
+  an artifact's site analytics over a range of UTC days, on a hosted Clax
+  (404 `not_found` on a local one), for whoever administers it, from their
+  browser or with the owner's token (anyone else 403 `admin_only`); never
+  for an agent (403 `not_for_agents`, and `forbidden` for a person's
+  agent) or a page (403 `not_for_pages`). `to` defaults to the daemon's
+  today and `from` to 29 days before `to`; a range is at most 400 days and
+  starts no earlier than 13 calendar months before today, the same day of
+  the month or that month's last (400 `invalid_argument` otherwise, and
+  for a day not written `YYYY-MM-DD` or an unknown parameter). The answer,
+  `private, no-store`, is `{"analytics": "on" | "off", "from", "to",
+  "totals": {"visitors", "views", "framed", "load_ms_median",
+  "lcp_ms_median"}, "days": [{"day", "visitors", "views", "framed"}],
+  "versions": [{"n", "published_at"}], "pages", "referrers", "countries",
+  "devices", "versions_viewed"}`: every day of the range, zeros included;
+  `totals.visitors` the sum of the days' visitors; the medians, of the
+  merged histograms within about 10 %, null without samples; `versions`
+  the versions published in the range; and each table (`[{"value",
+  "views", "visitors"}]`, a referring host `""` for none, a country `XX`
+  for unknown, a version as its number) its top 50 rows by views, the
+  rest summed into one `(other)` row. The views not yet written are
+  included, so a view shows at once. In the shell the more menu's
+  **Analytics…**, offered where the artifact carries `analytics`, opens a
+  panel of the same numbers over 7 days, 30 days, 90 days or 13 months,
+  with a line saying whether Clax counts visits and one button, **Stop
+  counting visits** or **Count visits**, which sends the change at once.
 - When the lockdown refuses a page something from another origin, the
   shell framing it is told. The bridge, the first script of every HTML
   page a site serves, listens for `securitypolicyviolation` and, framed,
@@ -11801,7 +11848,8 @@ was made; and a run's end, sent until it is acknowledged.
   query), `docs:batch`, `docs:acquire`, `docs:str_replace`, `assets`
   (`POST` an upload, `GET` the list), `assets/<asset ID>` (`DELETE`, an
   asset of this artifact's alone), `room` (the WebSocket), `artifact`
-  (`GET`), `whoami` (`GET`), and `read/<source>/docs` and
+  (`GET`), `whoami` (`GET`), `analytics` (`POST`, a page view the bridge
+  reports on a hosted Clax, below), and `read/<source>/docs` and
   `read/<source>/docs/<path>` (`GET`, `db.artifact(<source>)`'s reads,
   below); any other path is 404, comments and threads among them. No
   field of a path, query or body names another artifact but a read's
@@ -11824,6 +11872,65 @@ was made; and a run's end, sent until it is acknowledged.
   Clax the writes of a visitor, a link viewer and a guest are limited per client address (60, one back a
   second) and per artifact (600, ten back a second): 429 `rate_limited`
   with `retry_after_s`.
+- **Site analytics.** On a hosted Clax (the Worker, or a daemon with
+  `[hosted]`) the bridge tag of an artifact's own HTML page, at its site's
+  root or a version's address, carries `data-count="1"` while the
+  artifact's `analytics` setting is `on` (below); never on a draft, a live
+  page's snapshot or the Clax app's pages, and never on a local Clax. The
+  page's `ETag` is of the bytes sent, so a browser that kept the page
+  before the setting changed is answered the page with the tag as it now
+  is. From a tag so marked the bridge reports one page view per page load:
+  in the first task after the document's `load` (after a prerendered
+  document is shown; never for a document restored from the back/forward
+  cache, in the Clax app's inspect and migration frames, or while
+  `navigator.globalPrivacyControl` is true) it sends `POST
+  /_clax/api/analytics` with the `fetch` it captured before any page
+  script ran (same origin, `keepalive`), the JSON `{"file", "version",
+  "framed", "referrer", "load_ms", "lcp_ms"}`: the page's published path
+  and the version served (the tag's), whether the page was framed, the
+  host of `document.referrer` alone (`""` without one), the navigation's
+  `loadEventStart` and the latest `largest-contentful-paint` seen by then,
+  in whole milliseconds from a prerender's activation, each null where the
+  browser has none. A failure is ignored. The route takes a report from
+  whoever the site's access lets in (on a private site only a site
+  session's holder; who they are decides access and is not recorded), with
+  the site's own `Origin` (else 403 `forbidden_origin`), by `POST` only
+  (405), a body of at most 2 KiB (413), unknown fields ignored; a body that
+  is not JSON, a field of the wrong type, or no `file` or `version`, is
+  400 `invalid_argument`. Any other report is answered 204 with no body,
+  counted or not; it is not counted with `Sec-GPC: 1`, from a User-Agent
+  that is empty or names a bot, crawler, spider, link preview fetcher or
+  headless browser, for an artifact deleted, a draft or `off`, for a
+  `version` outside 1 to the current one, a `file` over 512 bytes or
+  with a control character, or a `file` that is not one of that
+  version's HTML pages (its `index.html` or a `text/html` file), or from a client address (an IPv6 address by
+  its /64) past 30 reports at once, one more every 2 s. A timing outside 0
+  to 600 000 is dropped and the view counted without it. A referring host
+  that is not a lowercase host name of letters, digits, `-` and `.` of at
+  most 253 bytes, that is an IP address, or that is the site's own, the
+  public origin's or another site host's, is counted as `""` (no referring
+  site). The daemon
+  counts, per artifact and UTC day, page views, visitors and the views
+  made in Clax's frame; per page, referring host, country, device
+  (`phone`, `tablet` or `desktop`, from `Sec-CH-UA-Mobile` and the
+  User-Agent) and version, views and visitors; and histograms of the two
+  timings. The country is Cloudflare's (`request.cf.country` on the
+  Worker, which replaces any `CF-IPCountry` the client sent; on a daemon
+  `CF-IPCountry` only with `behind_cloudflare`), else `XX`. A visitor is,
+  for one day, an HMAC of a secret made for that day, the artifact, the
+  client address (an IPv6 address by its /64) and the User-Agent: counted
+  once a day per page, and in the other tables by their first view of the
+  day; a visitor on two days counts on each. The day's secret and its set
+  of visitor hashes are deleted at the first sweep after midnight UTC,
+  after which no hash of that day can be made again; no address,
+  User-Agent, cookie or visitor hash is kept past it, and the visitor
+  cookie is never read for analytics. Each artifact and day keeps at most
+  500 distinct pages and 500 referring hosts, the rest counted as
+  `(other)`. Views are written in batches, at most a minute apart (a
+  batch not yet written is lost if the process ends), and reads include
+  the batch not yet written. Totals are kept 13 calendar months; a deleted
+  artifact's are never read again and are deleted by the retention pass
+  after it, a bounded number of rows at a time.
 - **Cross-app reads.** `read/<source>/docs…` on artifact A's site reads
   app B's (`<source>`'s) documents for A, with the bodies of B's document
   reads: only for a site session of the owner or a person who may read B
