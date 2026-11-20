@@ -140,10 +140,10 @@ impl ToolImage {
 /// What ends the text of a tool result whose images were left out because
 /// the caller sends the model none ([`Block::tool_result_with_images`]).
 /// It says what was done, not what the model can take: nothing here
-/// knows that, and ClaxBot leaves images out whenever its `[bot]
-/// model_takes_images` setting is off, which is the default.
+/// knows that, and ClaxBot leaves images out for every model its
+/// `[bot.models] images` does not list, which by default is every model.
 pub const IMAGES_NOT_SHOWN: &str = "The images of this result are not shown: images are not sent \
-     to the model here ([bot] model_takes_images is off).";
+     to the model here (this instance's [bot.models] images does not list it).";
 
 /// The images in a `tool_result`'s content, in order, each as its media
 /// type and base64 data: the `image` blocks with a `base64` source of an
@@ -233,7 +233,7 @@ impl Block {
     /// [`IMAGES_NOT_SHOWN`], after a blank line when there is text before
     /// it. Nothing here knows which models take images
     /// ([`ModelInfo`] and the price catalog do not say): the caller does
-    /// (ClaxBot's `RunSettings::model_takes_images`), and a caller that
+    /// (ClaxBot's `RunSettings::takes_images`), and a caller that
     /// does not know passes false.
     ///
     /// Neither the number of images nor their size or type is checked: the

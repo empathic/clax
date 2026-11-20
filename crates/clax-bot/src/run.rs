@@ -96,12 +96,15 @@ pub struct RunSettings {
     /// Messages API's whatever it is.
     pub api: ModelApi,
     pub base_url: String,
-    /// The model takes images in a tool result: what
-    /// `Block::tool_result_with_images` is told. Nothing in a model's
-    /// metadata says so (`ModelInfo`, the price catalog), so it is a
-    /// setting, off by default: a model is shown no image unless this says
-    /// it takes them. The daemon's `[bot] model_takes_images` sets it for
-    /// every model of the instance; nothing stored sets it.
+    /// The models that take images in a tool result, by ID: a run's model
+    /// is shown the images a script step returns only when it is one of
+    /// these ([`RunSettings::takes_images`], what
+    /// `Block::tool_result_with_images` is told). Nothing in a model's
+    /// metadata says so (`ModelInfo`, the price catalog), so the instance
+    /// names them: the daemon's `[bot.models] images`; none by default.
+    pub image_models: Vec<String>,
+    /// Every model takes images, whatever `image_models` lists: the
+    /// daemon's older `[bot] model_takes_images`, still taken.
     pub model_takes_images: bool,
     pub max_tokens: u32,
     pub max_steps: u32,
@@ -143,6 +146,7 @@ impl Default for RunSettings {
             enabled: true,
             api: ModelApi::Anthropic,
             base_url: "https://api.anthropic.com".into(),
+            image_models: Vec::new(),
             model_takes_images: false,
             max_tokens: 32_000,
             max_steps: 40,
@@ -197,6 +201,14 @@ impl RunSettings {
                 .unwrap_or(d.script_max_calls),
             ..d
         })
+    }
+
+    /// Whether a run on `model` is shown the images its script steps
+    /// return: `model` is one [`RunSettings::image_models`] names, or
+    /// [`RunSettings::model_takes_images`] says every model takes them.
+    #[must_use]
+    pub fn takes_images(&self, model: &str) -> bool {
+        self.model_takes_images || self.image_models.iter().any(|m| m == model)
     }
 
     /// The sandbox limits of one script.
@@ -2235,7 +2247,7 @@ impl Tick<'_> {
             self.store,
             &self.run.id,
             &self.steps,
-            self.settings.model_takes_images,
+            self.settings.takes_images(&self.run.model),
             messages,
         )?;
         let mut req = MessagesRequest {
@@ -2659,6 +2671,24 @@ impl Tick<'_> {
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    /// A run's model is shown images only when it is one the instance
+    /// lists, whichever tier it is; the older switch says every model.
+    #[test]
+    fn each_model_answers_whether_it_takes_images() {
+        let s = RunSettings {
+            image_models: vec!["claude-sonnet-5-5".into(), "claude-opus-5-5".into()],
+            ..RunSettings::default()
+        };
+        assert!(s.takes_images("claude-sonnet-5-5") && s.takes_images("claude-opus-5-5"));
+        assert!(!s.takes_images("claude-haiku-5-5"));
+        assert!(!RunSettings::default().takes_images("claude-sonnet-5-5"));
+        let every = RunSettings {
+            model_takes_images: true,
+            ..RunSettings::default()
+        };
+        assert!(every.takes_images("claude-haiku-5-5"));
+    }
 
     #[test]
     fn compute_is_cpu_at_the_memory_limit_rounded_up() {

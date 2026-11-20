@@ -138,7 +138,7 @@ async fn an_image_a_host_answers_reaches_the_script_the_model_once_and_the_host_
     let ts = TestServer::spawn_with(|s| {
         let cfg = clax_core::config::HomeConfig::from_text(
             s.home.root().join(clax_core::config::FILE),
-            "[bot]\nmodel_takes_images = true\n",
+            "[bot.models]\nimages = [\"claude-sonnet-5-5\"]\n",
             Vec::new(),
         )
         .unwrap();

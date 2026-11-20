@@ -9089,6 +9089,7 @@ price_catalog_url = "https://tokenulator.dev/data/site.json"  # https://, or htt
 default = "claude-sonnet-5-5"
 quick = "claude-haiku-5-5"
 complex = "claude-opus-5-5"
+images = []                     # the model IDs shown the images a script step returns
 
 [bot.script]
 cpu_ms = 2000                   # 1 to 600,000
@@ -9111,9 +9112,18 @@ a leading `<think>…</think>`) shows as thinking and is not sent back; a
 stream that carries no token usage fails the turn. A model ID may hold
 `/` (`subconscious/glm-5.3-marathon`).
 
+Whether a model takes images is a fact of the model: `[bot.models]
+images` lists the model IDs ClaxBot shows the images a script step
+returns (`CLAX_BOT__MODELS__IMAGES='["claude-sonnet-5-5"]'`), whichever
+tier names them; a run on any other model is told its images were not
+sent. Not every model takes images and no model listing says which do,
+so none is listed by default. The older `[bot] model_takes_images =
+true`, which said every model does, is still taken. Both are read from
+the file and the environment alone.
+
 A `[bot]` table that is invalid (not a table, an unknown key, a mistyped
 value, an `api` other than those three, an `api` other than `anthropic`
-without a `base_url`, an empty `api_key_env` or model ID, a `base_url`
+without a `base_url`, an empty `api_key_env` or model ID (in `images` too), a `base_url`
 refused as `[sample]`'s is, or a value outside the range above) turns
 ClaxBot off and the daemon starts anyway. `clax doctor` prints a `config_tables` line that
 warns for an invalid `[toolpath]`, `[questions]` or `[bot]`.

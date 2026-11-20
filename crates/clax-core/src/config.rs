@@ -651,6 +651,12 @@ impl HomeConfig {
                 ));
             }
         }
+        if b.models.images.iter().any(|m| m.trim().is_empty()) {
+            return Err(bad(
+                "models.images",
+                "models.images lists an empty model ID".into(),
+            ));
+        }
         let ranges: [(&str, u64, u64, u64); 11] = [
             ("max_tokens", b.max_tokens.into(), 1, 1_000_000),
             ("max_steps", b.max_steps.into(), 1, 10_000),
@@ -1124,9 +1130,11 @@ pub struct BotConfig {
     /// `CLAX_BOT__PRICE_CATALOG_URL=off`). Read from the file and the
     /// environment alone, never from the admin pages ([`BotConfig::catalog_url`]).
     pub price_catalog_url: String,
-    /// The instance's models take images in a tool result (default
-    /// false): ClaxBot shows a model the images a script step returns
-    /// only when this says it takes them. Read from the file and the
+    /// Every model takes images in a tool result (default false): the
+    /// instance-wide switch `[bot.models] images` replaced, still taken so
+    /// a `config.toml` that sets it keeps working. Which models take images
+    /// is a fact of each model: list them in `images` instead
+    /// ([`BotConfig::takes_images`]). Read from the file and the
     /// environment alone.
     pub model_takes_images: bool,
 }
@@ -1135,6 +1143,14 @@ pub struct BotConfig {
 pub const PRICE_CATALOG_URL: &str = "https://tokenulator.dev/data/site.json";
 
 impl BotConfig {
+    /// Whether ClaxBot shows `model` the images a script step returns: it
+    /// is one `[bot.models] images` lists, or `model_takes_images` says
+    /// every model takes them.
+    #[must_use]
+    pub fn takes_images(&self, model: &str) -> bool {
+        self.model_takes_images || self.models.images.iter().any(|m| m.trim() == model)
+    }
+
     /// The price catalog URL `price_catalog_url` names: `None` when it is
     /// empty or `off` (never fetched), or not a URL [`base_url_ok`] takes.
     #[must_use]
@@ -1250,13 +1266,21 @@ pub fn url_host(url: &str) -> String {
     host.trim_end_matches('.').to_string()
 }
 
-/// `[bot.models]`: the model ID of each tier; none empty.
+/// `[bot.models]`: the model ID of each tier, none empty, and the models
+/// that take images.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct BotModels {
     pub default: String,
     pub quick: String,
     pub complex: String,
+    /// The model IDs that take images in a tool result (default none):
+    /// ClaxBot shows a run's model the images a script step returns only
+    /// when its model is one of these, whichever tier it is. Not every
+    /// model takes images, and nothing in a model's metadata says which
+    /// do, so the instance names them. None empty. Read from the file and
+    /// the environment alone.
+    pub images: Vec<String>,
 }
 
 impl Default for BotModels {
@@ -1265,6 +1289,7 @@ impl Default for BotModels {
             default: "claude-sonnet-5-5".into(),
             quick: "claude-haiku-5-5".into(),
             complex: "claude-opus-5-5".into(),
+            images: Vec::new(),
         }
     }
 }
@@ -2591,6 +2616,45 @@ mod tests {
                 assert_eq!(c.serve_port().unwrap(), Some(7481), "{var}");
             }
         }
+    }
+
+    /// Which models take images is each model's: `[bot.models] images`
+    /// lists them, from the file or the environment; the old instance-wide
+    /// `[bot] model_takes_images` still says every model does; an empty
+    /// ID is refused.
+    #[test]
+    fn the_models_that_take_images_are_listed() {
+        let b = under("", &[]).bot().unwrap();
+        assert!(b.models.images.is_empty());
+        assert!(!b.takes_images("claude-sonnet-5-5"));
+        let b = under(
+            "[bot.models]\nimages = [\"claude-sonnet-5-5\", \"claude-opus-5-5\"]\n",
+            &[],
+        )
+        .bot()
+        .unwrap();
+        assert!(b.takes_images("claude-sonnet-5-5") && b.takes_images("claude-opus-5-5"));
+        assert!(
+            !b.takes_images("claude-haiku-5-5"),
+            "a model not listed takes none"
+        );
+        let b = under("", &[("CLAX_BOT__MODELS__IMAGES", "[\"m-1\"]")])
+            .bot()
+            .unwrap();
+        assert_eq!(b.models.images, vec!["m-1".to_string()]);
+        assert!(b.takes_images("m-1") && !b.takes_images("m-2"));
+        let b = under("[bot]\nmodel_takes_images = true\n", &[])
+            .bot()
+            .unwrap();
+        assert!(
+            b.takes_images("any-model"),
+            "the old switch says every model"
+        );
+        let e = under("[bot.models]\nimages = [\" \"]\n", &[])
+            .bot()
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("models.images"), "{e}");
     }
 
     #[test]

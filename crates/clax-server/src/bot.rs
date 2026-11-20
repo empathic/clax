@@ -1193,6 +1193,11 @@ pub fn driver_with_sources(
     let wake = host.wake.clone();
     let host: Arc<dyn BotHost> = Arc::new(host);
     let sessions = browser_sessions(state, browser.clone());
+    let configured_bot = state
+        .settings
+        .running
+        .as_ref()
+        .and_then(|cfg| cfg.bot().ok());
     let deps = clax_bot::Deps::new(
         state.store.clone(),
         crate::routes::admin::messages_client(&state.store),
@@ -1201,11 +1206,12 @@ pub fn driver_with_sources(
         Arc::new(clax_http::bot::Settings {
             store: state.store.clone(),
             enabled: bot.enabled,
-            model_takes_images: state
-                .settings
-                .running
+            image_models: configured_bot
                 .as_ref()
-                .and_then(|cfg| cfg.bot().ok())
+                .map(|b| b.models.images.clone())
+                .unwrap_or_default(),
+            model_takes_images: configured_bot
+                .as_ref()
                 .is_some_and(|b| b.model_takes_images),
         }),
         bot.keys(),

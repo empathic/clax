@@ -204,6 +204,8 @@ impl clax_core::working::Clock for StoreClock<'_> {
 pub struct Settings {
     pub store: Arc<Store>,
     pub enabled: bool,
+    /// `[bot.models] images` ([`clax_bot::RunSettings::image_models`]).
+    pub image_models: Vec<String>,
     /// `[bot] model_takes_images` ([`clax_bot::RunSettings::model_takes_images`]).
     pub model_takes_images: bool,
 }
@@ -212,6 +214,7 @@ impl clax_bot::SettingsSource for Settings {
     fn settings(&self) -> clax_core::Result<clax_bot::RunSettings> {
         Ok(clax_bot::RunSettings {
             enabled: self.enabled,
+            image_models: self.image_models.clone(),
             model_takes_images: self.model_takes_images,
             ..clax_bot::RunSettings::from_store(&self.store)?
         })

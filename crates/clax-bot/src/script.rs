@@ -717,7 +717,7 @@ impl Tick<'_> {
             self.store,
             &self.run.id,
             outcome.value.as_ref(),
-            self.settings.model_takes_images,
+            self.settings.takes_images(&self.run.model),
             &self.limits,
         )?;
         let (content, is_error) = tool_result_content(
