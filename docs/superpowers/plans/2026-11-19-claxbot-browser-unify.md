@@ -735,3 +735,111 @@ credentials), `justfile` (`browser-live` unchanged in form).
 - [ ] `just check` once (background, logged under `target/`); a lane failing in code this branch did not touch is rerun alone and both results reported.
 - [ ] `qualifier diff main`: every spec decision a task built has a reply naming its commit; closes of records other sessions wrote, and every `status:needs-decision` thread, are left for the owner.
 - [ ] Run `just browser-live` with real credentials if the owner provides them; reply on `88b76c21` (path spelling) and `d48cf9c0` (keep-alive) with what it showed.
+
+## Phase F: run state and session capabilities
+
+The owner's decisions `70eababf` (a run-scoped `state`; an unforgeable
+session capability; a session lives as long as its handle) and
+`c2e00840` (the layer only in browser runs), as spec §17 sets them out.
+Closes, once built: `36272d22` (`clax.browser.session(id)`, superseded)
+and `f83e9b51` (the prelude's budget). Each task verifies its own
+targets, logged under `target/unify-task-F<n>.log`; the last runs `just
+check`.
+
+### Task F1: the layer only in browser runs
+
+Spec §17.2 (a `Page`'s JSON, no session from a string), §17.5. First,
+because the prelude has 8 bytes of its budget left (`f42ca857`) and
+`state`'s codec joins it. **Files:** `crates/clax-bot-sandbox/src/browser.js`
+(new: the layer, moved out of `prelude.js`; `toJSON` of `"<browser
+page>"` and `"<browser locator>"`; no `clax.browser.session`),
+`prelude.js` (the marker line), `lib.rs` (`Script::browser`,
+`prelude_source`, `BROWSER_LAYER`, `BROWSER_LAYER_BUDGET_BYTES`,
+`browser_layer_table` from the layer), `conformance.rs` (browser cases
+ask for the layer), both sandboxes (`prelude_source(script.browser)`),
+`crates/clax-bot/src/script.rs` (a script asks for the layer when a
+binding has the five session operations among its own).
+
+- [ ] Tests first: `a_returned_page_shows_no_capability`, `the_layer_is_absent_without_browser`, `there_is_no_session_from_a_string`, `the_prelude_and_the_layer_stay_within_their_budgets`; run level: `a_run_without_a_browser_capability_has_no_page_layer`.
+- [ ] Verify: `bazel test //crates/clax-bot-sandbox/... //crates/clax-bot-js/... //crates/clax-bot/... //bazel/wasm:check`.
+- [ ] Commit: `feat(sandbox): load the Page layer only in browser runs`
+
+### Task F2: `state` in the sandbox, handles in it
+
+Spec §17.1, §17.2. **Files:** `crates/clax-bot-sandbox/src/prelude.js`
+(the global `state`, restored from `options.state`, encoded when the
+script ends and passed as `done`'s third argument; a hook the layer
+gives its handles through), `browser.js` (its classes' handle entries,
+restored live, one `Page` per handle), `lib.rs` (`Script::state`,
+`ScriptOutcome::state`, `StateOut`, the prelude's documented contract),
+`conformance.rs` (`Case::state`, `Expect::state`), `crates/clax-bot-js`
+(the option in, the third argument out), `crates/clax-worker/src/sandbox`
+(`job.state`, `final.done.state`, `driver.js`).
+
+- [ ] Tests first (conformance, both sandboxes): `state_starts_empty_and_comes_back_as_left`, `state_is_kept_after_a_throw`, `state_is_replaced_by_an_object_and_refuses_anything_else`, `what_state_cannot_keep_is_listed_with_its_path`, `a_clax_member_is_not_kept`, `a_stopped_script_writes_no_state`, `a_page_and_its_locator_in_state_restore_live_as_one_page`.
+- [ ] Verify: `bazel test //crates/clax-bot-sandbox/... //crates/clax-bot-js/... //crates/clax-worker/... //bazel/wasm:check`.
+- [ ] Commit: `feat(sandbox): a run's state across scripts`
+
+### Task F3: a run's state kept with its step
+
+Spec §17.1. **Files:** `crates/clax-bot/src/script.rs` (the last
+committed state into `Script::state`; the outcome's state capped at 64
+KiB, largest members left out and listed; the payload's `state`; the
+result's `state` only when something was not kept),
+`crates/clax-server/src/routes/bot.rs` (`step_view`'s `state`, handles
+shown opaque, the handle entries left out), `crates/clax-bot/tests/state.rs`
+(new).
+
+- [ ] Tests first: `a_steps_state_is_the_next_scripts`, `a_step_executed_again_starts_from_the_committed_state`, `a_state_over_its_cap_leaves_out_its_largest_members`, `a_stopped_script_keeps_the_last_state`, `a_result_says_nothing_of_a_state_kept_whole`; server: `a_steps_state_is_shown_without_its_capabilities`.
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-server/...`.
+- [ ] Commit: `feat(bot): keep a run's state with its step`
+
+### Task F4: a session's handle is an unforgeable capability
+
+Spec §17.3. **Files:** `crates/clax-bot/src/browser/live.rs` (a 256-bit
+handle drawn at the open, mapped to its session for its run;
+`resolve`), `clax/browser.rs` (the open answers `page`; session calls
+name their session by the handle, resolved at admission; shown, audit
+and errors by the session's ID), `browser.js` (the `Page` keeps the
+handle), `clax.d.ts` (the flat operations' `page` parameter),
+`tests/browser.rs`.
+
+- [ ] Tests first: `an_open_answers_a_handle_no_record_names`, `another_runs_handle_is_lost`, `an_unknown_handle_is_lost_and_not_echoed`; existing session tests through `state`.
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-bot-sandbox/... //crates/clax-server/...`.
+- [ ] Commit: `feat(bot): a browser session's handle is an unforgeable capability`
+
+### Task F5: a session lives as long as its handle
+
+Spec §17.4. **Files:** `crates/clax-store/src/bot_web.rs`
+(`SessionEnd::Dropped`), `crates/clax-bot/src/surface.rs`
+(`SurfaceProvider::state_committed`), `script.rs` (after a script
+step's commit, each binding's provider told the committed state's
+handles), `clax/provider.rs` (closes the run's sessions not held,
+`dropped`, and charges them), `browser/live.rs` (`close_unheld`),
+`web/shell/src/bot/model.ts` (the reason's words), `tests/browser.rs`.
+
+- [ ] Tests first: `a_page_in_state_lives_into_the_next_script`, `a_page_only_returned_closes_dropped_when_its_step_commits`, `a_dropped_session_is_charged_once`, `a_replayed_step_drops_the_same_sessions`.
+- [ ] Verify: `bazel test //crates/clax-bot/... //crates/clax-store/... //crates/clax-server/... //web:unit`.
+- [ ] Commit: `feat(bot): a browser session lives as long as its handle`
+
+### Task F6: what ClaxBot is told
+
+Spec §17.6. **Files:** `crates/clax-bot/src/prompt/standard.rs` (the
+code-mode paragraph), `clax.d.ts` (the browser namespace's rules),
+`browser/layer.rs` (`close`'s doc), goldens, the Clax app's prompt copy
+(`//apps/clax_app:prompt_sync`).
+
+- [ ] Regenerate goldens as `golden.rs` documents; read every diff.
+- [ ] Verify: `bazel test //crates/clax-bot/... //apps/clax_app:prompt_sync //web:unit`.
+- [ ] Commit: `feat(bot): tell ClaxBot of state and of pages it lets go`
+
+### Task F7: the run panel shows a step's state
+
+Spec §17.1. **Files:** `web/shell/src/bot/RunPanel.svelte`, `model.ts`,
+`run-panel.test.ts`.
+
+- [ ] Tests first (vitest): `a_script_step_shows_its_state`.
+- [ ] Verify: `bazel test //web:unit //web:lint //web:typecheck //web:bundle_size`.
+- [ ] `just check`, in the background, logged to `target/unify-phase-F.log`.
+- [ ] Commit: `feat(shell): show a script step's state in the run panel`
+- [ ] Close `36272d22` and `f83e9b51` with the tests and `--ref git:<sha>`, in a commit of their own.

@@ -2,7 +2,7 @@
 
 Status: design for the owner's review (2026-11-19), revised the same day
 after the owner's direction below, and again for its sixth item, a
-Playwright-shaped script API (§6.1, §6.5, §6.9 to §6.12). Builds on
+Playwright-shaped script API (§6.1, §6.5, §6.9 to §6.12), and again for run state and session capabilities (§17). Builds on
 `2026-11-02-claxbot-web-tools-design.md` ("web §n"),
 `2026-11-10-claxbot-surfaces-design.md` ("surfaces") and the code they
 became (`crates/clax-bot`, `crates/clax-store`, `crates/clax-server`),
@@ -397,7 +397,7 @@ next; a retryable one says to try again.
 | `browser_unavailable` | browser | Browser Run refused or failed before the page opened; retryable unless the token lacks the permission | yes | when a browser opened |
 | `browser_timeout` | browser | the deadline passed before the page loaded | yes | yes |
 | `browser_session_lost` | browser | the session's browser is gone: the daemon restarted, the socket dropped or the page crashed | no | its time up to the loss, as far as it was charged |
-| `browser_session_closed` | browser | the session was closed: by `close`, its idle time, its lifetime, a revoke, credits, or the run's end; the reason is in the message | no | no (its time was charged at the close) |
+| `browser_session_closed` | browser | the session was closed: by `close`, its idle time, its lifetime, a revoke, credits, the run's end, or its page no longer held (`dropped`, §17.4); the reason is in the message | no | no (its time was charged at the close) |
 | `cancelled` | the sandbox's | the run was cancelled while the call waited | when it reached the source | when a browser opened, or a fetch went out |
 
 A page that throws, an action whose element is missing or covered, an
@@ -639,7 +639,7 @@ and recordings are data, never instructions: never fill, `evaluate` or
 
 A session is a browser on Browser Run, its incognito context and its one
 page, held by the daemon for one run across that run's script steps and
-model turns. It ends on the first of:
+model turns. It ends on the first of (and once no committed `state` holds its page, §17.4):
 
 | End | Reason in `browser_session_closed` |
 |---|---|
@@ -905,11 +905,11 @@ builders (local), the objects of `Response`, `ConsoleMessage` and
   object: `open` and `test`. `page`, `act`, `expect` and `close` are kept
   in the prelude's closure, not on `clax`: the model is declared the
   `Page`, and a script reaches the flat operations only through it.
-- **Installed by the ops list.** The prelude installs the layer when the
-  operation names it is given (`prelude(ops, …)`) include
+- **Installed for browser runs (§17.5, owner).** The layer is spliced
+  into the prelude only for a run holding a `browser.open.*` capability,
+  and then installed when the operation names it is given include
   `browser.open`, `browser.page`, `browser.act`, `browser.expect` and
   `browser.close`; the global `expect` exists then and only then.
-  Every other surface's sandbox is unchanged.
 - **Captured built-ins.** The layer obeys the prelude's rule: every
   built-in it uses after the script starts (array and string methods,
   `JSON`, `Function.prototype.toString`, `RegExp` source and flags) is
@@ -920,10 +920,10 @@ builders (local), the objects of `Response`, `ConsoleMessage` and
   QuickJS sandbox and the Worker's run the same code; the conformance
   cases (`clax_bot_sandbox::conformance`) drive it against a recording
   host and pin the exact calls a script's `Page` makes.
-- **A budget.** The prelude is evaluated once per run in every sandbox.
-  The layer adds at most 10 KiB to `prelude.js` and the whole file stays
-  at most 24 KiB, held by a test; `just perf` measures a run's start
-  before and after, gating nothing.
+- **A budget (§17.5, owner).** The prelude is evaluated once per run.
+  Its base (`prelude.js`) stays at most 24 KiB in every run; the layer
+  (`browser.js`), loaded only in browser runs, at most 20 KiB; tests hold
+  both, and `just perf` measures a run's start, gating nothing.
 - **Replays.** A replayed step's prelude makes the same flat calls in
   the same order and gets the journaled answers, so the `Page` it builds
   holds the same session, URL and values. Nothing in the layer reads a
@@ -1138,8 +1138,8 @@ each open session as a task (`clax_rt::spawn`) that owns its `Cdp` and:
 loop's end of a run calls `BrowserSessions::end_run`; the daemon's grant
 changes call `BrowserSessions::reevaluate` (§4.4); the daemon's start
 calls `Store::lose_open_browser_sessions` (§6.4). A session of a run is
-reachable only through that run's calls: its handle is checked against
-the run's ID.
+reachable only through that run's calls: its handle, an unforgeable
+capability bound to the run (§17.3), names it, never its ID.
 
 ## 8. Serving and egress
 
@@ -1561,3 +1561,192 @@ and that a browser now lives across steps.
 - The run panel's layout of a session and its flipbook.
 - The HTML cleaner's element list beyond §5.2's, within "no script, no
   style, no handler".
+
+## 17. Run state and session capabilities
+
+Given by the owner on 2026-11-19, after the unify plan was built, in
+answer to records `36272d22` (a later script had no way to reach a
+session but `clax.browser.session(id)`) and `f83e9b51` (the prelude's
+budget). The owner's words, as records `70eababf` and `c2e00840` keep
+them:
+
+- "Maybe we should have some idea of persistent script state that can
+  carry for the session? A sort of session object that serializes across
+  scripts? Kind of like the window object across handlers in the
+  browser?"
+- "Having persistent sessions for the browser system still seems
+  necessary but the state object gives a way to hold onto a
+  cryptographic capability to control the session across turns. Browser
+  sessions also should only live as long as their session handle."
+- "yes, load it only for browser runs."
+
+This section replaces §6.9's install rule and budget, §7.4's handle
+check, and the build's `clax.browser.session(id)` and `{session, url}`
+JSON of a `Page`. Plan: Phase F of
+`docs/superpowers/plans/2026-11-19-claxbot-browser-unify.md`.
+
+### 17.1 `state` **(owner: what it is; design: its format and cap)**
+
+Every script of a run has one global, `state`, that outlives it, "like
+the window object across handlers in the browser" **(owner)**. Nothing
+else does: every other global is the script's own, as before.
+
+- **What it is.** A plain object, `{}` in a run's first script. A script
+  changes its members, or assigns `state = {...}` to replace it; assigning
+  anything but a plain object throws a `TypeError`.
+- **Written out when a script ends** **(owner)**, whether it returned or
+  threw: the prelude encodes it, as the step's value is, with the
+  built-ins it captured before the script ran. It keeps JSON values
+  (`null`, booleans, finite numbers, strings, arrays, plain objects) and
+  Clax's handles: a `Page`, a `Locator`, a page's `keyboard` and `mouse`,
+  an `expect` of either, each as a reference to a handle entry
+  (§17.2); and an `Image`, which is JSON already.
+- **What cannot be kept is reported, never dropped silently**
+  **(owner)**: a function, a symbol, a `bigint`, a number JSON cannot
+  hold, a cycle, an object that is not plain data (a `Date`, `Map`, `Set`,
+  class instance, error, `RegExp`), a member named `$clax`, a value nested
+  deeper than 64 levels, a getter that throws. Each is left out (an array
+  item becomes `null`) and listed with its path and why (`{"path":
+  "state.onClick", "why": "a function"}`), at most 20, then how many more.
+  A member whose value is `undefined` is left out unlisted, as JSON
+  leaves it.
+- **A cap of 64 KiB** **(design)**: 65,536 bytes of the encoded JSON.
+  Over it, the host leaves out the value's top-level members, largest
+  first, until it fits, each listed `too large (N bytes)`.
+- **Stored with the step** **(owner)**: the encoded state is the script
+  step's payload's `state`, `{"value": …, "handles": […]}`, written by the
+  step's commit, the commit that keeps what the step's journal answered.
+- **Restored before the next script** **(owner)**: from the last
+  committed script step that kept one (`Script::state`; none before the
+  first). A step executed again (a crash, a park, a failed commit)
+  starts from that same state, so it makes the calls it made and the
+  journal answers them.
+- **A script the sandbox stopped** (its CPU, memory or call limit, a
+  cancel, a park) writes nothing; the last committed state stands.
+- **What the model is told.** The script's result gains `state` only
+  when something was not kept: `{"dropped": [{path, why}, …]}`, or
+  `{"saved": false, "why": …}` when the script was stopped before it could
+  be written. A result with nothing to say is as before.
+- **The run panel** **(owner)** shows the state each script step
+  committed, each handle as `"<browser page>"` or `"<browser locator>"`;
+  the handle entries, and the capabilities in them, never leave the
+  store (`step_view`).
+- **Both sandboxes** **(owner)**: the encoding and the restoring are the
+  shared prelude's; a sandbox only carries the text in
+  (`options.state`) and out (the third argument of `done`), the QuickJS
+  sandbox natively and the Worker's through its driver's job and final
+  message. The encoding runs within the script's CPU limit.
+
+### 17.2 Handles in `state`; a `Page`'s JSON **(owner)**
+
+- Each handle in the encoded value is `{"$clax": i}`, an index into
+  `handles`, whose entry is `{page, url, of, steps?, not?, timeout?}`:
+  the page's capability (§17.3), its URL as of the last call, the class
+  (`Page`, `Locator`, `Keyboard`, `Mouse`, `LocatorAssertions`,
+  `PageAssertions`), a locator's steps, a negated assertion, the page's
+  default timeout. A script cannot write a handle: a member named
+  `$clax` is not kept, so only the prelude makes the markers, from the
+  objects it made itself.
+- **Restored live.** The next script's `state` holds working objects:
+  the same session, the same URL, the same locator. Two members holding
+  one `Page` (or a `Page` and its locator) restore as one `Page`.
+- **Shown opaque.** A `Page` in a returned value, a log line or
+  `JSON.stringify` is `"<browser page>"`, a `Locator` `"<browser
+  locator>"`: the model never sees a capability.
+- **No session from a string.** `clax.browser.session(id)` is removed
+  (the build's answer to `36272d22`): a `Page` comes only from
+  `clax.browser.open` or from `state`.
+
+### 17.3 A session's handle is an unforgeable capability **(owner: what; design: at rest)**
+
+- **Drawn at the open.** The registry draws 256 bits from the operating
+  system (`clax_core::secret::random_bytes::<32>`), the session's handle,
+  64 hex digits, bound to the run that opened it. `browser.open` answers
+  it to the prelude (`{page, kind, url, …}`), which keeps it in the
+  `Page`'s private state, a `WeakMap` no script reaches; each flat call
+  names its session by it.
+- **Holding the `Page` is the authority to drive it** **(owner)**: the
+  registry maps a handle to its session for the handle's own run only;
+  another run's, an unknown one, or one after a restart answers
+  `browser_session_lost`; one closed, `browser_session_closed` with the
+  reason. Nothing else reaches a session.
+- **Never shown** **(owner)**: events, the run panel, `bot.spend`
+  records, logs and every error message name a session by its ID (§6.3,
+  12 characters, which its content origin shows anyway); the model sees
+  `"<browser page>"`.
+- **At rest** **(design)**: the handle itself, in the step journal (the
+  open's answer, and each call's argument hash) and in the committed
+  state's handle entries: an opaque reference only the registry of the
+  process that drew it maps to a session, of its own run, while that
+  session lives; every session ends with its process (§6.4). Keeping only
+  its SHA-256 at rest was considered: the journal must answer a replayed
+  open with the handle its later calls send, and their argument hashes
+  must match after a restart too (§6.4), so the host would swap the
+  handle for its hash in every answer and argument hash, for a stored
+  value that already reaches nothing once its process is gone (recorded
+  as an alternative, to revisit when sessions survive a restart).
+
+### 17.4 A session lives as long as its handle **(owner)**
+
+- **When a script step commits**, the host reads the handles of the
+  state it committed (each entry's `page`) and closes every open session
+  of the run whose handle is not among them, `dropped`, charging its last
+  segment then (`Store::end_bot_browser_session`). A `Page` only in a
+  local variable, or only in the returned value, so closes when its
+  script's step commits; a step whose state was not written keeps the
+  last committed state's pages, and closes the ones it opened.
+- **Replays decide the same**: reachability is read from committed state
+  alone, never from a script's own objects.
+- `page.close()` ends a session at once, and its handle answers
+  `browser_session_closed` (`closed`) after; the run's end closes every
+  session (`run_ended`); the idle time and lifetime stay, as a backstop
+  on cost; revokes and credits as before (§6.3).
+- `browser_session_closed` gains the reason `dropped`, "its page was not
+  in `state` when its script ended". `browser.test` holds no session.
+
+### 17.5 The layer only in browser runs **(owner)**
+
+- The prelude is two files: `prelude.js`, every run's, and `browser.js`,
+  the `Page`, `Locator` and `expect` layer, spliced into it at one marker
+  line for a script that asks for it (`Script::browser`,
+  `clax_bot_sandbox::prelude_source`). The run loop asks for it when one
+  of the run's bindings has the five session operations among its own
+  (`Binding::operations`), which `Bindings::clax` grants only with a
+  `browser.open.*` capability. Another run has neither `Page` nor the
+  global `expect`; its `clax.browser.open`, the plain operation, is
+  refused `browser_disabled` as before.
+- **Budgets** **(owner: raised for browser runs alone; design: the
+  numbers)**: `prelude.js` at most 24 KiB, as before the layer;
+  `browser.js` at most 20 KiB. Tests hold both.
+
+### 17.6 What ClaxBot is told **(design)**
+
+- The code-mode paragraph (`{core.code_mode}`) gains: every script
+  starts afresh but for `state`, an object kept from one script to the
+  next (JSON values and Clax's handles, 64 KiB), what was not kept being
+  listed in the result.
+- The browser namespace's rules gain: a page lives as long as `state`
+  holds it: keep it there (`state.page = page`) to use it in a later
+  script; one no script's `state` holds when its script ends is closed
+  then.
+
+### 17.7 Tests **(design)**
+
+- **The prelude** (`clax_bot_sandbox::conformance`, both sandboxes):
+  `state` starts `{}`, comes back as left, also after a throw; an
+  assignment replaces it and a non-object one throws; each value of
+  §17.1 that cannot be kept is listed with its path; a `$clax` member is
+  not kept; a returned `Page` shows `"<browser page>"`; a `Page` and its
+  locator in `state` restore live and as one page; the layer and `expect`
+  are absent without `Script::browser`; both files within their budgets.
+- **The run loop**: a step's state is the next script's; a step executed
+  again starts from the committed state; over 64 KiB leaves out the
+  largest members, listed; a stopped script keeps the last state; the
+  result says nothing when nothing was dropped.
+- **Sessions**: an open's answer carries a 64-digit handle and no event,
+  record or error names it; another run's handle, an unknown one and one
+  after a restart answer `browser_session_lost`; a page in `state` lives
+  into the next script; one only returned closes `dropped` when its step
+  commits, charged once; a replayed step makes the same decision.
+- **The run panel** shows a step's state with its pages as `"<browser
+  page>"`.
