@@ -170,13 +170,18 @@ pub struct Answered {
 /// of the draft, the draft as the call sees it; and, when the run may
 /// leave the session's origin by this call (`browser.open.url` live, the
 /// URL admitted by its rule), the URL session's policy it would then
-/// have.
+/// have; and the capability that authorized the call, with the run that
+/// holds it, whose `origin` caveat the session's task holds a `goto` or
+/// `reload` to again, against the page's URL as it navigates (spec
+/// §18.3): the page may have moved since [`BrowserSessions::authorize`]
+/// read it.
 #[derive(Clone)]
 pub struct CallCtx {
     pub deadline: DateTime<Utc>,
     pub cancel: CancelToken,
     pub pages: Option<Pages>,
     pub leave: Option<Arc<dyn RequestPolicy>>,
+    pub held: Option<Arc<(Cap, String)>>,
 }
 
 impl CallCtx {
@@ -189,6 +194,7 @@ impl CallCtx {
             cancel,
             pages: None,
             leave: None,
+            held: None,
         }
     }
 }
@@ -248,7 +254,8 @@ struct Entry {
     /// `None` while open; why it ended once it did.
     ended: Option<SessionEnd>,
     tx: mpsc::UnboundedSender<Msg>,
-    /// The page's URL after the last call.
+    /// The page's URL as its task last saw it: after a call, or a
+    /// navigation of the page's own between calls.
     url: String,
     /// The synthetic origin's host it is served from, until it leaves it.
     synthetic: Option<String>,
@@ -809,6 +816,11 @@ fn resolve_url(base: &str, to: &str) -> Option<String> {
         .map(|u| u.to_string())
 }
 
+/// Where a `goto` of `to` from the page at `base` goes.
+fn goto_url(base: &str, to: &str) -> String {
+    resolve_url(base, to).unwrap_or_else(|| to.to_string())
+}
+
 /// The host of `url`.
 fn host_of(url: &str) -> Option<&str> {
     let after = url.split_once("://")?.1;
@@ -987,6 +999,11 @@ impl Task {
                     // reaches the page.
                     let mut converted = None;
                     if let SessionCall::Page { action, args } = &call {
+                        if let Some(why) = self.refused_nav(&ctx, &d.url, action, args) {
+                            let _ = reply.send(Err(why));
+                            last_call = self.clock.now();
+                            continue;
+                        }
                         if action == "runTests" && synthetic.is_none() {
                             let _ = reply.send(Err(disabled(
                                 "page.runTests: this session is on the web, not on the run's clax; open the clax to run its tests"
@@ -998,8 +1015,7 @@ impl Task {
                         if action == "goto"
                             && let Some(host) = synthetic.clone()
                         {
-                            let to = args["url"].as_str().unwrap_or_default();
-                            let target = resolve_url(&d.url, to).unwrap_or_else(|| to.to_string());
+                            let target = goto_url(&d.url, args["url"].as_str().unwrap_or_default());
                             if host_of(&target) != Some(host.as_str()) {
                                 let Some(leave) = ctx.leave.clone() else {
                                     let _ = reply.send(Err(disabled(format!(
@@ -1110,7 +1126,13 @@ impl Task {
                     let by =
                         self.clock.now() + Duration::seconds(i64::from(self.times.call_seconds));
                     d.cdp.rebound(self.source.deadline(by), CancelToken::new());
-                    if let Err(fail) = d.handle(e).await
+                    let handled = d.handle(e).await;
+                    if let Some(e) = lock(&self.reg).sessions.get_mut(&self.id)
+                        && e.url != d.url
+                    {
+                        e.url.clone_from(&d.url);
+                    }
+                    if let Err(fail) = handled
                         && let Some(reason) = self.ended_by(&fail)
                     {
                         let at = self.at_ms();
@@ -1133,6 +1155,35 @@ impl Task {
                 last_sent = self.clock.now();
             }
         }
+    }
+
+    /// Why a page call `action` with `args`, on the page at `url`, is
+    /// refused by the `origin` caveat of the capability that authorized
+    /// it ([`CallCtx::held`]): a `goto` is held to its URL resolved against
+    /// the page's, a `reload` to the page's own URL (spec §18.3).
+    fn refused_nav(
+        &self,
+        ctx: &CallCtx,
+        url: &str,
+        action: &str,
+        args: &Value,
+    ) -> Option<BrowserError> {
+        let (cap, run) = ctx.held.as_deref()?;
+        let target = match action {
+            "goto" => goto_url(url, args["url"].as_str().unwrap_or_default()),
+            "reload" => url.to_string(),
+            _ => return None,
+        };
+        let holder = Holder::Run(run.clone());
+        let u = Use {
+            holder: &holder,
+            class: None,
+            target: Target::Url(target),
+            now_ms: self.clock.now().timestamp_millis(),
+        };
+        cap.check(&u)
+            .err()
+            .map(|r| BrowserError::new(CODE_BROWSER_FORBIDDEN, r.message(), false))
     }
 
     /// Whether `fail`, met between calls, ends the session, and why: a
@@ -1280,11 +1331,7 @@ async fn page(
 ) -> Result<Answered, CdpFail> {
     Ok(match action {
         "goto" => {
-            let to = args["url"].as_str().unwrap_or_default();
-            let url = match url::Url::parse(&d.url).and_then(|base| base.join(to)) {
-                Ok(u) => u.to_string(),
-                Err(_) => to.to_string(),
-            };
+            let url = goto_url(&d.url, args["url"].as_str().unwrap_or_default());
             match d.navigate(&url).await? {
                 Ok(()) => {
                     d.settle().await?;
@@ -2164,6 +2211,70 @@ mod tests {
             (format!("{ORIGIN}about.html").as_str(), None)
         );
         assert!(log.sent("Fetch.continueRequest").is_empty());
+    }
+
+    /// An `origin` caveat holds a `goto` and a `reload` to the page's URL
+    /// as the task navigates from it, not as the last call left it: a page
+    /// that moved itself between calls is not navigated outside the
+    /// caveat's origins.
+    #[tokio::test]
+    async fn an_origin_caveat_holds_the_url_the_page_moved_to_between_calls() {
+        let w = World::new();
+        let (o, log) = w.open(TIMES).await;
+        let g = w
+            .call_with(
+                "goto",
+                json!({"url": "https://a.example/x"}),
+                None,
+                Some(Arc::new(Web)),
+            )
+            .await
+            .unwrap();
+        assert!(g.ok, "{g:?}");
+        let only_a = w
+            .sessions
+            .share(
+                "run-1",
+                &o.handle,
+                &[Caveat::Origin(["https://a.example".to_string()].into())],
+            )
+            .unwrap();
+        // The page moves itself (a script's `location =`); a request of
+        // its own after the move, answered, shows the task saw both.
+        let continued = log.sent("Fetch.continueRequest").len();
+        log.emit(event(
+            "Page.frameNavigated",
+            json!({"frame": {"id": "T", "url": "https://b.example/"}}),
+            Some("S"),
+        ));
+        log.emit(event(
+            "Fetch.requestPaused",
+            json!({"requestId": "tick", "request": {"url": "https://b.example/a.js", "method": "GET", "headers": {}}, "resourceType": "Script"}),
+            Some("S"),
+        ));
+        log.wait_sent("Fetch.continueRequest", continued + 1).await;
+        let navigated = log.sent("Page.navigate").len();
+        for (action, args) in [("goto", json!({"url": "/p"})), ("reload", json!({}))] {
+            let mut ctx = CallCtx::new(w.clock.now() + Duration::seconds(60), CancelToken::new());
+            ctx.held = Some(Arc::new((only_a.clone(), "run-1".to_string())));
+            let r = w
+                .sessions
+                .call(
+                    "run-1",
+                    "s1",
+                    SessionCall::Page {
+                        action: action.into(),
+                        args,
+                    },
+                    ctx,
+                )
+                .await;
+            let e = r.expect_err(action);
+            assert_eq!(e.code, CODE_BROWSER_FORBIDDEN, "{action}: {e:?}");
+            assert!(e.message.contains("https://b.example"), "{}", e.message);
+        }
+        assert_eq!(log.sent("Page.navigate").len(), navigated);
+        assert!(log.sent("Page.reload").is_empty());
     }
 
     #[tokio::test]

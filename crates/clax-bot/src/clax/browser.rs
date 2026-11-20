@@ -1090,7 +1090,7 @@ impl Performer for SessionOp {
                 let deadline = s.provider.clock.now()
                     + chrono::Duration::seconds(i64::from(args.terms.call_seconds));
                 let mut ctx = CallCtx::new(deadline, s.cx.cancel.clone());
-                ctx.held = args.held.clone().map(|c| (c, run.to_string()));
+                ctx.held = args.held.clone().map(|c| Arc::new((c, run.to_string())));
                 if self.kind == Some(SessionKind::Artifact) {
                     ctx.pages = Some(s.draft_pages());
                 }
