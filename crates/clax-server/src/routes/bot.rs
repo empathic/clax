@@ -2528,6 +2528,7 @@ pub async fn exports(
 }
 
 /// `POST /api/bot/runs/<id>/exports`'s body.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportBody {

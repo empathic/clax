@@ -103,7 +103,7 @@ async function call(base, method, path, body) {
 /** The admin grants both web capabilities to everyone on the instance: a
  * switch turned on offers a capability and grants it to no one. */
 async function grantWeb(base) {
-  for (const capability of ["web.search", "web.fetch"]) {
+  for (const capability of ["clax-web:search", "clax-web:fetch"]) {
     await ok(base, "POST", "/api/admin/bot/grants", { capability, grantee: "everyone" });
   }
 }
