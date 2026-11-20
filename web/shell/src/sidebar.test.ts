@@ -7,6 +7,7 @@ import Sidebar from "./ui/Sidebar.svelte";
 import { flush, mount } from "./test/svelte";
 import type { Thread } from "./threads";
 import { settled } from "./test/settled";
+import { ApiError } from "./api";
 
 const base = { artifact_id: "7q3k9mzx2b4t", version_n: 1, has_clip: false, clip_url: null, created_at: "2026-09-29T10:00:00.000Z", resolved_at: null, resolved_by: null, feedback_state: null };
 const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
@@ -234,6 +235,33 @@ describe("Sidebar", () => {
     key({ ctrlKey: true });
     expect(onReply).toHaveBeenLastCalledWith(t, "again");
     expect(onSelect).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("keeps a reply's text when it fails to post, says why beside the box, and empties the box once it posts", async () => {
+    let fail = true;
+    const onReply = vi.fn(async () => { if (fail) throw new ApiError(530, ""); });
+    const onText = vi.fn();
+    const writers = createRawSnippet(() => ({ render: () => "<span></span>" }));
+    const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply, live: { writers, onText } });
+    const card = view.root.querySelector(".thread-card")!;
+    const input = card.querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    const status = () => card.querySelector(".reply ~ .act-hint")!;
+    flush(() => input.click());
+    flush(() => { input.value = "looks good"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+    await vi.waitFor(() => { flush(); expect(status().textContent).toBe("Could not post: this Clax is not answering. It may have been taken down or moved."); });
+    expect(status().getAttribute("role")).toBe("status");
+    expect(input.value).toBe("looks good");
+    // Others still see it being written.
+    expect(onText).toHaveBeenLastCalledWith("a", "looks good");
+    fail = false;
+    flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+    await vi.waitFor(() => { flush(); expect(input.value).toBe(""); });
+    expect(status().textContent).toBe("");
+    expect(onText).toHaveBeenLastCalledWith("a", "");
+    expect(onReply).toHaveBeenCalledTimes(2);
     view.unmount();
   });
 

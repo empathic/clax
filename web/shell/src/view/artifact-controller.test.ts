@@ -95,6 +95,34 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     vi.useRealTimers();
   });
 
+  it("puts looked-at marks back when their request fails, so the next batch carries them", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let down = true;
+    const { ctl } = await started({ threads: [thread("t1"), thread("t2")], routes: url => (url === "/api/viewers/me/looked" ? (down ? new Response("error code: 1016", { status: 530 }) : { looked: { t1: "x", t2: "y" } }) : undefined) });
+    await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(2));
+    const looks = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(([u]) => String(u) === "/api/viewers/me/looked").map(([, i]) => JSON.parse((i as RequestInit).body as string).thread_ids);
+    const [t1, t2] = ctl.state.get().threads;
+    ctl.look(t1);
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.waitFor(() => expect(looks()).toEqual([["t1"]]));
+    down = false;
+    ctl.look(t2);
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.waitFor(() => expect(looks()).toHaveLength(2));
+    expect(looks()[1].sort()).toEqual(["t1", "t2"]);
+    await vi.waitFor(() => expect(ctl.state.get().looked).toMatchObject({ t1: "x", t2: "y" }));
+    ctl.dispose();
+    vi.useRealTimers();
+  });
+
+  it("says when Copy link could not copy", async () => {
+    const { ctl } = await started();
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: async () => { throw new DOMException("denied", "NotAllowedError"); } } });
+    ctl.copyLink();
+    await vi.waitFor(() => expect(ctl.state.get().notice).toBe("Could not copy the link."));
+    ctl.dispose();
+  });
+
   it("inserts the frame on its site's handshake only once the artifact and its site are known, with the gate already reset", async () => {
     const { ctl, frame } = await started();
     expect(ctl.state.get().data?.artifact.title).toBe("T");
@@ -188,6 +216,24 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(focus()).toBe(t2);
     ctl.focusThread(null);
     expect(focus()).toBeNull();
+    ctl.dispose();
+  });
+
+  it("posts nothing to the frame before its hello but the handshake's own messages, and sends at the hello what it held back", async () => {
+    const { ctl, frame } = await started({ threads: [thread("t1")] });
+    const posted: { type: string; mode?: string }[] = [];
+    frame.contentWindow!.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
+    ctl.set({ commenting: true });
+    ctl.resolveAll();
+    ctl.send({ type: "clax:focus", id: null });
+    ctl.send({ type: "clax:comment-mode", on: true });
+    ctl.send({ type: "clax:storage-access" });
+    ctl.send({ type: "clax:greet" });
+    expect(posted.map(m => m.type)).toEqual(["clax:storage-access", "clax:greet"]);
+    hello(frame.contentWindow!);
+    expect(posted.map(m => m.type)).toEqual(expect.arrayContaining(["clax:welcome", "clax:resolve-anchors", "clax:focus"]));
+    // Comment mode rides on the welcome.
+    expect(posted.find(m => m.type === "clax:welcome")!.mode).toBe("comment");
     ctl.dispose();
   });
 
@@ -1195,7 +1241,28 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(new Headers(reopens[0].headers).get("authorization")).toBe("Bearer tk");
     refuse = true;
     ctl.resolveThread(done);
-    await vi.waitFor(() => expect(ctl.state.get().notice).toBe("Could not reopen: 403 set a name first"));
+    await vi.waitFor(() => expect(ctl.state.get().notice).toBe("Could not reopen: set a name first"));
+    ctl.dispose();
+  });
+
+  it("answers a reply's post with a promise that rejects on failure, for the reply box to say why, and shows no stage banner for it", async () => {
+    const open = thread("t9");
+    const { ctl } = await started({ threads: [open] });
+    await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
+    const base = fetch as unknown as ReturnType<typeof vi.fn>;
+    let down = true;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (!url.endsWith("/threads/t9/comments")) return base(url, init);
+      return down ? new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } })
+        : new Response(JSON.stringify({ thread: { ...open, comments: [...open.comments, { ...open.comments[0], id: "c2", body: "yes" }] } }));
+    }));
+    const e = await ctl.reply(open, "yes").then(() => null, (x: unknown) => x);
+    expect(e).toMatchObject({ status: 530, clax: false });
+    expect(ctl.state.get().notice).toBeNull();
+    expect(ctl.state.get().busy).toBe(0);
+    down = false;
+    await ctl.reply(open, "yes");
+    expect(ctl.state.get().threads[0].comments.map(c => c.body)).toContain("yes");
     ctl.dispose();
   });
 
@@ -1330,6 +1397,44 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
         ctl.dispose();
       });
     }
+
+    for (const [what, answer] of [
+      ["a CDN's page for a Clax taken down", () => new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } })],
+      ["a page served with 200", () => new Response("<!doctype html>", { headers: { "content-type": "text/html" } })],
+      ["no answer", () => { throw new TypeError("Failed to fetch"); }],
+    ] as const) {
+      it(`leaves the frame, offering no tab, for ${what}: the connection notice says why`, async () => {
+        const { ctl, frame } = await started();
+        const calls = codes(answer);
+        fromFrame(frame.contentWindow!, STATE);
+        await vi.waitFor(() => expect(calls).toHaveLength(1));
+        await (await import("../api")).getToken();
+        await new Promise(r => setTimeout(r, 0));
+        expect(ctl.state.get().openInTab).toBeNull();
+        expect(frame.isConnected).toBe(true);
+        ctl.dispose();
+      });
+    }
+
+    it("starts the handshake again at Clax's next answer after a code request that found no Clax", async () => {
+      const { ctl, frame } = await started();
+      let down = true;
+      const calls = codes(() => (down ? new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } }) : sent()));
+      const went = await goes();
+      fromFrame(frame.contentWindow!, STATE);
+      await vi.waitFor(() => expect(calls).toHaveLength(1));
+      await new Promise(r => setTimeout(r, 0));
+      expect(went).toEqual([]);
+      down = false;
+      // Any answer of Clax's (here the probe's, as reach.ts hears it) starts the frame's site over.
+      (await import("../reach")).heard(null);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(START));
+      // The site posts its state again, and this time the code comes.
+      fromFrame(frame.contentWindow!, STATE);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
+      expect(ctl.state.get().openInTab).toBeNull();
+      ctl.dispose();
+    });
 
     it("asks a frame without its cookie for storage access, starts once more when refused, then offers the page in a tab", async () => {
       const { ctl, frame } = await started();

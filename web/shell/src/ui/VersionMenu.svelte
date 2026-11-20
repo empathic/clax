@@ -11,6 +11,7 @@
   // menu's Versions item opens the panel, as a sheet); `Reload for latest`
   // stays.
   import type { RowInput } from "../view/version-rows";
+  import { partFailed } from "../conn-notice";
   import type VersionPanelT from "./VersionPanel.svelte";
 
   let { shown, latest, newer = null, dot, open, onToggle, onLatest, input, hrefFor, onChoose, live }: {
@@ -31,7 +32,8 @@
   // The panel's code loads on first open (no await block: its runtime would
   // join the artifact entry).
   let Panel: typeof VersionPanelT | null = $state(null);
-  $effect(() => { if (open && !Panel) void import("./VersionPanel.svelte").then(m => { Panel = m.default; }, () => {}); });
+  // A panel that cannot load says so and closes, so the next press tries again.
+  $effect(() => { if (open && !Panel) void import("./VersionPanel.svelte").then(m => { Panel = m.default; }, () => { partFailed(); onToggle(); }); });
 </script>
 
 <div class={["version-menu", action && "split"]}>

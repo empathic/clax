@@ -4,7 +4,7 @@ import type { Recorder } from "../../sdk/src/diagnostics";
 import type { Badge, DiagLine, Report } from "../../sdk/src/types";
 import type { Captured } from "./capture";
 import {
-  BADGE_POLL_MS, BadgeWatch, CONTEXT_TIMEOUT_MS, MAX_CONTEXT_BYTES, PAGE_ANCHOR, Poll, POLL_MS, Session, type Timers, type Visibility,
+  BADGE_POLL_MS, BadgeWatch, CONTEXT_TIMEOUT_MS, MAX_CONTEXT_BYTES, PAGE_ANCHOR, Poll, POLL_BACKOFF_MAX, POLL_MS, Session, type Timers, type Visibility,
   buildContext, canSend, carryShapes, clipOf, clipStatus, contextPreview, defaultShapes, externalIdOf, failureText, newDraft, quoteOf, reopenOf, repliesOf, reportOf,
   safeLink, stateLabel, summaryOf, waitingFix,
 } from "./model";
@@ -205,13 +205,35 @@ describe("the reports poll", () => {
     expect(calls).toBe(3);
   });
 
-  it("keeps going after a failed load, which it reports", async () => {
+  it("keeps going after a failed load, which it reports, after a longer wait", async () => {
     const t = manualTimers();
     const errors: unknown[] = [];
     const poll = new Poll(() => Promise.reject(new Error("down")), t, POLL_MS, e => errors.push(e));
     poll.start();
     await settle();
     expect(errors).toHaveLength(1);
+    expect(t.pending()).toEqual([POLL_MS * 2]);
+    poll.stop();
+  });
+
+  it("waits longer after each failed load, up to POLL_BACKOFF_MAX times its wait, and its wait again once one succeeds", async () => {
+    const t = manualTimers();
+    let fail = true;
+    const poll = new Poll(() => (fail ? Promise.reject(new Error("down")) : Promise.resolve()), t);
+    poll.start();
+    const waits: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      await settle();
+      waits.push(t.pending()[0]);
+      t.fire();
+    }
+    expect(waits).toEqual([2, 4, 8, 8, 8, 8].map(k => k * POLL_MS));
+    expect(POLL_BACKOFF_MAX).toBe(8);
+    // The load the last wait started fails too; the one after it succeeds.
+    fail = false;
+    await settle();
+    t.fire();
+    await settle();
     expect(t.pending()).toEqual([POLL_MS]);
     poll.stop();
   });

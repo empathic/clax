@@ -103,6 +103,22 @@ describe("Reply drafts across the views", () => {
     s.view.unmount();
   });
 
+  it("keeps a draft whose post failed, with why beside the box, through a switch of view", async () => {
+    const onReply = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    const s = setup({ view: { now: "threads", onChange: vi.fn() }, onReply });
+    await loaded(s.root);
+    const input = reply(s.root, s.a)!;
+    type(input, "Shorter still");
+    flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    await vi.waitFor(() => { flush(); expect(s.card(s.a)!.querySelector(".reply ~ .act-hint")!.textContent).toBe("Could not post: Clax did not answer."); });
+    expect(input.value).toBe("Shorter still");
+    show(s, "timeline", { onReply });
+    await vi.waitFor(() => expect(s.root.querySelector(".timeline")).not.toBeNull());
+    flush(() => s.row(s.a)!.click());
+    expect(reply(s.root, s.a)!.value).toBe("Shorter still");
+    s.view.unmount();
+  });
+
   it("drops a draft once its box is emptied", async () => {
     const s = setup({ view: { now: "threads", onChange: vi.fn() } });
     await loaded(s.root);

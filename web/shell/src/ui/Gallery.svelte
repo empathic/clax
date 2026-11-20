@@ -56,9 +56,11 @@
   // (`NewTile`) leads the first section's grid (searched or filtered too),
   // and the empty gallery. Signing out of a hosted Clax is in Settings.
   import { type Component, onDestroy, onMount, tick } from "svelte";
-  import { ApiError, type Artifact, type AttentionSummary, type TagRef, deleteArtifact, getToken, listArtifacts, patchArtifact, tokenUnsure } from "../api";
+  import { type Artifact, type AttentionSummary, type TagRef, deleteArtifact, getToken, listArtifacts, patchArtifact, tokenUnsure } from "../api";
   import type { MeBot } from "../bot/api";
   import { banner } from "../bot/meter";
+  import { reasonText, unreached } from "../trouble";
+  import { loadWait } from "../reach";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
   import { readConfig } from "../feedback/boot";
   import { configOnce } from "../feedback/config";
@@ -191,12 +193,12 @@
     if (u !== `${location.pathname}${location.search}${location.hash}`) history.replaceState(history.state, "", u);
   });
 
-  const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const describe = reasonText;
   const get = (path: string): Promise<Answer<unknown>> => fetch(path).then(async r => ({ status: r.status, body: r.ok ? await r.json().catch(() => null) : null }), () => ({ status: 0, body: null }));
   const tokenP: Promise<TokenAnswer> = getToken().then(t => (t === null && tokenUnsure() ? "failed" : t));
   const io: Io = {
     get, token: () => tokenP, feedback: configOnce, proof: ownerProof() !== null,
-    list: () => retrying(life, signal => listArtifacts(undefined, { signal }), { retry: e => !(e instanceof ApiError), trouble: on => connTrouble("gallery", on, REQUEST_STUCK) }),
+    list: () => retrying(life, signal => listArtifacts(undefined, { signal }), { retry: unreached, wait: loadWait, trouble: on => connTrouble("gallery", on, REQUEST_STUCK) }),
   };
   /** The token for an owner's action: asked at mount, an action waits for it. */
   const withToken = (f: (t: string) => Promise<unknown>) => tokenP.then(t => (typeof t === "string" ? f(t) : Promise.reject(new Error("only the owner may do this"))));

@@ -41,7 +41,8 @@
     onSelect(t: Thread): void;
     onSend(t: Thread): void;
     onResolve(t: Thread): void;
-    onReply(t: Thread, body: string): void;
+    /** Posts a reply; a promise it answers rejects when the post failed, and the box keeps the text. */
+    onReply(t: Thread, body: string): void | Promise<unknown>;
     /** Hears the thread whose card the pointer is over, and null when it leaves. */
     onHover?(t: Thread | null): void;
     /** This viewer, to show its own name on threads it resolved. */
@@ -211,10 +212,11 @@
     : undefined;
   // With the views (`view`), a reply's draft outlives its card: a switch
   // of view, a move to another group, a closed sidebar. A card reports its
-  // text as typed, "" once posted (`onReply` drops the draft first), and
-  // "" when it goes, its box already out of the document: a draft is
-  // dropped on "" only while the thread's box is here and empty, as the
-  // viewer emptied it. Who else sees it typed is the live layers' alone.
+  // text as typed, "" once posted (`onReply` drops the draft once the post
+  // went through, and keeps it when it failed), and "" when it goes, its
+  // box already out of the document: a draft is dropped on "" only while
+  // the thread's box is here and empty, as the viewer emptied it. Who else
+  // sees it typed is the live layers' alone.
   const replyBox = (id: string) => [...(aside?.querySelectorAll<HTMLElement>(".thread-card") ?? [])].find(c => c.dataset.thread === id)?.querySelector<HTMLInputElement>('input[aria-label="Reply"]');
   const replyText = (t: Thread, text: string) => {
     if (p.view) {
@@ -223,7 +225,11 @@
     }
     p.live?.onText(t.id, text);
   };
-  const replied = (t: Thread, body: string) => { drafts.delete(t.id); p.onReply(t, body); };
+  const replied = (t: Thread, body: string) => {
+    const r = p.onReply(t, body);
+    if (!(r instanceof Promise)) { drafts.delete(t.id); return; }
+    return r.then(() => { drafts.delete(t.id); });
+  };
   // The question module (loaded apart, owner only) fills the slot: it hears
   // where the slot is now, each time the sidebar mounts.
   $effect(() => {

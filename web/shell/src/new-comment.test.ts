@@ -6,6 +6,7 @@ import type { Thread } from "./threads";
 import { WHOLE_LABEL, type WholeHost, postWhole, wholeAnchor } from "./view/whole-comment";
 import { whereLabel } from "./view/presence-model";
 import type { ViewState } from "./view/artifact-controller";
+import { KEPT, NOT_CLAX, connNoticeText, connTrouble } from "./conn-notice";
 
 const base = { artifact_id: "7q3k9mzx2b4t", version_n: 1, has_clip: false, clip_url: null, created_at: "2026-09-29T10:00:00.000Z", resolved_at: null, resolved_by: null, feedback_state: null, sent_to_agent: false };
 const whole = (id: string): Thread => ({ ...base, id, anchor: wholeAnchor(), status: "open", comments: [{ id: "c", thread_id: id, author_kind: "viewer", author_name: "Alex", via_harness: null, body: "Warmer colours", created_at: base.created_at }] });
@@ -46,8 +47,11 @@ describe("whole-artifact anchors", () => {
     expect(h.threads.map(x => x.id)).toEqual(["new"]);
     expect(h.selected).toBe("new");
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "invalid_anchor", message: "no" } }), { status: 400 })));
+    // The box says why beside it (NewComment), not the stage.
     await expect(postWhole(host, 2, "x")).rejects.toThrow();
-    expect(h.notice).toMatch(/^Could not post: .*no$/);
+    expect(h.notice).toBeNull();
+    // A post clears a failed post's banner.
+    h.notice = "Could not post: no";
     vi.stubGlobal("fetch", created());
     await postWhole(host, 2, "again");
     expect(h.notice).toBeNull();
@@ -93,19 +97,44 @@ describe("NewComment", () => {
     v.unmount();
   });
 
-  it("keeps the composer and its text when the post fails", async () => {
-    const fetch = vi.fn(async () => { throw new Error("offline"); });
-    vi.stubGlobal("fetch", fetch);
+  it("keeps the composer and its text when the post fails, and says why beside the box rather than on the stage", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } })));
     const { h, host } = fakeHost();
     const v = mount(NewComment, { version: 1, host });
     flush(() => v.root.querySelector<HTMLButtonElement>(".new-comment-open")!.click());
     const ta = v.root.querySelector("textarea")!;
     flush(() => { ta.value = "Warmer"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     flush(() => v.root.querySelector<HTMLButtonElement>("button[type=submit]")!.click());
-    await vi.waitFor(() => expect(h.notice).toBe("Could not post: offline"));
-    flush();
+    const status = () => v.root.querySelector(".composer .act-hint")!;
+    await vi.waitFor(() => { flush(); expect(status().textContent).toBe("Could not post: this Clax is not answering. It may have been taken down or moved."); });
+    expect(h.notice).toBeNull();
     expect(v.root.querySelector("textarea")!.value).toBe("Warmer");
+    // A post that goes through closes the box.
+    vi.stubGlobal("fetch", created());
+    flush(() => v.root.querySelector<HTMLButtonElement>("button[type=submit]")!.click());
+    await vi.waitFor(() => expect(v.root.querySelector(".composer")).toBeNull());
     v.unmount();
+  });
+
+  it("tells the connection notice it holds unsent text, until it is emptied or closed", () => {
+    const { host } = fakeHost();
+    const v = mount(NewComment, { version: 1, host });
+    connTrouble("api", true, NOT_CLAX, document, 3);
+    try {
+      flush(() => v.root.querySelector<HTMLButtonElement>(".new-comment-open")!.click());
+      const ta = v.root.querySelector("textarea")!;
+      const type = (s: string) => flush(() => { ta.value = s; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+      type("Warmer");
+      expect(connNoticeText()).toBe(`${NOT_CLAX} ${KEPT}`);
+      type("  ");
+      expect(connNoticeText()).toBe(NOT_CLAX);
+      type("Warmer");
+      flush(() => [...v.root.querySelectorAll("button")].find(b => b.textContent === "Cancel")!.click());
+      expect(connNoticeText()).toBe(NOT_CLAX);
+    } finally {
+      connTrouble("api", false, "");
+      v.unmount();
+    }
   });
 
   it("shows in the panel below the questions and above the threads only when the panel composes; whole-artifact threads lead Open with no number", async () => {

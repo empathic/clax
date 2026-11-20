@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { freshModules } from "./test/modules";
 import { settled } from "./test/settled";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
+import { LOAD_RETRY } from "./reach";
 import { artifactViewHooks, waitFor, ID, FakeES, artifact, page, viewer, mountView, stubMedia, buttonNamed, fromFrame, gestureIn, SITE } from "./test/artifact-view";
 
 describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
@@ -144,15 +145,29 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 
   it("says not found only for a 404 status", async () => {
-    const view = await mountView(async () => new Response(JSON.stringify({ error: { message: "nope" } }), { status: 404 }));
+    const view = await mountView(async () => new Response(JSON.stringify({ error: { code: "not_found", message: "nope" } }), { status: 404 }));
     const root = view.root;
     await waitFor(() => root.textContent?.includes("Artifact not found"), "not-found message");
   });
 
+  it("retries a first load that found no Clax (a CDN's page) until Clax answers, and shows no failure meanwhile", async () => {
+    let down = true;
+    const view = await mountView(async () => (down ? new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } }) : new Response(JSON.stringify(artifact(1)))));
+    const clock = (globalThis as unknown as { claxTestClock: { dueIn(l: string): number | null; advance(ms: number): number } }).claxTestClock;
+    await waitFor(() => clock.dueIn(LOAD_RETRY) !== null, "the retry's wait");
+    expect(view.root.textContent).not.toContain("Could not load");
+    down = false;
+    clock.advance(clock.dueIn(LOAD_RETRY)!);
+    await waitFor(() => view.root.querySelector(".topbar h1"), "the artifact");
+  });
+
   it("shows the raw error for other failures, even when the text contains 404", async () => {
-    const view = await mountView(async () => new Response(JSON.stringify({ error: { message: "port 4040 or 404 busy" } }), { status: 500 }));
+    const view = await mountView(async () => new Response(JSON.stringify({ error: { code: "internal", message: "port 4040 or 404 busy" } }), { status: 500 }));
     const root = view.root;
     await waitFor(() => root.textContent?.includes("port 4040"), "error message");
+    // The daemon's own words, never the error's class name or the status.
+    expect(root.textContent).not.toContain("ApiError");
+    expect(root.textContent).not.toContain("500");
     expect(root.textContent).not.toContain("Artifact not found");
   });
 
@@ -244,7 +259,8 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const root = view.root;
     const banner = await waitFor(() => root.querySelector(".banner.notice"), "notice banner");
     expect(banner.getAttribute("role")).toBe("alert");
-    expect(banner.textContent).toContain("Could not load comments: 500 db locked");
+    expect(banner.textContent).toContain("Could not load comments: db locked");
+    expect(banner.textContent).not.toContain("500");
   });
 
   it("says a failed name lookup could not load the name", async () => {
@@ -257,7 +273,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => !root.querySelector(".more-slot"), "more menu");
     (await waitFor(() => root.querySelector<HTMLButtonElement>("button.who"), "roster")).click();
     const banner = await waitFor(() => root.querySelector(".banner.notice"), "notice banner");
-    expect(banner.textContent).toContain("Could not load your name: 403 nope");
+    expect(banner.textContent).toContain("Could not load your name: nope");
   });
 
   for (const narrow of [false, true]) {

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { ApiError } from "../trouble";
 import type { GalleryBoot } from "./gallery-boot";
 import { type Answer, type Io, contentFromBlock, gatherContent, gatherHeader, header, headerFromBlock, pageKind } from "./gallery-start";
 
@@ -149,8 +150,18 @@ describe("gathering without a block", () => {
 
   it("says why the list did not load", async () => {
     const { io: x } = io({});
-    x.list = () => Promise.reject(new Error("403 Forbidden"));
+    x.list = () => Promise.reject(new ApiError(403, "Only the owner may list artifacts", "forbidden"));
     const c = await gatherContent(null, x, gatherHeader(null, x, x.token()));
-    expect(c).toMatchObject({ artifacts: null, error: "403 Forbidden", attention: {} });
+    expect(c).toMatchObject({ artifacts: null, error: "Only the owner may list artifacts", attention: {} });
+  });
+
+  it("says a list no Clax answered, and a block's refused list, without a status number", async () => {
+    const { io: x } = io({});
+    x.list = () => Promise.reject(new ApiError(530, "error code: 1016", null, false));
+    const c = await gatherContent(null, x, gatherHeader(null, x, x.token()));
+    expect(c.error).toBe("this Clax is not answering. It may have been taken down or moved.");
+    const b = block(PERSON, true, { status: { viewer: 200, hosted: 404, feedback: 200, bot: 404, artifacts: 401, attention: 200 } });
+    const d = await gatherContent(b, x, gatherHeader(b, x, x.token()));
+    expect(d).toMatchObject({ artifacts: null, error: "you are signed out." });
   });
 });

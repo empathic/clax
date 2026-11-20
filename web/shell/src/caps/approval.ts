@@ -1,7 +1,8 @@
 // The approval bar's copy and its one write: what a version asks for, what
 // approving lets the page do, and the PUT that approves the declaration the
 // bar showed (plan 2026-10-26-quickstart-d-permissions, Decisions 8 and 9).
-import { ApiError, type PendingCapabilities, getToken } from "../api";
+import { type PendingCapabilities, getToken } from "../api";
+import { readError } from "../trouble";
 
 type Words = { label: string; detail: string };
 
@@ -57,9 +58,5 @@ export async function approveCapabilities(id: string, version: number, declarati
     headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify({ version, declaration_sha256: declarationSha256 }),
   });
-  if (res.ok) return;
-  let message = res.statusText;
-  let code: string | null = null;
-  try { const e = (await res.json()).error; message = e?.message ?? message; code = e?.code ?? null; } catch { /* not json */ }
-  throw new ApiError(res.status, message, code);
+  if (!res.ok) throw await readError(res);
 }
