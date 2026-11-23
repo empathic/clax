@@ -349,7 +349,7 @@ pub async fn auth_page(
 /// Where the daemon's instance is at hand, the block also carries what
 /// decides the top bar's optional controls ([`boot::deciders`]), asked
 /// beside the store's data; a cookie one of their routes sets in its
-/// answer is set by the page.
+/// answer is set by the page, also where the block is left out.
 ///
 /// The page differs by viewer and frame mode, both read from cookies: it is
 /// `private, no-cache` with `Vary: Cookie`, and its `ETag` is over the exact
@@ -411,9 +411,13 @@ pub async fn artifact_page(
     } else {
         (None, None)
     };
+    // A cookie the deciders' routes set is the page's even where the block
+    // is left out (the route made what the cookie names: a viewer).
     let mut cookies = Vec::new();
-    if let (Some(i), Some((d, c))) = (injected.as_mut(), decided) {
-        i.boot = boot::with_field(&i.boot, "deciders", &d);
+    if let Some((d, c)) = decided {
+        if let Some(i) = injected.as_mut() {
+            i.boot = boot::with_field(&i.boot, "deciders", &d);
+        }
         cookies = c;
     }
     let page = boot::with_embed_meta(

@@ -397,6 +397,39 @@ async fn an_unknown_artifact_gets_the_bare_entry() {
     assert!(html.contains("<h1></h1>"));
 }
 
+/// A cookie the top bar's routes set (`GET /api/viewers/me` reissuing a
+/// legacy viewer cookie) is set by the page also where the artifact's
+/// block is left out: the route has made the secret it names.
+#[tokio::test]
+async fn an_unknown_artifact_still_sets_the_cookie_its_routes_set() {
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
+    let legacy = "01J9Z3K4M5N6P7Q8R9S0T1V2W5";
+    ts.store.upsert_viewer(legacy, Some("Bea")).unwrap();
+    let res = page(
+        &ts,
+        "/a/7q3k9mzx2b4t",
+        &[("cookie", format!("clax_viewer={legacy}"))],
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+    let set: Vec<String> = res
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    let html = res.text().await.unwrap();
+    assert!(!html.contains(OPEN), "no block for an unknown artifact");
+    let fresh = set
+        .iter()
+        .find_map(|c| c.strip_prefix("clax_viewer="))
+        .and_then(|c| c.split(';').next())
+        .expect("the reissued viewer cookie");
+    assert_ne!(fresh, legacy);
+    assert!(ts.store.get_viewer(fresh).unwrap().is_some(), "{set:?}");
+}
+
 #[tokio::test]
 async fn a_host_the_api_refuses_gets_no_data() {
     let dist = dist();
