@@ -333,9 +333,10 @@ input, select { line-height: 1.2; }
 /* The Clax app's view (`?app=1`, `html.app`, marked by the inline
    clax-theme script before the body is parsed): no chrome from the first
    paint, the stage filling the window (nor do the threads' drawer and
-   strip show). The rest of its rules come with the app's host module
+   strip show: each is the viewer's "Comment threads" aside, named so here
+   rather than by the strip's own class, which ShellRail.svelte scopes). The rest of its rules come with the app's host module
    (app/app.css). */
-html.app .topbar, html.app .sidebar, html.app .phone-tabs, html.app .viewer .drawer, html.app .viewer .rail { display: none; }
+html.app .topbar, html.app .sidebar, html.app .phone-tabs, html.app .viewer aside[aria-label="Comment threads"] { display: none; }
 html.app .viewer { margin-bottom: 0; }
 /* A thread's number, on a pin over the frame and on its card. */
 .thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--you); color: var(--on-you); font: 600 11.5px/1 var(--font); font-variant-numeric: tabular-nums; flex: none; padding: 0; }
