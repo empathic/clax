@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SKELETON_HTML, skeleton } from "./skeleton";
+import { skeleton } from "./skeleton";
+import { SKELETON_HTML } from "./skeleton-html";
 
 describe("skeleton", () => {
-  it("creates the page once and finds the same elements again", () => {
+  it("finds the page's parts, the same each time", () => {
     const root = document.createElement("div");
+    root.innerHTML = `<div class="page">${SKELETON_HTML}</div>`;
     const a = skeleton(root);
     const b = skeleton(root);
     expect(root.querySelectorAll(".page")).toHaveLength(1);
@@ -23,11 +25,12 @@ describe("skeleton", () => {
     expect(a.stage.querySelector(":scope > .stage-wait[role=status]")).not.toBeNull();
     expect(a.viewer.querySelector(":scope > aside.drawer.held[aria-busy=true]")).not.toBeNull();
   });
-  it("adopts a page the server sent", () => {
+  it("adopts the page the server sent, and refuses a root without one", () => {
     const root = document.createElement("div");
     root.innerHTML = `<div class="page">${SKELETON_HTML}</div>`;
     const page = root.firstElementChild;
     expect(skeleton(root).page).toBe(page);
+    expect(() => skeleton(document.createElement("div"))).toThrow(/no skeleton/);
   });
 });
 

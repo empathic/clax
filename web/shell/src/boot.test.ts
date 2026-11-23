@@ -3,7 +3,7 @@ import { FakeWorker } from "./test/fake-worker";
 import { dispatchTrusted } from "../../bridge/test/trusted";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SKELETON_HTML } from "./view/skeleton";
+import { SKELETON_HTML } from "./view/skeleton-html";
 import { settled } from "./test/settled";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import { waitFor } from "./test/wait-for";

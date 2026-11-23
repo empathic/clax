@@ -1,6 +1,7 @@
 // The theme's top bar rules reach the artifact view's controls, which render
 // inside the topbar's island: a selector that stops matching through the
 // island would drop their style without failing anything else.
+import { SKELETON_HTML } from "./view/skeleton-html";
 import { readFileSync } from "node:fs";
 import { FakeWorker } from "./test/fake-worker";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
@@ -33,6 +34,7 @@ it("styles the topbar controls through the island: a 3px red-orange rule under t
     url.includes("/threads") ? { threads: [], next_cursor: null } : url.startsWith("/api/viewers") ? { viewer: { public_id: "u_1", display_name: null, created_at: "x" } } : url === "/api/token" ? { token: "tk" } : loaded))));
   Object.defineProperty(navigator, "clipboard", { value: { writeText: async () => {} }, configurable: true });
   const root = document.createElement("div");
+  root.innerHTML = `<div class="page">${SKELETON_HTML}</div>`;
   document.body.append(root);
   const view = (await import("./artifact")).mountArtifactView(root, { id: ID, pinnedVersion: null });
   const comment = await waitFor(() => root.querySelector<HTMLButtonElement>(".topbar button.comment"), "the topbar's comment button");

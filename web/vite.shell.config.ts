@@ -111,7 +111,7 @@ export const ARTIFACT_PRELOAD: Record<string, string | string[]> = {
   bot: "/src/bot/ArtifactBot.svelte",
 };
 
-/** Writes each preloaded chunk's file, with the files it imports that the
+/** Writes each preloaded chunk's file (its name under `_clax/shell/`), with the files it imports that the
  * entry has not loaded already, into its HTML's `/*clax:preload*\/{}`: the
  * gallery entry's `PRELOAD` into `index.html` (for any key but `gallery`
  * and the `ALONE` ones, less what the gallery's lazy module loads), the
@@ -136,6 +136,12 @@ export function preloadLazy(): Plugin {
         if (!c) throw new Error(`${id}, which ${html} preloads, is in no chunk`);
         return c.fileName;
       };
+      // Each file by its name under the shell's directory, which the page's
+      // inline script puts back (`/_clax/shell/`): the lists are the HTML's.
+      const short = (f: string) => {
+        if (!f.startsWith("_clax/shell/")) throw new Error(`${f}, which a page preloads, is not under _clax/shell/`);
+        return f.slice("_clax/shell/".length);
+      };
       const write = (html: string, map: Record<string, string[]>) => {
         const asset = bundle[html];
         if (!asset || asset.type !== "asset") return;
@@ -156,7 +162,7 @@ export function preloadLazy(): Plugin {
         for (const [key, ids] of Object.entries(PRELOAD)) {
           const files = new Set<string>();
           for (const id of [ids].flat()) closure(fileOf(id, "index.html"), files);
-          map[key] = [...files].filter(f => !loaded.has(f) && (key === "gallery" || ALONE.has(key) || !gallery.has(f))).map(f => `/${f}`);
+          map[key] = [...files].filter(f => !loaded.has(f) && (key === "gallery" || ALONE.has(key) || !gallery.has(f))).map(short);
         }
         write("index.html", map);
       }
@@ -166,12 +172,12 @@ export function preloadLazy(): Plugin {
         for (const [key, ids] of Object.entries(ARTIFACT_PRELOAD)) {
           const files = new Set<string>();
           for (const id of [ids].flat()) closure(fileOf(id, "artifact.html"), files);
-          map[key] = [...files].filter(f => !loaded.has(f)).map(f => `/${f}`);
+          map[key] = [...files].filter(f => !loaded.has(f)).map(short);
         }
         // The haiku list the thread list's chunk fetches with it (`view/haiku-list.ts`), preloaded with it.
         const haiku = Object.values(bundle).find(f => f.type === "asset" && /\/haiku-[\w-]+\.json$/.test(`/${f.fileName}`));
         if (!haiku) throw new Error("no haiku list in the build, which artifact.html preloads");
-        map.fetch = [`/${haiku.fileName}`];
+        map.fetch = [short(haiku.fileName)];
         write("artifact.html", map);
       }
     },

@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { FakeWorker, artifactStreams } from "./fake-worker";
+import { SKELETON_HTML } from "../view/skeleton-html";
 
 export { waitFor } from "./wait-for";
 
@@ -57,6 +58,8 @@ export async function mountView(fetchImpl: (url: string, init?: RequestInit) => 
   gesture = await import("../caps/gesture");
   gestureModules.add(gesture);
   const root = document.createElement("div");
+  // The page's static layout, as artifact.html carries it.
+  root.innerHTML = `<div class="page">${SKELETON_HTML}</div>`;
   document.body.appendChild(root);
   loadFrames(root);
   const view = mountArtifactView(root, { id: ID, pinnedVersion: pinned, file });
