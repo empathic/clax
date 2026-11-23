@@ -280,7 +280,7 @@ else
     fail "just dev's own daemon on exit (rc=$rc; exe=$DAEMON_EXE tmpdir=$tmpdir; $(cat "$T/out" "$T/err"))"
     # Not a job of this shell: stopped here, while its command line still
     # names this run's binary.
-    if [ -n "$DAEMON_PID" ] && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -qF "$tmpdir/clax"; then kill "$DAEMON_PID"; fi
+    if [ -n "$DAEMON_PID" ] && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -F "$tmpdir/clax" >/dev/null; then kill "$DAEMON_PID"; fi
 fi
 mkdir -p "$T/watch"
 : > "$T/watch/clax"
