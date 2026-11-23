@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ID, artifact, artifactViewHooks, mountView, stubMedia, viewer, waitFor } from "./test/artifact-view";
+import { ID, artifact, artifactViewHooks, mountView, stubMedia, stubWidth, viewer, waitFor } from "./test/artifact-view";
 import GetInClax from "./ui/GetInClax.svelte";
 import { flush, mount } from "./test/svelte";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
@@ -141,20 +141,27 @@ describe("Echo top bar parts", () => {
     vi.unstubAllGlobals();
   });
 
-  it("the more menu stands in at phone width for the roster and the ClaxBot button, and at full width does not", () => {
+  it("the more menu stands in at phone width for the roster, 900 px and narrower for the ClaxBot button and Publish, and at full width for neither", () => {
     const onPeople = vi.fn();
     const onBot = { label: "ClaxBot, working", open: vi.fn() };
-    const names = (phone: boolean) => {
-      vi.stubGlobal("matchMedia", (q: string) => ({ matches: phone && q === "(max-width: 700px)" }));
+    const onPublish = { label: "Publish…", open: vi.fn() };
+    const names = (width: number) => {
+      stubWidth(width);
       const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), onPeople, onBot });
       flush(() => (m.root.querySelector("button.icon") as HTMLButtonElement).click());
       const items = [...m.root.querySelectorAll<HTMLElement>("[role=menuitem]")];
       return { m, items, text: items.map(i => i.textContent) };
     };
-    const wide = names(false);
+    const wide = names(901);
     expect(wide.text).toEqual(["Open raw", "Copy link"]);
     wide.m.unmount();
-    const phone = names(true);
+    // Where the bar hides the ClaxBot button and Publish's (`hide-nr`) but shows the roster.
+    stubWidth(900);
+    const narrow = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), onPeople, onBot, onPublish });
+    flush(() => (narrow.root.querySelector("button.icon") as HTMLButtonElement).click());
+    expect([...narrow.root.querySelectorAll("[role=menuitem]")].map(i => i.textContent)).toEqual(["ClaxBot, working", "Open raw", "Copy link", "Publish…"]);
+    narrow.unmount();
+    const phone = names(700);
     expect(phone.text).toEqual(["Versions", "People and agents", "ClaxBot, working", "Open raw", "Copy link"]);
     flush(() => phone.items[1].click());
     expect(onPeople).toHaveBeenCalledTimes(1);
@@ -203,7 +210,7 @@ describe("Echo top bar parts", () => {
 
   it("at phone width the more menu leads with Versions, which closes it and opens the version menu; wider, it has no Versions item", async () => {
     let phone = true;
-    vi.stubGlobal("matchMedia", (q: string) => ({ matches: phone && (q === "(max-width: 700px)" || q === "(max-width: 1199px)") }));
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: phone && /\(max-width: (700|900)px\)/.test(q) }));
     const onVersions = vi.fn();
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions });
     const b = m.root.querySelector<HTMLButtonElement>("button.icon")!;
@@ -223,7 +230,7 @@ describe("Echo top bar parts", () => {
   });
 
   it("in the Clax app the more menu has no Open raw or Copy link, and shows at phone width only", async () => {
-    vi.stubGlobal("matchMedia", (q: string) => ({ matches: (q === "(max-width: 700px)" || q === "(max-width: 1199px)") }));
+    stubWidth(700);
     const items = async () => {
       const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn() });
       flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
@@ -254,7 +261,7 @@ describe("Echo top bar parts", () => {
   });
 
   it("at phone width on a live page the more menu reads Snapshots and lists Open page", async () => {
-    vi.stubGlobal("matchMedia", (q: string) => ({ matches: (q === "(max-width: 700px)" || q === "(max-width: 1199px)") }));
+    stubWidth(700);
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), pageHref: "http://localhost:5173/settings" });
     flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
     await new Promise(r => setTimeout(r));
@@ -266,7 +273,7 @@ describe("Echo top bar parts", () => {
   });
 
   it("at phone width on an app's page the more menu lists Get in Clax first", async () => {
-    vi.stubGlobal("matchMedia", (q: string) => ({ matches: (q === "(max-width: 700px)" || q === "(max-width: 1199px)") }));
+    stubWidth(700);
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), getHref: "/a/x/get" });
     flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
     await new Promise(r => setTimeout(r));

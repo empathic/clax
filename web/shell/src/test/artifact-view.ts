@@ -72,6 +72,16 @@ export function stubMedia(matches: Record<string, boolean>) {
   vi.stubGlobal("matchMedia", (q: string) => ({ matches: matches[q] ?? false, media: q, addEventListener() {}, removeEventListener() {} }));
 }
 
+/** A window `width` px wide, as `matchMedia` answers its `(max-width: Npx)`
+ * and `(min-width: Npx)` queries (any other query does not match). */
+export function stubWidth(width: number) {
+  vi.stubGlobal("matchMedia", (q: string) => {
+    const max = /\(max-width: (\d+)px\)/.exec(q), min = /\(min-width: (\d+)px\)/.exec(q);
+    const matches = (!!max || !!min) && (!max || width <= Number(max[1])) && (!min || width >= Number(min[1]));
+    return { matches, media: q, addEventListener() {}, removeEventListener() {} };
+  });
+}
+
 /** Whether Post posts when pressed: enabled, and not waiting for the screenshot. */
 export function postReady(root: Element): boolean {
   const b = buttonNamed(root, "Post comment");

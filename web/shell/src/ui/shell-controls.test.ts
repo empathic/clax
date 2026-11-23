@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { artifact, artifactViewHooks, mountView, waitFor } from "../test/artifact-view";
+import { ID, artifact, artifactViewHooks, mountView, waitFor } from "../test/artifact-view";
 import { mount } from "../test/svelte";
 import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
 import PhoneTabs from "./PhoneTabs.svelte";
@@ -88,12 +88,18 @@ describe("the shell's marked controls", () => {
   describe("every_name_is_marked_somewhere", { timeout: MOUNT_TIMEOUT_MS }, () => {
     artifactViewHooks();
 
+    // As the artifact entry starts it (artifact-main.ts): what decides the
+    // bar's optional controls, the owner's token among them (Fork), then the
+    // controls' code.
     const owner = async (links: unknown[] = []) => {
-      (await import("./more-menu.svelte")).loadMoreMenu();
-      return mountView(async url => {
+      const answer = async (url: string) => {
         if (url.endsWith("/remotes")) return new Response(JSON.stringify({ links, remotes: [] }));
         return new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1)));
-      });
+      };
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => answer(String(input))));
+      (await import("../view/deciders.svelte")).startDeciders(ID, null);
+      (await import("./more-menu.svelte")).loadMoreMenu();
+      return mountView(answer);
     };
     const only = (root: Element, name: string) => {
       const all = root.querySelectorAll<HTMLElement>(`[data-shell-control="${name}"]`);
