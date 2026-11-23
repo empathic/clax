@@ -282,6 +282,7 @@ mod l10 {
         ("inbox::read_one", Person),
         ("inbox::unread_one", Person),
         ("shell::gallery_page", NoArtifact),
+        ("shell::moved_page", NoArtifact),
         ("shell::static_file", NoArtifact),
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),

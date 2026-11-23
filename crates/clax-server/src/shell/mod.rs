@@ -290,8 +290,9 @@ pub fn moved_to(path: &str, query: Option<&str>) -> Option<String> {
 }
 
 /// A page that moved into Settings ([`moved_to`]): a `308` to its screen,
-/// so the browser loads that page alone, never the shell twice.
-pub async fn moved_page(uri: axum::http::Uri) -> Response {
+/// so the browser loads that page alone, never the shell twice. Refused to
+/// agents and grants, as the shell's pages are.
+pub async fn moved_page(_d: clax_http::agent::DeniedToGrants, uri: axum::http::Uri) -> Response {
     match moved_to(uri.path(), uri.query()) {
         Some(to) => (StatusCode::PERMANENT_REDIRECT, [(header::LOCATION, to)]).into_response(),
         None => ApiError::not_found().into_response(),
