@@ -59,8 +59,11 @@
     try {
       token = await getToken();
       const res = await fetch(`/api/artifacts/${ctl.id}/permissions`, { headers: auth() });
-      answer = { ...(await readJson<object>(res)), id: ctl.id } as PermissionsView;
-      rows = permissionRows(answer, (await ctl.host?.grantState("comments")) ?? null);
+      // The answer and its rows are drawn together: never the answer
+      // without its rows ("asks for nothing") while the grants are read.
+      const a = { ...(await readJson<object>(res)), id: ctl.id } as PermissionsView;
+      rows = permissionRows(a, (await ctl.host?.grantState("comments")) ?? null);
+      answer = a;
       error = null;
     } catch (e) {
       error = failureText("Could not load the permissions.", e);

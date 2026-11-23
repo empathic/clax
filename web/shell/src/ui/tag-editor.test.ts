@@ -10,7 +10,7 @@ afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 const ctl = () => ({ id: "7q3k9mzx2b4t", disposed: false, state: writable({ tags: { tags: [], may: true } }), tagTicket: () => 0, setTags: () => {} });
 
 describe("the tag editor", () => {
-  it("opens on the press, saying it is reading the tags while their answer is on its way, and the next opening draws the list it read", async () => {
+  it("opens on the press, saying it is reading the tags while their answer is on its way (the artifact carrying none), and the next opening draws the list it read", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => { asked.push(String(url)); return new Promise<Response>(r => { answer = r; }); }));
     const { toggleTagEditor } = await import("./tag-editor");
     const button = document.createElement("button");

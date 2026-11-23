@@ -678,7 +678,7 @@ test.describe("in the Clax app's view", () => {
 
 test.describe("on a desktop, the panels the page opens", () => {
   test.use({ viewport: { width: 1280, height: 900 } });
-  test("the Permissions panel and the tag editor open in their final shape, written once", async ({ page, freshDaemon: d }) => {
+  test("the Permissions panel and the tag editor open on the press, and write what they read once", async ({ page, freshDaemon: d }) => {
     const sd = await seed(page, d, "owner");
     const { artifact } = await publishWith(d.base, d.token, "Forecast", PAGE, { net: { hosts: ["api.clax.invalid"] } });
     await approve(d.base, d.token, artifact.id);
@@ -687,15 +687,21 @@ test.describe("on a desktop, the panels the page opens", () => {
     await page.getByRole("button", { name: "More" }).click();
     await page.getByRole("menuitem", { name: "Permissions…" }).click();
     await expect(page.locator(".perm-panel li[data-permission]").first()).toBeVisible();
+    // Open at once, its rows' places a skeleton (no text), then its rows:
+    // never a loading line, nor "asks for nothing" before the rows.
     const perm = (await textHistory(page))[".perm-panel"];
-    expect.soft(shownTexts(perm), formatTexts(".perm-panel", perm)).toHaveLength(1);
+    expect.soft(shownTexts(perm).length, formatTexts(".perm-panel", perm)).toBeLessThanOrEqual(2);
+    expect.soft(shownTexts(perm).filter(t => /Loading|asks for nothing/.test(t)), formatTexts(".perm-panel", perm)).toEqual([]);
+    expect.soft(shownTexts(perm).at(-1), formatTexts(".perm-panel", perm)).toContain("The internet (api.clax.invalid)");
     await page.locator(".perm-panel").getByRole("button", { name: "Close" }).click();
     await page.goto("about:blank");
     // The tag editor, on the seeded artifact with its tags.
     await openArtifact(page, d.base, sd.id, 3);
     await page.locator(".topbar .ttl .tedit").click();
     await expect(page.locator(".tag-pop").getByText("design")).toBeVisible();
+    // Open at once with the artifact's own tags, then every tag there is.
     const tags = (await textHistory(page))[".tag-pop"];
-    expect.soft(shownTexts(tags), formatTexts(".tag-pop", tags)).toHaveLength(1);
+    expect.soft(shownTexts(tags)[0], formatTexts(".tag-pop", tags)).toContain("designq4");
+    expect.soft(shownTexts(tags).filter(t => /Loading/.test(t)), formatTexts(".tag-pop", tags)).toEqual([]);
   });
 });

@@ -10,7 +10,7 @@
   // answer never replaces a newer one. The list is fetched again whenever
   // the artifact's tags change, here or elsewhere (a `tags` event); the
   // opener gives the list it last read (`first`, ui/tag-editor.ts), drawn
-  // until then. The owner,
+  // until then; with none, the artifact's own tags are, chosen. The owner,
   // who keeps the list, is linked to the Tags page.
   import { SvelteMap } from "svelte/reactivity";
   import { fromStore } from "svelte/store";
@@ -59,7 +59,7 @@
   }
 </script>
 
-<TagPicker tags={list?.tags ?? []} chosen={has} onToggle={toggle} label="Tags" {error} onClose={p.onClose}>
+<TagPicker tags={list?.tags ?? mine} chosen={has} onToggle={toggle} label="Tags" {error} onClose={p.onClose}>
   {#snippet empty()}<p class="tn" role={list ? undefined : "status"}>{list ? "There are no tags yet." : "Loading…"}{#if list?.may_manage}{" "}<a href="/tags">Make one</a>{/if}</p>{/snippet}
   {#snippet foot()}{#if list?.may_manage && list.tags.length}<a href="/tags">Manage tags</a>{/if}{/snippet}
 </TagPicker>
