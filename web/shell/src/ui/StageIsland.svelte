@@ -129,3 +129,18 @@
   {#if s.ask && !s.native?.includes("ask")}<PromptDialog ask={s.ask} />{/if}
   {#if s.sheet === "keys" && KeysSheet}<KeysSheet onClose={() => ctl.closeSheet()} />{/if}
 {/if}
+
+<style>
+  /* The stage's static frame: the artifact page's alone, here rather than in
+     theme.css, which the gallery carries too. */
+  :global {
+    /* The frame shows once it holds the artifact's page (`.shown`, set by the
+       view): the site's handshake documents before it never show, so the stage
+       keeps the theme's background, and says it is loading, until the page is
+       in. The message shows after a moment, so a quick load shows none. */
+    .stage > .frame:not(.shown) { visibility: hidden; }
+    .stage-wait { position: absolute; inset: 0; margin: 0; display: grid; place-items: center; color: var(--muted); font-size: 14px; animation: stage-wait 0s .6s both; }
+    .stage:has(> .frame.shown) > .stage-wait, .stage:has(.empty) > .stage-wait { display: none; }
+  }
+  @keyframes -global-stage-wait { from { visibility: hidden; } }
+</style>

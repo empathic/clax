@@ -283,14 +283,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline-offs
 input, select { line-height: 1.2; }
 @media (pointer: coarse) { button, input, select { min-height: 40px; } .topbar > .home, .gbar > .home { min-width: 44px; min-height: 44px; } }
 .frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
-/* The frame shows once it holds the artifact's page (`.shown`, set by the
-   view): the site's handshake documents before it never show, so the stage
-   keeps the theme's background, and says it is loading, until the page is
-   in. The message shows after a moment, so a quick load shows none. */
-.stage > .frame:not(.shown) { visibility: hidden; }
-.stage-wait { position: absolute; inset: 0; margin: 0; display: grid; place-items: center; color: var(--muted); font-size: 14px; animation: stage-wait 0s .6s both; }
-@keyframes stage-wait { from { visibility: hidden; } }
-.stage:has(> .frame.shown) > .stage-wait, .stage:has(.empty) > .stage-wait { display: none; }
 /* Transparent bands caps/gesture.ts puts over the frame, beneath every shell
    control, after shell input there: a 9 px hole under the pointer. */
 .frame-shield { position: absolute; inset: 0; display: none; pointer-events: none; }
@@ -316,28 +308,6 @@ input, select { line-height: 1.2; }
    and made the whole window scroll. */
 .sidebar { position: relative; width: 392px; flex: none; overflow: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 @media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
-/* The drawer's box in the static frame, where the threads open docked
-   (900 px and wider, ArtifactController's first `panel`), until the sidebar
-   island draws its own. */
-.viewer > .drawer.held { display: none; }
-@media (min-width: 900px) { :root:not([data-drawer="float"], .app) .viewer > .drawer.held { display: block; } }
-/* The closed drawer's strip in the static frame (56 px, bordered toward the
-   page, as SidebarIsland.svelte draws it) where it shows: 701 to 899 px
-   wide, where the threads open closed, docked left or right; not where the
-   bootstrap block, else the artifact's kept shape (view/drawer-shape.ts),
-   says it has no thread (`data-rail="0"`, the inline clax-dsk script), nor
-   in the Clax app's view. The sidebar island's own takes its place. */
-.viewer > .rail-held { display: none; flex: none; width: 56px; border: 0 solid var(--border); border-left-width: 1px; }
-[data-drawer="left"] .viewer > .rail-held { order: -1; border-width: 0 1px 0 0; }
-@media (min-width: 701px) and (max-width: 899px) { :root:not([data-drawer="bottom"], [data-drawer="float"], [data-rail="0"], .app) .viewer > .rail-held { display: block; } }
-/* The Clax app's view (`?app=1`, `html.app`, marked by the inline
-   clax-theme script before the body is parsed): no chrome from the first
-   paint, the stage filling the window (nor do the threads' drawer and
-   strip show: each is the viewer's "Comment threads" aside, named so here
-   rather than by the strip's own class, which ShellRail.svelte scopes). The rest of its rules come with the app's host module
-   (app/app.css). */
-html.app .topbar, html.app .sidebar, html.app .phone-tabs, html.app .viewer aside[aria-label="Comment threads"] { display: none; }
-html.app .viewer { margin-bottom: 0; }
 /* A thread's number, on a pin over the frame and on its card. */
 .thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--you); color: var(--on-you); font: 600 11.5px/1 var(--font); font-variant-numeric: tabular-nums; flex: none; padding: 0; }
 .composer .clip { display: block; max-width: 100%; min-height: 24px; object-fit: cover; object-position: left top; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg); }

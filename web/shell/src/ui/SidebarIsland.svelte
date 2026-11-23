@@ -120,6 +120,30 @@
      the drawer is; its drawing's rules come with it (Rail.svelte). -->
 <style>
   :global {
+    /* The static frame's drawer, strip and the Clax app's view: the artifact
+       page's alone, here rather than in theme.css, which the gallery carries too. */
+    /* The drawer's box in the static frame, where the threads open docked
+       (900 px and wider, ArtifactController's first `panel`), until the sidebar
+       island draws its own. */
+    .viewer > .drawer.held { display: none; }
+    @media (min-width: 900px) { :root:not([data-drawer="float"], .app) .viewer > .drawer.held { display: block; } }
+    /* The closed drawer's strip in the static frame (56 px, bordered toward the
+       page, as SidebarIsland.svelte draws it) where it shows: 701 to 899 px
+       wide, where the threads open closed, docked left or right; not where the
+       bootstrap block, else the artifact's kept shape (view/drawer-shape.ts),
+       says it has no thread (`data-rail="0"`, the inline clax-dsk script), nor
+       in the Clax app's view. The sidebar island's own takes its place. */
+    .viewer > .rail-held { display: none; flex: none; width: 56px; border: 0 solid var(--border); border-left-width: 1px; }
+    [data-drawer="left"] .viewer > .rail-held { order: -1; border-width: 0 1px 0 0; }
+    @media (min-width: 701px) and (max-width: 899px) { :root:not([data-drawer="bottom"], [data-drawer="float"], [data-rail="0"], .app) .viewer > .rail-held { display: block; } }
+    /* The Clax app's view (`?app=1`, `html.app`, marked by the inline
+       clax-theme script before the body is parsed): no chrome from the first
+       paint, the stage filling the window (nor do the threads' drawer and
+       strip show: each is the viewer's "Comment threads" aside, named so here
+       rather than by the strip's own class, which ShellRail.svelte scopes). The rest of its rules come with the app's host module
+       (app/app.css). */
+    html.app .topbar, html.app .sidebar, html.app .phone-tabs, html.app .viewer aside[aria-label="Comment threads"] { display: none; }
+    html.app .viewer { margin-bottom: 0; }
     /* The threads' skeleton over the drawer's box (view/drawer-shape.ts, drawn
        by the inline clax-dsk script): shown while the drawer has no list yet
        (the static frame's held drawer, the island's empty one) and while the
