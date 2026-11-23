@@ -3,11 +3,11 @@
 // "+N" or "N tags". Their own chunk, loaded on the first press. One is open
 // at a time; its button toggles it, and a press outside it, focus leaving
 // it, or the view ending (or its button going) closes it. Escape closes it
-// with focus back on the button. The editor opens once every tag there is
-// has been read (or the read failed), so it is drawn in its final shape.
+// with focus back on the button. The editor opens on the press, with the
+// list of tags it last read on this page while it reads it again.
 import { mount, unmount } from "svelte";
 import type { ArtifactController } from "../view/artifact-controller";
-import { type TagList, failure, listTags } from "../view/tags-api";
+import type { TagList } from "../view/tags-api";
 import { tagChip, tagsOf } from "../view/title-tags";
 import TagEditor from "./TagEditor.svelte";
 
@@ -64,22 +64,17 @@ function toggle(button: HTMLButtonElement, ctl: ArtifactController, label: strin
   addEventListener("resize", replace);
 }
 
-// The editor's button while its tags are being read: a second press then does nothing.
-let reading: HTMLButtonElement | null = null;
+// The last list of every tag there is the editor read: a later opening
+// draws it at once, then reads it again.
+let last: TagList | null = null;
 
-/** Opens the tag editor of `ctl`'s artifact under `button` once the tags
- * are read, or closes it when it is open there. */
+/** Opens the tag editor of `ctl`'s artifact under `button` at once, or
+ * closes it when it is open there: with the list it last read, or saying
+ * it is reading it (the first opening on this page). */
 export function toggleTagEditor(button: HTMLButtonElement, ctl: ArtifactController): void {
-  if (open?.button === button) { open.close(); return; }
-  if (reading) return;
-  reading = button;
-  void listTags().then((l): { list: TagList | null; error: string | null } => ({ list: l, error: null }), (e: unknown) => ({ list: null, error: `Could not load the tags: ${failure(e)}` })).then(first => {
-    reading = null;
-    if (ctl.disposed || !button.isConnected) return;
-    toggle(button, ctl, "Edit tags", (pop, close) => {
-      const view = mount(TagEditor, { target: pop, props: { ctl, first, onClose: () => close(true) } });
-      return () => { void unmount(view); };
-    });
+  toggle(button, ctl, "Edit tags", (pop, close) => {
+    const view = mount(TagEditor, { target: pop, props: { ctl, first: last ? { list: last, error: null } : undefined, onList: (l: TagList) => { last = l; }, onClose: () => close(true) } });
+    return () => { void unmount(view); };
   });
 }
 

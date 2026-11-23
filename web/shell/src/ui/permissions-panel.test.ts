@@ -46,6 +46,25 @@ afterEach(() => { for (const m of mounted.splice(0)) unmount(m); document.body.r
 const button = (name: string) => [...document.querySelectorAll("button")].find(b => b.textContent === name);
 
 describe("PermissionsPanel", () => {
+  it("opens on the press, its rows' places a busy skeleton hidden from assistive technology until they are read", async () => {
+    setup(answer());
+    let release!: () => void;
+    const held = new Promise<void>(r => { release = r; });
+    const real = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => { await held; return real(url, init); }));
+    permissionsOpen.current!();
+    flushSync();
+    const panel = document.querySelector<HTMLElement>(".perm-panel")!;
+    expect(panel).not.toBeNull();
+    expect(panel.getAttribute("aria-busy")).toBe("true");
+    expect(panel.querySelector(".perm-sk")!.getAttribute("aria-hidden")).toBe("true");
+    expect(panel.textContent).not.toContain("Loading");
+    release();
+    await vi.waitFor(() => expect(document.querySelector("[data-permission=net]")).not.toBeNull());
+    expect(panel.querySelector(".perm-sk")).toBeNull();
+    expect(panel.hasAttribute("aria-busy")).toBe(false);
+  });
+
   it("a_member_without_the_owner_token_sees_grant_rows_without_revoke", async () => {
     token = null;
     setup(answer());

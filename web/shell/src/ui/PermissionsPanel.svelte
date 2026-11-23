@@ -11,8 +11,8 @@
   // served, so the view reloads (ArtifactController.permissionsChanged); the
   // panel then opens again on the new document (the flag `reopenKey`). Loaded after the
   // first paint (`more-menu.svelte.ts`), which keeps its opener. It opens
-  // once its rows are read (or the read failed), so it is drawn in its
-  // final shape, never as a "Loading…" line its rows then replace; opened at
+  // on the press, its rows' places held by a skeleton (busy, hidden from
+  // assistive technology) until they are read; opened at
   // `"policy"` (the blocked notice's Permissions…) it focuses the Content
   // Security Policy setting. Under the rows, the artifact's Content Security
   // Policy, where the daemon says it: for whoever administers it
@@ -71,14 +71,11 @@
   // the answer again, so no row lingers as it was.
   const approvalKey = $derived(JSON.stringify([s.data?.artifact.capabilities_in_force ?? null, s.data?.artifact.pending_capabilities ?? null, s.data?.artifact.may_approve ?? null]));
   $effect(() => { void approvalKey; if (untrack(() => open)) void untrack(load); });
-  let opening = false;
   async function show(at?: "policy") {
-    if (open || opening) return;
-    opening = true;
+    if (open) return;
     back.el = document.activeElement as HTMLElement | null;
-    await load();
-    opening = false;
     open = true;
+    void load();
     if (at === "policy") { await tick(); panel?.querySelector<HTMLElement>("button[name=content_security_policy]")?.focus(); }
   }
 
@@ -160,9 +157,10 @@
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="perm-backdrop" {@attach modal} onclick={e => { if (e.target === e.currentTarget) close(); }}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="perm-panel" role="dialog" aria-modal="true" aria-labelledby="perm-title" tabindex="-1" bind:this={panel} onkeydown={keydown}>
+    <div class="perm-panel" role="dialog" aria-modal="true" aria-labelledby="perm-title" aria-busy={!answer && !error ? "true" : undefined} tabindex="-1" bind:this={panel} onkeydown={keydown}>
       <h2 id="perm-title">Permissions for “{s.data?.artifact.title ?? ""}”</h2>
       {#if error}<p class="err" role="alert">{error}</p>{/if}
+      {#if !answer && !error}<ul class="perm-sk" aria-hidden="true"><li><i></i></li><li><i></i></li></ul>{/if}
       {#if answer && !rows.length}<p class="muted">This page asks for nothing that needs your permission.</p>{/if}
       <ul>
         {#each rows as r (r.key)}
@@ -207,4 +205,7 @@
   .perm-panel .policy { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
   .perm-panel h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
   .perm-panel .policy .muted { margin: 0; font-size: 13px; }
+  /* A row's place while the rows are read: its label and state lines. */
+  .perm-panel .perm-sk li { height: 34px; }
+  .perm-panel .perm-sk i { display: block; width: 60%; height: 30px; border-radius: var(--radius-xs); background: var(--border); opacity: .5; }
 </style>

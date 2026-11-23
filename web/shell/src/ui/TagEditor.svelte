@@ -8,8 +8,9 @@
   // (twenty tags at most, say) shows under the list and its box goes back.
   // Each answer goes through the view's ordering (`setTags`), so an older
   // answer never replaces a newer one. The list is fetched again whenever
-  // the artifact's tags change, here or elsewhere (a `tags` event), its
-  // first read given by the opener (`first`, ui/tag-editor.ts). The owner,
+  // the artifact's tags change, here or elsewhere (a `tags` event); the
+  // opener gives the list it last read (`first`, ui/tag-editor.ts), drawn
+  // until then. The owner,
   // who keeps the list, is linked to the Tags page.
   import { SvelteMap } from "svelte/reactivity";
   import { fromStore } from "svelte/store";
@@ -19,7 +20,7 @@
   import { tagsOf } from "../view/title-tags";
   import TagPicker from "./TagPicker.svelte";
 
-  const p: { ctl: ArtifactController; first?: { list: TagList | null; error: string | null }; onClose(): void } = $props();
+  const p: { ctl: ArtifactController; first?: { list: TagList | null; error: string | null }; onList?(l: TagList): void; onClose(): void } = $props();
   // svelte-ignore state_referenced_locally
   const view = fromStore(p.ctl.state);
   const mine = $derived(tagsOf(view.current).tags);
@@ -28,16 +29,13 @@
   let list = $state<TagList | null>(p.first?.list ?? null);
   // svelte-ignore state_referenced_locally
   let error = $state<string | null>(p.first?.error ?? null);
-  // svelte-ignore state_referenced_locally
-  let given = !!p.first;
   // The state asked for each tag whose change is still on its way.
   const asked = new SvelteMap<string, boolean>();
   let queue: Promise<void> = Promise.resolve();
   $effect(() => {
     void changed;
-    // The opener's read stands for the first run.
-    if (given) { given = false; return; }
-    listTags().then(l => { list = l; }, e => { error = `Could not load the tags: ${failure(e)}`; });
+    // The opener's list is drawn at once and read again.
+    listTags().then(l => { list = l; error = null; p.onList?.(l); }, e => { error = `Could not load the tags: ${failure(e)}`; });
   });
   const has = (t: TagRef) => asked.get(t.id) ?? mine.some(x => x.id === t.id);
   /** Asks for `t` the other way from how it shows, after every change asked before. */
@@ -62,6 +60,6 @@
 </script>
 
 <TagPicker tags={list?.tags ?? []} chosen={has} onToggle={toggle} label="Tags" {error} onClose={p.onClose}>
-  {#snippet empty()}<p class="tn">{list ? "There are no tags yet." : "Loading…"}{#if list?.may_manage}{" "}<a href="/tags">Make one</a>{/if}</p>{/snippet}
+  {#snippet empty()}<p class="tn" role={list ? undefined : "status"}>{list ? "There are no tags yet." : "Loading…"}{#if list?.may_manage}{" "}<a href="/tags">Make one</a>{/if}</p>{/snippet}
   {#snippet foot()}{#if list?.may_manage && list.tags.length}<a href="/tags">Manage tags</a>{/if}{/snippet}
 </TagPicker>
