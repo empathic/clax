@@ -199,3 +199,73 @@ export function placesDiffer(marks: Landmark[], a: Record<string, Place | null>,
   }
   return out;
 }
+
+/** A rule of the overlap check: the boxes `of` selects, each visible one
+ * (an element, or with `items` each box its children lay out, looking
+ * through `display: contents`), must not intersect any other box of the
+ * rule (one inside another is not an overlap); with `inside`, each must
+ * also lie within that element's box (a box clipped to a sliver there). */
+export type Apart = { name: string; of: string[]; items?: boolean; inside?: string };
+
+/** Each overlap `rules` find in `page` now, as "<rule>: <a> (x,y wxh)
+ * overlaps <b> (…)" or "<rule>: <a> (…) is cut by <inside> (…)": a box
+ * shown under another, or clipped where it should show whole. A box a
+ * pixel or less across (no area, or visually hidden), or not visible
+ * (`visibility`, `display`, zero opacity), is skipped. Boxes meeting along an edge, or by less than half a pixel, do
+ * not overlap. */
+export async function overlaps(page: Page, rules: Apart[]): Promise<string[]> {
+  return quietEval(page, `(() => {
+    const out = [];
+    const shown = e => {
+      for (let n = e; n && n.nodeType === 1; n = n.parentElement) {
+        const cs = getComputedStyle(n);
+        if (cs.display === "none" || cs.opacity === "0") return false;
+      }
+      const cs = getComputedStyle(e);
+      if (cs.visibility !== "visible") return false;
+      const r = e.getBoundingClientRect();
+      return r.width > 1 && r.height > 1;
+    };
+    const items = e => [...e.children].flatMap(c => getComputedStyle(c).display === "contents" ? items(c) : [c]);
+    const name = e => {
+      const cls = typeof e.className === "string" && e.className.trim() ? "." + e.className.trim().split(/\\s+/).join(".") : "";
+      const t = (e.getAttribute("aria-label") || e.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 24);
+      return e.localName + cls + (t ? ' "' + t + '"' : "");
+    };
+    const box = r => "(" + Math.round(r.x) + "," + Math.round(r.y) + " " + Math.round(r.width) + "x" + Math.round(r.height) + ")";
+    for (const rule of ${JSON.stringify(rules)}) {
+      const els = [];
+      for (const sel of rule.of) for (const e of document.querySelectorAll(sel)) for (const x of rule.items ? items(e) : [e]) if (!els.includes(x) && shown(x)) els.push(x);
+      const rects = els.map(e => e.getBoundingClientRect());
+      for (let i = 0; i < els.length; i++) {
+        for (let j = i + 1; j < els.length; j++) {
+          if (els[i].contains(els[j]) || els[j].contains(els[i])) continue;
+          const a = rects[i], b = rects[j];
+          const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+          const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+          if (w > 0.5 && h > 0.5) out.push(rule.name + ": " + name(els[i]) + " " + box(a) + " overlaps " + name(els[j]) + " " + box(b));
+        }
+        const c = rule.inside && els[i].parentElement?.closest(rule.inside);
+        if (c) {
+          const r = c.getBoundingClientRect(), a = rects[i];
+          if (a.left < r.left - 0.5 || a.right > r.right + 0.5 || a.top < r.top - 0.5 || a.bottom > r.bottom + 0.5) out.push(rule.name + ": " + name(els[i]) + " " + box(a) + " is cut by " + rule.inside + " " + box(r));
+        }
+      }
+    }
+    return out;
+  })()`);
+}
+
+/** The gallery's header: its controls, the links in its links' slot (the
+ * search box among them), none over another or out of the bar. */
+export const GALLERY_APART: Apart[] = [
+  { name: "the gallery's header", of: ["#app > .gbar", "#app > .gbar .glinks"], items: true, inside: ".gbar" },
+];
+
+/** A sign-in page's or the landing page's header and what is under it:
+ * the header's controls apart and in the bar, and the card (or the
+ * quickstart's frame) clear of the header. */
+export const SIGNIN_APART: Apart[] = [
+  { name: "the sign-in header", of: ["#app > .aframe > .gbar", "#app > .gbar"], items: true, inside: ".gbar" },
+  { name: "the header and the card", of: ["#app .gbar", "#app main.signin .sicard", "#app .aframe > .lframe"] },
+];

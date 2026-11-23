@@ -192,7 +192,8 @@ test("docked left, then at the bottom, each resized by its edge and kept across 
     }).observe(document, { childList: true, subtree: true });
   });
   await page.reload();
-  const placeholder = page.locator('aside.sidebar.drawer[aria-busy="true"]');
+  // The sidebar island's box (the static frame's, `.held`, gives way to it as the view is ready).
+  const placeholder = page.locator('aside.sidebar.drawer:not(.held)[aria-busy="true"]');
   await expect(placeholder).toBeVisible();
   b = await box(placeholder);
   expect([b.x, b.width, b.height, b.y + b.height]).toEqual([viewer.x, viewer.width, 364, viewer.y + viewer.height]);

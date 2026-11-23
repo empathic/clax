@@ -30,7 +30,7 @@
 import type { Page } from "@playwright/test";
 import { test, expect, type Daemon, api, asLocalViewer, proofHeaders, publishAs, publishNext, registerSession } from "./fixtures";
 import { ask } from "./questions-helpers";
-import { CONTENT_MARKS, HEADER_MARKS, type Landmark, type Place, formatShifts, formatTexts, landmarks, layoutShifts, placesDiffer, recordLayoutShifts, recordTexts, shiftTotal, shownTexts, textHistory } from "./layout-shift";
+import { CONTENT_MARKS, GALLERY_APART, HEADER_MARKS, type Landmark, type Place, formatShifts, overlaps, formatTexts, landmarks, layoutShifts, placesDiffer, recordLayoutShifts, recordTexts, shiftTotal, shownTexts, textHistory } from "./layout-shift";
 import { type StageRule, stageLoad } from "./load-stages";
 import { quietEval } from "./time";
 
@@ -267,6 +267,7 @@ for (const [form, use] of FORMS) {
         const texts = await textHistory(page);
         const released = `released in order:\n  ${order.join("\n  ")}`;
         expect.soft(shiftTotal(shifts), `${formatShifts(shifts)}\n${released}`).toBe(0);
+        expect.soft(await overlaps(page, GALLERY_APART), "boxes that overlap, or leave the header, at the settled page").toEqual([]);
         expect.soft(shownTexts(texts[SUB]), formatTexts(SUB, texts[SUB])).toHaveLength(1);
         for (const sel of [...HEADINGS, ...titles]) expect.soft(shownTexts(texts[sel]), formatTexts(sel, texts[sel])).toHaveLength(1);
         expect.soft(headerHolds(stages, again), released).toEqual([]);
@@ -283,6 +284,7 @@ for (const [form, use] of FORMS) {
           const shifts = await layoutShifts(page);
           const released = `released in order:\n  ${order.join("\n  ")}`;
           expect.soft(shiftTotal(shifts), `${formatShifts(shifts)}\n${released}`).toBe(0);
+          expect.soft(await overlaps(page, GALLERY_APART), "boxes that overlap, or leave the header, at the settled page").toEqual([]);
           expect.soft(headerHolds(stages, again), released).toEqual([]);
         });
       }
@@ -295,6 +297,7 @@ for (const [form, use] of FORMS) {
         expect.soft(Math.max(...stages.map(s => s.skeletonCards)), "skeleton cards seen at any stage").toBe(0);
         expect.soft(headerHolds(stages, again)).toEqual([]);
         expect.soft(shiftTotal(await layoutShifts(page))).toBe(0);
+        expect.soft(await overlaps(page, GALLERY_APART), "boxes that overlap, or leave the header, at the settled page").toEqual([]);
       });
     }
 
@@ -319,6 +322,39 @@ for (const [form, use] of FORMS) {
       }
       const shifts = await layoutShifts(page);
       expect(shiftTotal(shifts), formatShifts(shifts)).toBe(0);
+      expect.soft(await overlaps(page, GALLERY_APART), "boxes that overlap, or leave the header, at the settled page").toEqual([]);
     });
   });
 }
+
+// A document painted while it streams in (the browser paints what it has
+// parsed when the network pauses) shows none of `#app` until the parser
+// is past it (gallery.css, the inline `clax-framed` script after it): the
+// first frame painted with any of the frame is the whole frame, never a
+// header bar with nothing in it. The page's own HTML is served cut at
+// points inside the frame, each a document the parser has finished, and
+// whole, with every script held.
+test("a gallery document cut inside its frame shows none of it, and whole shows all of it", async ({ page, freshDaemon: d }) => {
+  const html = await (await fetch(`${d.base}/`, { headers: { accept: "text/html" } })).text();
+  const app = html.indexOf('<div id="app">');
+  const framed = html.indexOf('<script id="clax-framed">');
+  expect(app, "the frame").toBeGreaterThan(0);
+  expect(framed, "the script after the frame").toBeGreaterThan(app);
+  const cuts = [
+    html.indexOf("<header", app) + "<header".length + 20,
+    html.indexOf("</svg>", app) + "</svg>".length,
+    html.indexOf('<input type="search"', app),
+    html.indexOf('<main class="gal"', app) + 400,
+    html.indexOf("</main>", app),
+    framed,
+  ];
+  await page.route("**/*", r => (r.request().isNavigationRequest() ? r.fallback() : r.abort()));
+  const shows = async (body: string) => {
+    await page.route(`${d.base}/`, r => r.fulfill({ status: 200, contentType: "text/html", body }), { times: 1 });
+    await page.goto(`${d.base}/`);
+    return quietEval<string>(page, `getComputedStyle(document.getElementById("app")).visibility`);
+  };
+  for (const at of cuts) expect.soft(await shows(html.slice(0, at)), `cut at ${at}: ${JSON.stringify(html.slice(at - 40, at))}`).toBe("hidden");
+  expect(await shows(html)).toBe("visible");
+  expect(await quietEval<boolean>(page, `(() => { const r = document.querySelector("#app > .gbar .home .mark").getBoundingClientRect(); return r.width > 0 && r.height > 0; })()`), "the mark, painted").toBe(true);
+});

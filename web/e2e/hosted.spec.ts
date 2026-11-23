@@ -446,22 +446,43 @@ test("another machine's Clax signs in by device code: the page names it, warns w
     const start = await fetch(`${origin}/api/hosted/device/code`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_name: "Clax on alex-laptop" }) });
     expect(start.status).toBe(200);
     const { user_code, verification_uri_complete } = await start.json();
-    // Asked from another address than the browser's: the page warns.
+    // Asked from another address than the browser's: the page warns, from
+    // its bootstrap block's answer (here as if asked from elsewhere), and
+    // asks the route nothing; then, served without its block, from the
+    // route's answer.
+    const block = /<script type="application\/json" id="clax-boot">([^<]*)<\/script>/;
+    let asked = 0;
+    const devicePage = (u: URL) => u.pathname === "/device";
     await owner.route("**/api/hosted/device/*", async r => {
       if (r.request().method() !== "GET") return r.continue();
+      asked++;
       const res = await r.fetch();
       await r.fulfill({ response: res, json: { ...(await res.json()), same_address: false, peer_ip: "203.0.113.9" } });
     });
-    await owner.goto(verification_uri_complete);
-    await expect(owner).toHaveURL(`${origin}/device`);
-    await expect(owner.getByRole("heading", { name: "Connect a Clax" })).toBeVisible();
-    await expect(owner.locator(".signin")).toContainText("Clax on alex-laptop, from 203.0.113.9, asks to publish here as you, Ada.");
-    await expect(owner.locator(".signin code")).toHaveText(user_code);
-    await expect(owner.getByTestId("other-address")).toContainText("Approve only if you started this sign-in yourself");
-    await shots(owner, "device-other-address");
-    // From the browser's own address: no warning.
+    for (const withBlock of [true, false]) {
+      await owner.route(devicePage, async r => {
+        const res = await r.fetch();
+        const html = await res.text();
+        const b = JSON.parse(block.exec(html)![1]);
+        expect(b.status.device, "the block's device answer").toBe(200);
+        b.device = { ...b.device, same_address: false, peer_ip: "203.0.113.9" };
+        await r.fulfill({ response: res, body: withBlock ? html.replace(block, () => `<script type="application/json" id="clax-boot">${JSON.stringify(b).replace(/</g, "\\u003c")}</script>`) : html.replace(block, "") });
+      });
+      asked = 0;
+      await owner.goto(verification_uri_complete);
+      await expect(owner).toHaveURL(`${origin}/device`);
+      await expect(owner.getByRole("heading", { name: "Connect a Clax" })).toBeVisible();
+      await expect(owner.locator(".signin")).toContainText("Clax on alex-laptop, from 203.0.113.9, asks to publish here as you, Ada.");
+      await expect(owner.locator(".signin code")).toHaveText(user_code);
+      await expect(owner.getByTestId("other-address")).toContainText("Approve only if you started this sign-in yourself");
+      expect(asked, withBlock ? "the route, with the block" : "the route, without it").toBe(withBlock ? 0 : 1);
+      if (withBlock) await shots(owner, "device-other-address");
+      await owner.unroute(devicePage);
+    }
+    // From the browser's own address, with the page's own block: no warning.
     await owner.unroute("**/api/hosted/device/*");
     await owner.goto(verification_uri_complete);
+    expect(await owner.evaluate(() => !!document.getElementById("clax-boot")), "the device page's block").toBe(true);
     await expect(owner.locator(".signin")).toContainText("Clax on alex-laptop, from ");
     await expect(owner.getByTestId("other-address")).toHaveCount(0);
     await owner.getByRole("button", { name: "Approve" }).click();

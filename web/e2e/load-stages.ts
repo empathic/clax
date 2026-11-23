@@ -12,7 +12,8 @@
 // The order is a list of rules; a request takes the first rule it matches,
 // and requests matching no rule come after all of them. Ties go by method
 // and URL, then by arrival. A response that never finishes (an event
-// stream) counts as done once its headers arrive.
+// stream) counts as done once its headers arrive. A request the test says
+// never answers (`never`) is held for good: never released, never waited on.
 import type { Page, Request, Route } from "@playwright/test";
 import { expect } from "./fixtures";
 import { markStage } from "./layout-shift";
@@ -36,7 +37,7 @@ export type StagedLoad = {
 
 /** Holds `page`'s requests at gates from now on (call before `goto`, which
  * must not wait past `commit`: the load event waits for released requests). */
-export async function stageLoad(page: Page, order: StageRule[], opts: { hold?: (req: Request) => boolean } = {}): Promise<StagedLoad> {
+export async function stageLoad(page: Page, order: StageRule[], opts: { hold?: (req: Request) => boolean; never?: (url: URL, req: Request) => boolean } = {}): Promise<StagedLoad> {
   const hold = opts.hold ?? (req => !(req.isNavigationRequest() && req.frame() === page.mainFrame()));
   const held: Held[] = [];
   const released: string[] = [];
@@ -57,6 +58,7 @@ export async function stageLoad(page: Page, order: StageRule[], opts: { hold?: (
     const req = route.request();
     if (!hold(req)) return route.fallback();
     const url = new URL(req.url());
+    if (opts.never?.(url, req)) return new Promise<void>(() => {});
     const at = order.findIndex(r => r.match(url, req));
     let release = () => {};
     const gate = new Promise<void>(r => { release = r; });
