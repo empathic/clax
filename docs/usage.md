@@ -637,9 +637,10 @@ remote list`). `just watch` needs `cargo-watch` (`cargo install cargo-watch`).
 `clax`, copies it into a temporary directory put first on `PATH` (removed
 when the session ends), starts the dev home's daemon, and starts the harness
 on that home. When the session ends it stops the home's daemon if that runs
-the session's own build, so the next session's build serves the routes and
-the web UI; a daemon running another build (`just watch`'s, or another `just
-dev` session's) is left running. A home whose database the build cannot open (upgraded by a
+the session's own build and no agent is connected to it, so the next
+session's build serves the routes and the web UI; a daemon running another
+build (`just watch`'s, or another `just dev` session's) is left running. A
+home whose database the build cannot open (upgraded by a
 build with other migrations) stops it before the harness, with the error and
 what to do:
 

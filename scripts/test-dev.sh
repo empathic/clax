@@ -114,9 +114,7 @@ stop_orphan_daemon "$T/o3" >/dev/null
 if kill -0 "$reused" 2>/dev/null; then pass "stop_orphan_daemon leaves a reused PID alone, with or without /private on the recorded path"
 else fail "stop_orphan_daemon signalled a process that is not the recorded daemon"; fi
 kill "$reused" 2>/dev/null
-# daemon.json records the canonical path, and the command line has the path
-# the daemon was started by: on macOS, /private/var/... and /var/... . Here
-# the recorded path is the command line's with /private before it, as there.
+# As on macOS: the recorded path is the command line's under /private.
 fake_daemon "$T/gone/clax"
 linked=$!
 mkdir -p "$T/o4"
@@ -248,11 +246,8 @@ if CLAX_DEV_BIN="$T/clax-build" PATH="$FAKE:$PATH" CLAX_HOME="$T/mine" "$HERE/de
     pass "a CLAX_HOME you set wins over ~/.clax-dev"
 else fail "CLAX_HOME override ($(cat "$T/calls"))"; fi
 
-# When the harness exits, just dev stops the home's daemon if it runs this
-# run's binary, and leaves one of another executable running. This clax's
-# serve joins the home's recorded daemon when it is alive, else starts a
-# stand-in for it (named, as a real daemon's command line is, after the
-# binary) and records it; its stop ends the recorded daemon and notes the call.
+# A clax whose serve joins the home's live daemon or starts and records a
+# stand-in, whose stop ends it, and whose agents prints $CLAX_HOME/agents.
 fake_exe "$T/clax-daemon" <<'SH'
 #!/bin/bash
 pid="$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$CLAX_HOME/daemon.json" 2>/dev/null)"
@@ -263,6 +258,7 @@ case "$1" in
         printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$!" "$(cd "${0%/*}" && pwd -P)/${0##*/}" > "$CLAX_HOME/daemon.json"
         ;;
     stop) echo stop >> "$CLAX_HOME/stops"; kill "$pid" ;;
+    agents) cat "$CLAX_HOME/agents" 2>/dev/null || echo '{"agents":[]}' ;;
     *) echo "clax 9.9.9-dev" ;;
 esac
 SH
@@ -278,10 +274,19 @@ if [ "$rc" = 0 ] && [ -n "$DAEMON_PID" ] && [ -n "$tmpdir" ] && [ "$DAEMON_EXE" 
     pass "just dev stops the daemon that runs its own binary when the harness exits"
 else
     fail "just dev's own daemon on exit (rc=$rc; exe=$DAEMON_EXE tmpdir=$tmpdir; $(cat "$T/out" "$T/err"))"
-    # Not a job of this shell: stopped here, while its command line still
-    # names this run's binary.
     if [ -n "$DAEMON_PID" ] && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -F "$tmpdir/clax" >/dev/null; then kill "$DAEMON_PID"; fi
 fi
+echo '{"agents":[{"handle":"a_1"}]}' > "$own/agents"
+rm -f "$own/stops"
+CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-daemon" CLAX_HOME="$own" PATH="$FAKE:$PATH" "$HERE/dev.sh" pi >"$T/out" 2>"$T/err"
+rc=$?
+daemon_record "$own"
+if [ "$rc" = 0 ] && [ ! -e "$own/stops" ] && kill -0 "$DAEMON_PID" 2>/dev/null \
+    && grep -F "(pid $DAEMON_PID) still has agents connected" "$T/out" >/dev/null; then
+    pass "just dev leaves its own daemon running while an agent is connected to it"
+else fail "just dev's own daemon with an agent connected (rc=$rc; $(cat "$T/out" "$T/err"))"; fi
+kill "$DAEMON_PID" 2>/dev/null
+rm -f "$own/agents"
 mkdir -p "$T/watch"
 : > "$T/watch/clax"
 fake_daemon "$T/watch/clax"

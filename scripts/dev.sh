@@ -8,9 +8,8 @@
 # its own for a linked worktree, or $CLAX_HOME and $CLAX_DEV_PORT). It starts
 # the home's daemon before the harness, and stops with what to do when the
 # build cannot open the home's database. When the harness exits it stops the
-# home's daemon if that runs this run's binary; a daemon it joined (`just
-# watch`'s, another `just dev`'s) keeps running. The agents' own home, daemon
-# and installed binary are untouched.
+# home's daemon if that runs this run's binary and no agent is connected to
+# it. The agents' own home, daemon and installed binary are untouched.
 #   claude  loads the Clax plugin from this checkout for this run:
 #           claude --plugin-dir plugins/claude-code, with an installed
 #           clax@clax disabled for the session (--settings)
@@ -55,21 +54,26 @@ else
     # else Cargo's (scripts/run.sh bin).
     bin="$(scripts/run.sh bin)"
 fi
-# Resolved (on macOS /var is a symbolic link into /private), so the daemon
-# runs as the canonical path its daemon.json records.
+# Canonical, as daemon.json records the daemon's path.
 tmp="$(cd "$(mktemp -d)" && pwd -P)"
-# On exit, after the harness: when the home's daemon runs this run's binary
-# (started below, or again by an agent's call through CLAX_BIN), it is
-# stopped and waited for, so no daemon outlives the binary it runs. A daemon
-# of any other executable (`just watch`'s, another `just dev`'s) is left
-# running, and so is anything in ~/.clax, the agents' home. Then the
-# temporary directory is removed.
+# True when the home's daemon lists no running agent.
+no_agents() {
+    local list
+    list="$("$tmp/clax" agents --json 2>/dev/null)" || return 1
+    ! printf '%s\n' "$list" | grep -F '"handle"' >/dev/null
+}
+# Stops this run's daemon unless an agent is still connected to it, then
+# removes the temporary directory.
 on_exit() {
     if [ -n "${CLAX_HOME:-}" ] && ! is_agents_home "$CLAX_HOME"; then
         daemon_record "$CLAX_HOME"
         if [ "$DAEMON_EXE" = "$tmp/clax" ] && [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
-            echo "clax dev: stopping this run's daemon of $CLAX_HOME (pid $DAEMON_PID)"
-            "$tmp/clax" stop >/dev/null || echo "clax dev: could not stop it; the next \`just dev\` or \`just watch\` stops it" >&2
+            if no_agents; then
+                echo "clax dev: stopping this run's daemon of $CLAX_HOME (pid $DAEMON_PID)"
+                "$tmp/clax" stop >/dev/null || echo "clax dev: could not stop it; the next \`just dev\` or \`just watch\` stops it" >&2
+            else
+                echo "clax dev: this run's daemon of $CLAX_HOME (pid $DAEMON_PID) still has agents connected, so it keeps running; the next \`just dev\` or \`just watch\` stops it"
+            fi
         fi
     fi
     rm -rf "$tmp"

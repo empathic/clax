@@ -57,8 +57,8 @@ just dev claude     # or codex, grok, pi; extra arguments go to the harness
 
 Builds `clax`, puts it first on `PATH` for the session, starts the dev
 home's daemon, and starts the harness on that home; when the harness exits
-it stops the home's daemon if that runs the session's own build (one of
-`just watch` or another `just dev` session keeps running). When the build cannot
+it stops the home's daemon if that runs the session's own build and no
+agent is connected to it. When the build cannot
 open the home's database, it stops before the harness and says why and what
 to do. Claude Code and Pi load this checkout's plugin
 (Claude Code with `--plugin-dir plugins/claude-code`, and your installed
