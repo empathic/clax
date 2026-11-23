@@ -32,6 +32,8 @@
   import ThreadCard from "./ThreadCard.svelte";
   import type AddressedGroupT from "./AddressedGroup.svelte";
   import type NewCommentT from "./NewComment.svelte";
+  import type SelectionBarT from "./SelectionBar.svelte";
+  import type SidebarViewsT from "./SidebarViews.svelte";
   import type WorkingStripT from "./WorkingStrip.svelte";
   import { ticker } from "./ticker.svelte";
 
@@ -128,11 +130,12 @@
      * (SidebarViews.svelte). Without it (the extension's side panel), the
      * thread list alone. */
     view?: { now: SidebarView; onChange(v: SidebarView): void; side?: "left" | "right" };
-    /** The New comment box, the working strips and the Addressed group,
-     * already loaded (the artifact view's sidebar chunk carries them), so
-     * the sidebar renders them with the rest at once; without them each
-     * loads the first time it shows (the extension's side panel). */
-    parts?: { NewComment: typeof NewCommentT; WorkingStrip: typeof WorkingStripT; AddressedGroup: typeof AddressedGroupT };
+    /** The New comment box, the working strips, the Addressed group, the
+     * views (with `view`) and the selection bar, already loaded (the
+     * artifact view's sidebar chunk carries them), so the sidebar renders
+     * them with the rest at once; without them each loads the first time
+     * it shows (the extension's side panel). */
+    parts?: { NewComment: typeof NewCommentT; WorkingStrip: typeof WorkingStripT; AddressedGroup: typeof AddressedGroupT; SidebarViews?: typeof SidebarViewsT; SelectionBar?: typeof SelectionBarT };
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
@@ -277,7 +280,9 @@
 {#snippet empty()}<p class="muted small empty-open">{group.length ? "Nothing else open." : p.noReply ? p.noReply : p.readOnly ? "Nothing open." : `Nothing open. Press C and click anything to comment on it${p.compose ? ", or use New comment for the whole artifact" : ""}.`}</p>{/snippet}
 
 {#snippet sections()}
-  {#if group.length}
+  {#if group.length && p.parts}
+    <p.parts.AddressedGroup n={p.decided!.n} agent={p.agent} count={group.length}>{@render cards(group)}</p.parts.AddressedGroup>
+  {:else if group.length}
     {#await import("./AddressedGroup.svelte") then { default: AddressedGroup }}
       <AddressedGroup n={p.decided!.n} agent={p.agent} count={group.length}>{@render cards(group)}</AddressedGroup>
     {/await}
@@ -298,6 +303,21 @@
       {@render cards(resolvedRest)}
     </details>
   </div>
+{/snippet}
+
+{#snippet selbar(SelectionBar: typeof SelectionBarT)}
+  <SelectionBar count={p.selection!.ids.length} note={p.batchNote ?? ""} busy={p.batchBusy ?? false}
+    onNote={v => p.onNote?.(v)} onClear={() => p.onClear?.()} onSend={() => p.onSendSelection?.()}>
+    {#snippet send(go: (e: Event) => void)}
+      <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} {own} aid={asks} threads={p.selection!.ids}
+        disabled={p.batchBusy} onSend={go} onChoose={h => p.onChoose?.(h)} />
+    {/snippet}
+  </SelectionBar>
+{/snippet}
+
+{#snippet views(SidebarViews: typeof SidebarViewsT)}
+  <SidebarViews view={p.view!} threads={p.threads} versions={p.versions} working={p.working} claimed={p.claimed} me={p.me} now={clock.now} selected={p.selected}
+    numbers={p.numbers ?? s.numbers} detached={s.detached} above={p.above} onSeen={p.onSeen} onSelect={p.onSelect} {card} {sections} {empty} note={p.noReply && p.threads.length ? p.noReply : ""} />
 {/snippet}
 
 <aside class="sidebar" aria-label="Comment threads" bind:this={aside}>
@@ -334,22 +354,14 @@
     <p class="act-hint" role="status">{unsentHint ?? ""}</p>
   {/if}
   {#if p.selection?.ids.length}
-    {#await import("./SelectionBar.svelte") then { default: SelectionBar }}
-      <SelectionBar count={p.selection.ids.length} note={p.batchNote ?? ""} busy={p.batchBusy ?? false}
-        onNote={v => p.onNote?.(v)} onClear={() => p.onClear?.()} onSend={() => p.onSendSelection?.()}>
-        {#snippet send(go: (e: Event) => void)}
-          <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} {own} aid={asks} threads={p.selection!.ids}
-            disabled={p.batchBusy} onSend={go} onChoose={h => p.onChoose?.(h)} />
-        {/snippet}
-      </SelectionBar>
-    {/await}
+    {#if p.parts?.SelectionBar}{@render selbar(p.parts.SelectionBar)}{:else}
+      {#await import("./SelectionBar.svelte") then { default: SelectionBar }}{@render selbar(SelectionBar)}{/await}
+    {/if}
   {/if}
   <!-- The tabs and the timeline load apart: the extension's side panel, which passes no view, carries none of them. -->
-  {#if p.view}
-    {#await import("./SidebarViews.svelte") then { default: SidebarViews }}
-      <SidebarViews view={p.view!} threads={p.threads} versions={p.versions} working={p.working} claimed={p.claimed} me={p.me} now={clock.now} selected={p.selected}
-        numbers={p.numbers ?? s.numbers} detached={s.detached} above={p.above} onSeen={p.onSeen} onSelect={p.onSelect} {card} {sections} {empty} note={p.noReply && p.threads.length ? p.noReply : ""} />
-    {/await}
+  {#if p.view && p.parts?.SidebarViews}{@render views(p.parts.SidebarViews)}
+  {:else if p.view}
+    {#await import("./SidebarViews.svelte") then { default: SidebarViews }}{@render views(SidebarViews)}{/await}
   {:else}{@render sections()}{/if}
 </aside>
 

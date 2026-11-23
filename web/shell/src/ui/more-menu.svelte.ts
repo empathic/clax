@@ -12,7 +12,7 @@ import type { Component } from "svelte";
 import type WhoT from "./Who.svelte";
 import { getToken } from "../api";
 import { ownerProof } from "../owner-proof";
-import { botKnown } from "../view/deciders.svelte";
+import { botKnown, runsAsked } from "../view/deciders.svelte";
 import type { ArtifactController } from "../view/artifact-controller";
 
 /** What the more menu's Publish item says and opens. */
@@ -113,7 +113,8 @@ export function setAnalyticsOpener(f: (() => void) | null): void { analyticsOpen
 
 /** ClaxBot's part of the bar (`bot/ArtifactBot.svelte`) once `loadMoreMenu`
  * has loaded it, where the bootstrap block says ClaxBot is on for this
- * browser, so it shows with the bar; else null (the roster loads it itself). */
+ * browser or the artifact has runs (`view/deciders.svelte.ts`), so its runs
+ * button shows with the bar; else null (the roster loads it itself). */
 export const botPart = { get current(): Component<{ ctl: ArtifactController }> | null { return botLoaded; } };
 
 /** Whether a chunk `loadMoreMenu` asked for is still on its way. */
@@ -123,8 +124,9 @@ export const loading = { get current(): boolean { return pending > 0; } };
 export const legal = { get current(): LegalLinks | null { return legalLinks; } };
 
 /** Loads the more menu's, the roster's, the Clone dialog host's and the
- * Fork, Get in Clax, Share and Publish buttons' code, and ClaxBot's part where the block
- * says it is on. A failed load leaves its part out. */
+ * Fork, Get in Clax, Share and Publish buttons' code, and ClaxBot's part
+ * where the block says it is on or the artifact has runs (the bar waits
+ * for that answer). A failed load leaves its part out. */
 export function loadMoreMenu(): void {
   const load = <T>(p: Promise<T>, take: (m: T) => void) => {
     pending++;
@@ -137,7 +139,9 @@ export function loadMoreMenu(): void {
   load(import("./GetInClax.svelte"), m => { getLoaded = m.default; });
   load(import("./Share.svelte"), m => { shareLoaded = m.default; });
   load(import("./PermissionsPanel.svelte"), m => { permissionsLoaded = m.default; });
-  if (botKnown()?.enabled) load(import("../bot/ArtifactBot.svelte"), m => { botLoaded = m.default; });
+  const bot = () => import("../bot/ArtifactBot.svelte");
+  if (botKnown()?.enabled) load(bot(), m => { botLoaded = m.default; });
+  else load((runsAsked() ?? Promise.resolve([])).then(r => (r.length ? bot() : null)), m => { if (m) botLoaded = m.default; });
   const publishCode = () => load(import("./Publish.svelte"), m => { publishLoaded = m.default; });
   if (ownerProof()) publishCode();
   else void getToken().then(t => { if (t && !t.startsWith("cxo_")) publishCode(); });

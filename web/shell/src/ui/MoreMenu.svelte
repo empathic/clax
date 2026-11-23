@@ -10,11 +10,13 @@
   // every width (the bar has no Clone button), which opens the Clone dialog;
   // where the viewer may share the artifact on a hosted Clax (`onShare`),
   // phone width lists Share; where the owner may publish the artifact to a
-  // public Clax (`onPublish`), it lists Publish; on an app's page
+  // public Clax (`onPublish`), 900 px wide and narrower, where the bar hides
+  // Publish's buttons, it lists Publish; on an app's page
   // (`getHref`, its get page), it lists Get in Clax first. Phone width, where
-  // the bar hides the roster and the ClaxBot button, lists People and agents
-  // (`onPeople`, the people panel) and, while the artifact has runs, ClaxBot
-  // (`onBot`, the run panel). While ClaxBot is
+  // the bar hides the roster, lists People and agents (`onPeople`, the
+  // people panel), and 900 px and narrower, where the bar hides the ClaxBot
+  // button, while the artifact has runs, ClaxBot (`onBot`, the run panel).
+  // While ClaxBot is
   // on for the viewer (`usage`), it lists Usage at every width, with the
   // week's credits, linking to the page that details them. Where the viewer administers the artifact on
   // a hosted Clax (`onAnalytics`), it lists Analytics…. On a hosted
@@ -40,11 +42,14 @@
   const app = onHost();
   // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
   let phone = $state(false);
+  // 900 px wide and narrower, where the bar hides Publish and the ClaxBot button (`hide-nr`).
+  let narrow = $state(false);
   let button: HTMLButtonElement | undefined = $state();
   let menu: HTMLDivElement | undefined = $state();
   async function toggle() {
     open = !open;
     phone = !!onVersions && typeof matchMedia === "function" && matchMedia("(max-width: 700px)").matches;
+    narrow = !!onVersions && typeof matchMedia === "function" && matchMedia("(max-width: 900px)").matches;
     if (open) { await tick(); menu?.querySelector<HTMLElement>("a, button")?.focus(); }
   }
   function close() { open = false; button?.focus(); }
@@ -86,7 +91,7 @@
       {#if phone && getHref}<a role="menuitem" tabindex="-1" href={getHref} onclick={close}>Get in Clax</a>{/if}
       {#if phone && onVersions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onVersions(); }}>{pageHref ? "Snapshots" : "Versions"}</button>{/if}
       {#if phone && onPeople}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPeople(); }}>People and agents</button>{/if}
-      {#if phone && onBot}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onBot.open(); }}>{onBot.label}</button>{/if}
+      {#if narrow && onBot}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onBot.open(); }}>{onBot.label}</button>{/if}
       {#if phone && onFork}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onFork(); }}>Fork</button>{/if}
       {#if phone && pageHref && /^https?:\/\//.test(pageHref)}<a role="menuitem" tabindex="-1" href={pageHref} target="_blank" rel="noopener noreferrer" onclick={close}>Open page</a>{/if}
       {#if app}
@@ -99,7 +104,7 @@
       {#if canCopy && !app}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { onCopy(); close(); }}>Copy link</button>{/if}
       {#if onClone}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onClone(); }}>Clone with git…</button>{/if}
       {#if phone && onShare}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onShare(); }}>Share…</button>{/if}
-      {#if phone && onPublish}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPublish.open(); }}>{onPublish.label}</button>{/if}
+      {#if narrow && onPublish}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPublish.open(); }}>{onPublish.label}</button>{/if}
       {#if onPermissions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPermissions(); }}>Permissions…</button>{/if}
       {#if usage}<a role="menuitem" tabindex="-1" class="usage" class:warn={usage.warn} class:out={usage.out} href={usage.href} aria-label={`Usage: ${usage.label}`} title={usage.title} onclick={close}>Usage <span class="usage-n">{usage.text}</span></a>{/if}
       {#if onAnalytics}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onAnalytics(); }}>Analytics…</button>{/if}

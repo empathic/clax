@@ -18,7 +18,7 @@
   // approved. A link whose remote signed this Clax out (it refused the
   // token) says so, its button marked, and offers to sign in there again,
   // which keeps the link. Anywhere else (a
-  // hosted daemon, another viewer) it shows nothing. At phone width the buttons are
+  // hosted daemon, another viewer) it shows nothing. 900 px wide and narrower the buttons are
   // hidden and the more menu lists Publish (`setPublishOpener`). Its chunk is
   // asked as the page starts (`more-menu.svelte.ts`), and the artifact's
   // links beside the view's data (`view/deciders.svelte.ts`), so where they
@@ -213,13 +213,13 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <span class="pub" bind:this={root} onkeydown={key}>
     {#if !link || behind > 0}
-      <button type="button" class="publish hide-sm" data-shell-control="publish" aria-haspopup="dialog" aria-expanded={open} onclick={() => (open ? close() : show())}>{action}</button>
+      <button type="button" class="publish hide-sm hide-nr" data-shell-control="publish" aria-haspopup="dialog" aria-expanded={open} onclick={() => (open ? close() : show())}>{action}</button>
     {/if}
     {#if link && behind === 0}
-      <button type="button" class="linked hide-sm" data-shell-control="publish" data-warn={warn ? "" : undefined} aria-haspopup="dialog" aria-expanded={open} title={`Its link to ${host}: versions and comments`} onclick={() => (open ? close() : show())}>Linked{#if warn}<span class="warn-dot" aria-label={signedOut ? `Signed out of ${host}` : since ? `${host} unreachable` : `${notSentLabel(failed, failedQuestions)} not sent`}></span>{/if}</button>
+      <button type="button" class="linked hide-sm hide-nr" data-shell-control="publish" data-warn={warn ? "" : undefined} aria-haspopup="dialog" aria-expanded={open} title={`Its link to ${host}: versions and comments`} onclick={() => (open ? close() : show())}>Linked{#if warn}<span class="warn-dot" aria-label={signedOut ? `Signed out of ${host}` : since ? `${host} unreachable` : `${notSentLabel(failed, failedQuestions)} not sent`}></span>{/if}</button>
     {/if}
     {#if link}
-      <a class="public hide-sm" href={link.url} target="_blank" rel="noopener noreferrer" title={`Its public copy on ${host}`}>Public ↗</a>
+      <a class="public hide-sm hide-nr" href={link.url} target="_blank" rel="noopener noreferrer" title={`Its public copy on ${host}`}>Public ↗</a>
     {/if}
     {#if open}
       <div class="pub-pop" role="dialog" aria-label={action}>

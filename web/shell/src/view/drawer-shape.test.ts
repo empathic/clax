@@ -52,6 +52,16 @@ describe("the threads' kept shape", () => {
     expect(keptDrawer(ID, s)).toBeNull();
   });
 
+  it("keeps whether the artifact had a thread beside its blocks, each kept when the other changes", () => {
+    const s = storage();
+    keepDrawer(ID, { t: 0 }, s);
+    expect(keptDrawer(ID, s)).toEqual({ b: [], t: 0 });
+    keepDrawer(ID, { b: [[53, 34]], t: 1 }, s);
+    keepDrawer(ID, { t: 1 }, s);
+    expect(keptDrawer(ID, s)).toEqual({ b: [[53, 34]], t: 1 });
+    expect(cleanDrawer({ b: [], t: 2 })).toBeNull();
+  });
+
   it("measures the list's blocks from the drawer's top, within the window", () => {
     document.body.innerHTML = `<div class="drawer"><aside class="sidebar"><div class="new-comment"></div><h2 class="gh"></h2><article class="thread-card"></article><article class="thread-card"></article></aside></div>`;
     const tops = [100, 153, 199, 231, 2000];
@@ -81,5 +91,15 @@ describe("the threads' skeleton", () => {
     expect(drawn(`/a/${ID}`, { v: 1, threads: open(2) }, { b: [[60, 40], [110, 300]] })).toEqual([[60, 40], [110, 300]]);
     expect(drawn("/", null)).toEqual([]);
     expect(document.querySelector(".dsk")).toBeNull();
+  });
+
+  it("leaves out the closed drawer's strip where the block, else the kept shape, says the artifact has no thread", () => {
+    const rail = (boot: unknown, kept?: unknown) => { delete document.documentElement.dataset.rail; drawn(`/a/${ID}`, boot, kept); return document.documentElement.dataset.rail ?? null; };
+    expect(rail({ v: 1, threads: [] })).toBe("0");
+    expect(rail({ v: 1, threads: open(1) }, { b: [], t: 0 })).toBeNull();
+    expect(rail(null, { b: [], t: 0 })).toBe("0");
+    expect(rail(null, { b: [], t: 1 })).toBeNull();
+    expect(rail(null)).toBeNull();
+    delete document.documentElement.dataset.rail;
   });
 });

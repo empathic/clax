@@ -12,7 +12,9 @@
   // artifact view's threads controls show while a question about the
   // artifact is open (`<html data-questions>`, `q/wire.ts`), whose place
   // they keep in a browser with an inbox (`<html data-inbox>`,
-  // `view/deciders.svelte.ts`).
+  // `view/deciders.svelte.ts`): in a browser with an inbox the dot's place
+  // is kept from the first render, so the dot moves nothing when it shows.
+  // (No comment goes in the styles: injected, they would carry it.)
   let { unread, current = false }: { unread: number | null; current?: boolean } = $props();
   // svelte-ignore state_referenced_locally
   const reserved = unread === null;
@@ -34,8 +36,6 @@
     @media (max-width: 700px) { .topbar .inbox-link { display: none; } }
     .phone-tabs .inbox-link { flex: 1; justify-content: center; min-height: 52px; border-radius: 0; font: 400 15px var(--font); color: var(--muted); }
     @media (pointer: coarse) { .inbox-link { min-height: 44px; } }
-    /* In a browser with an inbox (`html[data-inbox]`) the dot's place is
-       kept from the first render, so the dot moves nothing when it shows. */
     html:is([data-inbox], [data-questions]) .topbar button.threads::after, html:is([data-inbox], [data-questions]) .phone-tabs button:last-of-type::after {
       content: "" / ", a question for you"; display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--you); vertical-align: 1px; visibility: hidden;
     }

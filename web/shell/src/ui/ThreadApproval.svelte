@@ -8,16 +8,20 @@
   // goes; focus left in it goes to its thread's card head. A thread that
   // reads "waiting for your approval" with no request for this viewer (its
   // agent was told of the withheld comment but has not asked) says that
-  // nothing waits for a decision yet, and where one will come.
+  // nothing waits for a decision yet, and where one will come. Where the
+  // thread list asked before it showed, the card is drawn with the list.
   import { tick } from "svelte";
   import type { InboxItem } from "../api";
   import ApprovalCard from "../people/ApprovalCard.svelte";
   import type { Thread } from "../threads";
-  import { approvalFor } from "./thread-approvals";
+  import { approvalFor, approvalKnown } from "./thread-approvals";
 
   let { t, now }: { t: Thread; now: Date } = $props();
-  let item = $state<InboxItem | null>(null);
-  let asked = $state(false);
+  // The answer the thread list waited for before it showed (SidebarIsland.svelte), so the card is drawn with the list.
+  // svelte-ignore state_referenced_locally
+  const first = approvalKnown(t.artifact_id, t.id);
+  let item = $state<InboxItem | null>(first ?? null);
+  let asked = $state(first !== undefined);
   $effect(() => {
     const id = t.id;
     void [t.feedback_state?.state, t.feedback_state?.since, t.comments.length];

@@ -8,12 +8,20 @@
 // list first shows), so a second visit's list lands where its placeholders
 // were; else, with the bootstrap block, its open threads' count in the
 // list's usual measures (`skeletonBlocks`); else a neutral two cards.
+// The shape also keeps whether the artifact had a thread (`t`), so a load
+// without the block holds the closed drawer's strip (`.rail-held`, between
+// 701 and 899 px) only where it will show. This module comes with the
+// thread list's chunk (`ShellSidebar.svelte` re-exports it): the inline
+// script reads what it keeps before the first paint, and the entry carries
+// none of it.
 import { keepEntry, readShapes } from "./kept-shape";
 
 /** A block of the list: its top and height in px, from the drawer's top. */
 export type Block = [number, number];
-/** What an artifact's list showed: its first blocks (`BLOCKS`), within the window's height. */
-export type DrawerShape = { b: Block[] };
+/** What an artifact's list showed: its first blocks (`BLOCKS`), within the
+ * window's height (none where its list has not shown in this browser), and
+ * whether it had a thread (1) or none (0), where known. */
+export type DrawerShape = { b: Block[]; t?: 0 | 1 };
 
 /** The list's blocks a shape keeps: the questions' cards, New comment, the
  * working strips, the Send bar, the sections' headings and the thread cards. */
@@ -30,12 +38,18 @@ export const DEFAULT = { comment: [53, 34] as Block, heading: [99, 22] as Block,
 const key = (id: string) => `/a/${id}`;
 const ID = /^[0-9a-z]{12}$/;
 
-/** `v` as a shape: at most `MAX_BLOCKS` blocks, each two finite, non-negative numbers; null when none. */
+/** `v` as a shape: at most `MAX_BLOCKS` blocks, each two finite,
+ * non-negative numbers, and `t` where it is 0 or 1; null when it has
+ * neither blocks nor `t`. */
 export function cleanDrawer(v: unknown): DrawerShape | null {
-  const b = (v as DrawerShape | null)?.b;
-  if (!Array.isArray(b)) return null;
+  const o = v as { b?: unknown; t?: unknown } | null;
+  const b = Array.isArray(o?.b) ? o.b : [];
   const ok = b.filter((x): x is Block => Array.isArray(x) && x.length === 2 && x.every(n => typeof n === "number" && Number.isFinite(n) && n >= 0)).slice(0, MAX_BLOCKS);
-  return ok.length ? { b: ok.map(([t, h]) => [Math.round(t), Math.round(h)]) } : null;
+  const t = o?.t === 0 || o?.t === 1 ? o.t : undefined;
+  if (!ok.length && t === undefined) return null;
+  const out: DrawerShape = { b: ok.map(([top, h]) => [Math.round(top), Math.round(h)]) };
+  if (t !== undefined) out.t = t;
+  return out;
 }
 
 /** The shape kept for artifact `id`'s list, or null. */
@@ -43,10 +57,13 @@ export function keptDrawer(id: string, store: Storage = localStorage): DrawerSha
   return ID.test(id) ? cleanDrawer(readShapes(store)[key(id)]) : null;
 }
 
-/** Keeps `s` as artifact `id`'s list's shape (the newest `MAX_DRAWERS` artifacts' stay). */
-export function keepDrawer(id: string, s: DrawerShape, store: Storage = localStorage): void {
-  const clean = cleanDrawer(s);
-  if (clean && ID.test(id)) keepEntry(key(id), clean, store, { match: /^\/a\//, max: MAX_DRAWERS });
+/** Keeps `s` as artifact `id`'s list's shape (the newest `MAX_DRAWERS`
+ * artifacts' stay); blocks or `t` that `s` leaves out stay as kept. */
+export function keepDrawer(id: string, s: Partial<DrawerShape>, store: Storage = localStorage): void {
+  if (!ID.test(id)) return;
+  const was = keptDrawer(id, store);
+  const clean = cleanDrawer({ b: s.b?.length ? s.b : was?.b, t: s.t ?? was?.t });
+  if (clean) keepEntry(key(id), clean, store, { match: /^\/a\//, max: MAX_DRAWERS });
 }
 
 /** The blocks `drawer` shows now, from its top, those that start within `height`. */

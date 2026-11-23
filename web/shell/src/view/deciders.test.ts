@@ -11,13 +11,14 @@ vi.mock("../q/api", () => ({ inboxSummary, listQuestions }));
 
 const ID = "7q3k9mzx2b4t";
 const block = {
-  status: { feedback: 200, bot: 200, hosted: 200, summary: 200, questions: 200, clone: 200 },
+  status: { feedback: 200, bot: 200, hosted: 200, summary: 200, questions: 200, clone: 200, runs: 200 },
   feedback: { enabled: true, instance: "https://clax.example", queue: "q1", user: "u" },
   bot: { enabled: true },
   hosted: null,
   summary: { unread: 2, questions: [], latest: [] },
   questions: { questions: [], open: 0 },
   clone: { available: true, scopes: ["read"] },
+  runs: { runs: [{ id: "r1" }] },
   inbox: true,
   owner: false,
 };
@@ -32,7 +33,7 @@ const refuse = () => {
 };
 
 describe("what decides the artifact view's optional parts", () => {
-  it("takes the block's answers at once: Inbox and its count, the owner's token, the feedback menu, Clone, ClaxBot; asking none of their routes", async () => {
+  it("takes the block's answers at once: Inbox and its count, the owner's token, the feedback menu, Clone, ClaxBot and its runs; asking none of their routes", async () => {
     const f = refuse();
     const d = await import("./deciders.svelte");
     d.startDeciders(ID, block as never);
@@ -40,6 +41,7 @@ describe("what decides the artifact view's optional parts", () => {
     expect(document.documentElement.hasAttribute("data-inbox")).toBe(true);
     expect(d.cloneKnown()).toEqual(block.clone);
     expect(d.botKnown()).toEqual(block.bot);
+    expect(d.runsKnown()).toEqual(block.runs.runs);
     expect(await d.firstInbox()).toEqual({ summary: block.summary, open: [] });
     await vi.waitFor(() => expect(seedBot).toHaveBeenCalledWith(block.bot));
     // The token alone is asked (for Publish, the local owner's), none of the deciders' routes.
@@ -55,12 +57,16 @@ describe("what decides the artifact view's optional parts", () => {
     expect([d.decided.inbox, d.decided.unread, d.decided.feedback]).toEqual([null, null, null]);
     expect(d.cloneKnown()).toBeUndefined();
     expect(d.botKnown()).toBeUndefined();
+    expect(d.runsKnown()).toBeUndefined();
     await d.decideInbox(Promise.resolve(null));
     expect(d.decided.inbox).toBe(true);
     expect((await d.firstInbox())?.summary?.unread).toBe(3);
     expect(d.decided.unread).toBe(3);
     await vi.waitFor(() => expect(d.cloneKnown()).toBeNull());
-    expect(f.mock.calls.map(c => String(c[0]))).toEqual(expect.arrayContaining(["/_app/feedback/config", `/api/artifacts/${ID}/git-token`]));
+    // What the view waits for beside its data (Publish's, ClaxBot's runs, the feedback menu's): refused, each decides its control absent.
+    await d.barDecided();
+    expect([d.runsKnown(), d.remotesKnown(), d.decided.feedback]).toEqual([[], null, false]);
+    expect(f.mock.calls.map(c => String(c[0]))).toEqual(expect.arrayContaining(["/_app/feedback/config", `/api/artifacts/${ID}/git-token`, `/api/bot/runs?artifact=${ID}`]));
   });
 
   it("a browser without an inbox has its questions decided at once", async () => {

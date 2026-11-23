@@ -46,7 +46,7 @@ import type { LiveUi, LiveView } from "./live-view";
 import type { AgentView, Working } from "./working-model";
 import type { DraftChanged, DraftView } from "./draft-model";
 import type { Drafts } from "./drafts";
-import { decideInbox, decided as known, firstInbox, questionsDecided, setUnread } from "./deciders.svelte";
+import { barDecided, decideInbox, decided as known, firstInbox, questionsDecided, setUnread } from "./deciders.svelte";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 /** How long a reopen asked of an unnamed viewer waits for its name. */
@@ -438,7 +438,8 @@ export class ArtifactController {
     this.state = new Store<ViewState>({
       pinnedVersion, startFile,
       data: null, error: null, approvalHidden: null, approving: false, declarationStale: false, origin: undefined, openInTab: null, elsewhere: false, newer: null, deleted: false, commenting: false,
-      panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
+      // The threads open docked 900 px wide and wider; the Clax app's view (`?app=1`) shows none.
+      panel: media("(min-width: 900px)") && !appQuery(location.search), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
       decided: null, rally: false, menu: null, askName: null, looked: {}, presence: [], shareWhere: readShareWhere(),
@@ -1000,11 +1001,12 @@ export class ArtifactController {
       // view takes them together, so its counts, its thread list and its
       // pins are drawn once, with the artifact; with them whether this
       // browser has an inbox (the viewer's, or the token's, answer), so
-      // the top bar draws Inbox with its controls. A daemon that does not answer, or an
+      // the top bar draws Inbox with its controls, and what decides Publish
+      // and ClaxBot's runs button. A daemon that does not answer, or an
       // answer that is not Clax's, is retried (with a notice); Clax's own
       // answer, even a refusal, is shown.
       const me = getViewer().catch(() => null);
-      const together = Promise.all([this.loadThreads(), me, decideInbox(me)]);
+      const together = Promise.all([this.loadThreads(), me, decideInbox(me), barDecided()]);
       retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: unreached, wait: loadWait, trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
         .then(d => together.then(() => this.loaded(d)), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : failureText(ARTIFACT_FAILED, e) }); });
     }

@@ -7,11 +7,15 @@
   // lists ClaxBot to the Send menu (`botView`): as the artifact's agents list
   // it (`builtin`), else as this person's ClaxBot says. It shows a ClaxBot
   // button while the artifact has runs (marked while one is active) that
-  // opens the run panel (hidden at phone width, where the more menu's ClaxBot
-  // item stands in: `setBotOpener`); it gives the more menu its Usage item, the week's
+  // opens the run panel (hidden 900 px wide and narrower, where the more
+  // menu's ClaxBot item stands in: `setBotOpener`); it gives the more menu its Usage item, the week's
   // meter (marked "your key" on the person's own model key: `meterWords`),
-  // and, from 80 % of the week's credits, shows the usage banner under the
-  // top bar. The panel opens by
+  // and, from 80 % of the week's credits, shows the usage banner over the
+  // top of the viewer, under the top bar: it takes no room, so it moves
+  // nothing whenever it comes, and Dismiss hides it in this tab until the
+  // week ends. The runs the page knows as it starts (the bootstrap block's,
+  // or asked beside the view's data: `view/deciders.svelte.ts`) are its
+  // first list, so its button shows with the bar. The panel opens by
   // itself on a run this browser starts, and on `#run=<ID>` (or `#run`, the
   // newest active run) in the address, which the New dialog and the audit
   // log link with; a run the artifact's list does not hold is read on its
@@ -29,7 +33,7 @@
   import UsageBanner from "./UsageBanner.svelte";
   import { setBotOpener, setUsage } from "../ui/more-menu.svelte";
   import { late } from "../ui/topbar-gate.svelte";
-  import { botKnown } from "../view/deciders.svelte";
+  import { botKnown, runsKnown } from "../view/deciders.svelte";
 
   let { ctl }: { ctl: ArtifactController } = $props();
   // The bootstrap block's answer, so the meter shows with the bar.
@@ -37,7 +41,8 @@
   if (known && !botView.me) botView.me = known;
   // svelte-ignore state_referenced_locally
   const view = fromStore(ctl.state);
-  let runs = $state<RunSummary[]>([]);
+  const sorted = (l: RunSummary[]) => [...l].sort((a, b) => b.started_at.localeCompare(a.started_at));
+  let runs = $state<RunSummary[]>(sorted(runsKnown() ?? []));
   const active = $derived(runs.some(r => !ended(r)));
   const week = $derived(botView.me?.enabled ? meter(botView.me.week) : null);
   const weekWords = $derived(botView.me?.enabled ? meterWords(botView.me) : null);
@@ -87,7 +92,6 @@
   const panel = $state({ aid: "", runs: [] as RunSummary[], quotes, onThread, onStep, mine });
   $effect(() => { panel.runs = runs; });
   $effect(() => { botView.claimed = [...new Set(runs.flatMap(r => r.thread_ids))]; });
-  const sorted = (l: RunSummary[]) => [...l].sort((a, b) => b.started_at.localeCompare(a.started_at));
   const load = () => listRuns(ctl.id).then(r => { runs = sorted(Array.isArray(r?.runs) ? r.runs : []); return runs; }, () => runs);
   // The run shown changed state: read the list again.
   let seen = botView.changes;
@@ -111,6 +115,11 @@
     });
   });
 
+  // A dismissed banner stays hidden in this tab until the week it is about ends.
+  const DISMISSED = "clax.bot-banner";
+  const dismissed = (me: { week?: { end?: string } }) => { try { return sessionStorage.getItem(DISMISSED) === (me.week?.end ?? ""); } catch { return false; } };
+  const dismiss = (me: { week?: { end?: string } }) => { try { sessionStorage.setItem(DISMISSED, me.week?.end ?? ""); } catch { /* this page only */ } };
+
   onMount(() => {
     const aid = ctl.id;
     panel.aid = aid;
@@ -122,13 +131,14 @@
     void myBot().then(me => {
       botView.me = me;
       if (!me?.enabled && !asked && !view.current.agents.some(a => a.builtin)) return;
-      // The usage banner under the top bar, from 80 % of the week's credits.
-      const bar = document.querySelector(".page > .topbar");
-      if (me?.enabled && bar) {
+      // The usage banner over the viewer's top, from 80 % of the week's
+      // credits, unless dismissed in this tab for this week.
+      const viewer = document.querySelector(".page > .viewer");
+      if (me?.enabled && viewer && !dismissed(me)) {
         bannerAt = document.createElement("div");
         bannerAt.className = "bot-banner-at";
-        bar.after(bannerAt);
-        banner = mount(UsageBanner, { target: bannerAt, props: { me } });
+        viewer.prepend(bannerAt);
+        banner = mount(UsageBanner, { target: bannerAt, props: { me, onDismiss: () => { dismiss(me); if (banner) void unmount(banner); banner = null; bannerAt?.remove(); } } });
       }
       void load().then(list => {
         if (!asked) return;
@@ -151,7 +161,7 @@
 <!-- In a slot of the top bar's (`ui/topbar-gate.svelte.ts`): where it
      comes after the bar has shown, it takes the bar's free end. -->
 <span class="slot" use:late>{#if shown}
-  <button type="button" class="botbtn hide-sm" class:on={active} aria-expanded={!!botView.run} aria-controls="bot-run-panel" onclick={toggleRuns}>
+  <button type="button" class="botbtn hide-sm hide-nr" class:on={active} aria-expanded={!!botView.run} aria-controls="bot-run-panel" onclick={toggleRuns}>
     <span class="dot" aria-hidden="true"></span>ClaxBot<span class="bot-sr">{active ? ", working" : ", runs"}</span>
   </button>
 {/if}</span>
@@ -164,7 +174,7 @@
     .botbtn.on { color: var(--agent-ink); }
     .topbar .botbtn[aria-expanded="true"] { background: var(--hover); }
     .bot-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    .bot-banner-at { flex: none; }
-    .bot-banner-at .bbanner { margin: 0; border-radius: 0; border-width: 0 0 1px; padding: 8px var(--gutter); }
+    .bot-banner-at { position: absolute; top: 0; left: 0; right: 0; z-index: 6; pointer-events: none; }
+    .bot-banner-at .bbanner { pointer-events: auto; margin: 0; border-radius: 0; border-width: 0 0 1px; padding: 8px var(--gutter); box-shadow: var(--elev-lg); }
   }
 </style>

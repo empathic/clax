@@ -13,16 +13,20 @@
   // edge (`railShows`), whose code (ShellRail) comes in the same chunk;
   // until then an empty box of its size holds its place. Where the threads
   // open, the list and the page's pins show together, once the list is
-  // drawn with its questions above it (`view/deciders.svelte.ts`): until
+  // drawn with its questions above it (`view/deciders.svelte.ts`) and, for
+  // the owner or a connected person with a thread sent to an agent, the
+  // approval cards above those threads (asked as the chunk comes, waited
+  // for at most `APPROVALS_WAIT_MS`, ui/thread-approvals.ts): until
   // then the page is `.cards-wait`, and the threads' skeleton
   // (`view/drawer-shape.ts`) holds the list's place; once the list shows,
-  // its shape is kept for the next load's skeleton.
+  // its shape is kept for the next load's skeleton, and once the view is
+  // ready, whether the artifact has a thread (the next load's strip), both
+  // by the thread list's chunk.
   import { fromStore } from "svelte/store";
   import { inspectQuery } from "../route";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
   import { afterPaint } from "../view/after-paint";
   import { decided } from "../view/deciders.svelte";
-  import { keepDrawer, measureDrawer } from "../view/drawer-shape";
   import PhoneTabs from "./PhoneTabs.svelte";
   import type RailT from "./ShellRail.svelte";
   import type SidebarT from "./ShellSidebar.svelte";
@@ -45,10 +49,11 @@
   const rail = $derived(viewReady(s) && railShows(s, document.documentElement.dataset.drawer, wide, inspecting));
   let Sidebar: typeof SidebarT | null = $state(null);
   let Rail: typeof RailT | null = $state(null);
+  let wait: Pick<typeof import("./ShellSidebar.svelte"), "keepShape" | "listReady"> | null = $state(null);
   let asked = false;
   let cancel: (() => void) | undefined;
   const take = () => {
-    loadSidebar().then(m => { Sidebar = m.default; Rail = m.ShellRail; }, () => ctl.setNotice("The threads could not load. Reload to try again."));
+    loadSidebar().then(m => { Sidebar = m.default; Rail = m.ShellRail; wait = m; }, () => ctl.setNotice("The threads could not load. Reload to try again."));
   };
   $effect(() => {
     if (asked || !(s.panel || rail || (sidebarPrefetch() && !s.deleted))) return;
@@ -61,18 +66,24 @@
     cancel = afterPaint(take);
   });
   $effect(() => () => cancel?.());
-  const waiting = $derived(viewReady(s) && s.panel && !(Sidebar && decided.questions));
+  // Whether the list may show (its approval cards in: the chunk's `listReady`), asked once the threads open.
+  let ready = $state(0);
+  $effect(() => { if (!ready && s.panel && viewReady(s) && wait) { ready = 1; void wait.listReady(ctl.id, s).then(() => { ready = 2; }); } });
+  const waiting = $derived(viewReady(s) && s.panel && !(Sidebar && decided.questions && ready > 1));
   $effect(() => { document.querySelector(".page")?.classList.toggle("cards-wait", waiting); });
-  let kept = false;
+  // The shape kept for the next load: once the view is ready, and again with the list's blocks once it shows.
+  let kept = 0;
+  let unkeep: (() => void) | undefined;
   $effect(() => {
-    if (kept || waiting || !viewReady(s) || !s.panel || !Sidebar) return;
-    kept = true;
-    return afterPaint(() => {
-      const box = document.querySelector(".viewer .drawer");
-      if (box) keepDrawer(ctl.id, measureDrawer(box, innerHeight));
-      document.querySelector(".viewer > .dsk")?.remove();
-    });
+    const list = !waiting && s.panel;
+    if (kept > (list ? 1 : 0) || !viewReady(s) || s.deleted || !wait) return;
+    kept = list ? 2 : 1;
+    const m = wait;
+    unkeep?.();
+    const n = s.threads.length;
+    unkeep = afterPaint(() => m.keepShape(ctl.id, n, list ? document.querySelector(".viewer .drawer") : null));
   });
+  $effect(() => () => unkeep?.());
   // The static frame's drawer box and strip (`.drawer.held`, `.rail-held`: skeleton.ts) give way to
   // this island's own in the render that draws it.
   $effect.pre(() => {

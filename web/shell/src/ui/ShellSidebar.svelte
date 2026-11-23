@@ -1,6 +1,8 @@
 <script lang="ts" module>
   // The strip the sidebar leaves when it is closed (ShellRail.svelte) comes in this chunk (`loadSidebar`, sidebar-chunk.ts).
   export { default as ShellRail } from "./ShellRail.svelte";
+  // So does what the sidebar island asks of it once it is in (sidebar-wait.ts).
+  export { keepShape, listReady } from "./sidebar-wait";
 </script>
 
 <script lang="ts">
@@ -10,7 +12,8 @@
   // Above a sent thread with an open approval request of this viewer's
   // (the owner's or a connected person's browser), their approval card
   // (spec 2026-10-08-multi-agent-multi-person §9.5), whichever of the
-  // thread's comments it holds; loaded once one is sent.
+  // thread's comments it holds, drawn with the list (which waits for the
+  // requests: SidebarIsland.svelte).
   // With no target chosen, a Send goes to this viewer's own most recent
   // live agent (`ownTarget`), chosen for it as it sends; a LAN viewer's, to
   // the owner's (`sendsFor`). ClaxBot leads the Send menu where the
@@ -45,10 +48,10 @@
   import { sidebarView } from "./sidebar-view.svelte";
   import LiveWriters from "./LiveWriters.svelte";
   import NewComment from "./NewComment.svelte";
+  import SelectionBar from "./SelectionBar.svelte";
   import Sidebar from "./Sidebar.svelte";
-  // Sidebar.svelte imports its views when it mounts (the extension's panel
-  // has none); imported here too, they come with this chunk, not a fetch later.
-  import "./SidebarViews.svelte";
+  import SidebarViews from "./SidebarViews.svelte";
+  import ThreadApproval from "./ThreadApproval.svelte";
   import WorkingStrip from "./WorkingStrip.svelte";
 
   let { ctl, s }: { ctl: ArtifactController; s: ViewState & { data: Loaded } } = $props();
@@ -82,8 +85,10 @@
       void sendToBot(ctl, [t.id]);
     }
   });
-  // Rendered with the rest of the sidebar, not each a chunk of its own.
-  const parts = { NewComment, WorkingStrip, AddressedGroup };
+  // Rendered with the rest of the sidebar, in its first render, not each a
+  // chunk of its own (Sidebar.svelte imports them when it mounts without
+  // them: the extension's panel).
+  const parts = { NewComment, WorkingStrip, AddressedGroup, SidebarViews, SelectionBar };
   const clip = async (t: Thread) => (t.clip_url ? (await import("../api-image")).apiImageSrc(t.clip_url) : null);
   // The page the cards are laid out for: the frame's page, kept while the
   // frame is between documents (`file` null from a load until the page
@@ -102,9 +107,7 @@
   {#if offered(t)}
     {#await import("../bot/BotOffer.svelte") then { default: BotOffer }}<BotOffer onSend={() => void sendToBot(ctl, [t.id])} onAlways={() => always(t)} />{/await}
   {/if}
-  {#if t.status === "open" && t.sent_to_agent && (s.me?.owner || s.me?.person)}
-    {#await import("./ThreadApproval.svelte") then { default: ThreadApproval }}<ThreadApproval {t} {now} />{/await}
-  {/if}
+  {#if t.status === "open" && t.sent_to_agent && (s.me?.owner || s.me?.person)}<ThreadApproval {t} {now} />{/if}
 {/snippet}
 
 <DrawerChrome onClose={() => ctl.togglePanel()}>

@@ -5,11 +5,13 @@
   // week's credits a warning that ClaxBot keeps working until the limit;
   // at the limit, that ClaxBot is paused until the reset (pages, comments
   // and local agents keep working), with how to ask an admin for a lift.
-  // An unenforced person sees the numbers, never the pause.
+  // An unenforced person sees the numbers, never the pause. With
+  // `onDismiss` (the artifact view's, which lays it over the page) it has a
+  // Dismiss button.
   import type { MeBot } from "./api";
   import { banner } from "./meter";
 
-  let { me }: { me: MeBot | null } = $props();
+  let { me, onDismiss }: { me: MeBot | null; onDismiss?: () => void } = $props();
   const b = $derived(banner(me));
   let asking = $state(false);
 </script>
@@ -22,6 +24,7 @@
       <button type="button" class="ghost" aria-expanded={asking} aria-controls="bbanner-ask" onclick={() => { asking = !asking; }}>Ask an admin for a lift</button>
       {#if asking}<p id="bbanner-ask" class="ask">An admin can raise your weekly credits under Settings › Roles &amp; ClaxBot access. Tell one what you need ClaxBot for this week; <a href="/settings/claxbot">Your ClaxBot</a> shows what you have used.</p>{/if}
     {/if}
+    {#if onDismiss}<button type="button" class="ghost bb-dismiss" onclick={onDismiss}>Dismiss</button>{/if}
   </div>
 {/if}
 

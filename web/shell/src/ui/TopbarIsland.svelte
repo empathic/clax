@@ -53,7 +53,6 @@
   // so nothing moves. Until the controls show they are laid out, hidden.
   import { tick } from "svelte";
   import { fromStore } from "svelte/store";
-  import { getToken } from "../api";
   import { COMMENTS_OFF } from "../failure";
   import { type ArtifactController, commentsOff, viewReady } from "../view/artifact-controller";
   import { decided as known } from "../view/deciders.svelte";
@@ -80,10 +79,9 @@
   const Permissions = $derived(permissions.current);
   let forking = $state(false);
   // The owner's shell (it holds the token) may always fork; anyone else as
-  // the daemon says (`may_fork`). The block says whose it is; else the token's answer does.
-  let tokenHeld = $state(false);
-  void getToken().then(t => { tokenHeld = !!t; });
-  const ownerShell = $derived(known.owner ?? tokenHeld);
+  // the daemon says (`may_fork`). The block says whose it is; else the
+  // token's answer does, which the view waits for (`barDecided`).
+  const ownerShell = $derived(known.owner === true);
   // The changelog this load decided names what the pill says first (`s.decided`).
   const decided = $derived(viewReady(s) && s.decided !== null && !loading.current);
   // Once the controls have painted, a slot filled later is late (`topbar-gate.svelte.ts`).

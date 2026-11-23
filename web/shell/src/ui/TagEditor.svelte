@@ -8,8 +8,9 @@
   // (twenty tags at most, say) shows under the list and its box goes back.
   // Each answer goes through the view's ordering (`setTags`), so an older
   // answer never replaces a newer one. The list is fetched again whenever
-  // the artifact's tags change, here or elsewhere (a `tags` event). The
-  // owner, who keeps the list, is linked to the Tags page.
+  // the artifact's tags change, here or elsewhere (a `tags` event), its
+  // first read given by the opener (`first`, ui/tag-editor.ts). The owner,
+  // who keeps the list, is linked to the Tags page.
   import { SvelteMap } from "svelte/reactivity";
   import { fromStore } from "svelte/store";
   import type { TagRef } from "../api";
@@ -18,18 +19,24 @@
   import { tagsOf } from "../view/title-tags";
   import TagPicker from "./TagPicker.svelte";
 
-  const p: { ctl: ArtifactController; onClose(): void } = $props();
+  const p: { ctl: ArtifactController; first?: { list: TagList | null; error: string | null }; onClose(): void } = $props();
   // svelte-ignore state_referenced_locally
   const view = fromStore(p.ctl.state);
   const mine = $derived(tagsOf(view.current).tags);
   const changed = $derived(view.current.tags);
-  let list = $state<TagList | null>(null);
-  let error = $state<string | null>(null);
+  // svelte-ignore state_referenced_locally
+  let list = $state<TagList | null>(p.first?.list ?? null);
+  // svelte-ignore state_referenced_locally
+  let error = $state<string | null>(p.first?.error ?? null);
+  // svelte-ignore state_referenced_locally
+  let given = !!p.first;
   // The state asked for each tag whose change is still on its way.
   const asked = new SvelteMap<string, boolean>();
   let queue: Promise<void> = Promise.resolve();
   $effect(() => {
     void changed;
+    // The opener's read stands for the first run.
+    if (given) { given = false; return; }
     listTags().then(l => { list = l; }, e => { error = `Could not load the tags: ${failure(e)}`; });
   });
   const has = (t: TagRef) => asked.get(t.id) ?? mine.some(x => x.id === t.id);

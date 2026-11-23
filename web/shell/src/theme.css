@@ -320,15 +320,23 @@ input, select { line-height: 1.2; }
    (900 px and wider, ArtifactController's first `panel`), until the sidebar
    island draws its own. */
 .viewer > .drawer.held { display: none; }
-@media (min-width: 900px) { :root:not([data-drawer="float"]) .viewer > .drawer.held { display: block; } }
+@media (min-width: 900px) { :root:not([data-drawer="float"], .app) .viewer > .drawer.held { display: block; } }
 /* The closed drawer's strip in the static frame (56 px, bordered toward the
    page, as SidebarIsland.svelte draws it) where it shows: 701 to 899 px
    wide, where the threads open closed, docked left or right; not where the
-   bootstrap block says the artifact has no thread (`data-rail="0"`, the
-   inline clax-dsk script). The sidebar island's own takes its place. */
+   bootstrap block, else the artifact's kept shape (view/drawer-shape.ts),
+   says it has no thread (`data-rail="0"`, the inline clax-dsk script), nor
+   in the Clax app's view. The sidebar island's own takes its place. */
 .viewer > .rail-held { display: none; flex: none; width: 56px; border: 0 solid var(--border); border-left-width: 1px; }
 [data-drawer="left"] .viewer > .rail-held { order: -1; border-width: 0 1px 0 0; }
-@media (min-width: 701px) and (max-width: 899px) { :root:not([data-drawer="bottom"], [data-drawer="float"], [data-rail="0"]) .viewer > .rail-held { display: block; } }
+@media (min-width: 701px) and (max-width: 899px) { :root:not([data-drawer="bottom"], [data-drawer="float"], [data-rail="0"], .app) .viewer > .rail-held { display: block; } }
+/* The Clax app's view (`?app=1`, `html.app`, marked by the inline
+   clax-theme script before the body is parsed): no chrome from the first
+   paint, the stage filling the window (nor do the threads' drawer and
+   strip show). The rest of its rules come with the app's host module
+   (app/app.css). */
+html.app .topbar, html.app .sidebar, html.app .phone-tabs, html.app .viewer .drawer, html.app .viewer .rail { display: none; }
+html.app .viewer { margin-bottom: 0; }
 /* A thread's number, on a pin over the frame and on its card. */
 .thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--you); color: var(--on-you); font: 600 11.5px/1 var(--font); font-variant-numeric: tabular-nums; flex: none; padding: 0; }
 .composer .clip { display: block; max-width: 100%; min-height: 24px; object-fit: cover; object-position: left top; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg); }

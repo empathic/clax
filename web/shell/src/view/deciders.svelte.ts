@@ -1,6 +1,6 @@
 // What decides the artifact view's optional parts: the top bar's Inbox,
-// Clone, Publish, the feedback menu and ClaxBot's button and meter, and the
-// questions at the top of the thread list. None of them holds the bar's
+// Clone, Publish, the feedback menu and ClaxBot's runs button and meter, and
+// the questions at the top of the thread list. None of them holds the bar's
 // essential controls (TopbarIsland.svelte): where the page knows a part's
 // answer at the bar's first render (the bootstrap block's `deciders`,
 // crates/clax-server/src/shell/boot.rs, or an answer this module asked for
@@ -11,7 +11,7 @@ import type { InboxSummary, QuestionView } from "../api";
 import { getToken } from "../api";
 import { bootFeedback, readConfig } from "../feedback/boot";
 import { configOnce } from "../feedback/config";
-import type { MeBot } from "../bot/api";
+import type { MeBot, RunSummary } from "../bot/api";
 import type { CloneOptions } from "../ui/clone-api";
 import type { Remotes } from "../ui/publish-api";
 import { type Viewer, getViewer } from "../threads";
@@ -21,13 +21,14 @@ import { type Viewer, getViewer } from "../threads";
  * null and the shell asks), and `inbox` and `owner` as the daemon decides
  * them (null: not known). */
 export type Deciders = {
-  status: Partial<Record<"feedback" | "bot" | "hosted" | "summary" | "questions" | "clone", number>>;
+  status: Partial<Record<"feedback" | "bot" | "hosted" | "summary" | "questions" | "clone" | "runs", number>>;
   feedback: unknown;
   bot: MeBot | null;
   hosted: unknown;
   summary: InboxSummary | null;
   questions: { questions: QuestionView[]; open: number } | null;
   clone: CloneOptions | null;
+  runs: { runs: RunSummary[] } | null;
   inbox: boolean | null;
   owner: boolean | null;
 };
@@ -79,6 +80,9 @@ let remotesAsk: Promise<Remotes | null> | null = null;
 let cloneNow: CloneOptions | null | undefined;
 let remotesNow: Remotes | null | undefined;
 let inboxAsk: Promise<void> | null = null;
+let runsAsk: Promise<RunSummary[]> | null = null;
+let feedbackAsk: Promise<void> | null = null;
+let runsNow: RunSummary[] | undefined;
 
 const answered = (f: keyof Deciders["status"]) => typeof block?.status[f] === "number";
 
@@ -93,13 +97,18 @@ export function startDeciders(id: string, d: Deciders | null, inspecting = false
   // overlay's recorder starts as early as it can.
   bootFeedback(undefined, answered("feedback") ? { body: block!.feedback } : undefined);
   if (answered("feedback")) known.feedback = readConfig(block!.feedback) !== null;
-  else void configOnce().then(b => { known.feedback = readConfig(b) !== null; });
+  else feedbackAsk = configOnce().then(b => { known.feedback = readConfig(b) !== null; }, () => { known.feedback = false; });
   void import("../bot/me").then(m => (answered("bot") ? m.seedBot(block!.status.bot === 200 ? block!.bot : null) : void m.myBot()), () => {});
   if (block && typeof block.owner === "boolean") known.owner = block.owner;
   else void getToken().then(t => { known.owner = !!t; });
   if (!answered("clone")) cloneAsk = import("../ui/clone-api").then(m => m.cloneOptions(id)).catch(() => null).then(o => (cloneNow = o));
   // Publish is the local owner's shell's alone (a hosted owner's token is `cxo_`).
   remotesAsk = getToken().then(t => (t && !t.startsWith("cxo_") ? import("../ui/publish-api").then(m => m.remotesOf(id)) : null)).catch(() => null).then(r => (remotesNow = r));
+  // ClaxBot's runs of the artifact (its button shows while there is one):
+  // none where the daemon has no ClaxBot or refuses this browser.
+  if (answered("runs")) runsNow = block!.status.runs === 200 && Array.isArray(block!.runs?.runs) ? block!.runs.runs : [];
+  runsAsk = runsNow ? Promise.resolve(runsNow) : getToken().then(t => fetch(`/api/bot/runs?artifact=${encodeURIComponent(id)}`, { headers: t ? { authorization: `Bearer ${t}` } : {}, cache: "no-store" }))
+    .then(r => (r.ok ? r.json() : null)).then((b: { runs?: unknown } | null) => (Array.isArray(b?.runs) ? b.runs as RunSummary[] : []), () => []).then(r => (runsNow = r));
   if (block && typeof block.inbox === "boolean") {
     setInbox(block.inbox);
     if (block.inbox && answered("summary") && answered("questions")) {
@@ -156,3 +165,16 @@ export function cloneAsked(): Promise<CloneOptions | null> | null { return clone
 export function remotesKnown(): Remotes | null | undefined { return remotesNow; }
 /** The same, as asked when the page started (null where nothing was asked). */
 export function remotesAsked(): Promise<Remotes | null> | null { return remotesAsk; }
+/** ClaxBot's runs of the artifact as known now (empty: none, or not
+ * answered); undefined while they are on their way. */
+export function runsKnown(): RunSummary[] | undefined { return runsNow; }
+/** The same, as asked when the page started (null where nothing was asked). */
+export function runsAsked(): Promise<RunSummary[]> | null { return runsAsk; }
+
+/** Settles once what decides the feedback menu, Publish and ClaxBot's
+ * runs button is in (an answer or a failure each), where the block did not
+ * say: the view waits for it beside its own data, so they are drawn with
+ * the bar. */
+export function barDecided(): Promise<void> {
+  return Promise.all([feedbackAsk, remotesAsk, runsAsk]).then(() => {}, () => {});
+}

@@ -100,7 +100,8 @@ const ALONE = new Set(["signin", "landing"]);
  * `preload` the build adds); and the question module (`q`, with the view's
  * loader of it) for a browser with an inbox: the bootstrap block's
  * `deciders.inbox`, else the owner's proof; and ClaxBot's part (`bot`)
- * where the block says ClaxBot is on for this browser. */
+ * where the block says ClaxBot is on for this browser or the artifact has
+ * runs. */
 export const ARTIFACT_PRELOAD: Record<string, string | string[]> = {
   bar: ["/src/ui/MoreMenu.svelte", "/src/ui/Who.svelte", "/src/ui/Clone.svelte", "/src/ui/ForkButton.svelte", "/src/ui/GetInClax.svelte", "/src/ui/Share.svelte", "/src/ui/PermissionsPanel.svelte"],
   publish: "/src/ui/Publish.svelte",

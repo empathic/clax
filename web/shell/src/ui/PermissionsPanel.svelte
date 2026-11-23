@@ -10,7 +10,9 @@
   // (ApprovalDialog). Withdrawing an approval changes what the page is
   // served, so the view reloads (ArtifactController.permissionsChanged); the
   // panel then opens again on the new document (the flag `reopenKey`). Loaded after the
-  // first paint (`more-menu.svelte.ts`), which keeps its opener; opened at
+  // first paint (`more-menu.svelte.ts`), which keeps its opener. It opens
+  // once its rows are read (or the read failed), so it is drawn in its
+  // final shape, never as a "Loading…" line its rows then replace; opened at
   // `"policy"` (the blocked notice's Permissions…) it focuses the Content
   // Security Policy setting. Under the rows, the artifact's Content Security
   // Policy, where the daemon says it: for whoever administers it
@@ -69,10 +71,14 @@
   // the answer again, so no row lingers as it was.
   const approvalKey = $derived(JSON.stringify([s.data?.artifact.capabilities_in_force ?? null, s.data?.artifact.pending_capabilities ?? null, s.data?.artifact.may_approve ?? null]));
   $effect(() => { void approvalKey; if (untrack(() => open)) void untrack(load); });
+  let opening = false;
   async function show(at?: "policy") {
+    if (open || opening) return;
+    opening = true;
     back.el = document.activeElement as HTMLElement | null;
+    await load();
+    opening = false;
     open = true;
-    void load();
     if (at === "policy") { await tick(); panel?.querySelector<HTMLElement>("button[name=content_security_policy]")?.focus(); }
   }
 
@@ -157,7 +163,6 @@
     <div class="perm-panel" role="dialog" aria-modal="true" aria-labelledby="perm-title" tabindex="-1" bind:this={panel} onkeydown={keydown}>
       <h2 id="perm-title">Permissions for “{s.data?.artifact.title ?? ""}”</h2>
       {#if error}<p class="err" role="alert">{error}</p>{/if}
-      {#if !answer && !error}<p class="muted">Loading…</p>{/if}
       {#if answer && !rows.length}<p class="muted">This page asks for nothing that needs your permission.</p>{/if}
       <ul>
         {#each rows as r (r.key)}
