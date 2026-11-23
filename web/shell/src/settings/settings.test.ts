@@ -111,6 +111,8 @@ describe("Settings", () => {
     const ready = vi.fn();
     const m = mount(Settings, { onready: ready });
     await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+    // The screen's heading takes focus once its pane shows (it mounted unseen).
+    await vi.waitFor(() => expect(document.activeElement?.textContent).toBe("Confirmations"));
     click(m.root.querySelector(".stg-nav a[href='/settings/remotes']")!);
     await settle();
     expect(m.root.querySelectorAll(".stg-pane.stg-held")).toHaveLength(1);
@@ -118,6 +120,7 @@ describe("Settings", () => {
     await vi.waitFor(() => expect(m.root.querySelector(".stg-held")).toBeNull());
     expect([...m.root.querySelectorAll(".stg-pane .bpg h2")].map(h => h.textContent)).toEqual(["Remotes"]);
     await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(document.activeElement?.textContent).toBe("Remotes"));
   });
 
   it("shows the overview, saying so, for a screen this browser may not open", async () => {

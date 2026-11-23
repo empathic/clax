@@ -110,7 +110,14 @@
   // sought again: it was laid out with no room to scroll it into view until then.
   function tellReady() {
     told = true;
-    void tick().then(() => onready?.()).then(() => { if (!gone && location.hash) seek(); });
+    void tick().then(() => onready?.()).then(() => { if (!gone) { if (location.hash) seek(); else focusHead(); } });
+  }
+  // A screen that takes focus to its heading as it mounts (`BotPage.svelte`)
+  // mounts in its pane unseen, where nothing takes focus: its heading is
+  // focused once the pane shows.
+  function focusHead() {
+    const h = root?.querySelector<HTMLElement>(".stg-pane:not(.stg-held) h2[tabindex='-1']");
+    if (h && document.activeElement !== h && !root?.querySelector(".stg-pane:not(.stg-held)")?.contains(document.activeElement)) h.focus({ preventScroll: true });
   }
   $effect(() => { if (ctx && !screen) { document.title = "Settings · Clax"; tellReady(); } });
   // A screen shown instead of the one asked for is the address's from then on.
