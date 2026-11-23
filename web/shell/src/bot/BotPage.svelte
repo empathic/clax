@@ -53,7 +53,9 @@
     .bpg .stat { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; min-width: 0; }
     .bpg .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
     .bpg .stat span { display: block; font-size: 12px; color: var(--muted); }
-    .bpg .scroll { overflow-x: auto; min-width: 0; }
+    /* What scrolls sideways holds what is positioned in it (a table's visually
+       hidden header), which would otherwise widen the page past the window. */
+    .bpg .scroll { overflow-x: auto; min-width: 0; position: relative; }
     .bpg table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
     .bpg th { text-align: start; font-size: 12px; font-weight: 600; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
     .bpg td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: middle; overflow-wrap: anywhere; }

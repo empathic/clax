@@ -33,7 +33,8 @@
   import FixHistory from "./FixHistory.svelte";
   import { REASON_LABEL, STATE_LABEL, TABS, anchorText, httpUrl, noteOf, queueHref, queueTopic, refusal, reporterName } from "./model";
 
-  const p: { qid: string; tid: string; queue?: api.Queue | null; nav: (e: MouseEvent) => void; stream?: EventStream; zone?: string; locale?: string } = $props();
+  /** `onready`: called once the view shows its first data (the report, or why it did not load). */
+  const p: { qid: string; tid: string; queue?: api.Queue | null; nav: (e: MouseEvent) => void; stream?: EventStream; zone?: string; locale?: string; onready?: () => void } = $props();
   let report = $state<api.Report | null>(null);
   let loadErr = $state<string | null>(null);
   let err = $state<string | null>(null);
@@ -171,7 +172,7 @@
   }
 
   onMount(() => {
-    void refresh();
+    void refresh().then(() => p.onready?.());
     // The topic's first `ready` is its going live as the view opens, which
     // the fetch above covers; a later one is the stream coming back.
     let opened = 0;

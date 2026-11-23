@@ -1,5 +1,6 @@
 import type { Artifact, AttentionSummary, InboxSummary, QuestionView } from "../api";
 import type { HostedMe } from "../hosted/api";
+import type { TagList } from "./tags-api";
 
 /** A field of the gallery's bootstrap that one route answers: its name in
  * the block and the route (each `GET`), as the gallery fetches it. */
@@ -12,6 +13,7 @@ export const GALLERY_ROUTES = {
   attention: "/api/viewers/me/attention",
   summary: "/api/inbox/summary",
   questions: "/api/questions?status=open&limit=200",
+  tags: "/api/tags",
 } as const;
 export type GalleryField = keyof typeof GALLERY_ROUTES;
 
@@ -26,7 +28,7 @@ export type ViewerMe = {
 export type BotMe = { enabled?: boolean; role?: "owner" | "admin" | "member" } & Record<string, unknown>;
 
 /** The daemon's first-load data for a gallery page (`/`, `/inbox`, `/tags`,
- * `/queues…`, `/settings…`, `/people`, `/admin`, `/me`, `/audit`), from
+ * `/queues…`, `/settings…`), from
  * `crates/clax-server/src/shell/gallery.rs`, which documents the contract.
  *
  * Each route field is exactly the JSON body its route (`GALLERY_ROUTES`)
@@ -39,7 +41,8 @@ export type BotMe = { enabled?: boolean; role?: "owner" | "admin" | "member" } &
  *   field was left out): `f` is null and the shell asks
  *   the route itself.
  * - `artifacts`, `attention` and `questions` are there on `/` alone
- *   (absent elsewhere); `summary` (Inbox's count) on every page.
+ *   (absent elsewhere); `tags` on `/tags` alone (the Tags page's list);
+ *   `summary` (Inbox's count) on every page.
  *   `summary` and `questions` are the inbox's (refused, 401 or 403, to a
  *   browser without one).
  * - `inbox`: whether this browser has an inbox, as `inboxBrowser` in
@@ -60,6 +63,7 @@ export type GalleryBoot = {
   attention?: { artifacts: Record<string, AttentionSummary> } | null;
   summary?: InboxSummary | null;
   questions?: { questions: QuestionView[]; open: number } | null;
+  tags?: TagList | null;
 };
 
 /** How this document was reached (`back_forward` for history), from

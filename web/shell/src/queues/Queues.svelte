@@ -11,7 +11,12 @@
   // stream comes back. A queue's name opens its reports (`/queues/<qid>`,
   // `QueueView`), and a report its own view (`/queues/<qid>/<tid>`,
   // `ReportView`; spec 2026-10-29-feedback-loop-design §8): the page moves
-  // between them in place, through the browser's history.
+  // between them in place, through the browser's history. Each view is a
+  // pane made when its address is shown and laid out with no height until
+  // it shows its first data (the list: the queues and each one's counts; a
+  // queue's or a report's view: its own data, and the queues, which name
+  // it); the view shown stays until then, so a move shows no loading line.
+  // The page is ready (`onready`) once its first pane is.
   import { onMount } from "svelte";
   import type { EventStream } from "../stream";
   import * as api from "./api";
@@ -21,7 +26,7 @@
   import QueueView from "./QueueView.svelte";
   import ReportView from "./ReportView.svelte";
 
-  /** `onready`: called once the page shows its first data (the queues, or why they did not load). */
+  /** `onready`: called once the page shows its first data, and again each time it shows another view in place. */
   const p: { stream?: EventStream; onready?: () => void } = $props();
   let queues = $state<api.Queue[] | null>(null);
   let counts = $state<Record<string, Counts | "failed">>({});
@@ -33,8 +38,31 @@
   let managing = $state<Record<string, boolean>>({});
   let path = $state(location.pathname);
   const route = $derived(queuesRoute(path));
-  // The queue a sub-view is of: `null` while the list loads, `undefined` when the viewer has none of that ID.
-  const current = $derived(route.view === "list" ? null : queues ? queues.find(q => q.id === route.qid) : null);
+  // The queue a view is of: `null` while the list loads, `undefined` when the viewer has none of that ID.
+  const queueOf = (qid: string) => (queues ? queues.find(q => q.id === qid) : null);
+  const current = $derived(route.view === "list" ? null : queueOf(route.qid));
+  // The views' panes, by address: the one shown and the one the address
+  // asks for while it gets its first data; `own` is whether a view's own
+  // data is in (the list's is the page's).
+  type Pane = { key: string; ready: boolean; own: boolean };
+  let panes = $state<Pane[]>([]);
+  $effect(() => {
+    const key = path;
+    if (panes.at(-1)?.key === key) return;
+    // Back to the view still shown: the one on its way is dropped.
+    const shown = panes.find(x => x.key === key && x.ready);
+    panes = shown ? [shown] : [...panes.filter(x => x.ready), { key, ready: false, own: queuesRoute(key).view === "list" }];
+  });
+  // The pane asked for shows once its data and the queues (and on the list each one's counts) are in.
+  const counted = $derived(!!queues && queues.every(q => q.id in counts));
+  $effect(() => {
+    const want = panes.at(-1);
+    if (!want || want.ready || want.key !== path || !want.own || (!queues && !loadError)) return;
+    if (queuesRoute(want.key).view === "list" && queues && !counted) return;
+    panes = [{ ...want, ready: true }];
+    p.onready?.();
+  });
+  const viewReady = (key: string) => { panes = panes.map(x => (x.key === key ? { ...x, own: true } : x)); };
 
   /** Follows a plain click on a link to another of the page's views in place. */
   function nav(e: MouseEvent) {
@@ -100,7 +128,7 @@
   });
 
   onMount(() => {
-    void load().then(() => p.onready?.());
+    void load();
     const back = () => moved();
     addEventListener("popstate", back);
     const off = p.stream?.watch(["gallery"], e => { if (e.type === "ready" || e.type === "resync") void load(); });
@@ -108,10 +136,13 @@
   });
 </script>
 
-{#if route.view === "queue"}
-  {#key route.qid}<QueueView qid={route.qid} queue={current} {nav} stream={p.stream} />{/key}
-{:else if route.view === "report"}
-  {#key `${route.qid}/${route.tid}`}<ReportView qid={route.qid} tid={route.tid} queue={current} {nav} stream={p.stream} />{/key}
+{#each panes as pane (pane.key)}
+{@const at = queuesRoute(pane.key)}
+<div class={pane.ready ? "qpane" : "qpane held"}>
+{#if at.view === "queue"}
+  <QueueView qid={at.qid} queue={queueOf(at.qid)} {nav} stream={p.stream} onready={() => viewReady(pane.key)} />
+{:else if at.view === "report"}
+  <ReportView qid={at.qid} tid={at.tid} queue={queueOf(at.qid)} {nav} stream={p.stream} onready={() => viewReady(pane.key)} />
 {:else}
 <section class="queues" aria-labelledby="queues-h">
   <header class="qh">
@@ -163,8 +194,12 @@
   {/if}
 </section>
 {/if}
+</div>
+{/each}
 
 <style>
+  /* A view laid out with no height until it shows its first data. */
+  .held { height: 0; overflow: hidden; visibility: hidden; }
   .queues { max-width: 880px; margin: 0 auto; min-width: 0; }
   .qh { display: flex; align-items: center; gap: 8px 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
   .qh h2 { margin: 0; font-size: 22px; line-height: 1.2; }

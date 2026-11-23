@@ -70,8 +70,8 @@
   import { afterPaint } from "../view/after-paint";
   import { groups, markers } from "../view/attention-model";
   import type { GalleryBoot } from "../view/gallery-boot";
-  import { REST_AFTER_NEEDS, REST_HEADING, REST_NOTE, SKELETON_HTML } from "../view/gallery-frame";
-  import { keepShape, measureShape } from "../view/gallery-shape";
+  import { REST_AFTER_NEEDS, REST_HEADING, REST_NOTE, frameSkeleton } from "../view/gallery-frame";
+  import { keepShape, measureShape, shapeKeyOf } from "../view/gallery-shape";
   import { filterArtifacts, orderArtifacts } from "../view/gallery-model";
   import { type Answer, type Content, type Header, type Io, type TokenAnswer, contentFromBlock, gatherContent, gatherHeader, header as decide, headerFromBlock, topOf } from "../view/gallery-start";
   import { barTags, canonical, carriesAll, holds, refsForUrl, same, tagsFromUrl, tagsInUse, toggle, withTags } from "../view/tags-model";
@@ -87,6 +87,8 @@
   import ThemeSwitch from "./ThemeSwitch.svelte";
 
   type Lazy = typeof import("./gallery-working");
+  // The skeleton: the static frame's, read before this page takes its place.
+  const SKELETON = frameSkeleton();
   const p: { boot?: GalleryBoot | null } = $props();
   // svelte-ignore state_referenced_locally
   const boot = p.boot ?? null;
@@ -160,8 +162,14 @@
   const revealed = $derived(pageShown && !!hdr && bannerIn);
   // The skeleton shows (`main` busy): until the content, the page or a failure ends it.
   const pending = $derived(!failed && (listing ? !ready : inbox ? hasInbox !== false && !revealed : !revealed));
-  /** Shows the page; resolves once it is on screen. */
-  const shownPage = () => { pageShown = true; return tick(); };
+  /** Shows the page, or the view it moved to in place (a page calls it
+   * again then); resolves once it is on screen. A view moved to keeps its
+   * shape once painted, as the first does. */
+  const shownPage = () => {
+    if (pageShown && revealed) { cancelKeep?.(); cancelKeep = afterPaint(keepNow); }
+    pageShown = true;
+    return tick();
+  };
   let unPage: (() => void) | undefined;
   let destroyed = false;
   let cancelLive: (() => void) | undefined;
@@ -267,21 +275,24 @@
     });
   };
 
+  // What `main` shows is the page's: the list, a page with its first data,
+  // or the line saying this browser has no inbox.
+  const settledPage = $derived(listing ? ready : revealed || (inbox && hasInbox === false && !!hdr));
   /** Keeps the page's shape for the next load's skeleton (view/gallery-shape.ts). */
   const keepNow = () => {
-    if (failed || (listing ? !ready || error || query.trim() || sel.length : !revealed)) return;
-    keepShape(top, measureShape(document, listing && artifacts ? { need: g?.needs.length ?? 0, rest: g?.rest.length ?? 0, tile: hdr?.me?.may_create === true, empty: artifacts.length === 0 } : undefined));
+    if (failed || !settledPage || (listing && (error || query.trim() || sel.length))) return;
+    keepShape(shapeKeyOf(location.pathname), measureShape(document, listing && artifacts ? { need: g?.needs.length ?? 0, rest: g?.rest.length ?? 0, tile: hdr?.me?.may_create === true, empty: artifacts.length === 0 } : undefined));
   };
   // Measured once its first render is painted, laid out as the person sees it.
   let cancelKeep: (() => void) | undefined;
-  $effect(() => { if ((listing ? ready : revealed) && !cancelKeep) cancelKeep = afterPaint(keepNow); });
+  $effect(() => { if (settledPage && !cancelKeep) cancelKeep = afterPaint(keepNow); });
 
   onMount(() => {
     addEventListener("clax:people-gone", recheck);
     const headerP = hdr ? Promise.resolve(hdr) : gatherHeader(boot, io, tokenP);
     // The links' remembered width held their slot until now (the inline clax-shape script).
     void headerP.then(h => { if (destroyed) return; hdr = h; void loadBanner(h).then(() => { bannerIn = true; }); document.documentElement.style.removeProperty("--sk-links"); headerIn(h); });
-    if (sub) void lazy().then(m => { if (!destroyed && pageHost) unPage = m.page(sub, pageHost, shownPage, () => { failed = true; }); }, () => { failed = true; });
+    if (sub) void lazy().then(m => { if (!destroyed && pageHost) unPage = m.page(sub, pageHost, shownPage, () => { failed = true; }, boot); }, () => { failed = true; });
     if (!listing) { void lazy().then(m => { if (!destroyed) lm = m; }, () => {}); return; }
     addEventListener("pagehide", keep); addEventListener("click", keep, true);
     if (back) scrollTo(0, back);
@@ -331,12 +342,12 @@
   {#if !listing && revealed}{@render usage()}{/if}
   {#if inbox}
     {#if hasInbox && Page}<div class={revealed ? "gpage" : "gpage pending"}><Page stream={lm?.pageStream()} onready={shownPage} /></div>{/if}
-    {#if hasInbox === false}<p class="empty">This browser has no inbox: open the owner's at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{:else if failed}{@render trouble()}{:else if !revealed}{@html SKELETON_HTML}{/if}
+    {#if hasInbox === false}<p class="empty">This browser has no inbox: open the owner's at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{:else if failed}{@render trouble()}{:else if !revealed}{@html SKELETON}{/if}
   {:else if sub}
     <div class={revealed ? "gpage" : "gpage pending"} bind:this={pageHost}></div>
-    {#if failed}{@render trouble()}{:else if !revealed}{@html SKELETON_HTML}{/if}
+    {#if failed}{@render trouble()}{:else if !revealed}{@html SKELETON}{/if}
   {:else if !ready}
-    {@html SKELETON_HTML}
+    {@html SKELETON}
   {:else}
   {@render usage()}
   {#if Summary}<Summary />{/if}

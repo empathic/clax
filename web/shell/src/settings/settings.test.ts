@@ -76,6 +76,28 @@ describe("Settings", () => {
     expect(m.root.querySelector(".stg-over")).not.toBeNull();
   });
 
+  it("keeps the screen shown until the next one has its first data, then shows it in its place", async () => {
+    history.replaceState(null, "", "/settings/confirmations");
+    let answer: (() => void) | undefined;
+    const mutes = new Promise<void>(r => { answer = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url === "/api/remotes/mutes" ? mutes.then(() => new Response(JSON.stringify({ mutes: [] }))) : new Response("{}", { status: 404 }))));
+    const ready = vi.fn();
+    const m = mount(Settings, { onready: ready });
+    await vi.waitFor(() => expect(m.root.querySelector(".stg-pane:not(.stg-held) .bpg h2")?.textContent).toBe("Confirmations"));
+    await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+    click(m.root.querySelector(".stg-nav a[href='/settings/remotes']")!);
+    await settle();
+    // The address and the navigation move at once; the screen shown stays, the next laid out unseen.
+    expect(location.pathname).toBe("/settings/remotes");
+    expect(m.root.querySelector(".stg-nav [aria-current=page]")!.textContent).toBe("Remotes");
+    expect([...m.root.querySelectorAll(".stg-pane:not(.stg-held) .bpg h2")].map(h => h.textContent)).toEqual(["Confirmations"]);
+    expect(m.root.querySelectorAll(".stg-pane.stg-held")).toHaveLength(1);
+    answer!();
+    await vi.waitFor(() => expect([...m.root.querySelectorAll(".stg-pane .bpg h2")].map(h => h.textContent)).toEqual(["Remotes"]));
+    expect(m.root.querySelector(".stg-held")).toBeNull();
+    expect(ready).toHaveBeenCalledTimes(2);
+  });
+
   it("shows the overview, saying so, for a screen this browser may not open", async () => {
     who = { hosted: true, owner: false, member: true, admin: false, bot: false };
     history.replaceState(null, "", "/settings/provider");

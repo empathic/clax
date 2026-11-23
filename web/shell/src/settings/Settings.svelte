@@ -22,7 +22,11 @@
   // for with its own first data (each part of a screen that fetches holds
   // the reveal until its first answer: `first-data.ts`), or a line saying
   // the screen's chunk could not load. The gallery says it is loading until
-  // then, so the "Loading…" lines here speak only once it has.
+  // then. Each screen is a pane (`ScreenPane.svelte`) made when its address
+  // is shown and laid out with no height until it is ready the same way:
+  // moving to another screen keeps the one shown (or the overview) until
+  // the next one's pane is ready, and then shows it in its place, so no
+  // move shows a loading line or a screen without its data.
   //
   // On a hosted Clax, Sign out ends the navigation and the overview, for
   // every member on every screen: it forgets the person's reporter, ends
@@ -31,14 +35,13 @@
   import { refusal } from "../people/refusal";
   import type { EventStream } from "../stream";
   import { context } from "./context";
-  import { Reveal, provideReveal } from "./first-data";
   import { GO, openPalette } from "./palette";
   import { type Ctx, type Screen, groupsFor, idOf, screenFor } from "./screens";
+  import ScreenPane from "./ScreenPane.svelte";
   import Search from "./Search.svelte";
 
-  /** `onready`: called once the page shows its first data (what this browser may open, and the screen asked for). */
+  /** `onready`: called once the page shows its first data (what this browser may open, and the screen asked for), and again each time it shows another screen in place. */
   let { stream, onready }: { stream?: EventStream; onready?: () => void | Promise<void> } = $props();
-  type Body = Component<{ stream?: EventStream; part?: string; tab?: string }>;
   const people = (part: string) => ({ load: () => import("../people/People.svelte"), part });
   const admin = (tab: string) => ({ load: () => import("../bot/AdminPage.svelte"), tab });
   /** Each screen's component, and the part or tab of it the screen is. */
@@ -52,15 +55,16 @@
     audit: { load: () => import("../bot/AuditPage.svelte") },
   };
 
+  // The screen the address names starts loading with Settings, beside the
+  // asks of who this browser is, not after them.
+  void BODY[idOf(location.pathname) ?? ""]?.load().catch(() => {});
+
   let ctx = $state<Ctx | null>(null);
   // The address shown: its path, and a number that changes with each move,
   // so a screen opened again (another query) starts afresh.
   let path = $state(location.pathname);
   let visit = $state(0);
   let query = $state("");
-  let Shown = $state<Body | null>(null);
-  // The screen's chunk did not load.
-  let broken = $state(false);
   let root: HTMLElement | undefined = $state();
   const asked = $derived(idOf(path));
   const screen = $derived<Screen | null>(ctx && asked ? screenFor(asked, ctx) : null);
@@ -69,21 +73,40 @@
   // The Settings key as this machine writes it.
   const KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl K";
 
-  // The screen's chunk, loaded when the screen changes.
-  let loaded = "";
+  // The screens' panes: the one shown (ready) and the one the address asks
+  // for while it gets its first data, each keyed by its screen and visit.
+  type Pane = { key: string; id: string; ready: boolean };
+  let panes = $state<Pane[]>([]);
+  // The pane the address asks for ("" for the overview).
+  let want = "";
   $effect(() => {
-    const id = screen?.id ?? "";
-    if (id === loaded) return;
-    loaded = id; Shown = null; broken = false;
-    if (id) void BODY[id].load().then(m => { if (!gone && loaded === id) Shown = m.default as Body; }, () => { if (!gone && loaded === id) broken = true; });
+    const key = screen ? `${screen.id} ${visit}` : "";
+    if (key === want) return;
+    want = key;
+    panes = screen ? [...panes.filter(x => x.ready), { key, id: screen.id, ready: false }] : [];
   });
-  $effect(() => { if (ctx && !screen) document.title = "Settings · Clax"; });
+  const shownPane = $derived(panes.find(x => x.ready) ?? null);
+  // The page has said it is ready (`onready`).
   let told = $state(false);
-  // Shown, the setting the address names is sought again: it was laid out
-  // with no room to scroll it into view until then.
-  const reveal = new Reveal(() => { void Promise.resolve(onready?.()).then(() => { if (!gone && location.hash) seek(); }); });
-  provideReveal(reveal);
-  $effect(() => { if (!told && ctx && (!screen || Shown || broken)) { told = true; reveal.arm(); } });
+  // A screen's layout (the navigation beside the body): once a screen's
+  // pane is ready, and on the first load before that (the gallery keeps
+  // the page from view until it is ready).
+  const onScreen = $derived(!!shownPane || (!told && !!screen));
+  /** The pane `key` has its first data: it takes the shown one's place,
+   * unless the address has moved on since. */
+  function paneReady(key: string) {
+    if (gone || key !== want) return;
+    panes = panes.filter(x => x.key === key).map(x => ({ ...x, ready: true }));
+    tellReady();
+  }
+  // Says the page shows its first data, or another screen in place (the
+  // gallery keeps its shape then); shown, the setting the address names is
+  // sought again: it was laid out with no room to scroll it into view until then.
+  function tellReady() {
+    told = true;
+    void tick().then(() => onready?.()).then(() => { if (!gone && location.hash) seek(); });
+  }
+  $effect(() => { if (ctx && !screen) { document.title = "Settings · Clax"; tellReady(); } });
   // A screen shown instead of the one asked for is the address's from then on.
   $effect(() => { if (screen && asked && screen.id !== asked) { history.replaceState(history.state, "", `/settings/${screen.id}${location.search}${location.hash}`); path = location.pathname; } });
 
@@ -157,10 +180,11 @@
 {/snippet}
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="stg" class:on-screen={!!screen} bind:this={root} onclick={clicked}>
+<div class="stg" class:on-screen={onScreen} bind:this={root} onclick={clicked}>
   {#if !ctx}
     <p class="stg-note">Loading…</p>
-  {:else if screen}
+  {:else}
+  {#if onScreen && screen}
     <nav class="stg-nav" aria-label="Settings">
       <a class="stg-home" href="/settings">Settings</a>
       <button type="button" class="stg-find" onclick={openPalette}>
@@ -175,17 +199,11 @@
       {/each}
       {@render out()}
     </nav>
-    <div class="stg-body">
-      <div class="stg-back"><a href="/settings">‹ All settings</a><button type="button" class="ghost" aria-label="Search settings" onclick={openPalette}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg></button></div>
-      {#key `${screen.id} ${visit}`}
-        {#if Shown}<Shown {stream} part={BODY[screen.id].part} tab={BODY[screen.id].tab} />{:else if broken}<p class="stg-note" role="alert">This screen could not load. <button type="button" class="ghost" onclick={() => location.reload()}>Reload to try again</button></p>{:else}<p class="stg-note" role={told ? "status" : undefined}>Loading…</p>{/if}
-      {/key}
-    </div>
   {:else}
     <div class="stg-over">
       <div class="stg-head"><h2>Settings</h2></div>
       {#if !ctx.member}<p class="stg-note">Settings are for the owner of this Clax and the people they connect.</p>
-      {:else if asked}<p class="stg-note">That screen is not one this browser can open here. These are the settings it can.</p>{/if}
+      {:else if asked && !screen}<p class="stg-note">That screen is not one this browser can open here. These are the settings it can.</p>{/if}
       <Search {ctx} bind:query onGo={go} />
       {#if !query.trim()}
         {#each groups as g (g.name)}
@@ -199,6 +217,15 @@
         {@render out()}
       {/if}
     </div>
+  {/if}
+  {#if panes.length}
+    <div class={onScreen ? "stg-body" : "stg-body stg-held"}>
+      {#if onScreen}<div class="stg-back"><a href="/settings">‹ All settings</a><button type="button" class="ghost" aria-label="Search settings" onclick={openPalette}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg></button></div>{/if}
+      {#each panes as pn (pn.key)}
+        <div class={pn.ready ? "stg-pane" : "stg-pane stg-held"}><ScreenPane load={BODY[pn.id].load} part={BODY[pn.id].part} tab={BODY[pn.id].tab} {stream} onready={() => paneReady(pn.key)} /></div>
+      {/each}
+    </div>
+  {/if}
   {/if}
 </div>
 
@@ -223,6 +250,10 @@
     .stg-out button { color: var(--fg); font-weight: 600; }
     .stg-err { margin: 6px 0 0; color: var(--danger); font-size: 13px; }
     .stg-body { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+    .stg-pane { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+    /* A pane, or the body, laid out with no height until it is ready to show. */
+    .stg-held { height: 0; overflow: hidden; visibility: hidden; }
+    .stg-body > .stg-held { margin-top: -12px; }
     .stg-back { display: none; align-items: center; justify-content: space-between; gap: 8px; }
     .stg-back a { font-weight: 600; font-size: 14px; color: var(--fg); text-decoration: none; padding: 8px 4px; }
     /* A screen's own frame fills the column from its start. */

@@ -28,6 +28,35 @@ describe("Queues", () => {
     expect(document.title).toBe("Queues · Clax");
   });
 
+  it("is ready once the queues are counted, and keeps the list shown until a queue's view has its reports", async () => {
+    history.replaceState(null, "", "/queues");
+    let answer: (() => void) | undefined;
+    const held = new Promise<void>(r => { answer = r; });
+    let views = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/api/queues") return new Response(JSON.stringify({ queues: [QUEUE] }));
+      // The list's count, then the queue's view's first page, held.
+      if (url.startsWith("/api/queues/q1/reports")) { if (url.includes("order=newest") && views++ === 0) await held; return new Response(JSON.stringify({ reports: [], next: null })); }
+      return new Response("{}", { status: 404 });
+    }));
+    const ready = vi.fn();
+    const m = mount(Queues, { onready: ready });
+    await settle();
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(m.root.querySelector(".qcard .counts")!.textContent).not.toContain("Counting");
+    click(m.root.querySelector('.qcard h3 a'));
+    await settle();
+    expect(location.pathname).toBe("/queues/q1");
+    // The list stays in view; the queue's view is laid out unseen until its reports are in.
+    expect(m.root.querySelector(".qpane:not(.held) .queues")).not.toBeNull();
+    expect(m.root.querySelector(".qpane.held .qview")).not.toBeNull();
+    answer!();
+    await vi.waitFor(() => expect(m.root.querySelector(".qpane:not(.held) .qview .qnone")).not.toBeNull());
+    expect(m.root.querySelector(".queues")).toBeNull();
+    expect(ready).toHaveBeenCalledTimes(2);
+    history.replaceState(null, "", "/");
+  });
+
   it("makes a queue from the form, its origins one per line, and refuses a line that is not an origin", async () => {
     const calls = stubFetch(routes({ "POST /api/queues": { queue: { ...QUEUE, id: "q2" } } }));
     const m = mount(Queues, {});

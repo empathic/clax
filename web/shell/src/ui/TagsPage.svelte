@@ -11,21 +11,27 @@
   // A refused change says why until the next one. Closing a form returns
   // focus to the button that opened it, and a delete to the next row. The
   // list is fetched again on the `tags` event, and when the stream comes
-  // back.
+  // back. Loaded with the page's bootstrap block (`boot`), the list and
+  // what this viewer may do are its answers, and the page shows them at once.
   import { onMount, tick } from "svelte";
   import type { EventStream } from "../stream";
+  import { type GalleryBoot, answered } from "../view/gallery-boot";
   import { COLOURS } from "../view/tags-model";
   import { type TagFields, type TagList, type TagView, createTag, deleteTag, failure, listTags, updateTag } from "../view/tags-api";
   import TagForm from "./TagForm.svelte";
 
   /** `onready`: called once the page shows its first data (the list and what this viewer may do). */
-  const p: { stream: EventStream; onready?: () => void } = $props();
-  let list = $state<TagList | null>(null);
+  const p: { stream: EventStream; onready?: () => void; boot?: GalleryBoot | null } = $props();
+  // svelte-ignore state_referenced_locally
+  const b = p.boot ?? null;
+  // The block's answers, where it has them (a refusal of the tags is asked again, to say why).
+  const fromBlock = !!b && b.status.tags === 200 && !!b.tags && answered(b, "viewer");
+  let list = $state<TagList | null>(fromBlock ? b!.tags! : null);
   // Why the list could not load, and why the last change was refused.
   let loadError = $state<string | null>(null);
   let error = $state<string | null>(null);
   // Whether this viewer makes artifacts (`GET /api/viewers/me` `may_create`).
-  let mayCreate = $state(false);
+  let mayCreate = $state(fromBlock && b!.viewer?.may_create === true);
   let root: HTMLElement | undefined = $state();
   let status = $state("");
   // The form open: a tag's ID, "new", or none.
@@ -76,7 +82,8 @@
 
   onMount(() => {
     document.title = "Tags · Clax";
-    void Promise.all([load(), fetch("/api/viewers/me").then(r => (r.ok ? r.json() : null)).then((b: { may_create?: boolean } | null) => { mayCreate = !!b?.may_create; }, () => {})]).then(() => p.onready?.());
+    if (fromBlock) p.onready?.();
+    else void Promise.all([load(), fetch("/api/viewers/me").then(r => (r.ok ? r.json() : null)).then((v: { may_create?: boolean } | null) => { mayCreate = !!v?.may_create; }, () => {})]).then(() => p.onready?.());
     return p.stream.watch(["gallery"], e => { if (e.type === "tags" || e.type === "ready" || e.type === "resync") void load(); });
   });
 </script>

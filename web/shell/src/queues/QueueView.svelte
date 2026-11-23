@@ -20,7 +20,8 @@
   import * as api from "./api";
   import { STATE_LABEL, TABS, noteOf, queueTopic, refusal, reportHref, reporterName } from "./model";
 
-  const p: { qid: string; queue?: api.Queue | null; nav: (e: MouseEvent) => void; stream?: EventStream } = $props();
+  /** `onready`: called once the view shows its first data (the tab's first page of reports, or why it did not load). */
+  const p: { qid: string; queue?: api.Queue | null; nav: (e: MouseEvent) => void; stream?: EventStream; onready?: () => void } = $props();
   const fromUrl = () => TABS.find(t => t.key === new URLSearchParams(location.search).get("state"))?.key ?? "active";
   let tab = $state(fromUrl());
   let reports = $state<api.Report[] | null>(null);
@@ -119,7 +120,7 @@
   const fixes = (r: api.Report) => r.fixes?.length ?? 0;
 
   onMount(() => {
-    void load();
+    void load().then(() => p.onready?.());
     // The topic's first `ready` is its going live as the view opens, which
     // the fetch above covers; a later one is the stream coming back.
     let opened = 0;

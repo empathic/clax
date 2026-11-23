@@ -7,7 +7,7 @@ import { banner } from "../bot/model";
 import { groups } from "./attention-model";
 import type { GalleryBoot } from "./gallery-boot";
 import { SKELETON_CARDS } from "./gallery-frame";
-import { SHAPE_KEY, type Shape, cleanShape, forgetShapes, keepShape, keptShape, measureShape } from "./gallery-shape";
+import { SHAPE_KEY, type Shape, cleanShape, forgetShapes, keepShape, keptShape, measureShape, shapeKeyOf } from "./gallery-shape";
 
 /** A Storage over a map, or one that throws on every call. */
 function storage(init: Record<string, string> = {}, throws = false): Storage {
@@ -70,6 +70,31 @@ describe("the kept shapes", () => {
     expect(measureShape(document)).not.toHaveProperty("rest");
     document.body.replaceChildren();
   });
+
+  it("measures a page beside the gallery's height from main's content top, once it shows, and the gallery's list none", () => {
+    document.documentElement.dataset.page = "page";
+    document.body.innerHTML = `<main class="gal" style="padding-top:28px"><div class="gpage pending"></div></main>`;
+    const main = document.querySelector("main")!;
+    const page = document.querySelector(".gpage")!;
+    main.getBoundingClientRect = () => ({ top: 60, bottom: 960 }) as DOMRect;
+    page.getBoundingClientRect = () => ({ top: 88, bottom: 600.5 }) as DOMRect;
+    expect(measureShape(document)).not.toHaveProperty("ph");
+    page.classList.remove("pending");
+    expect(measureShape(document).ph).toBe(512.5);
+    delete document.documentElement.dataset.page;
+    expect(measureShape(document)).not.toHaveProperty("ph");
+    document.body.replaceChildren();
+  });
+
+  it("keeps each Settings screen's shape apart, and one for every queue's view and every report's", () => {
+    expect(["/", "/tags", "/settings", "/settings/people", "/queues", "/queues/q1", "/queues/q1/t9"].map(shapeKeyOf)).toEqual(["/", "/tags", "/settings", "/settings/people", "/queues", "/queues/*", "/queues/*/*"]);
+    const s = storage();
+    for (const k of ["/settings/people", "/queues/*", "/queues/*/*"]) keepShape(k, { w: 1280, links: 0, ban: 0, sum: 0, tb: 0, ph: 40 }, s);
+    expect(keptShape("/queues/*/*", s)).toMatchObject({ ph: 40 });
+    expect(keptShape("/settings/people", s)).toMatchObject({ ph: 40 });
+    keepShape("/queues/q1", SHAPE, s);
+    expect(keptShape("/queues/q1", s)).toBeNull();
+  });
 });
 
 // The inline `clax-shape` script, run as the page runs it: after the block
@@ -84,7 +109,7 @@ function run(o: Run = {}): Out {
   const root = document.documentElement;
   root.dataset.page = o.kind ?? "gallery";
   delete root.dataset.sk;
-  for (const v of ["--sk-ban", "--sk-sum", "--sk-tb", "--sk-links", "--sk-nh"]) root.style.removeProperty(v);
+  for (const v of ["--sk-ban", "--sk-sum", "--sk-tb", "--sk-links", "--sk-nh", "--sk-ph"]) root.style.removeProperty(v);
   document.head.replaceChildren();
   if (o.block !== undefined) {
     const b = document.createElement("script");
@@ -98,7 +123,7 @@ function run(o: Run = {}): Out {
   new Function("document", "location", "localStorage", "performance", "innerWidth", script)(document, { pathname: o.path ?? "/", search: o.search ?? "" }, storage(kept, o.throws), perf, o.width ?? 1280);
   const style = document.head.querySelector("style")?.textContent ?? "";
   const nth = (g: string) => { const m = new RegExp(`\\.sk-${g} \\.sk-c:nth-child\\(n\\+(\\d+)\\)`).exec(style); return m ? Number(m[1]) - 1 : -1; };
-  const vars = Object.fromEntries(["--sk-ban", "--sk-sum", "--sk-tb", "--sk-links", "--sk-nh"].map(v => [v, root.style.getPropertyValue(v)]).filter(([, v]) => v));
+  const vars = Object.fromEntries(["--sk-ban", "--sk-sum", "--sk-tb", "--sk-links", "--sk-nh", "--sk-ph"].map(v => [v, root.style.getPropertyValue(v)]).filter(([, v]) => v));
   return { sk: (root.dataset.sk ?? "").split(" ").filter(Boolean), vars, need: nth("need"), rest: nth("rest") };
 }
 
@@ -172,13 +197,17 @@ describe("the inline clax-shape script", () => {
   });
 
   it("uses the shape kept for the page where there is no block, its heights only at the width it was measured", () => {
-    const kept = { "/": SHAPE, "/settings": { w: 1280, links: 120, ban: 62, sum: 0, tb: 0 } };
+    const kept = { "/": SHAPE, "/settings/people": { w: 1280, links: 120, ban: 62, sum: 0, tb: 0, ph: 480.5 }, "/queues/*": { w: 1280, links: 120, ban: 0, sum: 0, tb: 0, ph: 300 } };
     expect(run({ kept })).toEqual({ sk: ["sum", "tb", "known", "need"], vars: { "--sk-sum": "431.25px", "--sk-tb": "44px", "--sk-links": "212.5px" }, need: 2, rest: 5 });
     // The needs group's height, for as many cards as it had.
     expect(run({ kept: { "/": { ...SHAPE, nh: 310.5 } } }).vars["--sk-nh"]).toBe("310.5px");
     expect(run({ kept: { "/": { ...SHAPE, nh: 310.5 } }, block: block([art("a")], { a: att({ addressed: ["t"] }) }) }).vars["--sk-nh"]).toBeUndefined();
     expect(run({ kept, width: 390 })).toEqual({ sk: ["sum", "tb", "known", "need"], vars: {}, need: 2, rest: 5 });
-    expect(run({ kept, path: "/settings/people", kind: "page" })).toMatchObject({ sk: ["ban"], vars: { "--sk-ban": "62px", "--sk-links": "120px" } });
+    // A page beside the gallery: each Settings screen its own, a queue's view one for every queue, and the height it took.
+    expect(run({ kept, path: "/settings/people", kind: "page" })).toMatchObject({ sk: ["ban", "ph"], vars: { "--sk-ban": "62px", "--sk-links": "120px", "--sk-ph": "480.5px" } });
+    expect(run({ kept, path: "/settings/audit", kind: "page" })).toMatchObject({ sk: [], vars: {} });
+    expect(run({ kept, path: "/queues/q7", kind: "page" })).toMatchObject({ sk: ["ph"], vars: { "--sk-ph": "300px" } });
+    expect(run({ kept, path: "/queues/q7", kind: "page", width: 390 })).toMatchObject({ sk: [], vars: {} });
     expect(run({ kept: { "/": { ...SHAPE, empty: true, tile: 1, need: 0, rest: 1 } } }).sk).toEqual(["sum", "tb", "known", "empty", "tile"]);
   });
 

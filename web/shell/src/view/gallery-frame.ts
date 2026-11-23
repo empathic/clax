@@ -8,7 +8,7 @@ import { MARK_SVG } from "./mark";
 // header puts it; `main` holding the skeleton; and the footer (and after
 // them the sign-in pages' frame, `AUTH_FRAME_HTML`). The
 // gallery's entry mounts `Gallery.svelte` in its place in one task
-// (`gallery-main.ts`), which shows the same skeleton (`SKELETON_HTML`)
+// (`gallery-main.ts`), which shows the same skeleton (`frameSkeleton`)
 // until its content is in. The footer stays: the gallery adds a hosted
 // Clax's legal links to it. The inline `clax-page` script marks the root
 // with the page's kind (`data-page`, `gallery-start.ts` `pageKind`): the
@@ -59,6 +59,15 @@ export const SKELETON_HTML = `<div class="gskel"><p class="vh" role="status">${L
   + `<section class="grp rest sk-rest"><h2><span class="sw"></span><span class="sk-a">${REST_HEADING}</span><span class="sk-e">${REST_AFTER_NEEDS}</span><small>${REST_NOTE}</small></h2>${cards}</section>`
   + `<div class="sk-ls"><div class="sk-h"></div><div class="sk-l"></div><div class="sk-l"></div><div class="sk-l"></div><div class="sk-l"></div></div>`
   + `</div></div>`;
+
+/** The skeleton the gallery shows until its content is in: the static
+ * frame's own (the entry's `index.html` carries `SKELETON_HTML` in `main`),
+ * read from `doc` before the gallery takes the frame's place, so the
+ * entry's code carries none of it; where the document has no frame, only
+ * the polite status. */
+export function frameSkeleton(doc: Document = document): string {
+  return doc.querySelector("main.gal > .gskel")?.outerHTML ?? `<div class="gskel"><p class="vh" role="status">${LOADING}</p></div>`;
+}
 
 /** The footer under every gallery page. */
 export const FOOTER_HTML = `<nav class="glegal" aria-label="About Clax"><a href="https://github.com/empathic/clax" target="_blank" rel="noopener">Source on GitHub</a></nav>`;

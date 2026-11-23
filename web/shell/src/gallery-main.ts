@@ -5,7 +5,6 @@ import Gallery from "./ui/Gallery.svelte";
 import { answered, readGalleryBoot } from "./view/gallery-boot";
 import { replaceFrame } from "./view/gallery-frame";
 import { LANDING_PATH, SIGN_IN_PATH } from "./view/gallery-start";
-import { readSignInBoot, statusOf } from "./hosted/signin-boot";
 
 const target = document.getElementById("app")!;
 // A hosted daemon's sign-in pages (`/setup`, `/device`, `/join/<code>`, `/signin[/<code>]`)
@@ -13,13 +12,14 @@ const target = document.getElementById("app")!;
 // The entry's static frame (`view/gallery-frame.ts`) shows each its own
 // frame until its chunk is in, and the page takes the frame's place in the
 // task its chunk arrives in: the frame painted last is the page's layout.
+// Their block's reader (`hosted/signin-boot.ts`) is in their chunks, not
+// the gallery's entry.
 if (SIGN_IN_PATH.test(location.pathname)) {
-  const boot = readSignInBoot();
-  void import("./hosted/SignIn.svelte").then(m => { target.replaceChildren(); mount(m.default, { target, props: { boot } }); });
+  void Promise.all([import("./hosted/SignIn.svelte"), import("./hosted/signin-boot")]).then(([m, b]) => { const boot = b.readSignInBoot(); target.replaceChildren(); mount(m.default, { target, props: { boot } }); });
 } else if (location.pathname === LANDING_PATH) {
-  const boot = readSignInBoot();
-  const signedIn = statusOf(boot, "hosted") === 200 ? !!boot?.hosted?.signed_in : null;
-  void import("./hosted/Landing.svelte").then(m => {
+  void Promise.all([import("./hosted/Landing.svelte"), import("./hosted/signin-boot")]).then(([m, b]) => {
+    const boot = b.readSignInBoot();
+    const signedIn = b.statusOf(boot, "hosted") === 200 ? !!boot?.hosted?.signed_in : null;
     // The quickstart's frame stays where the static frame put it (moving
     // an iframe loads it again); the landing's header takes the frame's.
     const stage = landingStage();

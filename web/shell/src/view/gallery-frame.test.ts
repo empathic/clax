@@ -97,6 +97,9 @@ describe("the mounted gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
       vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
       const { default: Gallery } = await import("../ui/Gallery.svelte");
       const { mount } = await import("../test/svelte");
+      // The entry's static frame, whose skeleton the gallery shows as its own.
+      const app = Object.assign(document.createElement("div"), { id: "app", innerHTML: FRAME_HTML });
+      document.body.append(app);
       const { root, unmount } = mount(Gallery, {});
       const frame = parse(path === "/" ? HEADER_HTML : HEADER_HTML.replace(/<input[^>]*>/, ""));
       expect(shape(root.querySelector(".gbar")!)).toEqual(shape(frame.querySelector(".gbar")!));
@@ -106,6 +109,15 @@ describe("the mounted gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
       unmount();
     });
   }
+
+  it("shows only the polite status for a skeleton where the document has no frame", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    const { default: Gallery } = await import("../ui/Gallery.svelte");
+    const { mount } = await import("../test/svelte");
+    const { root, unmount } = mount(Gallery, {});
+    expect(root.querySelector("main.gal > .gskel")!.outerHTML).toBe(`<div class="gskel"><p class="vh" role="status">${LOADING}</p></div>`);
+    unmount();
+  });
 });
 
 describe("replaceFrame", () => {

@@ -13,6 +13,7 @@ import GallerySites from "./GallerySites.svelte";
 import type { WorkingFeed } from "./working-feed.svelte";
 import { pageStream } from "../stream";
 import { moved } from "../settings/moved";
+import type { GalleryBoot } from "../view/gallery-boot";
 
 export { default as HaikuLine } from "./HaikuLine.svelte";
 export { WorkingFeed } from "./working-feed.svelte";
@@ -61,11 +62,13 @@ const PAGES: Partial<Record<Page, () => Promise<{ default: unknown }>>> = {
 
 /** `/tags`, `/queues` and `/settings` (with its screens, `/settings/<screen>`): mounts
  * that page (its own chunk) at the end of `target`, following the page's
- * stream; `ready` is called once the page shows its first data, `failed`
- * when its chunk could not load. The result removes it. A page that moved into Settings
+ * stream, with the page's bootstrap block (`boot`, null without one);
+ * `ready` is called once the page shows its first data (and again when it
+ * shows another view in place), `failed` when its chunk could not load.
+ * The result removes it. A page that moved into Settings
  * (`/people`, `/admin`, `/me`, `/audit`) is replaced by its screen's
  * address there, keeping its query and fragment. */
-export function page(name: Page, target: Element, ready: () => void | Promise<void> = () => {}, failed: () => void = () => {}): () => void {
+export function page(name: Page, target: Element, ready: () => void | Promise<void> = () => {}, failed: () => void = () => {}, boot: GalleryBoot | null = null): () => void {
   let view: Record<string, unknown> | null = null;
   let gone = false;
   const load = PAGES[name];
@@ -74,6 +77,6 @@ export function page(name: Page, target: Element, ready: () => void | Promise<vo
     if (to) location.replace(`${to}${location.hash}`);
     return () => {};
   }
-  void load().then(p => { if (!gone) view = mount(p.default as Component<{ stream: ReturnType<typeof pageStream>; onready?: () => void | Promise<void> }>, { target, props: { stream: pageStream(), onready: ready } }); }, () => { if (!gone) failed(); });
+  void load().then(p => { if (!gone) view = mount(p.default as Component<{ stream: ReturnType<typeof pageStream>; onready?: () => void | Promise<void>; boot?: GalleryBoot | null }>, { target, props: { stream: pageStream(), onready: ready, boot } }); }, () => { if (!gone) failed(); });
   return () => { gone = true; if (view) void unmount(view); };
 }

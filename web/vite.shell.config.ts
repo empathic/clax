@@ -86,7 +86,8 @@ export const PRELOAD: Record<string, string | string[]> = {
   settings: "/src/settings/Settings.svelte",
   legal: ["/src/hosted/legal.ts", "/src/hosted/LegalPrompt.svelte"],
   signin: "/src/hosted/SignIn.svelte",
-  landing: "/src/hosted/Landing.svelte",
+  // The landing page reads its block with the sign-in pages' reader (`gallery-main.ts`).
+  landing: ["/src/hosted/Landing.svelte", "/src/hosted/signin-boot.ts"],
 };
 /** The `PRELOAD` keys a page preloads without the gallery's lazy module. */
 const ALONE = new Set(["signin", "landing"]);

@@ -43,7 +43,8 @@
    marks them on the root (`data-sk`, and the heights it knows as --sk-*),
    before the page paints: the usage banner's place, the inbox summary's,
    the tag bar's, the groups with their headings and cards (or the empty
-   gallery's), and lines on a page beside the gallery (`data-page`). The
+   gallery's), and lines on a page beside the gallery (`data-page`), as tall
+   as the page last was where this browser kept it. The
    placeholders pulse gently; the headings are the content's own words,
    shown where the shape is known. The sign-in pages show none of the frame. */
 .gskel .vh { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -86,6 +87,8 @@ html[data-sk~="tile"] .gskel .sk-nt, html[data-sk~="need"] .gskel .sk-e { displa
 html[data-sk~="need"] .gskel .sk-a, html[data-sk~="flat"] .gskel h2, html[data-sk~="empty"] .gskel .sk-tb, html[data-sk~="empty"] .gskel .grp { display: none; }
 html[data-page="page"] .gskel .grp, html[data-page="page"] .gskel .sk-sum, html[data-page="page"] .gskel .sk-tb, html[data-page="page"] .gskel .sk-empty, html[data-page="page"] .gbar > .search { display: none; }
 html[data-page="page"] .gskel .sk-ls { display: grid; }
+/* A page beside the gallery whose height this browser kept (`ph`): the skeleton takes it. */
+html[data-page="page"][data-sk~="ph"] .gskel { height: var(--sk-ph); overflow: hidden; }
 /* The sign-in pages show their own frame, not the gallery's, until their page takes its place. */
 html[data-page="auth"] #app:has(> .aframe) > :is(.gbar, .gal, .glegal), html:not([data-page="auth"]) #app > .aframe { display: none; }
 @media (prefers-reduced-motion: no-preference) { .gskel .sk { animation: gskel 1.2s ease-in-out infinite alternate; } }
