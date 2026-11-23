@@ -172,11 +172,14 @@ export function runsKnown(): RunSummary[] | undefined { return runsNow; }
 export function runsAsked(): Promise<RunSummary[]> | null { return runsAsk; }
 
 /** The longest the top bar keeps its controls from view once the view is
- * ready (TopbarIsland.svelte), for what decides its optional controls
- * (`barDecided`) and for their code: one that comes later takes its late
- * place then (`ui/topbar-gate.svelte.ts`), and the essential controls
- * (Comment, Threads, the versions, the more menu) never wait longer. */
-export const BAR_WAIT_MS = 300;
+ * ready (TopbarIsland.svelte) for what decides its optional controls
+ * (`barDecided`: the daemon's own routes, which answer at once): one that
+ * comes later takes its late place then (`ui/topbar-gate.svelte.ts`), and
+ * the essential controls (Comment, Threads, the versions, the more menu)
+ * never wait longer. The controls' code, preloaded with the page, is
+ * waited for, not capped. As long as the thread list's caps
+ * (`QUESTIONS_WAIT_MS`, `APPROVALS_WAIT_MS`). */
+export const BAR_WAIT_MS = 3000;
 
 /** Settles once what decides Inbox, the feedback menu, Publish and
  * ClaxBot's runs button is in (an answer or a failure each), where the

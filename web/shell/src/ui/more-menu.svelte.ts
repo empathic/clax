@@ -141,7 +141,8 @@ export function loadMoreMenu(): void {
   load(import("./PermissionsPanel.svelte"), m => { permissionsLoaded = m.default; });
   const bot = () => import("../bot/ArtifactBot.svelte");
   if (botKnown()?.enabled) load(bot(), m => { botLoaded = m.default; });
-  else load((runsAsked() ?? Promise.resolve([])).then(r => (r.length ? bot() : null)), m => { if (m) botLoaded = m.default; });
+  // Its code once the runs say it shows: the runs are the bar's capped wait (`barDecided`), its code not.
+  else void (runsAsked() ?? Promise.resolve([])).then(r => { if (r.length) load(bot(), m => { botLoaded = m.default; }); }, () => {});
   const publishCode = () => load(import("./Publish.svelte"), m => { publishLoaded = m.default; });
   if (ownerProof()) publishCode();
   else void getToken().then(t => { if (t && !t.startsWith("cxo_")) publishCode(); });

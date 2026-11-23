@@ -5,4 +5,4 @@
 // leaves the old view up, or the page's skeleton, for good.
 
 /** The longest a view moved to stays unseen (on the shell's clock, `../clock` `after`). */
-export const VIEW_WAIT_MS = 300;
+export const VIEW_WAIT_MS = 3000;

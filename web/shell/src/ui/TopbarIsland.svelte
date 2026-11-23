@@ -44,7 +44,7 @@
   // its threads, so every count is drawn once; with the bootstrap block, at
   // the first render), its changelog decided, and the controls' chunks in
   // (modulepreloaded with the page) and, without the block, what decides
-  // the optional ones (`barDecided`), each at most `BAR_WAIT_MS` past the
+  // the optional ones (`barDecided`), at most `BAR_WAIT_MS` past the
   // view's being ready. No control waits on another's request, and the
   // frame waits on none of them. Each optional control (Inbox, Fork, Share, Publish, Get in
   // Clax, the feedback menu, and ClaxBot's button in `Who.svelte`) is in a
@@ -88,7 +88,7 @@
   // The view is ready, and the changelog this load decided names what the
   // pill says first (`s.decided`).
   const viewIn = $derived(viewReady(s) && s.decided !== null);
-  // What decides the optional controls is in, and their code; or
+  // Their code is in, and what decides the optional ones is in or
   // `BAR_WAIT_MS` passed since the view was ready: what comes later takes
   // its late place.
   let answered = $state(false);
@@ -102,7 +102,7 @@
     cancelCap = after(BAR_WAIT_MS, () => { capped = true; });
   });
   $effect(() => () => cancelCap());
-  const decided = $derived(viewIn && ((answered && !loading.current) || capped));
+  const decided = $derived(viewIn && !loading.current && (answered || capped));
   // Once the controls have painted, a slot filled later is late (`topbar-gate.svelte.ts`).
   let marked = false;
   $effect(() => {
