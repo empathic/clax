@@ -24,14 +24,24 @@
 // and a second; and a pinned version, a deleted artifact and a missing one.
 //
 // What decides the top bar's optional controls and the thread list's
-// questions (Clone's options, the feedback config, ClaxBot's meter, the
-// inbox's first read) is released only after the frame's page shows, and
-// ClaxBot's meter and Publish's links never answer: the essential controls
-// (Comment, Threads, the version switch, More, the theme switch) must be
-// shown and usable when the page first shows, the thread cards and the
-// pins they number must show in the same frame, and nothing may move. At
-// the settled page no box of the top bar overlaps another or is cut, nor
+// questions and approval cards (Clone's options, Publish's links, ClaxBot's
+// runs, the feedback config, the inbox's first read and this viewer's
+// approval requests, answered here for the thread the agent works on) is
+// released only after the frame's page shows, and ClaxBot's meter never
+// answers: the essential controls (Comment, Threads, the version switch,
+// More, the theme switch, and the local owner's Publish) must be shown and
+// usable when the page first shows, the thread cards, the views' tabs and
+// the pins they number must show in the same frame, and nothing may move.
+// At the settled page no box of the top bar overlaps another or is cut, nor
 // the tags' chips (`overlaps`).
+//
+// Apart from those: ClaxBot on, with a run on the artifact and the week's
+// credits past 80 % (its button with the bar, its usage banner over the
+// viewer whenever it comes); an artifact without threads in a narrow window
+// on a second visit without the block (the closed drawer's strip held only
+// where it shows); the Clax app's view (`?app=1`: no chrome from the first
+// frame); and the Permissions panel and the tag editor, each drawn once, in
+// its final shape, when opened.
 //
 // The Layout Instability API sees only nodes that move, and the frame's
 // placeholders are replaced, not moved, by what the shell mounts. So each
@@ -42,7 +52,8 @@
 // top bar, the mark, the title's line and the stage must hold theirs from
 // the first painted frame on.
 import type { Browser, BrowserContextOptions, Page } from "@playwright/test";
-import { test, expect, type Daemon, api, asStranger, proofHeaders, publishAs, publishNext, registerSession, setWorking } from "./fixtures";
+import { hostChannel, NONCE } from "./app-host";
+import { test, expect, type Daemon, api, approve, asStranger, openArtifact, proofHeaders, publish, publishAs, publishNext, publishWith, registerSession, setWorking } from "./fixtures";
 import { SECRET, hostedDaemon } from "./hosted-helpers";
 import { ask } from "./questions-helpers";
 import { type Apart, type Landmark, type Place, formatShifts, formatTexts, landmarks, layoutShifts, overlaps, recordLayoutShifts, recordTexts, shiftTotal, shownTexts, textHistory } from "./layout-shift";
@@ -69,13 +80,13 @@ const ORDER: StageRule[] = [
   { name: "site-code", match: u => u.pathname.endsWith("/site-code") },
   // What decides the optional controls (Clone's options, Share's sharing,
   // the feedback config, Inbox and the questions): slower than the frame.
-  { name: "controls", match: u => /^\/api\/(artifacts\/[^/]+\/git-token|hosted\/artifacts\/[^/]+\/sharing|inbox(\/summary)?|questions)$/.test(u.pathname) || u.pathname.startsWith("/_app/feedback/") },
+  { name: "controls", match: u => /^\/api\/(artifacts\/[^/]+\/(git-token|remotes)|hosted\/artifacts\/[^/]+\/sharing|inbox(\/summary)?|questions|bot\/runs)$/.test(u.pathname) || u.pathname.startsWith("/_app/feedback/") },
   { name: "api", match: u => u.pathname.startsWith("/api/") && !u.pathname.startsWith("/api/stream") },
   { name: "stream", match: u => u.pathname.startsWith("/api/stream") },
 ];
 
-/** Deciders that never answer: ClaxBot's meter and Publish's links. */
-const NEVER = (u: URL) => u.pathname === "/api/me/bot" || /^\/api\/artifacts\/[^/]+\/remotes$/.test(u.pathname);
+/** What never answers: ClaxBot's meter (where ClaxBot is not the case's). */
+const NEVER = (u: URL) => u.pathname === "/api/me/bot";
 
 /** The top bar's boxes, and the title's (its tags' chips cut by nothing). */
 const APART: Apart[] = [
@@ -153,6 +164,27 @@ async function seed(page: Page, d: Daemon, who: Who, base = d.base): Promise<See
   return { id, addressed, replied };
 }
 
+/** Answers `page`'s ask for this viewer's approval requests on `sd`'s
+ * artifact with one, open, for the thread the agent works on (the inbox's
+ * approval item, as `GET /api/inbox?kind=approval` lists it). */
+async function stubApproval(page: Page, sd: Seeded): Promise<void> {
+  const tid = sd.replied;
+  const item = {
+    id: "01JA00000000000000000000AA", seq: 7, kind: "approval", read: false, created_at: "2026-10-07T09:12:03.120Z", agent: null,
+    artifact: { id: sd.id, title: TITLE, kind: "html", page_url: null },
+    thread: { id: tid, summary: "#chart", status: "open" }, reply: null, version: null, published: null, question: null, work: null, gone: false,
+    url: `/inbox?approval=01J9R0000000000000000000AA`,
+    approval: {
+      id: "01J9R0000000000000000000AA", approver: "p1", author: { public_id: "p4", name: "Mia", owner: false }, artifact_id: sd.id, thread_id: tid,
+      agent: { handle: "a_1f3a00", name: "clax-multi-person", harness: "codex", live: true }, cause: "routing", count: 1, status: "open", scope: null,
+      created_at: "2026-10-07T09:12:03.120Z", decided_at: null,
+      content: { thread: { id: tid, status: "open" }, comments: [{ id: "c1", body: "The chart could be wider", created_at: "2026-10-07T09:12:00.000Z", author_name: "Mia", by_agent: false }] },
+      via_page: null,
+    },
+  };
+  await page.route(u => u.pathname === "/api/inbox" && u.searchParams.get("kind") === "approval", route => route.fulfill({ json: { items: [item] } }));
+}
+
 /** The page's late pieces still missing (none once it has settled). */
 const artifactMissing = (opts: { panel: boolean; cards: number; phone: boolean }) => async (page: Page) => [...await pageShown(page), ...await quietEval<string[]>(page, `(() => {
   const q = s => document.querySelector(s);
@@ -204,6 +236,8 @@ const LATE_MARKS: Landmark[] = [
   { name: "Threads", skeleton: null, content: ".topbar .threads" },
   { name: "version", skeleton: null, content: ".topbar .version-menu" },
   { name: "Fork", skeleton: null, content: ".topbar .fork" },
+  { name: "Publish", skeleton: null, content: ".topbar .pub" },
+  { name: "ClaxBot", skeleton: null, content: ".topbar .botbtn" },
   { name: "more", skeleton: null, content: ".topbar .more, .topbar .more-slot" },
   { name: "theme", skeleton: null, content: ".topbar .theme-switch" },
   { name: "drawer", skeleton: null, content: ".viewer .drawer" },
@@ -212,13 +246,23 @@ const LATE_MARKS: Landmark[] = [
   { name: "working strip", skeleton: null, content: ".viewer .drawer .strip.ag", keys: ["x", "y", "w"] },
   { name: "addressed group", skeleton: null, content: ".viewer .drawer .section-addressed", keys: ["x", "y", "w"] },
   { name: "open group", skeleton: null, content: ".viewer .drawer .section-open", keys: ["x", "y", "w"] },
+  { name: "views' tabs", skeleton: null, content: ".viewer .drawer .sb-tabs" },
+  { name: "approval card", skeleton: null, content: ".viewer .drawer .thread-approval", keys: ["x", "y", "w"] },
   ...[1, 2, 3].map(n => ({ name: `card ${n}`, skeleton: null, content: `.viewer .drawer .thread-card:nth-of-type(${n})`, keys: ["x", "y", "w"] as (keyof Place)[] })),
   { name: "phone tabs", skeleton: null, content: ".phone-tabs" },
 ];
 
 /** The landmarks recorded at each stage of a load, and the content frame:
  * whether it shows, and the address its document is at. */
-type Stage = { stage: string | null; places: Record<string, Place | null>; status: string | null; frame: { visible: boolean; url: string | null }; essentials: Record<string, boolean>; pins: boolean; cards: boolean };
+type Stage = { stage: string | null; places: Record<string, Place | null>; status: string | null; frame: { visible: boolean; url: string | null }; essentials: Record<string, boolean>; pins: boolean; cards: boolean; tabs: boolean; approval: boolean };
+
+/** A staged visit's options: `again`, the page was loaded once before,
+ * unstaged, so the browser keeps what it keeps (and `kept` answers true
+ * before it goes on); `never`, what never answers (`NEVER` by default);
+ * `extra`, essential controls beyond the usual wider than 900 px, by name
+ * and selector;
+ * `each`, run at every stage before its landmarks are read. */
+type VisitOpts = { again?: boolean; kept?: (p: Page) => Promise<boolean>; never?: (u: URL) => boolean; extra?: Record<string, string>; each?: (p: Page) => Promise<void> };
 
 /** What the content frame did: its element's insertions, its `src` values,
  * its loads, and its background before its first load. */
@@ -260,39 +304,44 @@ const frameLog = (page: Page) => quietEval<FrameLog>(page, "window.claxFrameLog"
 /** Loads `path` staged until `missing` answers nothing; answers the release
  * order and the landmarks at each stage. `again`: the page was loaded once
  * before, unstaged, so the browser keeps what it keeps. */
-async function stagedVisit(page: Page, base: string, path: string, missing: (p: Page) => Promise<string[]>, texts: string[], again: boolean): Promise<{ order: string[]; stages: Stage[]; apart: string[] }> {
+async function stagedVisit(page: Page, base: string, path: string, missing: (p: Page) => Promise<string[]>, texts: string[], again: boolean | VisitOpts): Promise<{ order: string[]; stages: Stage[]; apart: string[] }> {
+  const o: VisitOpts = typeof again === "boolean" ? { again } : again;
   await page.addInitScript(() => { Reflect.deleteProperty(window, "SharedWorker"); });
-  if (again) {
+  if (o.again) {
     await page.goto(`${base}${path}`);
     await expect.poll(() => missing(page)).toEqual([]);
+    if (o.kept) await expect.poll(() => o.kept!(page), { message: "what the first visit keeps for the next" }).toBe(true);
     await page.goto("about:blank");
   }
   await recordLayoutShifts(page);
   await recordTexts(page, texts);
   await recordFrame(page);
-  const load = await stageLoad(page, ORDER, { never: NEVER });
+  const load = await stageLoad(page, ORDER, { never: o.never ?? NEVER });
   await page.goto(`${base}${path}`, { waitUntil: "commit" });
   let last: string[] = [];
   const stages: Stage[] = [];
   const each = async (stage: string | null) => {
+    await o.each?.(page);
     const places = await landmarks(page, [...TOP_MARKS, ...LATE_MARKS]);
     // The top bar's controls and the title's tags are laid out hidden until the bar shows them: not shown yet.
     if (await quietEval<boolean>(page, `!!document.querySelector(".topbar .tools.deciding")`)) {
-      for (const k of ["tags", "roster", "Comment", "Threads", "version", "Fork", "more", "theme"]) places[k] = null;
+      for (const k of ["tags", "roster", "Comment", "Threads", "version", "Fork", "Publish", "ClaxBot", "more", "theme"]) places[k] = null;
     }
-    // So is the thread list while it waits for its questions.
+    // So is the thread list while it waits for its questions and approval cards.
     if (await quietEval<boolean>(page, `!!document.querySelector(".page.cards-wait")`)) {
-      for (const k of ["new comment", "working strip", "addressed group", "open group", "card 1", "card 2", "card 3"]) places[k] = null;
+      for (const k of ["new comment", "working strip", "addressed group", "open group", "views' tabs", "approval card", "card 1", "card 2", "card 3"]) places[k] = null;
     }
-    // Whether each essential control is shown (and Comment usable), and whether pins and thread cards show.
-    const seen = await quietEval<{ essentials: Record<string, boolean>; pins: boolean; cards: boolean }>(page, `(() => {
+    // Whether each essential control is shown (and Comment usable), and whether pins, thread cards, the views' tabs and an approval card show.
+    const seen = await quietEval<{ essentials: Record<string, boolean>; pins: boolean; cards: boolean; tabs: boolean; approval: boolean }>(page, `(() => {
       const shown = sel => { const e = document.querySelector(sel); if (!e) return false; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility === "visible"; };
       const phone = innerWidth <= 700;
       const essentials = { Comment: shown(".topbar .comment") && !document.querySelector(".topbar .comment").disabled, more: shown(".topbar .more > button") };
       if (!phone) { essentials.Threads = shown(".topbar .threads"); essentials.version = shown(".topbar .vbtn"); }
       if (innerWidth > 900) essentials.theme = shown(".topbar .theme-switch");
       if (phone) essentials.tabs = shown(".phone-tabs [data-shell-control=threads]");
-      return { essentials, pins: [...document.querySelectorAll(".thread-pin")].some(p => getComputedStyle(p).visibility === "visible"), cards: shown(".viewer .drawer .thread-card") };
+      // Wider than 900 px (the bar hides them narrower, and the more menu lists them).
+      for (const [k, sel] of Object.entries(${JSON.stringify(o.extra ?? {})})) if (innerWidth > 900) essentials[k] = shown(sel);
+      return { essentials, pins: [...document.querySelectorAll(".thread-pin")].some(p => getComputedStyle(p).visibility === "visible"), cards: shown(".viewer .drawer .thread-card"), tabs: shown(".viewer .drawer .sb-tabs"), approval: shown(".viewer .drawer .thread-approval") };
     })()`);
     const status = await quietEval<string | null>(page, `(document.querySelector("#app .page > p.empty")?.textContent ?? null)`);
     const visible = await quietEval<boolean>(page, `(() => { const f = document.querySelector(".stage > iframe.frame"); return !!f && getComputedStyle(f).visibility === "visible"; })()`);
@@ -307,10 +356,11 @@ async function stagedVisit(page: Page, base: string, path: string, missing: (p: 
 }
 
 /** Where the page's first frame showing the artifact's page has an
- * essential control not shown (or Comment not usable), and where a pin
- * shows before the thread cards it numbers (the drawer open): the cards
- * may show first (the pins come with the page). */
-function together(stages: Stage[], panel: boolean): string[] {
+ * essential control not shown (or Comment not usable), where a pin shows
+ * before the thread cards it numbers (the drawer open): the cards may show
+ * first (the pins come with the page), and where the views' tabs or (with
+ * `approval`) an approval card do not show in the cards' first frame. */
+function together(stages: Stage[], panel: boolean, approval = false): string[] {
   const out: string[] = [];
   const first = stages.find(s => s.frame.visible);
   if (!first) return ["the page never showed"];
@@ -320,6 +370,10 @@ function together(stages: Stage[], panel: boolean): string[] {
     const pins = stages.findIndex(s => s.pins);
     const cards = stages.findIndex(s => s.cards);
     if (pins < 0 || cards < 0 || pins < cards) out.push(`pins first showed after ${stages[pins]?.stage ?? "never"}, thread cards after ${stages[cards]?.stage ?? "never"}`);
+    const tabs = stages.findIndex(s => s.tabs);
+    if (tabs !== cards) out.push(`the views' tabs first showed after ${stages[tabs]?.stage ?? "never"}, thread cards after ${stages[cards]?.stage ?? "never"}`);
+    const card = stages.findIndex(s => s.approval);
+    if (approval && card !== cards) out.push(`the approval card first showed after ${stages[card]?.stage ?? "never"}, thread cards after ${stages[cards]?.stage ?? "never"}`);
   }
   return out;
 }
@@ -401,8 +455,11 @@ for (const form of FORMS) {
         test(`the artifact loads without moving anything, and writes its title, version, tags and counts once (${how})`, async ({ page: own, freshDaemon: fresh, browser }) => {
           const { page, d, base } = await visitor(who, own, fresh, browser, form.use);
           const sd = await seed(page, d, who, base);
+          await stubApproval(page, sd);
           if (layout) await page.addInitScript(l => { try { localStorage.setItem("clax.drawer", JSON.stringify({ layout: l, w: 392, h: 280 })); } catch { /* none */ } }, layout);
-          const { order, stages, apart } = await stagedVisit(page, base, `/a/${sd.id}`, artifactMissing({ panel: form.panel, cards: 2, phone: form.phone }), TEXTS, again);
+          // The local owner's shell publishes to a public Clax: its Publish shows with the bar.
+          const extra: Record<string, string> = who === "owner" ? { Publish: ".topbar .pub" } : {};
+          const { order, stages, apart } = await stagedVisit(page, base, `/a/${sd.id}`, artifactMissing({ panel: form.panel, cards: 2, phone: form.phone }), TEXTS, { again, extra });
           expect(await hasBlock(page), "the page's bootstrap block").toBe(who === "member");
           const shifts = await layoutShifts(page);
           const texts = await textHistory(page);
@@ -416,7 +473,7 @@ for (const form of FORMS) {
           expect.soft(frameHolds(stages), "the content frame").toEqual([]);
           expect.soft(frame.blank, "a blank stage").toEqual([]);
           expect.soft(stages.map(s => s.status).filter(Boolean), "a message in place of the viewer").toEqual([]);
-          expect.soft(together(stages, form.panel), released).toEqual([]);
+          expect.soft(together(stages, form.panel, form.panel), released).toEqual([]);
           expect.soft(apart, "boxes that overlap, or are cut, at the settled page").toEqual([]);
         });
       }
@@ -485,4 +542,160 @@ test.describe("on a desktop, other addresses", () => {
       expect.soft(holds(stages).filter(x => !/ stage: /.test(x))).toEqual([]);
     });
   }
+});
+
+/** ClaxBot on for this person, 85 % of the week's credits spent (its usage
+ * banner shows), and a finished run on artifact `aid`. */
+const WEEK = { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z", weekly_milli: 2_000_000, lift_milli: 0, spent_milli: 1_700_000, warn: true, exhausted: false };
+const ME_BOT = { enabled: true, unenforced: false, available: true, unavailable_reason: null, key: { own: null, use_own: false }, week: WEEK, role: "owner" };
+const RUN = (aid: string, tid: string) => ({ id: "r1", artifact_id: aid, thread_ids: [tid], request: "Widen the chart", status: "finished", model: "claude-sonnet-5-5", key_source: "instance", acting_for: { id: "*owner", name: "Alex" }, started_at: "2026-10-21T14:02:00Z", credits_milli: 3000 });
+
+/** Answers ClaxBot's routes for `page` (this person's ClaxBot, the
+ * artifact's runs and one run), and, for a page served with the block,
+ * puts the same answers in the block's `deciders`, as a daemon with
+ * ClaxBot on writes them. */
+async function stubBot(page: Page, sd: Seeded): Promise<void> {
+  const runs = { runs: [RUN(sd.id, sd.replied)] };
+  await page.route(u => u.pathname === "/api/me/bot" || u.pathname.startsWith("/api/bot/runs"), route => {
+    const u = new URL(route.request().url());
+    if (u.pathname === "/api/me/bot") return route.fulfill({ json: ME_BOT });
+    if (u.pathname === "/api/bot/runs") return route.fulfill({ json: runs });
+    if (u.pathname === "/api/bot/runs/r1") return route.fulfill({ json: { ...runs.runs[0], steps: [] } });
+    return route.fulfill({ status: 404, json: { error: { code: "not_found", message: "not found" } } });
+  });
+  // The block's answers are written as the parser inserts the block, before
+  // any script reads it (a navigation the test fulfilled itself would lose
+  // the page's local address, and with it its frame).
+  await page.addInitScript((r: unknown) => {
+    if (window !== window.top) return;
+    const me = { enabled: true, unenforced: false, available: true, unavailable_reason: null, key: { own: null, use_own: false }, role: "owner",
+      week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z", weekly_milli: 2_000_000, lift_milli: 0, spent_milli: 1_700_000, warn: true, exhausted: false } };
+    const o = new MutationObserver(() => {
+      const el = document.getElementById("clax-boot");
+      if (!el) return;
+      let b: { deciders?: { status: Record<string, number>; [k: string]: unknown } };
+      try { b = JSON.parse(el.textContent ?? ""); } catch { return; }
+      o.disconnect();
+      if (!b.deciders) return;
+      b.deciders.status.bot = 200; b.deciders.bot = me;
+      b.deciders.status.runs = 200; b.deciders.runs = r;
+      el.textContent = JSON.stringify(b);
+    });
+    o.observe(document, { childList: true, subtree: true, characterData: true });
+  }, runs);
+}
+
+test.describe("on a desktop, with ClaxBot", () => {
+  const use: BrowserContextOptions = { viewport: { width: 1280, height: 900 } };
+  test.use(use);
+  for (const who of ["owner", "member"] as const) {
+    test(`its runs button shows with the bar and its usage banner moves nothing (${who === "owner" ? "the owner, no bootstrap block" : "a hosted Clax's member, with the block"})`, async ({ page: own, freshDaemon: fresh, browser }) => {
+      const { page, d, base } = await visitor(who, own, fresh, browser, use);
+      const sd = await seed(page, d, who, base);
+      await stubBot(page, sd);
+      const settled = artifactMissing({ panel: true, cards: 2, phone: false });
+      const missing = async (p: Page) => [...await settled(p), ...await quietEval<string[]>(p, `(document.querySelector(".bot-banner-at .bbanner") ? [] : ["the usage banner"])`)];
+      const extra: Record<string, string> = { ClaxBot: ".topbar .botbtn", ...(who === "owner" ? { Publish: ".topbar .pub" } : {}) };
+      const { order, stages, apart } = await stagedVisit(page, base, `/a/${sd.id}`, missing, TEXTS, { never: () => false, extra });
+      const shifts = await layoutShifts(page);
+      const released = `released in order:\n  ${order.join("\n  ")}`;
+      await keep(`claxbot ${who}`, { shifts, stages, order, texts: await textHistory(page) });
+      expect.soft(shiftTotal(shifts), `${formatShifts(shifts)}\n${released}`).toBe(0);
+      expect.soft(holds(stages), released).toEqual([]);
+      expect.soft(together(stages, true), released).toEqual([]);
+      expect.soft(apart, "boxes that overlap, or are cut, at the settled page").toEqual([]);
+      // The banner lies over the viewer, under the top bar, and Dismiss hides it.
+      const bar = (await page.locator(".page > .topbar").boundingBox())!;
+      const ban = (await page.locator(".bot-banner-at .bbanner").boundingBox())!;
+      expect.soft(Math.abs(ban.y - (bar.y + bar.height))).toBeLessThan(1);
+      await page.locator(".bot-banner-at").getByRole("button", { name: "Dismiss" }).click();
+      await expect(page.locator(".bot-banner-at")).toHaveCount(0);
+    });
+  }
+});
+
+test.describe("on a narrow window, an artifact without threads", () => {
+  const use: BrowserContextOptions = { viewport: { width: 820, height: 900 } };
+  test.use(use);
+  test("a second visit without the block holds no strip, and the stage its whole width", async ({ page, freshDaemon: d }) => {
+    const id = (await publish(d.base, d.token, "Quiet page", { "index.html": PAGE })).artifact.id as string;
+    const quiet = async (p: Page) => [...await pageShown(p), ...await quietEval<string[]>(p, `(() => {
+      const m = [];
+      if (!document.querySelector(".topbar .comment")) m.push("Comment");
+      if (!(window.claxStreamLive > 0)) m.push("the live stream");
+      return m;
+    })()`)];
+    const kept = (p: Page) => quietEval<boolean>(p, `(() => { try { return JSON.parse(localStorage.getItem("clax.shape"))[${JSON.stringify(`/a/${id}`)}].t === 0; } catch { return false; } })()`);
+    const { order, stages } = await stagedVisit(page, d.base, `/a/${id}`, quiet, TEXTS.slice(0, 3), { again: true, kept });
+    expect(await hasBlock(page), "the page's bootstrap block").toBe(false);
+    const shifts = await layoutShifts(page);
+    await keep("narrow no threads", { shifts, stages, order });
+    expect.soft(shiftTotal(shifts), formatShifts(shifts)).toBe(0);
+    expect.soft(holds(stages)).toEqual([]);
+    expect.soft(stages.at(-1)!.places.stage?.w, "the stage's width").toBe(820);
+    expect.soft(await page.locator(".viewer > :is(.rail, .rail-held)").count(), "a strip").toBe(0);
+  });
+});
+
+test.describe("in the Clax app's view", () => {
+  for (const [form, use] of [["phone", { viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true }], ["Mac", { viewport: { width: 1280, height: 900 } }]] as const) {
+    test.describe(`on a ${form}`, () => {
+      test.use(use);
+      test("the page loads without chrome from its first frame, and moves nothing", async ({ page, freshDaemon: d }) => {
+        const sd = await seed(page, d, "owner");
+        await hostChannel(page);
+        // The app inits its host once the host module is in, as its WebView does.
+        const init = async (p: Page) => {
+          if (await quietEval<boolean>(p, `typeof window.claxHost === "object" && !window.claxInited`)) await quietEval(p, `(window.claxInited = true, window.claxHost.init(${JSON.stringify({ nonce: NONCE })}))`);
+        };
+        const app = async (p: Page) => [...await pageShown(p), ...await quietEval<string[]>(p, `(() => {
+          const m = [];
+          if (!document.documentElement.classList.contains("app")) m.push("app mode");
+          if (!window.claxInited) m.push("the app's init");
+          if (!(window.claxStreamLive > 0)) m.push("the live stream");
+          return m;
+        })()`)];
+        const { order, stages } = await stagedVisit(page, d.base, `/a/${sd.id}?app=1`, app, [], { each: init });
+        const shifts = await layoutShifts(page);
+        const frame = await frameLog(page);
+        await keep(`app ${form}`, { shifts, stages, order, frame });
+        expect.soft(shiftTotal(shifts), formatShifts(shifts)).toBe(0);
+        expect.soft(holds(stages)).toEqual([]);
+        // From the first painted frame the stage fills the window: no top bar, no drawer, no tabs.
+        const size = use.viewport;
+        for (const s of stages) {
+          const st = s.places.stage;
+          if (!st) continue;
+          expect.soft({ at: s.stage, ...st }, "the stage").toEqual({ at: s.stage, x: 0, y: 0, w: size.width, h: size.height });
+          for (const k of ["top bar", "drawer", "phone tabs"]) expect.soft(s.places[k], `${k} after ${s.stage}`).toBeNull();
+        }
+        expect.soft(frame.inserted, "content frames inserted").toBe(1);
+        expect.soft(frameHolds(stages), "the content frame").toEqual([]);
+      });
+    });
+  }
+});
+
+test.describe("on a desktop, the panels the page opens", () => {
+  test.use({ viewport: { width: 1280, height: 900 } });
+  test("the Permissions panel and the tag editor open in their final shape, written once", async ({ page, freshDaemon: d }) => {
+    const sd = await seed(page, d, "owner");
+    const { artifact } = await publishWith(d.base, d.token, "Forecast", PAGE, { net: { hosts: ["api.clax.invalid"] } });
+    await approve(d.base, d.token, artifact.id);
+    await recordTexts(page, [".perm-panel", ".tag-pop"]);
+    await openArtifact(page, d.base, artifact.id, 1);
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Permissions…" }).click();
+    await expect(page.locator(".perm-panel li[data-permission]").first()).toBeVisible();
+    const perm = (await textHistory(page))[".perm-panel"];
+    expect.soft(shownTexts(perm), formatTexts(".perm-panel", perm)).toHaveLength(1);
+    await page.locator(".perm-panel").getByRole("button", { name: "Close" }).click();
+    await page.goto("about:blank");
+    // The tag editor, on the seeded artifact with its tags.
+    await openArtifact(page, d.base, sd.id, 3);
+    await page.locator(".topbar .ttl .tedit").click();
+    await expect(page.locator(".tag-pop").getByText("design")).toBeVisible();
+    const tags = (await textHistory(page))[".tag-pop"];
+    expect.soft(shownTexts(tags), formatTexts(".tag-pop", tags)).toHaveLength(1);
+  });
 });
