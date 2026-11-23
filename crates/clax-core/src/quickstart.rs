@@ -25,6 +25,29 @@ const PAGE: &str = "index.html";
 /// The page's manifest, relative to [`PREFIX`].
 const MANIFEST: &str = "clax.json";
 
+/// The page's reel, relative to [`PREFIX`], where the build carries it.
+pub const REEL: &str = "reel.mp4";
+
+/// The meta that tells the page its reel is served beside it
+/// (`web/quickstart/index.html` lays the reel out from its first paint,
+/// instead of once the video's first bytes are in).
+pub const REEL_MARK: &str = r#"<meta name="clax-reel" content="1">"#;
+
+/// `html` with [`REEL_MARK`] after its doctype (at its start without one),
+/// unless it carries it already.
+pub fn with_reel_mark(html: &str) -> String {
+    const DOCTYPE: &str = "<!doctype html>";
+    if html.contains(REEL_MARK) {
+        return html.to_string();
+    }
+    match html.get(..DOCTYPE.len()) {
+        Some(d) if d.eq_ignore_ascii_case(DOCTYPE) => {
+            format!("{d}{REEL_MARK}{}", &html[DOCTYPE.len()..])
+        }
+        _ => format!("{REEL_MARK}{html}"),
+    }
+}
+
 /// One build of the quickstart page: its files (paths relative to
 /// [`PREFIX`]) and the ID their bytes and names give.
 #[derive(Clone, Debug)]
@@ -37,7 +60,10 @@ pub struct Release {
 
 impl Release {
     /// The release `web` carries under [`PREFIX`], or none when it has no
-    /// `quickstart/index.html` (a build made without the page).
+    /// `quickstart/index.html` (a build made without the page). Where the
+    /// build carries the reel ([`REEL`]), the page is marked
+    /// ([`with_reel_mark`]), so every copy published from it lays its reel
+    /// out from its first paint.
     pub fn from_tree(web: &dyn FileTree) -> Option<Release> {
         let mut files = BTreeMap::new();
         for path in web.paths() {
@@ -50,6 +76,10 @@ impl Release {
         }
         if !files.contains_key(PAGE) {
             return None;
+        }
+        if files.contains_key(REEL) {
+            let page = files.get_mut(PAGE).expect("the page is there");
+            *page = with_reel_mark(&String::from_utf8_lossy(page)).into_bytes();
         }
         let mut hash = Sha256::new();
         for (path, bytes) in &files {
@@ -152,6 +182,24 @@ mod tests {
 
     fn id(files: &[(&str, &str)]) -> String {
         Release::from_tree(&tree(files)).unwrap().id
+    }
+
+    #[test]
+    fn a_release_with_its_reel_marks_its_page() {
+        let plain = Release::from_tree(&tree(&base())).unwrap();
+        assert_eq!(plain.files["index.html"], b"<p>a</p>");
+        let mut with = base();
+        with[0].1 = "<!DOCTYPE html><p>a</p>";
+        with.push(("quickstart/reel.mp4", "v"));
+        let r = Release::from_tree(&tree(&with)).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&r.files["index.html"]),
+            format!("<!DOCTYPE html>{REEL_MARK}<p>a</p>")
+        );
+        assert_eq!(
+            with_reel_mark(&with_reel_mark("<p>")),
+            format!("{REEL_MARK}<p>")
+        );
     }
 
     #[test]

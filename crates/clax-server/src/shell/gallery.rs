@@ -1,6 +1,5 @@
 //! The first-load data the daemon puts into `index.html` for the gallery's
-//! pages (`/`, `/inbox`, `/tags`, `/queues…`, `/settings…`, `/people`,
-//! `/admin`, `/me`, `/audit`): the answers the gallery would otherwise fetch
+//! pages (`/`, `/inbox`, `/tags`, `/queues…`, `/settings…`): the answers the gallery would otherwise fetch
 //! once its script runs, so its first paint can be its settled layout. The
 //! shell reads it with `readGalleryBoot` (`web/shell/src/view/gallery-boot.ts`,
 //! whose `GalleryBoot` type is this contract's other half).
@@ -36,8 +35,9 @@
 //! summary above the cards), and on `/` alone (the only page that lists
 //! artifacts) `artifacts` `GET /api/artifacts`, `attention` `GET
 //! /api/viewers/me/attention` and the summary's open questions,
-//! `questions` `GET /api/questions?status=open&limit=200`. The inbox's
-//! routes refuse a browser without one. The route answers it itself: the
+//! `questions` `GET /api/questions?status=open&limit=200`; on `/tags`
+//! alone `tags` `GET /api/tags` (the Tags page's list, the tags this
+//! browser may see). The inbox's routes refuse a browser without one. The route answers it itself: the
 //! daemon sends it, in process, through its whole router
 //! ([`crate::integrations::instance::Instance::router`]), so every layer and
 //! handler (the host rule, the local credential gate, a hosted daemon's gate
@@ -111,6 +111,9 @@ pub enum Field {
     Summary,
     /// `GET /api/questions?status=open&limit=200` (`listQuestions()`).
     Questions,
+    /// `GET /api/tags`, the Tags page's list (`listTags()` in
+    /// `web/shell/src/view/tags-api.ts`).
+    Tags,
 }
 
 impl Field {
@@ -125,6 +128,7 @@ impl Field {
             Field::Attention => "attention",
             Field::Summary => "summary",
             Field::Questions => "questions",
+            Field::Tags => "tags",
         }
     }
 
@@ -139,13 +143,14 @@ impl Field {
             Field::Attention => "/api/viewers/me/attention",
             Field::Summary => "/api/inbox/summary",
             Field::Questions => "/api/questions?status=open&limit=200",
+            Field::Tags => "/api/tags",
         }
     }
 }
 
 /// The fields the page at `path` uses: the header's on every gallery page
-/// (the inbox's unread summary among them: Inbox's count), and the list's
-/// and the open questions on `/` alone.
+/// (the inbox's unread summary among them: Inbox's count), the list's and
+/// the open questions on `/` alone, and the tags on `/tags` alone.
 pub fn fields_for(path: &str) -> &'static [Field] {
     const HEADER: &[Field] = &[
         Field::Viewer,
@@ -164,7 +169,19 @@ pub fn fields_for(path: &str) -> &'static [Field] {
         Field::Attention,
         Field::Questions,
     ];
-    if path == "/" { LIST } else { HEADER }
+    const TAGS: &[Field] = &[
+        Field::Viewer,
+        Field::Hosted,
+        Field::Feedback,
+        Field::Bot,
+        Field::Summary,
+        Field::Tags,
+    ];
+    match path {
+        "/" => LIST,
+        "/tags" => TAGS,
+        _ => HEADER,
+    }
 }
 
 /// Where the shell learns whether this browser is the owner's.
@@ -483,13 +500,17 @@ mod tests {
                 "questions"
             ]
         );
-        for p in ["/inbox", "/tags", "/queues/q/t", "/settings/you", "/people"] {
+        for p in ["/inbox", "/queues/q/t", "/settings/you"] {
             assert_eq!(
                 names(p),
                 ["viewer", "hosted", "feedback", "bot", "summary"],
                 "{p}"
             );
         }
+        assert_eq!(
+            names("/tags"),
+            ["viewer", "hosted", "feedback", "bot", "summary", "tags"]
+        );
     }
 
     #[test]

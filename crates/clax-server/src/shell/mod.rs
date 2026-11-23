@@ -17,6 +17,7 @@ use axum::extract::{Path, RawQuery};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::embedded::FileTree;
+use clax_core::quickstart::with_reel_mark;
 use clax_http::error::ApiError;
 use clax_http::http_cache::{self, IMMUTABLE, REVALIDATE};
 
@@ -200,22 +201,11 @@ pub fn landing_file(
 
 /// The meta that tells the landing page its reel is served beside it
 /// (`web/quickstart/index.html` lays the reel out from its first paint).
-pub const REEL_MARK: &str = r#"<meta name="clax-reel" content="1">"#;
-
-/// `html` with [`REEL_MARK`] after its doctype (at its start without one).
-fn with_reel_mark(html: &str) -> String {
-    const DOCTYPE: &str = "<!doctype html>";
-    match html.get(..DOCTYPE.len()) {
-        Some(d) if d.eq_ignore_ascii_case(DOCTYPE) => {
-            format!("{d}{REEL_MARK}{}", &html[DOCTYPE.len()..])
-        }
-        _ => format!("{REEL_MARK}{html}"),
-    }
-}
+pub use clax_core::quickstart::REEL_MARK;
 
 /// The gallery shell's pages (`/`, `/inbox`, `/tags`, `/queues…`,
-/// `/settings` and `/settings/<screen>`, and the pages that moved into
-/// Settings: `/people`, `/admin`, `/me`, `/audit`): the gallery's entry,
+/// `/settings` and `/settings/<screen>`; the pages that moved into
+/// Settings are sent there, [`moved_page`]): the gallery's entry,
 /// which shows the page its path names, with the first-load data of that
 /// page ([`gallery`]: what its routes answer this browser, asked of them
 /// in process through `instance`'s router, at once and each within the
@@ -252,6 +242,60 @@ pub async fn gallery_page(
         h.append(header::SET_COOKIE, c);
     }
     Ok(res)
+}
+
+/// Where a page that moved into Settings is now, as
+/// `web/shell/src/settings/moved.ts` reads it: `/people`, `/me` and
+/// `/audit` to their screens, `/admin` to the screen its `tab` names (the
+/// roles screen by default), each keeping the rest of its query. `None`
+/// for any other path.
+pub fn moved_to(path: &str, query: Option<&str>) -> Option<String> {
+    let pairs: Vec<(String, String)> = query
+        .map(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .into_owned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let (screen, keep): (&str, Vec<&(String, String)>) = match path {
+        "/people" => ("people", pairs.iter().collect()),
+        "/me" => ("claxbot", pairs.iter().collect()),
+        "/audit" => ("audit", pairs.iter().collect()),
+        "/admin" => {
+            let tab = pairs
+                .iter()
+                .find(|(k, _)| k == "tab")
+                .map_or("people", |(_, v)| v.as_str());
+            let screen = match tab {
+                "provider" => "provider",
+                "web" => "web",
+                "pricing" => "pricing",
+                "usage" => "usage",
+                _ => "roles",
+            };
+            (screen, pairs.iter().filter(|(k, _)| k != "tab").collect())
+        }
+        _ => return None,
+    };
+    let mut q = url::form_urlencoded::Serializer::new(String::new());
+    for (k, v) in keep {
+        q.append_pair(k, v);
+    }
+    let q = q.finish();
+    Some(if q.is_empty() {
+        format!("/settings/{screen}")
+    } else {
+        format!("/settings/{screen}?{q}")
+    })
+}
+
+/// A page that moved into Settings ([`moved_to`]): a `308` to its screen,
+/// so the browser loads that page alone, never the shell twice.
+pub async fn moved_page(uri: axum::http::Uri) -> Response {
+    match moved_to(uri.path(), uri.query()) {
+        Some(to) => (StatusCode::PERMANENT_REDIRECT, [(header::LOCATION, to)]).into_response(),
+        None => ApiError::not_found().into_response(),
+    }
 }
 
 /// The gallery's entry with no first-load data.
@@ -716,6 +760,35 @@ fn hashed_name(path: &str) -> bool {
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pages_that_moved_into_settings_go_to_their_screens() {
+        let at = |p, q| moved_to(p, q);
+        assert_eq!(at("/people", None).as_deref(), Some("/settings/people"));
+        assert_eq!(
+            at("/people", Some("invite")).as_deref(),
+            Some("/settings/people?invite=")
+        );
+        assert_eq!(at("/me", None).as_deref(), Some("/settings/claxbot"));
+        assert_eq!(
+            at("/audit", Some("kind=run")).as_deref(),
+            Some("/settings/audit?kind=run")
+        );
+        assert_eq!(at("/admin", None).as_deref(), Some("/settings/roles"));
+        assert_eq!(
+            at("/admin", Some("tab=people")).as_deref(),
+            Some("/settings/roles")
+        );
+        assert_eq!(
+            at("/admin", Some("tab=web&x=1")).as_deref(),
+            Some("/settings/web?x=1")
+        );
+        assert_eq!(
+            at("/admin", Some("tab=nope")).as_deref(),
+            Some("/settings/roles")
+        );
+        assert_eq!(at("/settings", None), None);
+    }
 
     #[tokio::test]
     async fn a_failed_or_slow_bootstrap_is_left_out() {

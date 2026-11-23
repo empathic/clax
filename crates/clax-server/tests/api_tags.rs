@@ -725,7 +725,12 @@ async fn the_claxbot_pages_are_the_gallery() {
         a.status(),
         clax_testkit::without_boot(&a.text().await.unwrap()),
     );
-    for path in ["/admin", "/settings", "/settings/people", "/me", "/audit"] {
+    for path in [
+        "/settings",
+        "/settings/people",
+        "/settings/claxbot",
+        "/settings/audit",
+    ] {
         let b = ts.get(path).await;
         assert_eq!(status, b.status(), "{path}");
         assert_eq!(

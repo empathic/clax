@@ -70,6 +70,11 @@ async fn fetched(ts: &TestServer, path: &str, cookie: &str) -> (u16, Value) {
 
 /// Each field of `b` equals the route's answer to `cookie`'s fetch.
 async fn assert_fields_are_the_routes(ts: &TestServer, b: &Value, cookie: &str, list: bool) {
+    assert_page_fields(ts, b, cookie, list, false).await;
+}
+
+/// As [`assert_fields_are_the_routes`], with the Tags page's `tags` (`tags`).
+async fn assert_page_fields(ts: &TestServer, b: &Value, cookie: &str, list: bool, tags: bool) {
     let mut fields = vec![
         ("viewer", "/api/viewers/me"),
         ("hosted", "/api/hosted/me"),
@@ -79,6 +84,11 @@ async fn assert_fields_are_the_routes(ts: &TestServer, b: &Value, cookie: &str, 
     ];
     if list {
         fields.extend(LIST_FIELDS);
+    }
+    if tags {
+        fields.push(("tags", "/api/tags"));
+    } else {
+        assert!(b.get("tags").is_none(), "tags: {b}");
     }
     for (name, path) in fields {
         let (status, body) = fetched(ts, path, cookie).await;
@@ -150,7 +160,7 @@ async fn a_local_viewer_gets_what_each_route_answers_it() {
 }
 
 #[tokio::test]
-async fn the_pages_beside_the_gallery_get_the_headers_fields_alone() {
+async fn the_pages_beside_the_gallery_get_the_headers_fields_and_the_tags_page_its_tags() {
     let dist = dist();
     let ts = TestServer::spawn_with_web(dist.path()).await;
     let cookie = format!("clax_viewer={}", ts.local_browser());
@@ -162,10 +172,6 @@ async fn the_pages_beside_the_gallery_get_the_headers_fields_alone() {
         "/queues/q1/t1",
         "/settings",
         "/settings/you",
-        "/people",
-        "/admin",
-        "/me",
-        "/audit",
     ] {
         let res = local(&ts, path, &cookie).await;
         assert_eq!(res.status(), 200, "{path}");
@@ -175,7 +181,7 @@ async fn the_pages_beside_the_gallery_get_the_headers_fields_alone() {
             "{path}"
         );
         let b = block(&res.text().await.unwrap()).expect(path);
-        assert_fields_are_the_routes(&ts, &b, &cookie, false).await;
+        assert_page_fields(&ts, &b, &cookie, false, path == "/tags").await;
     }
 }
 
@@ -706,6 +712,7 @@ where
             "/api/questions?status=open&limit=200".to_string(),
         ),
         ("clone", format!("/api/artifacts/{id}/git-token")),
+        ("runs", format!("/api/bot/runs?artifact={id}")),
     ] {
         let (status, body) = fetch(path).await;
         assert_eq!(d["status"][name], json!(status), "{name}: {d}");
@@ -840,4 +847,32 @@ async fn member_id(ts: &TestServer, session: &str) -> String {
         .await
         .unwrap();
     me["viewer"]["public_id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn the_pages_that_moved_into_settings_are_sent_there_before_any_shell() {
+    let ts = TestServer::spawn().await;
+    let cookie = format!("clax_viewer={}", ts.local_browser());
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    for (from, to) in [
+        ("/people", "/settings/people"),
+        ("/people?invite", "/settings/people?invite="),
+        ("/admin", "/settings/roles"),
+        ("/admin?tab=pricing", "/settings/pricing"),
+        ("/me", "/settings/claxbot"),
+        ("/audit", "/settings/audit"),
+    ] {
+        let res = client
+            .get(format!("{}{from}", ts.base))
+            .header("accept", "text/html")
+            .header(COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 308, "{from}");
+        assert_eq!(res.headers()["location"], to, "{from}");
+    }
 }

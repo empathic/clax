@@ -1147,10 +1147,10 @@ async fn the_extension_lists_the_owners_approval_requests_and_decides_nothing() 
 }
 
 #[tokio::test]
-async fn the_people_page_is_the_gallery() {
+async fn the_people_page_is_settings_people_screen() {
     let ts = TestServer::spawn().await;
     let a = ts.get("/").await;
-    let b = ts.get("/people").await;
+    let b = ts.get("/settings/people").await;
     assert_eq!(a.status(), b.status());
     // The same entry; each page's first-load data is its own.
     assert_eq!(
