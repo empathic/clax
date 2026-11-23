@@ -505,7 +505,7 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
     let (ov, enabled) = bot_overrides(cfg);
     s.store.set_bot_overrides(ov);
     // A web switch on only in the configuration gets the instance-wide
-    // grant migration 68 writes for a stored one, once
+    // grant migration 69 writes for a stored one, once
     // (`Store::grant_web_from_config`).
     match s
         .store

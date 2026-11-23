@@ -1053,7 +1053,7 @@ pub(crate) fn seed_web_lines(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Seeds the browser line (migration 68's Rust step): [`LINE_BROWSER_TIME`]
+/// Seeds the browser line (migration 69's Rust step): [`LINE_BROWSER_TIME`]
 /// at Browser Run's list price per browser hour, at the infrastructure
 /// margin, charged on every key (the instance's Cloudflare account pays
 /// whatever model key the person uses). A line that exists (an admin
@@ -3438,7 +3438,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_68_seeds_the_browser_line() {
+    fn migration_69_seeds_the_browser_line() {
         let (_d, st) = store();
         let l = st.cost_line(LINE_BROWSER_TIME).unwrap().unwrap();
         assert_eq!(

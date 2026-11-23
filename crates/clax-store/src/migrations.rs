@@ -6107,7 +6107,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_68_keeps_every_artifact_to_self_and_takes_unrestricted_alone() {
+    fn migration_67_keeps_every_artifact_to_self_and_takes_unrestricted_alone() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -8602,7 +8602,7 @@ mod tests {
         for o in &odd {
             let run = runs.iter().find(|r| r.id == o.id).expect("the odd run");
             let (web, threads) = (o.web, &o.thread_ids_json);
-            // Its web reads as the parts it names (migration 68 keeps them
+            // Its web reads as the parts it names (migration 69 keeps them
             // as capabilities, `bot_runs.caps`).
             let named = crate::bot_runs::web_shape(&crate::bot_runs::caps_of_web(web));
             assert_eq!(
@@ -9473,11 +9473,11 @@ mod tests {
         );
     }
 
-    /// Migration 68 keeps every cost line and every run, reads each run as
+    /// Migration 69 keeps every cost line and every run, reads each run as
     /// made with no browser capability, grants a person who chose about the
     /// web alone no browser capability, and seeds the browser line.
     #[test]
-    fn migration_68_keeps_every_line_and_run_and_grants_no_browser() {
+    fn migration_69_keeps_every_line_and_run_and_grants_no_browser() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let (lines, runs) = {
@@ -9562,7 +9562,7 @@ mod tests {
     /// (`bot_runs.browser`), and its runs read as main made them: their
     /// capabilities from their web shape alone.
     #[test]
-    fn migration_68_from_main_has_no_branch_columns() {
+    fn migration_69_from_main_has_no_branch_columns() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let st = opened_from_66_with(&home, "UPDATE bot_runs SET web = 'search,fetch'");
@@ -9618,7 +9618,7 @@ mod tests {
     /// to every person, and the grant to the runs of every person but the
     /// one who chose off.
     #[test]
-    fn migration_68_writes_main_web_as_explicit_grants() {
+    fn migration_69_writes_main_web_as_explicit_grants() {
         use crate::bot_grants::{EVERYONE, GRANTER_MIGRATION};
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
@@ -9685,7 +9685,7 @@ mod tests {
     /// An instance whose web switches were off, or set on only one, gets
     /// a grant of nothing it did not offer.
     #[test]
-    fn migration_68_grants_nothing_where_web_was_off() {
+    fn migration_69_grants_nothing_where_web_was_off() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let st = opened_from_66_with(
@@ -9713,7 +9713,7 @@ mod tests {
     /// No `browser.open` kind is granted by the migration, whatever the
     /// first version's browser settings and choices said.
     #[test]
-    fn migration_68_grants_no_browser_kind() {
+    fn migration_69_grants_no_browser_kind() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let st = opened_from_66_with(
@@ -9735,7 +9735,7 @@ mod tests {
     /// Each run's capabilities come from its web shape (main's), each part
     /// as `Bindings::clax` reads it, and the run reads as it read before.
     #[test]
-    fn migration_68_fills_run_caps_from_web() {
+    fn migration_69_fills_run_caps_from_web() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let mut c = at_64_with_runs(&home);
@@ -9774,11 +9774,11 @@ mod tests {
         assert_eq!(run.web, "search,fetch", "read as it was");
     }
 
-    /// Migration 68 keeps every page of main's page store, each with the
+    /// Migration 69 keeps every page of main's page store, each with the
     /// format its fetch's journal entry names: `raw` as `raw`, main's
     /// `auto`, none and an entry that is missing as `markdown`.
     #[test]
-    fn migration_68_keeps_every_page_with_its_format() {
+    fn migration_69_keeps_every_page_with_its_format() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let mut c = at_64_with_runs(&home);

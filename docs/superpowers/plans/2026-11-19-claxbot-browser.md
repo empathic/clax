@@ -47,7 +47,7 @@ Spec threads each task addresses are named in the task. Open threads on code thi
 
 | File | Responsibility |
 |---|---|
-| `crates/clax-store/src/migrations.rs` | Migration 68 and its Rust step |
+| `crates/clax-store/src/migrations.rs` | Migration 69 and its Rust step |
 | `crates/clax-store/src/credits.rs` | `Unit::BrowserHour`, `LINE_BROWSER_TIME`, seeding |
 | `crates/clax-store/src/bot_settings.rs` | The `browser.*` settings |
 | `crates/clax-store/src/bot_web.rs` | `bot_spend_counts`; `browser_choice`/`set_browser_choice` beside `web_choice` |
@@ -75,7 +75,7 @@ Spec threads each task addresses are named in the task. Open threads on code thi
 
 ## Phase 1: Core (`clax-store`, `clax-bot`)
 
-### Task 1: Migration 68: the browser line, the person's switch, the run's shape
+### Task 1: Migration 69: the browser line, the person's switch, the run's shape
 
 Addresses spec threads `c80fad7d` (charging rule), `e4dc1bbb` (separate switch).
 
@@ -83,13 +83,13 @@ Addresses spec threads `c80fad7d` (charging rule), `e4dc1bbb` (separate switch).
 
 **Interfaces produced:**
 - `Unit::BrowserHour` (`"browser_h"`, base `3_600_000`), in `ALL`, `as_str`, `base`.
-- `pub const LINE_BROWSER_TIME: &str = "browser.time"`, seeded by migration 68's Rust step (`seed_browser_line`, `INSERT OR IGNORE`) at 90,000 micro-USD, the infrastructure margin, `applies` always, `source` "Cloudflare Browser Run list price, $0.09 per browser hour (check)".
-- Migration 68: rebuild `cost_lines` with `'browser_h'` in the `unit` CHECK (as migration 63 did); `ALTER TABLE bot_person_prefs ADD COLUMN browser INTEGER NOT NULL DEFAULT 1`; `ALTER TABLE bot_runs ADD COLUMN browser TEXT NOT NULL DEFAULT ''`; its mark entry, as migration 66's.
+- `pub const LINE_BROWSER_TIME: &str = "browser.time"`, seeded by migration 69's Rust step (`seed_browser_line`, `INSERT OR IGNORE`) at 90,000 micro-USD, the infrastructure margin, `applies` always, `source` "Cloudflare Browser Run list price, $0.09 per browser hour (check)".
+- Migration 69: rebuild `cost_lines` with `'browser_h'` in the `unit` CHECK (as migration 63 did); `ALTER TABLE bot_person_prefs ADD COLUMN browser INTEGER NOT NULL DEFAULT 1`; `ALTER TABLE bot_runs ADD COLUMN browser TEXT NOT NULL DEFAULT ''`; its mark entry, as migration 66's.
 - `Store::browser_choice(person) -> Result<bool>` (true without a row), `Store::set_browser_choice(ctx, person, on) -> Result<bool>`, audited `me.browser`.
 - `Run::browser`, `NewRun::browser` (`""`, `"test"`, `"browse"`, `"test,browse"`); `Bindings::clax(artifact, web, browser)` adds `browser.test`/`browser.browse` to `granted` after the web operations.
 - `AuditKind::BotBrowser = "bot.browser"`, `AuditKind::MeBrowser = "me.browser"`.
 
-- [ ] **Tests first** (in-module): `migration_68_seeds_the_browser_line` (unit, price, applies), `browser_h_round_trips_with_base_3_600_000`, `a_person_turns_the_browser_off_and_back` (one `me.browser` record), `a_run_keeps_its_browser_shape` (`create_run_exclusive` with `browser: "test"`, read back, `bindings().bindings[0].granted() == ["browser.test"]`), and the migration suite's existing checks with the new version.
+- [ ] **Tests first** (in-module): `migration_69_seeds_the_browser_line` (unit, price, applies), `browser_h_round_trips_with_base_3_600_000`, `a_person_turns_the_browser_off_and_back` (one `me.browser` record), `a_run_keeps_its_browser_shape` (`create_run_exclusive` with `browser: "test"`, read back, `bindings().bindings[0].granted() == ["browser.test"]`), and the migration suite's existing checks with the new version.
 - [ ] Run `just test-affected`; expect compile failures.
 - [ ] Implement; fix every `match` on `Unit` and fixtures the compiler and tests name (toolpath expected files for the audit kinds).
 - [ ] `just test-affected` passes (`//crates/clax-store:clax_store_lib_test` among them).

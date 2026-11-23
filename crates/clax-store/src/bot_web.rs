@@ -2,7 +2,7 @@
 //! 2026-11-02-claxbot-web-tools).
 //!
 //! - A person's own choice (§9.2), now their grants of each web
-//!   capability to their runs (migration 68, spec
+//!   capability to their runs (migration 69, spec
 //!   2026-11-19-claxbot-browser-design §11.2, [`crate::bot_grants`]):
 //!   [`Store::web_choice`] and [`Store::set_web_choice`] read and set both
 //!   web capabilities' at once, for the Me route's `web` field, and

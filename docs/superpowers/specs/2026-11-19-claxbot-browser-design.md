@@ -169,7 +169,7 @@ every item below is in the tree.
   `browser::access::BrowserAccess`, each read from the `web.*` or
   `browser.*` settings, the person's `bot_person_prefs.web` or
   `.browser`, and the host's source; the run's shape kept in
-  `bot_runs.web` (migration 63) and `bot_runs.browser` (migration 68).
+  `bot_runs.web` (migration 63) and `bot_runs.browser` (migration 69).
 - **URL rules as built**: `web::access::UrlRule` (`sourced`, `allowlist`,
   `any_public`; `sources()` derives a run's sourced URLs from the
   sender's words, its search answers and its fetched pages' links) and
@@ -319,7 +319,7 @@ version, event, issued_at}`, so it can move into gnap's store unchanged.
   (credentials present, a browser source at all).
 - **No grant is implied.** Main's behaviour, web on for everyone the
   admin offers it to, is an explicit selector grant of `clax-web`
-  `search` and `fetch` (granter `migration`) that migration 68 writes on
+  `search` and `fetch` (granter `migration`) that migration 69 writes on
   an instance whose web switches were on (§11.2), shown and revocable
   on the admin page; a daemon whose config.toml turns a web switch on
   writes the same once (granter `config`). The three `open-*` actions get
@@ -1373,7 +1373,7 @@ artifact's owner is a follow-up (recorded).
   included hours are the instance's; its concurrency charge is not
   metered per session and the instance absorbs it (recorded as a waiver).
 
-Migration 68 (the branch's own, edited in place) rebuilds `cost_lines`
+Migration 69 (the branch's own, edited in place) rebuilds `cost_lines`
 with `browser_s` in its `unit` CHECK and seeds the line.
 
 ### 10.2 Retrieval **(design, kept)**
@@ -1387,7 +1387,7 @@ free.
 
 Browser time is charged in contiguous segments, as it is used:
 
-- `bot_browser_sessions` (migration 68) keeps per session: run, session
+- `bot_browser_sessions` (migration 69) keeps per session: run, session
   ID, kind, opened at, charged through (milliseconds since the open),
   closed at, and the close reason.
 - **Each session call** charges the segment from the session's
@@ -1509,7 +1509,7 @@ Written only by `crate::bot_grants` (`Store::issue_cap_grant`,
   Turning it off revokes that grant (reason `controller`); on issues a
   new one (granter the person, event `bot`). An action the admin offers
   but has not granted the person is shown off with "not granted to you".
-- **Migration 68** keeps main's behaviour with explicit rows: for each of
+- **Migration 69** keeps main's behaviour with explicit rows: for each of
   `clax-web:search` and `clax-web:fetch` whose `web.<op>.enabled` was on,
   a selector grant to everyone (granter `migration`), its child for every
   person of the instance (the owner and every person row), and each

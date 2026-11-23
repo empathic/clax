@@ -665,7 +665,7 @@ impl Env {
     }
 
     /// The instance-wide grant of every capability, once: no capability
-    /// reaches a run without one (migration 68).
+    /// reaches a run without one (migration 69).
     pub fn grant_everyone(&self) {
         use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GrantFilter};
         let live = self
