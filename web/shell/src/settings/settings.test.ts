@@ -7,6 +7,13 @@ import type { Ctx } from "./screens";
 // The browser's context is given, not asked: each test names who it is.
 let who: Ctx = { hosted: false, owner: true, member: true, admin: false, bot: false };
 vi.mock("./context", () => ({ context: () => Promise.resolve(who) }));
+// The shell's clock, with each timer it is asked for kept here, run only by a test.
+const timers: { ms: number; fn: () => void }[] = [];
+vi.mock("../clock", async orig => ({
+  ...(await orig<typeof import("../clock")>()),
+  after: (ms: number, fn: () => void) => { const t = { ms, fn }; timers.push(t); return () => { const i = timers.indexOf(t); if (i >= 0) timers.splice(i, 1); }; },
+}));
+const { VIEW_WAIT_MS } = await import("../view/view-wait");
 const { default: Settings } = await import("./Settings.svelte");
 const { default: Palette } = await import("./Palette.svelte");
 const { GO, go, isPaletteKey } = await import("./palette");
@@ -96,6 +103,21 @@ describe("Settings", () => {
     await vi.waitFor(() => expect([...m.root.querySelectorAll(".stg-pane .bpg h2")].map(h => h.textContent)).toEqual(["Remotes"]));
     expect(m.root.querySelector(".stg-held")).toBeNull();
     expect(ready).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows a screen moved to VIEW_WAIT_MS after the move, though its first data has not come", async () => {
+    history.replaceState(null, "", "/settings/confirmations");
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url !== "/api/remotes/mutes" ? new Response("{}", { status: 404 }) : location.pathname === "/settings/remotes" ? new Promise<Response>(() => {}) : new Response(JSON.stringify({ mutes: [] })))));
+    const ready = vi.fn();
+    const m = mount(Settings, { onready: ready });
+    await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+    click(m.root.querySelector(".stg-nav a[href='/settings/remotes']")!);
+    await settle();
+    expect(m.root.querySelectorAll(".stg-pane.stg-held")).toHaveLength(1);
+    flush(() => timers.find(t => t.ms === VIEW_WAIT_MS)!.fn());
+    await vi.waitFor(() => expect(m.root.querySelector(".stg-held")).toBeNull());
+    expect([...m.root.querySelectorAll(".stg-pane .bpg h2")].map(h => h.textContent)).toEqual(["Remotes"]);
+    await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(2));
   });
 
   it("shows the overview, saying so, for a screen this browser may not open", async () => {

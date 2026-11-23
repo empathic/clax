@@ -3,6 +3,14 @@ import { flush, mount } from "../test/svelte";
 import { settle, stubFetch } from "../people/fixtures";
 import Queues from "./Queues.svelte";
 
+// The shell's clock, with each timer it is asked for kept here, run only by a test.
+const timers: { ms: number; fn: () => void }[] = [];
+vi.mock("../clock", async orig => ({
+  ...(await orig<typeof import("../clock")>()),
+  after: (ms: number, fn: () => void) => { const t = { ms, fn }; timers.push(t); return () => { const i = timers.indexOf(t); if (i >= 0) timers.splice(i, 1); }; },
+}));
+const { VIEW_WAIT_MS } = await import("../view/view-wait");
+
 const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], reporters_see: "own", created_at: "2026-10-27T10:00:00Z", role: "admin" };
 const routes = (o: Record<string, unknown> = {}) => ({
   "GET /api/queues": { queues: [QUEUE] },
@@ -52,6 +60,33 @@ describe("Queues", () => {
     expect(m.root.querySelector(".qpane.held .qview")).not.toBeNull();
     answer!();
     await vi.waitFor(() => expect(m.root.querySelector(".qpane:not(.held) .qview .qnone")).not.toBeNull());
+    expect(m.root.querySelector(".queues")).toBeNull();
+    expect(ready).toHaveBeenCalledTimes(2);
+    history.replaceState(null, "", "/");
+  });
+
+  it("shows a queue's view whose reports do not come VIEW_WAIT_MS after the move, saying it reads them, and a list whose counts do not come", async () => {
+    history.replaceState(null, "", "/queues");
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/api/queues") return new Response(JSON.stringify({ queues: [QUEUE] }));
+      // Neither the list's count nor the queue's view's reports ever answer.
+      if (url.startsWith("/api/queues/q1/reports")) return new Promise<Response>(() => {});
+      return new Response("{}", { status: 404 });
+    }));
+    const ready = vi.fn();
+    const m = mount(Queues, { onready: ready });
+    await settle();
+    expect(ready).not.toHaveBeenCalled();
+    flush(() => timers.find(t => t.ms === VIEW_WAIT_MS)!.fn());
+    await settle();
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(m.root.querySelector(".qpane:not(.held) .qcard .counts")!.textContent).toBe("Counting reports…");
+    click(m.root.querySelector(".qcard h3 a"));
+    await settle();
+    expect(m.root.querySelector(".qpane.held .qview")).not.toBeNull();
+    flush(() => timers.find(t => t.ms === VIEW_WAIT_MS)!.fn());
+    await settle();
+    expect(m.root.querySelector(".qpane:not(.held) .qview")).not.toBeNull();
     expect(m.root.querySelector(".queues")).toBeNull();
     expect(ready).toHaveBeenCalledTimes(2);
     history.replaceState(null, "", "/");

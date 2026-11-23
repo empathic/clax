@@ -25,14 +25,16 @@
   // then. Each screen is a pane (`ScreenPane.svelte`) made when its address
   // is shown and laid out with no height until it is ready the same way:
   // moving to another screen keeps the one shown (or the overview) until
-  // the next one's pane is ready, and then shows it in its place, so no
-  // move shows a loading line or a screen without its data.
+  // the next one's pane is ready, or `VIEW_WAIT_MS` has passed
+  // (`view/view-wait.ts`), and then shows it in its place.
   //
   // On a hosted Clax, Sign out ends the navigation and the overview, for
   // every member on every screen: it forgets the person's reporter, ends
   // the session and lands on `/signin`; a refusal shows beside it.
   import { onDestroy, onMount, tick, type Component } from "svelte";
+  import { after } from "../clock";
   import { refusal } from "../people/refusal";
+  import { VIEW_WAIT_MS } from "../view/view-wait";
   import type { EventStream } from "../stream";
   import { context } from "./context";
   import { GO, openPalette } from "./palette";
@@ -92,10 +94,14 @@
   // pane is ready, and on the first load before that (the gallery keeps
   // the page from view until it is ready).
   const onScreen = $derived(!!shownPane || (!told && !!screen));
+  // A screen moved to in place shows at most `VIEW_WAIT_MS` after the move,
+  // its data in or not (the first load is the gallery's skeleton's).
+  const waiting = $derived(told ? panes.find(x => !x.ready)?.key ?? null : null);
+  $effect(() => { const key = waiting; if (key) return after(VIEW_WAIT_MS, () => paneReady(key)); });
   /** The pane `key` has its first data: it takes the shown one's place,
    * unless the address has moved on since. */
   function paneReady(key: string) {
-    if (gone || key !== want) return;
+    if (gone || key !== want || panes.some(x => x.key === key && x.ready)) return;
     panes = panes.filter(x => x.key === key).map(x => ({ ...x, ready: true }));
     tellReady();
   }

@@ -15,10 +15,13 @@
   // pane made when its address is shown and laid out with no height until
   // it shows its first data (the list: the queues and each one's counts; a
   // queue's or a report's view: its own data, and the queues, which name
-  // it); the view shown stays until then, so a move shows no loading line.
+  // it), or for at most `VIEW_WAIT_MS` once the queues are in; the view
+  // shown stays until then.
   // The page is ready (`onready`) once its first pane is.
   import { onMount } from "svelte";
+  import { after } from "../clock";
   import type { EventStream } from "../stream";
+  import { VIEW_WAIT_MS } from "../view/view-wait";
   import * as api from "./api";
   import { type Counts, countReports, countsText, queueHref, queuesRoute, refusal } from "./model";
   import QueueAdmin from "./QueueAdmin.svelte";
@@ -53,12 +56,19 @@
     const shown = panes.find(x => x.key === key && x.ready);
     panes = shown ? [shown] : [...panes.filter(x => x.ready), { key, ready: false, own: queuesRoute(key).view === "list" }];
   });
-  // The pane asked for shows once its data and the queues (and on the list each one's counts) are in.
+  // The pane asked for shows once its data and the queues (and on the list
+  // each one's counts) are in; or, once the queues are, `VIEW_WAIT_MS` after
+  // it was asked for (`view/view-wait.ts`), saying what it still reads.
   const counted = $derived(!!queues && queues.every(q => q.id in counts));
+  const waiting = $derived(panes.at(-1)?.ready === false ? panes.at(-1)!.key : null);
+  let waited = $state<string | null>(null);
+  $effect(() => { const key = waiting; if (key) return after(VIEW_WAIT_MS, () => { waited = key; }); });
   $effect(() => {
     const want = panes.at(-1);
-    if (!want || want.ready || want.key !== path || !want.own || (!queues && !loadError)) return;
-    if (queuesRoute(want.key).view === "list" && queues && !counted) return;
+    if (!want || want.ready || want.key !== path || (!queues && !loadError)) return;
+    const late = waited === want.key;
+    if (!want.own && !late) return;
+    if (queuesRoute(want.key).view === "list" && queues && !counted && !late) return;
     panes = [{ ...want, ready: true }];
     p.onready?.();
   });
