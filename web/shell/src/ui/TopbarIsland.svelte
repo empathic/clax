@@ -43,8 +43,10 @@
   // (`topbar-gate.svelte.ts`): once the view is ready (the artifact with
   // its threads, so every count is drawn once; with the bootstrap block, at
   // the first render), its changelog decided, and the controls' chunks in
-  // (modulepreloaded with the page). No control waits on another's
-  // request. Each optional control (Inbox, Fork, Share, Publish, Get in
+  // (modulepreloaded with the page) and, without the block, what decides
+  // the optional ones (`barDecided`), each at most `BAR_WAIT_MS` past the
+  // view's being ready. No control waits on another's request, and the
+  // frame waits on none of them. Each optional control (Inbox, Fork, Share, Publish, Get in
   // Clax, the feedback menu, and ClaxBot's button in `Who.svelte`) is in a
   // slot: what decides it is known at that render wherever the page knows
   // it (the block's `deciders`, the artifact's own fields, an answer asked
@@ -55,7 +57,8 @@
   import { fromStore } from "svelte/store";
   import { COMMENTS_OFF } from "../failure";
   import { type ArtifactController, commentsOff, viewReady } from "../view/artifact-controller";
-  import { decided as known } from "../view/deciders.svelte";
+  import { after } from "../clock";
+  import { BAR_WAIT_MS, barDecided, decided as known } from "../view/deciders.svelte";
   import { analyticsOpen, botOpen, clone, cloneOpen, forkButton, getInClax, legal, loading, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, usage, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
   import { feedbackDeciding, feedbackMenu } from "../feedback/slot.svelte";
@@ -80,10 +83,26 @@
   let forking = $state(false);
   // The owner's shell (it holds the token) may always fork; anyone else as
   // the daemon says (`may_fork`). The block says whose it is; else the
-  // token's answer does, which the view waits for (`barDecided`).
+  // token's answer does, which the bar waits for (`barDecided`).
   const ownerShell = $derived(known.owner === true);
-  // The changelog this load decided names what the pill says first (`s.decided`).
-  const decided = $derived(viewReady(s) && s.decided !== null && !loading.current);
+  // The view is ready, and the changelog this load decided names what the
+  // pill says first (`s.decided`).
+  const viewIn = $derived(viewReady(s) && s.decided !== null);
+  // What decides the optional controls is in, and their code; or
+  // `BAR_WAIT_MS` passed since the view was ready: what comes later takes
+  // its late place.
+  let answered = $state(false);
+  let capped = $state(false);
+  let cancelCap = () => {};
+  let waiting = false;
+  $effect(() => {
+    if (!viewIn || waiting) return;
+    waiting = true;
+    void barDecided().then(() => { answered = true; });
+    cancelCap = after(BAR_WAIT_MS, () => { capped = true; });
+  });
+  $effect(() => () => cancelCap());
+  const decided = $derived(viewIn && ((answered && !loading.current) || capped));
   // Once the controls have painted, a slot filled later is late (`topbar-gate.svelte.ts`).
   let marked = false;
   $effect(() => {

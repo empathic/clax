@@ -103,7 +103,7 @@ export function startDeciders(id: string, d: Deciders | null, inspecting = false
   else void getToken().then(t => { known.owner = !!t; });
   if (!answered("clone")) cloneAsk = import("../ui/clone-api").then(m => m.cloneOptions(id)).catch(() => null).then(o => (cloneNow = o));
   // Publish is the local owner's shell's alone (a hosted owner's token is `cxo_`).
-  remotesAsk = getToken().then(t => (t && !t.startsWith("cxo_") ? import("../ui/publish-api").then(m => m.remotesOf(id)) : null)).catch(() => null).then(r => (remotesNow = r));
+  remotesAsk = (known.owner === false ? Promise.resolve(null) : getToken().then(t => (t && !t.startsWith("cxo_") ? import("../ui/publish-api").then(m => m.remotesOf(id)) : null))).catch(() => null).then(r => (remotesNow = r));
   // ClaxBot's runs of the artifact (its button shows while there is one):
   // none where the daemon has no ClaxBot or refuses this browser.
   if (answered("runs")) runsNow = block!.status.runs === 200 && Array.isArray(block!.runs?.runs) ? block!.runs.runs : [];
@@ -171,10 +171,18 @@ export function runsKnown(): RunSummary[] | undefined { return runsNow; }
 /** The same, as asked when the page started (null where nothing was asked). */
 export function runsAsked(): Promise<RunSummary[]> | null { return runsAsk; }
 
-/** Settles once what decides the feedback menu, Publish and ClaxBot's
- * runs button is in (an answer or a failure each), where the block did not
- * say: the view waits for it beside its own data, so they are drawn with
- * the bar. */
+/** The longest the top bar keeps its controls from view once the view is
+ * ready (TopbarIsland.svelte), for what decides its optional controls
+ * (`barDecided`) and for their code: one that comes later takes its late
+ * place then (`ui/topbar-gate.svelte.ts`), and the essential controls
+ * (Comment, Threads, the versions, the more menu) never wait longer. */
+export const BAR_WAIT_MS = 300;
+
+/** Settles once what decides Inbox, the feedback menu, Publish and
+ * ClaxBot's runs button is in (an answer or a failure each), where the
+ * block did not say (with the block, at once): the top bar waits for it,
+ * at most `BAR_WAIT_MS`, so they are drawn with the bar. */
 export function barDecided(): Promise<void> {
-  return Promise.all([feedbackAsk, remotesAsk, runsAsk]).then(() => {}, () => {});
+  if (block) return Promise.resolve();
+  return Promise.all([feedbackAsk, remotesAsk, runsAsk, inboxAsk]).then(() => {}, () => {});
 }

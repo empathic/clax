@@ -46,7 +46,7 @@ import type { LiveUi, LiveView } from "./live-view";
 import type { AgentView, Working } from "./working-model";
 import type { DraftChanged, DraftView } from "./draft-model";
 import type { Drafts } from "./drafts";
-import { barDecided, decideInbox, decided as known, firstInbox, questionsDecided, setUnread } from "./deciders.svelte";
+import { decideInbox, decided as known, firstInbox, questionsDecided, setUnread } from "./deciders.svelte";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 /** How long a reopen asked of an unnamed viewer waits for its name. */
@@ -999,14 +999,15 @@ export class ArtifactController {
     } else {
       // The artifact, its threads and the viewer are asked at once, and the
       // view takes them together, so its counts, its thread list and its
-      // pins are drawn once, with the artifact; with them whether this
-      // browser has an inbox (the viewer's, or the token's, answer), so
-      // the top bar draws Inbox with its controls, and what decides Publish
-      // and ClaxBot's runs button. A daemon that does not answer, or an
-      // answer that is not Clax's, is retried (with a notice); Clax's own
-      // answer, even a refusal, is shown.
+      // pins are drawn once, with the artifact. Whether this browser has an
+      // inbox is asked beside them; it and what decides the top bar's other
+      // optional controls hold the bar's controls a moment
+      // (TopbarIsland.svelte, `BAR_WAIT_MS`), never the frame. A daemon
+      // that does not answer is retried (with a notice); an answer, even an
+      // error, is shown.
       const me = getViewer().catch(() => null);
-      const together = Promise.all([this.loadThreads(), me, decideInbox(me), barDecided()]);
+      void decideInbox(me);
+      const together = Promise.all([this.loadThreads(), me]);
       retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: unreached, wait: loadWait, trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
         .then(d => together.then(() => this.loaded(d)), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : failureText(ARTIFACT_FAILED, e) }); });
     }

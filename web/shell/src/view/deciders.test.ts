@@ -44,8 +44,10 @@ describe("what decides the artifact view's optional parts", () => {
     expect(d.runsKnown()).toEqual(block.runs.runs);
     expect(await d.firstInbox()).toEqual({ summary: block.summary, open: [] });
     await vi.waitFor(() => expect(seedBot).toHaveBeenCalledWith(block.bot));
-    // The token alone is asked (for Publish, the local owner's), none of the deciders' routes.
-    expect(f.mock.calls.map(c => String(c[0]))).toEqual(["/api/token"]);
+    // None of the deciders' routes is asked, nor the token (the block says whose browser it is).
+    expect(f.mock.calls.map(c => String(c[0]))).toEqual([]);
+    // The bar waits for nothing.
+    await d.barDecided();
     await d.decideInbox();
     expect(inboxBrowser).not.toHaveBeenCalled();
   });
