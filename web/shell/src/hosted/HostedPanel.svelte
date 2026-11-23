@@ -55,7 +55,14 @@
   }
   const copy = (what: string, text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
   const makeLink = () => act("me", async () => { link = await api.signinLink(); });
-  const signOut = () => act("me", async () => { await forgetThenSignOut(api.signOut); location.assign("/signin"); });
+  // Signed out, the browser goes to the sign-in page: nothing here is asked
+  // again (it would be refused), and Sign out stays busy until the page is left.
+  let leaving = $state(false);
+  async function signOut() {
+    if (leaving) return;
+    leaving = true; err = null;
+    try { await forgetThenSignOut(api.signOut); location.assign("/signin"); } catch (x) { err = { at: "me", text: msg(x) }; leaving = false; }
+  }
   const mint = (e: Event) => { e.preventDefault(); void act("tokens", async () => { minted = await api.mintToken(label.trim()); label = ""; }); };
   const share = (e: Event) => { e.preventDefault(); if (pick) void act("links", () => api.setLink(pick, pickAccess)); };
   const minutes = (iso: string) => Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60000));
@@ -73,7 +80,7 @@
   <h3 id="hm-h">This browser</h3>
   <div class="line"><span>Signed in as <strong>{person?.display_name ?? "an unnamed person"}</strong>{person?.owner ? " (the owner)" : ""}</span><span class="sp"></span>
     <button type="button" onclick={makeLink}>Sign in another device</button>
-    <button type="button" class="ghost" onclick={signOut}>Sign out</button></div>
+    <button type="button" class="ghost" onclick={signOut} disabled={leaving}>{leaving ? "Signing out…" : "Sign out"}</button></div>
   {#if link}
     <p class="lead">Open this link on the other device:</p>
     <div class="cmd"><code>{link.url}</code><button type="button" onclick={() => copy("link", link!.url)}>{copied === "link" ? "Copied" : "Copy"}</button></div>

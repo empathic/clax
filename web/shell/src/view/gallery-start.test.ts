@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "../trouble";
 import type { GalleryBoot } from "./gallery-boot";
 import { type Answer, type Io, contentFromBlock, gatherContent, gatherHeader, header, headerFromBlock, pageKind } from "./gallery-start";
+import { type AuthKind, authKind } from "../hosted/signin-boot";
 
 const VIEWER = { viewer: { public_id: "v1", display_name: "Ada" }, may_create: false };
 const PERSON = { viewer: { public_id: "p1", display_name: "Sam", person: true, person_revoked_at: null }, may_create: true };
@@ -49,6 +50,13 @@ describe("pageKind", () => {
     new Function("document", "location", "localStorage", script)(doc, { pathname: path }, { length: 0, key: () => null });
     return root.dataset.page;
   };
+  const inlineAuth = (path: string, given?: unknown) => {
+    const root = { dataset: {} as Record<string, string> };
+    const boot = given === undefined ? null : { textContent: JSON.stringify(given) };
+    const doc = { documentElement: root, getElementById: (id: string) => (id === "clax-boot" ? boot : null), createElement: () => ({}), head: { appendChild() {} } };
+    new Function("document", "location", "localStorage", script)(doc, { pathname: path }, { length: 0, key: () => null });
+    return root.dataset;
+  };
   it("tells the gallery, the pages beside it and the sign-in pages apart, as the entry's inline script does", () => {
     const cases: [string, string][] = [
       ["/", "gallery"], ["/a/nothing", "gallery"], ["/inbox", "page"], ["/tags", "page"], ["/queues", "page"], ["/queues/q1/t1", "page"],
@@ -59,6 +67,27 @@ describe("pageKind", () => {
       expect(pageKind(path), path).toBe(kind);
       expect(inline(path), path).toBe(kind);
     }
+  });
+
+  it("tells the sign-in pages apart, as the entry's inline script does", () => {
+    const cases: [string, AuthKind][] = [
+      ["/start/", "landing"], ["/setup", "setup"], ["/device", "device"], ["/join/abc", "join"], ["/join/", "join"],
+      ["/signin/xyz", "signin"], ["/signin/", "status"], ["/signin", "status"],
+    ];
+    for (const [path, kind] of cases) {
+      expect(authKind(path), path).toBe(kind);
+      expect(inlineAuth(path).auth, path).toBe(kind);
+    }
+    expect(inlineAuth("/", undefined).auth).toBeUndefined();
+  });
+
+  it("marks the landing page signed in from the block alone", () => {
+    const me = (signed_in: boolean) => ({ v: 1, kind: "signin", status: { hosted: 200 }, hosted: { signed_in } });
+    expect("signed" in inlineAuth("/start/", me(true))).toBe(true);
+    expect("signed" in inlineAuth("/start/", me(false))).toBe(false);
+    expect("signed" in inlineAuth("/start/", { ...me(true), status: {} })).toBe(false);
+    expect("signed" in inlineAuth("/start/", { ...me(true), kind: "gallery" })).toBe(false);
+    expect("signed" in inlineAuth("/start/")).toBe(false);
   });
 });
 

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FRAME_HTML, HEADER_HTML, LOADING, NEEDS_HEADING, NEEDS_RULE, REST_AFTER_NEEDS, REST_HEADING, REST_NOTE, SKELETON_CARDS, SKELETON_HTML, replaceFrame } from "./gallery-frame";
+import { AUTH_FRAME_HTML, FRAME_HTML, HEADER_HTML, LOADING, NEEDS_HEADING, NEEDS_RULE, REST_AFTER_NEEDS, REST_HEADING, REST_NOTE, SKELETON_CARDS, SKELETON_HTML, replaceFrame } from "./gallery-frame";
 import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
 
 /** The elements under `root` as tag, class and the attributes that place
@@ -17,7 +17,9 @@ const parse = (html: string) => { const d = document.createElement("div"); d.inn
 describe("index.html", () => {
   it("carries the gallery's frame in #app exactly, and the markers the daemon and the build fill", () => {
     const html = readFileSync(join(__dirname, "../../index.html"), "utf8");
-    expect(html).toContain(`<div id="app">${FRAME_HTML}</div>`);
+    expect(html).toContain(`<div id="app">${FRAME_HTML}${AUTH_FRAME_HTML}</div>`);
+    // The script that shows `#app` (gallery.css) once it is parsed whole comes right after it.
+    expect(html).toContain(`${AUTH_FRAME_HTML}</div>\n<script id="clax-framed">`);
     expect(html).toContain("<!--clax:boot-->");
     expect(html).toContain("/*clax:preload*/{}");
     // The page's kind is marked after the block, which it reads, and before the body.
@@ -39,6 +41,48 @@ describe("index.html", () => {
     expect(sk.querySelector(".sk-need .rule")!.textContent).toBe(NEEDS_RULE);
     expect(sk.querySelector(".sk-rest h2")!.textContent).toBe(`${REST_HEADING}${REST_AFTER_NEEDS}${REST_NOTE}`);
     expect(parse(FRAME_HTML).querySelector("main.gal")!.getAttribute("aria-busy")).toBe("true");
+  });
+});
+
+describe("the sign-in pages' frame", () => {
+  // The entry's inline script after `#app`, run on the frame for a page kind.
+  const html = readFileSync(join(__dirname, "../../index.html"), "utf8");
+  const script = /<script id="clax-framed">([\s\S]*?)<\/script>/.exec(html)![1];
+  const framed = (auth: string, signed = false) => {
+    document.documentElement.dataset.auth = auth;
+    if (signed) document.documentElement.dataset.signed = ""; else delete document.documentElement.dataset.signed;
+    document.body.innerHTML = `<div id="app">${AUTH_FRAME_HTML}</div>`;
+    new Function(script)();
+    return document.querySelector<HTMLElement>("#app > .aframe")!;
+  };
+  afterEach(() => { delete document.documentElement.dataset.auth; delete document.documentElement.dataset.signed; document.body.replaceChildren(); document.title = ""; });
+
+  it("heads each sign-in page's card with the page's own heading, over the skeleton, and says it is loading", () => {
+    for (const [auth, title] of [["setup", "Set up Clax"], ["join", "Join Clax"], ["signin", "Sign in"], ["device", "Connect a Clax"], ["status", "Sign in"]] as const) {
+      const f = framed(auth);
+      expect(f.querySelector("main.signin > .sicard > h2")!.textContent, auth).toBe(title);
+      expect(document.title).toBe(`${title} · Clax`);
+      expect(f.querySelector("main.signin")!.getAttribute("aria-busy")).toBe("true");
+      expect([...f.querySelectorAll("[role=status]")].map(e => e.textContent)).toEqual([LOADING]);
+      expect(f.querySelector("iframe")).toBeNull();
+    }
+  });
+
+  it("starts the landing page's quickstart in its stage, under a Sign in link, or Your gallery once signed in", () => {
+    let f = framed("landing");
+    expect(f.querySelector("iframe.lframe")!.getAttribute("src")).toBe("/start/index.html");
+    expect(f.lastElementChild).toBe(f.querySelector("iframe.lframe"));
+    expect(f.querySelector<HTMLAnchorElement>(".gbar a.lgo")!.textContent).toBe("Sign in");
+    expect(f.querySelector<HTMLAnchorElement>(".gbar a.lgo")!.getAttribute("href")).toBe("/signin");
+    f = framed("landing", true);
+    expect(f.querySelector<HTMLAnchorElement>(".gbar a.lgo")!.textContent).toBe("Your gallery");
+    expect(f.querySelector<HTMLAnchorElement>(".gbar a.lgo")!.getAttribute("href")).toBe("/");
+  });
+
+  it("does nothing on the gallery's pages", () => {
+    const f = framed("");
+    expect(f.querySelector("h2")!.textContent).toBe("");
+    expect(f.querySelector("iframe")).toBeNull();
   });
 });
 

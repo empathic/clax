@@ -86,13 +86,14 @@ html[data-sk~="tile"] .gskel .sk-nt, html[data-sk~="need"] .gskel .sk-e { displa
 html[data-sk~="need"] .gskel .sk-a, html[data-sk~="flat"] .gskel h2, html[data-sk~="empty"] .gskel .sk-tb, html[data-sk~="empty"] .gskel .grp { display: none; }
 html[data-page="page"] .gskel .grp, html[data-page="page"] .gskel .sk-sum, html[data-page="page"] .gskel .sk-tb, html[data-page="page"] .gskel .sk-empty, html[data-page="page"] .gbar > .search { display: none; }
 html[data-page="page"] .gskel .sk-ls { display: grid; }
-html[data-page="auth"] #app > .gbar, html[data-page="auth"] #app > .gal, html[data-page="auth"] #app > .glegal { display: none; }
+/* The sign-in pages show their own frame, not the gallery's, until their page takes its place. */
+html[data-page="auth"] #app:has(> .aframe) > :is(.gbar, .gal, .glegal), html:not([data-page="auth"]) #app > .aframe { display: none; }
 @media (prefers-reduced-motion: no-preference) { .gskel .sk { animation: gskel 1.2s ease-in-out infinite alternate; } }
 @keyframes gskel { to { opacity: .45; } }
 @media (max-width: 700px) {
   /* The gallery's search box takes a row of its own under the bar (not on a
-     page beside the gallery, whose frame holds the box hidden). */
-  html:not([data-page="page"]) .gbar:has(> .search) { flex-wrap: wrap; height: auto; padding-top: 10px; padding-bottom: 10px; row-gap: 10px; }
+     page beside the gallery or a sign-in page, whose frame holds the box hidden). */
+  html[data-page="gallery"] .gbar:has(> .search) { flex-wrap: wrap; height: auto; padding-top: 10px; padding-bottom: 10px; row-gap: 10px; }
   .gbar > .search { order: 1; flex: 1 0 100%; width: auto; max-width: none; }
   .needs .cards { grid-template-columns: 1fr; }
   .needs .card h3, .gskel .sk-need .sk-t { font-size: 15px; }
@@ -104,3 +105,79 @@ html[data-page="auth"] #app > .gbar, html[data-page="auth"] #app > .gal, html[da
    clax-page script's --gback, the place kept in the history entry) to be
    scrolled there at once, until the content is in (ui/Gallery.svelte). */
 html[data-page="gallery"] .gal { min-height: calc(100vh + var(--gback, 0px)); }
+/* Until the document is parsed to the end of `#app` (the `clax-framed`
+   script after it), none of `#app` shows: a document painted while it
+   streams in would show part of the frame (a header bar with no mark),
+   and the first frame painted is the whole frame. */
+html:not(:has(#clax-framed)) #app { visibility: hidden; }
+
+/* A hosted daemon's sign-in pages (hosted/SignIn.svelte) and landing page
+   (hosted/Landing.svelte), and their static frame (`.aframe`, index.html):
+   the header, the card, and the footer held at the bottom of the window,
+   so a card that grows as its content comes in moves nothing under it. */
+html[data-page="auth"] #app, #app > .aframe { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+#app > .aframe { flex: 1 0 auto; }
+.gbar .gsp { flex: 1; }
+.gbar a.primary { font: 500 14px/1.15 var(--font); min-height: 32px; padding: 7px 12px; background: var(--fg); color: var(--bg); border: 1px solid var(--fg); border-radius: var(--radius-sm); display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; flex: none; transition: background-color var(--t), border-color var(--t); }
+.gbar a.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+@media (pointer: coarse) { .gbar a.primary { min-height: 40px; } }
+/* The landing page: its header, and the quickstart's frame filling the rest of the window. */
+html[data-auth="landing"] #app > .aframe { height: 100vh; height: 100dvh; }
+html[data-auth="landing"] #app > .aframe > main.signin { display: none; }
+html:not([data-auth="landing"]) .gbar a.lgo { display: none; }
+.aframe > .gbar { flex: none; }
+/* Under the frame until its page paints (the frame is transparent until
+   then), the stage says it is loading, after a moment, as the artifact
+   page's stage does (`.stage-wait`, theme.css): the quickstart's opaque
+   page covers it as it paints. */
+.aframe:has(> .lframe) { position: relative; }
+.aframe > .lframe { flex: 1; width: 100%; border: 0; display: block; background: transparent; position: relative; z-index: 1; }
+.aframe:has(> .lframe)::after { content: "Loading…"; position: absolute; left: 0; right: 0; bottom: 0; top: 60px; display: grid; place-items: center; color: var(--muted); font-size: 14px; animation: stage-wait 0s .6s both; }
+.signin { flex: 1 0 auto; display: flex; flex-direction: column; width: 100%; max-width: 480px; margin: 0 auto; padding: 48px var(--gutter) 40px; }
+.signin .sicard { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 24px 24px; display: flex; flex-direction: column; gap: 12px; }
+.signin h2 { margin: 0; font-size: 22px; line-height: 1.2; }
+.signin p { margin: 0; font-size: 14.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.signin form { display: flex; flex-direction: column; gap: 12px; margin: 0; }
+.signin .field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.signin .field input { width: 100%; box-sizing: border-box; }
+.signin .hint, .signin .muted { color: var(--muted); font-size: 13px; }
+.signin code { font: 12.5px var(--mono); white-space: nowrap; }
+.signin button.primary { align-self: flex-start; white-space: normal; text-align: start; }
+.signin .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.signin a { color: var(--fg); }
+.signin .err { color: var(--danger); font-size: 13.5px; }
+.signin a.gh { align-self: flex-start; display: inline-flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: var(--radius-sm); background: var(--fg); color: var(--bg); font-weight: 600; font-size: 15px; text-decoration: none; min-height: 44px; box-sizing: border-box; }
+.signin a.gh:hover { opacity: .9; }
+.signin a.gh:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.signin .pub { margin-top: 16px; }
+.signin .pub h2 { font-size: 17px; }
+.signin .pub ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.signin .pub li + li { border-top: 1px solid var(--border); }
+.signin .pub li a { display: block; padding: 10px 0; font-size: 14.5px; font-weight: 500; text-decoration: none; overflow-wrap: anywhere; }
+.signin .pub li a:hover { text-decoration: underline; }
+.signin .legal a { color: inherit; text-decoration: underline; }
+.signin .silegal { margin-top: auto; padding-top: 16px; min-height: calc(16px + 1.5em); text-align: center; font-size: 12.5px; color: var(--muted); }
+.signin .silegal a { color: inherit; }
+.signin .now { border-inline-start: 3px solid var(--accent); padding: 6px 10px; background: var(--bg); border-radius: 4px; }
+.signin .vh { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* The card's skeleton until its answers are in: three lines and a button. */
+.signin .sk { display: flex; flex-direction: column; gap: 10px; }
+.signin .sk > * { display: block; background-color: var(--hover); border-radius: var(--radius-sm); }
+.signin .sk-l { height: 14px; }
+.signin .sk-l:nth-child(2) { width: 92%; }
+.signin .sk-l:nth-child(3) { width: 64%; }
+.signin .sk-b { width: 184px; height: 44px; margin-top: 4px; }
+@media (prefers-reduced-motion: no-preference) { .signin .sk { animation: gskel 1.2s ease-in-out infinite alternate; } }
+/* A control whose action is pending keeps its place and size: its label
+   gives way to a small ring turning where it was. */
+.signin .busy-able[aria-busy="true"], .prompt .busy-able[aria-busy="true"] { position: relative; color: transparent; }
+.signin .busy-able[aria-busy="true"] > *, .prompt .busy-able[aria-busy="true"] > * { visibility: hidden; }
+.signin .busy-able[aria-busy="true"]::after, .prompt .busy-able[aria-busy="true"]::after { content: ""; position: absolute; inset: 0; margin: auto; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--fg); border-right-color: transparent; }
+.signin .primary.busy-able[aria-busy="true"]::after, .prompt .primary.busy-able[aria-busy="true"]::after { border-color: var(--bg); border-right-color: transparent; }
+@media (prefers-reduced-motion: no-preference) { .signin .busy-able[aria-busy="true"]::after, .prompt .busy-able[aria-busy="true"]::after { animation: si-turn .8s linear infinite; } }
+@keyframes si-turn { to { transform: rotate(1turn); } }
+@media (max-width: 520px) {
+  .signin { padding-top: 24px; }
+  .signin .sicard { padding: 18px 16px 20px; }
+  .signin button.primary, .signin .sk-b { align-self: stretch; justify-content: center; width: auto; }
+}

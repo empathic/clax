@@ -43,7 +43,7 @@
     <p id="legal-body">This Clax has a <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a> and a <a href={legal.privacy_url} target="_blank" rel="noopener">Privacy Policy</a> you have not agreed to yet. By continuing, you agree to both.</p>
     {#if err}<p class="error" role="alert">{err}</p>{/if}
     <div class="actions">
-      <button type="button" class="primary" disabled={busy} onclick={agree}>Continue</button>
+      <button type="button" class="primary busy-able" disabled={busy} aria-busy={busy} onclick={agree}>Continue</button>
     </div>
   </div>
 </div>

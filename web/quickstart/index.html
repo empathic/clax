@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Start here: Clax in five minutes</title>
 <link rel="stylesheet" href="style.css">
+<script>(function(){var r=document.documentElement,h=!1;if(!document.querySelector('meta[name="clax-reel"]'))return;try{h=localStorage.getItem("clax-quickstart-reel-hidden")==="1"}catch(e){}r.dataset.reelEarly=h?"button":"show"})()</script>
 </head>
 <body>
 <header>
@@ -62,14 +63,17 @@
   // ---------- The reel ----------
   // reel.mp4 is a build artifact published beside the page, not part of the
   // repository: the figure shows once the video loads, and nothing shows
-  // where it is absent. It plays by itself unless the viewer asks for
+  // where it is absent. Where the server says the page has it (a
+  // `clax-reel` meta, as a hosted Clax's landing page does), the figure
+  // shows from the first paint, its poster in its place until the video
+  // plays, and goes only if the video fails. It plays by itself unless the viewer asks for
   // reduced motion. A viewer who hides it keeps it hidden on later visits
   // (REEL_HIDDEN in localStorage, where storage works) and can bring it back.
   {
     const REEL_HIDDEN = "clax-quickstart-reel-hidden";
     const reel = document.getElementById("reel"), video = reel.querySelector("video");
     const show = document.getElementById("reel-show");
-    let loaded = false, hidden = false;
+    let loaded = !!document.querySelector('meta[name="clax-reel"]') && !video.error, hidden = false;
     try { hidden = localStorage.getItem(REEL_HIDDEN) === "1"; } catch (_) {}
     const play = () => {
       let still = false;
@@ -83,6 +87,10 @@
       draw();
     };
     video.addEventListener("loadedmetadata", () => { loaded = true; draw(); if (!hidden) play(); }, { once: true });
+    video.addEventListener("error", () => { loaded = false; draw(); }, { once: true });
+    draw();
+    delete document.documentElement.dataset.reelEarly;
+    if (loaded && !hidden && video.readyState >= 1) play();
     document.getElementById("reel-hide").addEventListener("click", () => { try { video.pause(); } catch (_) {} keep(true); });
     show.addEventListener("click", () => { keep(false); play(); });
   }

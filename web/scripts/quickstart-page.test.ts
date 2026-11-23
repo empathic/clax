@@ -10,7 +10,8 @@ import { settled } from "../shell/src/test/settled";
 
 const html = readFileSync(join(__dirname, "../quickstart/index.html"), "utf8");
 const doc = new DOMParser().parseFromString(html, "text/html");
-const script = [...doc.querySelectorAll("script")].find((s) => !s.src)!.textContent!;
+// The page's script: the inline one in its body (the head's marks the reel's early layout).
+const script = [...doc.body.querySelectorAll("script")].find((s) => !s.src)!.textContent!;
 const body = (() => {
   const b = doc.body.cloneNode(true) as HTMLElement;
   b.querySelectorAll("script").forEach((s) => s.remove());

@@ -75,6 +75,12 @@
   .reel-show .play { position: relative; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); }
   .reel-show .play::after { content: ""; position: absolute; left: 10px; top: 8px; border: 5px solid transparent; border-left: 8px solid var(--accent-fg); border-right: 0; }
   .reel-show[hidden] { display: none; }
+  /* Where the page is served with its reel (a `clax-reel` meta), the reel,
+     or the button that brings it back, is laid out from the first paint
+     (the head script's data-reel-early), not once the video's first bytes
+     are in: nothing under it moves when they come. */
+  html[data-reel-early="show"] #reel[hidden] { display: block; }
+  html[data-reel-early="button"] #reel-show[hidden] { display: inline-flex; }
   @media (max-width: 600px) {
     .reel { margin: 16px auto 40px; border-radius: 12px; }
     .reel::before { inset: -6% -4% -2%; filter: blur(18px); }

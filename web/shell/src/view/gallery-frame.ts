@@ -5,14 +5,15 @@ import { MARK_SVG } from "./mark";
 // final layout): the header bar with the mark, the title, an empty
 // subtitle, the empty slot the header's links mount into, the search box
 // (the gallery's list only) and the theme switch, each where the mounted
-// header puts it; `main` holding the skeleton; and the footer. The
+// header puts it; `main` holding the skeleton; and the footer (and after
+// them the sign-in pages' frame, `AUTH_FRAME_HTML`). The
 // gallery's entry mounts `Gallery.svelte` in its place in one task
 // (`gallery-main.ts`), which shows the same skeleton (`SKELETON_HTML`)
 // until its content is in. The footer stays: the gallery adds a hosted
 // Clax's legal links to it. The inline `clax-page` script marks the root
 // with the page's kind (`data-page`, `gallery-start.ts` `pageKind`): the
 // search box shows on the gallery only, and the sign-in pages show none
-// of the frame.
+// of the gallery's frame, but their own.
 //
 // The skeleton takes the shape of what replaces it. It holds every part
 // the content may have, each in the content's own boxes (the groups'
@@ -64,6 +65,24 @@ export const FOOTER_HTML = `<nav class="glegal" aria-label="About Clax"><a href=
 
 /** The whole frame, as `#app` holds it in `shell/index.html`; `main` is busy until its content is in. */
 export const FRAME_HTML = `${HEADER_HTML}<main class="gal" aria-busy="true">${SKELETON_HTML}</main>${FOOTER_HTML}`;
+
+/** The skeleton of a sign-in page's card while its answers are on its
+ * way: a polite status, and three lines and a button's shape, hidden from
+ * assistive technology. `SignIn.svelte` shows the same until it renders. */
+export const SIGNIN_SKELETON_HTML = `<div class="vh" role="status">${LOADING}</div><div class="sk" aria-hidden="true"><span class="sk-l"></span><span class="sk-l"></span><span class="sk-l"></span><span class="sk-b"></span></div>`;
+
+/** The frame of a hosted daemon's sign-in pages and landing page (the
+ * root's `data-page` is `auth`; `data-auth` says which, from the inline
+ * `clax-page` script), after the gallery's in `#app`, shown only on them:
+ * the header `SignIn.svelte` and `Landing.svelte` render, with the
+ * landing's Sign in link (the landing page only); and the sign-in card
+ * with its heading (the inline `clax-framed` script writes the page's
+ * own) over the skeleton, and the footer's line, its text left to the
+ * page. On the landing page the same script adds the quickstart's frame
+ * after the header, so it loads beside the shell's code; the landing's
+ * entry keeps it and mounts its header in place of this one. */
+export const AUTH_FRAME_HTML = `<div class="aframe"><header class="gbar"><a href="/" class="home" aria-label="Gallery"><span class="mark" data-size="bar" role="img" aria-label="Clax">${MARK_SVG}</span></a><h1>Clax</h1><span class="gsp"></span>${THEME_SWITCH_HTML}<a class="primary lgo" href="/signin">Sign in</a></header>`
+  + `<main class="signin" aria-busy="true"><section class="sicard" aria-labelledby="si-h"><h2 id="si-h"></h2>${SIGNIN_SKELETON_HTML}</section><footer class="silegal" aria-hidden="true"></footer></main></div>`;
 
 /** Mounts the page in place of the static frame's header and `main` in
  * `root` within the one task: `mountAt` mounts before the anchor given (the

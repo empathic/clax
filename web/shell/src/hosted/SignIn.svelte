@@ -26,12 +26,26 @@
   // private site to `/signin?next=<its address>`, so a sign-in returns to
   // the site. The GitHub button carries it through the OAuth flow, and
   // `/signin?next=` in a browser already signed in (by a link opened in
-  // another tab, say) goes on there at once. Signed out, `/signin`
+  // another tab, say) goes on there at once (the daemon redirects it,
+  // crates/clax-server/src/hosted.rs `signin_page`; the page goes on
+  // itself where it was served anyway). Signed out, `/signin`
   // also lists the public gallery ("Public on Clax"), each artifact opening
   // through its link. The gallery's entry
   // loads this as a chunk of its own on these paths; the header's mark is
   // written out, as importing the gallery's `Mark` here would move it out
   // of the gallery's entry into a chunk both load.
+  //
+  // The page renders once, in its final shape: what it reads first (who
+  // the browser is, the public gallery, the invite, link or device it
+  // names) comes from the daemon's block where it answered (`boot`,
+  // `./signin-boot`), and anything else is asked at mount, the card
+  // showing the entry's frame's skeleton (`SIGNIN_SKELETON_HTML`,
+  // `view/gallery-frame.ts`) until every answer is in. Its styles are the
+  // gallery entry's (`gallery.css`), which the frame shares. A pending
+  // action keeps its control in place, busy (`aria-busy`, a turning ring
+  // where its label was) and disabled, and says so to assistive
+  // technology; a GitHub sign-in that comes back through history is no
+  // longer pending.
   import { onMount, tick } from "svelte";
   import ThemeSwitch from "../ui/ThemeSwitch.svelte";
   import * as api from "./api";
@@ -39,6 +53,8 @@
   import { refusal } from "../people/refusal";
   import { nextOfPage, loopbackReturn } from "./next";
   import { nav } from "../nav";
+  import { SIGNIN_SKELETON_HTML } from "../view/gallery-frame";
+  import { type SignInBoot, type SignInField, statusOf } from "./signin-boot";
 
   type Page = { kind: "setup" } | { kind: "join"; code: string } | { kind: "signin"; code: string } | { kind: "device" } | { kind: "status" };
   const page: Page = (() => {
@@ -51,13 +67,33 @@
     return { kind: "status" };
   })();
 
-  let me = $state<api.HostedMe | null>(null);
-  let publicList = $state<api.PublicArtifact[]>([]);
-  let invite = $state<{ name: string | null } | null | false>(null);
-  let link = $state<{ public_id: string; name: string | null; owner: boolean } | null | false>(null);
+  let { boot: given = null }: { boot?: SignInBoot | null } = $props();
+  // The block is read once, for the first render.
+  // svelte-ignore state_referenced_locally
+  const boot = given;
+  // The block's answer for `f`: its body when its route answered 200,
+  // `refused` for any other answer, undefined (ask the route) for none.
+  const fromBlock = <T, R>(f: SignInField, body: T | null, refused: R): T | R | undefined => {
+    const st = statusOf(boot, f);
+    return st === null ? undefined : st === 200 && body !== null ? body : refused;
+  };
+  const meIn = statusOf(boot, "hosted") === 200 && boot?.hosted ? boot.hosted : undefined;
+  const publicIn = fromBlock("public", boot?.public?.artifacts ?? null, [] as api.PublicArtifact[]);
+  const inviteIn = fromBlock("invite", boot?.invite ?? null, false as const);
+  const linkIn = fromBlock("link", boot?.link ?? null, false as const);
+  // A device's code the block looked up, or that the route does not know (404, as `lookUp` reads it).
+  const deviceIn = statusOf(boot, "device") === 404 ? (false as const) : statusOf(boot, "device") === 200 ? boot?.device ?? undefined : undefined;
+
+  let me = $state<api.HostedMe | null>(meIn ?? null);
+  let publicList = $state<api.PublicArtifact[]>(publicIn ?? []);
+  let invite = $state<{ name: string | null } | null | false>(inviteIn ?? null);
+  let link = $state<{ public_id: string; name: string | null; owner: boolean } | null | false>(linkIn ?? null);
   let name = $state("");
-  let secret = $state("");
+  // The setup secret, from `?secret=` (which leaves the address bar at mount).
+  let secret = $state(page.kind === "setup" ? new URLSearchParams(location.search).get("secret") ?? "" : "");
   let busy = $state(false);
+  // The control whose action is pending (its ring), while `busy`; the GitHub link's until the page is left.
+  let pressed = $state<string | null>(null);
   let err = $state<string | null>(null);
   const msg = refusal;
   const next = nextOfPage();
@@ -67,8 +103,8 @@
 
   // The device sign-in: the code as typed (from `?code=`, which leaves the
   // address bar), the machine it names once looked up, and the outcome.
-  let deviceCode = $state("");
-  let device = $state<api.DeviceRequest | null | false>(null);
+  let deviceCode = $state(page.kind === "device" ? new URLSearchParams(location.search).get("code") ?? "" : "");
+  let device = $state<api.DeviceRequest | null | false>(deviceIn ?? null);
   let decided = $state<"approved" | "denied" | null>(null);
   const isApp = $derived(device ? device.client_kind === "clax-app" : false);
   // Where the machine's Clax asked to be sent back to: its own loopback page.
@@ -80,12 +116,12 @@
   async function lookUp(e?: Event) {
     e?.preventDefault();
     if (busy || !deviceCode.trim()) return;
-    busy = true; err = null;
-    try { device = await api.peekDevice(deviceCode.trim()); } catch (x) { device = false; if (!(x instanceof api.Refused && x.status === 404)) err = msg(x); } finally { busy = false; }
+    busy = true; pressed = "continue"; err = null;
+    try { device = await api.peekDevice(deviceCode.trim()); } catch (x) { device = false; if (!(x instanceof api.Refused && x.status === 404)) err = msg(x); } finally { busy = false; pressed = null; }
   }
   async function decide(approve: boolean) {
     if (busy) return;
-    busy = true; err = null;
+    busy = true; pressed = approve ? "approve" : "deny"; err = null;
     try {
       await (approve ? api.approveDevice(deviceCode.trim()) : api.denyDevice(deviceCode.trim()));
       decided = approve ? "approved" : "denied";
@@ -94,67 +130,87 @@
         u.searchParams.set("clax_signin", decided);
         nav.assign(u.href);
       }
-    } catch (x) { err = msg(x); } finally { busy = false; }
+    } catch (x) { err = msg(x); } finally { busy = false; pressed = null; }
   }
 
-  async function run(fn: () => Promise<unknown>) {
+  // Signed in, the browser goes on: the control stays busy until the page is left.
+  async function run(fn: () => Promise<unknown>, control: string) {
     if (busy) return;
-    busy = true; err = null;
-    try { await fn(); location.assign(next ?? "/"); } catch (x) { err = msg(x); busy = false; }
+    busy = true; pressed = control; err = null;
+    try { await fn(); location.assign(next ?? "/"); } catch (x) { err = msg(x); busy = false; pressed = null; }
   }
-  const submitSetup = (e: Event) => { e.preventDefault(); void run(() => api.setup(secret, name.trim())); };
+  const submitSetup = (e: Event) => { e.preventDefault(); void run(() => api.setup(secret, name.trim()), "setup"); };
   const current = $derived(me?.person ?? null);
-  const join = () => run(() => page.kind === "join" ? api.acceptInvite(page.code, current !== null) : Promise.resolve());
-  const signin = () => run(() => page.kind === "signin" ? api.acceptSignin(page.code, current !== null) : Promise.resolve());
+  const join = () => run(() => page.kind === "join" ? api.acceptInvite(page.code, current !== null) : Promise.resolve(), "join");
+  const signin = () => run(() => page.kind === "signin" ? api.acceptSignin(page.code, current !== null) : Promise.resolve(), "signin");
   const linkName = $derived(link ? (link.name ?? "an unnamed person") : "");
   const currentName = $derived(current?.display_name ?? "an unnamed person");
   const legal = $derived(me?.legal ?? null);
   async function signOut() {
-    busy = true;
-    try { await forgetThenSignOut(api.signOut); me = await api.me(); } catch (x) { err = msg(x); } finally { busy = false; }
+    busy = true; pressed = "signout";
+    try { await forgetThenSignOut(api.signOut); me = await api.me(); } catch (x) { err = msg(x); } finally { busy = false; pressed = null; }
   }
+  // The GitHub link leaves the page: pending until it does, and no longer
+  // when the page comes back from history.
+  const leaving = (e: MouseEvent) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (pressed === "github") { e.preventDefault(); return; }
+    pressed = "github";
+  };
+  const returned = (e: PageTransitionEvent) => { if (e.persisted && pressed === "github") pressed = null; };
+  // What the busy control says to assistive technology.
+  const SAYS: Record<string, string> = { setup: "Setting up…", join: "Joining…", signin: "Signing in…", github: "Signing in with GitHub…", continue: "Looking up the code…", approve: "Approving…", deny: "Denying…", signout: "Signing out…" };
+
+  // Whether the first render has every answer it reads: it shows the
+  // skeleton until then (only where the block left one to ask).
+  const needsDevice = () => page.kind === "device" && !!deviceCode.trim() && !!me?.person && !me.person.guest && device === null;
+  const codeOf = () => page.kind === "device" ? new URLSearchParams(location.search).get("code") ?? "" : "";
+  let ready = $state(meIn !== undefined
+    && !(page.kind === "status" && meIn.person && next !== null)
+    && (page.kind !== "status" || !!meIn.person || publicIn !== undefined)
+    && (page.kind !== "join" || inviteIn !== undefined)
+    && (page.kind !== "signin" || linkIn !== undefined)
+    && !(page.kind === "device" && codeOf().trim() && meIn.person && !meIn.person.guest && deviceIn === undefined));
 
   onMount(async () => {
     document.title = `${TITLE[page.kind]} · Clax`;
-    if (page.kind === "setup") {
-      const q = new URLSearchParams(location.search);
-      const s = q.get("secret");
-      if (s !== null) { secret = s; history.replaceState(null, "", "/setup"); }
-    }
-    if (page.kind === "device") {
-      const q = new URLSearchParams(location.search).get("code");
-      if (q !== null) { deviceCode = q; history.replaceState(null, "", "/device"); }
-    }
-    try { me = await api.me(); } catch (x) { err = msg(x); }
+    if (page.kind === "setup" && new URLSearchParams(location.search).has("secret")) history.replaceState(null, "", "/setup");
+    if (page.kind === "device" && new URLSearchParams(location.search).has("code")) history.replaceState(null, "", "/device");
+    if (meIn === undefined) { try { me = await api.me(); } catch (x) { err = msg(x); } }
     if (page.kind === "status" && me?.person && next !== null) { location.replace(next); return; }
-    if (page.kind === "status" && !me?.person) {
+    if (page.kind === "status" && !me?.person && publicIn === undefined) {
       try { publicList = (await api.publicArtifacts()).artifacts; } catch { publicList = []; }
     }
-    if (page.kind === "device" && deviceCode && me?.person && !me.person.guest) await lookUp();
-    if (page.kind === "join") {
+    if (needsDevice()) await lookUp();
+    if (page.kind === "join" && inviteIn === undefined) {
       try { invite = await api.peekInvite(page.code); } catch { invite = false; }
     }
-    if (page.kind === "signin") {
+    if (page.kind === "signin" && linkIn === undefined) {
       try { link = await api.peekSignin(page.code); } catch { link = false; }
     }
+    ready = true;
     await tick();
     document.querySelector<HTMLElement>(".signin input, .signin button.primary")?.focus();
   });
 </script>
 
+<svelte:window onpageshow={returned} />
+
 <header class="gbar">
   <a href="/" class="home" aria-label="Gallery"><span class="mark" data-size="bar" role="img" aria-label="Clax"><svg class="mk" viewBox="0 0 40 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M38 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="20" cy="12" r="2.6"/></svg></span></a><h1>Clax</h1><span class="gsp"></span><ThemeSwitch />
 </header>
-<main class="signin">
+<main class="signin" aria-busy={ready ? undefined : "true"}>
   <section class="sicard" aria-labelledby="si-h">
     <h2 id="si-h">{TITLE[page.kind]}</h2>
-    {#if page.kind === "setup"}
+    {#if !ready}
+      {@html SIGNIN_SKELETON_HTML}
+    {:else if page.kind === "setup"}
       <p>You are the first person here. You will own this Clax: you invite people, share pages and approve what reaches your agents.</p>
       <form onsubmit={submitSetup}>
         <label class="field">Your name <input name="name" autocomplete="name" required maxlength="60" value={name} oninput={e => { name = e.currentTarget.value; }} /></label>
         <label class="field">Setup secret <input name="secret" type="password" autocomplete="off" required value={secret} oninput={e => { secret = e.currentTarget.value; }} /></label>
         <p class="hint">The secret the daemon was started with (its <code>CLAX_SETUP_SECRET</code>).</p>
-        <button class="primary" type="submit" disabled={!name.trim() || !secret}>Create the first person</button>
+        <button class="primary busy-able" type="submit" disabled={busy || !name.trim() || !secret} aria-busy={pressed === "setup"}>Create the first person</button>
         {@render agree("setting up this Clax")}
       </form>
     {:else if page.kind === "join"}
@@ -167,7 +223,7 @@
         {#if current}
           <p class="now" data-testid="signed-in-now">You are signed in here as <strong>{currentName}</strong>{current.guest ? " (a guest)" : current.owner ? ", the owner" : ""}. Joining signs you out of {currentName}.</p>
         {/if}
-        <button class="primary" type="button" onclick={join} disabled={busy}>Join as {invite.name ?? "a new person"}</button>
+        <button class="primary busy-able" type="button" onclick={join} disabled={busy} aria-busy={pressed === "join"}>Join as {invite.name ?? "a new person"}</button>
         {@render agree("joining")}
       {/if}
     {:else if page.kind === "signin"}
@@ -184,12 +240,12 @@
         {#if current}
           <p class="now" data-testid="signed-in-now">You are signed in here as <strong>{currentName}</strong>{current.guest ? " (a guest)" : current.owner ? ", the owner" : ""}. Signing in as {linkName} signs you out of {currentName}.</p>
         {/if}
-        <button class="primary" type="button" onclick={signin} disabled={busy}>Sign in as {linkName}</button>
+        <button class="primary busy-able" type="button" onclick={signin} disabled={busy} aria-busy={pressed === "signin"}>Sign in as {linkName}</button>
         {@render agree("signing in")}
       {/if}
     {:else if page.kind === "device"}
       {#if me === null}
-        <p class="muted">Reading your sign-in…</p>
+        <!-- Only when asking failed: the alert below says why. -->
       {:else if !me.person || me.person.guest}
         {#if me.github}
           <p>Another Clax asks to publish here as you. Sign in first, and this page comes back to approve it.</p>
@@ -208,21 +264,21 @@
         <p><strong>{device.client_name}</strong>{isApp ? ", the Clax app," : ","} from {device.peer_ip || "an unknown address"}, asks to publish here as you, <strong>{me.person.display_name ?? "you"}</strong>. Check that it shows the code <code>{deviceCode.trim().toUpperCase()}</code>.</p>
         {#if !device.same_address}<p class="now" data-testid="other-address">It asked from another address than this browser's. Approve only if you started this sign-in yourself, just now, on that machine: anyone who sent you this link would publish as you.</p>{/if}
         <p class="hint" data-testid={isApp ? "device-app" : undefined}>It gets an agent token of yours: {isApp ? "what it publishes is yours, within your rights, and an app it publishes stays private until you share it." : "what it publishes is public as yours, within your rights."}{#if isApp}{" "}As the Clax app, it may also change who can see or edit the pages you made{me.person.owner ? " and, as the owner, any page on this site" : ""}, and whether anyone may comment on them.{/if} It shows on People{isApp ? " among your devices" : ""}, where you can revoke it.{#if legal}{" "}<span class="legal">What it does here is yours under the <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a>.</span>{/if}</p>
-        <div class="acts"><button class="primary" type="button" disabled={busy} onclick={() => decide(true)}>Approve</button><button type="button" disabled={busy} onclick={() => decide(false)}>Deny</button></div>
+        <div class="acts"><button class="primary busy-able" type="button" disabled={busy} aria-busy={pressed === "approve"} onclick={() => decide(true)}>Approve</button><button class="busy-able" type="button" disabled={busy} aria-busy={pressed === "deny"} onclick={() => decide(false)}>Deny</button></div>
         {#if back}<p class="hint" data-testid="device-return">Approve, then go back to {new URL(back).host}.</p>{/if}
       {:else}
         <form onsubmit={lookUp}>
           {#if device === false}<p>No Clax is waiting with that code. It may have expired (codes last ten minutes) or been used: start again on that machine.</p>{/if}
           <label class="field">The code your Clax shows <input name="code" autocomplete="off" required maxlength="12" placeholder="WXYZ-4821" value={deviceCode} oninput={e => { deviceCode = e.currentTarget.value; }} /></label>
-          <button class="primary" type="submit" disabled={busy || !deviceCode.trim()}>Continue</button>
+          <button class="primary busy-able" type="submit" disabled={busy || !deviceCode.trim()} aria-busy={pressed === "continue"}>Continue</button>
         </form>
       {/if}
     {:else if me?.person && !me.person.guest}
       <p>You are signed in as <strong>{me.person.display_name ?? "an unnamed person"}</strong>{me.person.owner ? ", the owner" : ""}.</p>
-      <div class="acts"><a class="go" href="/">Open the gallery</a><button type="button" onclick={signOut} disabled={busy}>Sign out</button></div>
+      <div class="acts"><a class="go" href="/">Open the gallery</a><button class="busy-able" type="button" onclick={signOut} disabled={busy} aria-busy={pressed === "signout"}>Sign out</button></div>
     {:else if me?.person}
       <p>You are a guest named <strong>{me.person.display_name}</strong>. Guests see only the pages shared with them by link, and may comment on those that allow it.</p>
-      <div class="acts"><button type="button" onclick={signOut} disabled={busy}>Sign out</button></div>
+      <div class="acts"><button class="busy-able" type="button" onclick={signOut} disabled={busy} aria-busy={pressed === "signout"}>Sign out</button></div>
     {:else}
       {#if me?.github}
         <p>Sign in with your GitHub account. New here? Signing in makes your own space: publish your pages, connect your agents, and see what others share with you.</p>
@@ -234,15 +290,16 @@
       {/if}
       {#if me?.setup_open}<p class="hint">Setting up this Clax? Open <a href="/setup">/setup</a> with its secret.</p>{/if}
     {/if}
+    {#if ready}<div class="vh" role="status">{pressed ? SAYS[pressed] : ""}</div>{/if}
     {#if err}<p class="err" role="alert">{err}</p>{/if}
   </section>
   {#snippet githubButton(href: string)}
-    <a class="gh primary" href={href} data-testid="github-signin"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</a>
+    <a class="gh primary busy-able" href={href} data-testid="github-signin" aria-busy={pressed === "github"} onclick={leaving}><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</a>
   {/snippet}
   {#snippet agree(doing: string)}
     {#if legal}<p class="hint legal" data-testid="legal-notice">By {doing}, you agree to the <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a> and the <a href={legal.privacy_url} target="_blank" rel="noopener">Privacy Policy</a>.</p>{/if}
   {/snippet}
-  {#if page.kind === "status" && !me?.person && publicList.length}
+  {#if ready && page.kind === "status" && !me?.person && publicList.length}
     <section class="sicard pub" aria-labelledby="pub-h">
       <h2 id="pub-h">Public on Clax</h2>
       <ul>
@@ -250,42 +307,6 @@
       </ul>
     </section>
   {/if}
-  <footer class="silegal">{#if legal}<a href={legal.terms_url}>Terms of Service</a>{" · "}<a href={legal.privacy_url}>Privacy Policy</a>{" · "}{/if}<a href="https://github.com/empathic/clax" target="_blank" rel="noopener">Source on GitHub</a></footer>
+  <footer class="silegal">{#if ready}{#if legal}<a href={legal.terms_url}>Terms of Service</a>{" · "}<a href={legal.privacy_url}>Privacy Policy</a>{" · "}{/if}<a href="https://github.com/empathic/clax" target="_blank" rel="noopener">Source on GitHub</a>{/if}</footer>
 </main>
 
-<style>
-  :global {
-    .gbar .gsp { flex: 1; }
-    .signin { max-width: 480px; margin: 0 auto; padding: 48px var(--gutter) 40px; }
-    .signin .sicard { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 24px 24px; display: flex; flex-direction: column; gap: 12px; }
-    .signin h2 { margin: 0; font-size: 22px; line-height: 1.2; }
-    .signin p { margin: 0; font-size: 14.5px; line-height: 1.5; overflow-wrap: anywhere; }
-    .signin form { display: flex; flex-direction: column; gap: 12px; margin: 0; }
-    .signin .field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
-    .signin .field input { width: 100%; box-sizing: border-box; }
-    .signin .hint, .signin .muted { color: var(--muted); font-size: 13px; }
-    .signin code { font: 12.5px var(--mono); white-space: nowrap; }
-    .signin button.primary { align-self: flex-start; white-space: normal; text-align: start; }
-    .signin .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
-    .signin a { color: var(--fg); }
-    .signin .err { color: var(--danger); font-size: 13.5px; }
-    .signin a.gh { align-self: flex-start; display: inline-flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: var(--radius-sm); background: var(--fg); color: var(--bg); font-weight: 600; font-size: 15px; text-decoration: none; min-height: 44px; box-sizing: border-box; }
-    .signin a.gh:hover { opacity: .9; }
-    .signin a.gh:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
-    .signin .pub { margin-top: 16px; }
-    .signin .pub h2 { font-size: 17px; }
-    .signin .pub ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-    .signin .pub li + li { border-top: 1px solid var(--border); }
-    .signin .pub li a { display: block; padding: 10px 0; font-size: 14.5px; font-weight: 500; text-decoration: none; overflow-wrap: anywhere; }
-    .signin .pub li a:hover { text-decoration: underline; }
-    .signin .legal a { color: inherit; text-decoration: underline; }
-    .signin .silegal { margin-top: 16px; text-align: center; font-size: 12.5px; color: var(--muted); }
-    .signin .silegal a { color: inherit; }
-    .signin .now { border-inline-start: 3px solid var(--accent); padding: 6px 10px; background: var(--bg); border-radius: 4px; }
-    @media (max-width: 520px) {
-      .signin { padding-top: 24px; }
-      .signin .sicard { padding: 18px 16px 20px; }
-      .signin button.primary { align-self: stretch; justify-content: center; }
-    }
-  }
-</style>

@@ -2,8 +2,9 @@
 // crates/clax-server/src/hosted.rs). A signed-in person who has not agreed
 // to their current version is shown the prompt (LegalPrompt.svelte), once
 // per page load, until they agree. The gallery reads `GET /api/hosted/me`
-// itself and calls `ask`; the artifact view's more menu asks through
-// `hostedMe`.
+// itself and calls `ask` (its entry calls `askWith` when the bootstrap
+// block says so, before the gallery's first paint); the artifact view's
+// more menu asks through `hostedMe`.
 import { mount, unmount } from "svelte";
 import * as api from "./api";
 
@@ -24,7 +25,15 @@ export function hostedMe(): Promise<api.HostedMe | null> {
  * once per page load; resolves once it is shown or not needed. */
 export async function ask(legal: api.HostedLegal): Promise<void> {
   if (legal.agreed !== false || shown) return;
-  shown = true;
   const m = await import("./LegalPrompt.svelte");
-  const prompt = mount(m.default, { target: document.body, props: { legal, done: () => void unmount(prompt) } });
+  askWith(legal, m.default);
+}
+
+/** `ask` with the prompt's component already loaded: shows it now, in
+ * this task (the gallery's entry mounts it with the gallery's first
+ * render, from the bootstrap block). */
+export function askWith(legal: api.HostedLegal, Prompt: typeof import("./LegalPrompt.svelte").default): void {
+  if (legal.agreed !== false || shown) return;
+  shown = true;
+  const prompt = mount(Prompt, { target: document.body, props: { legal, done: () => void unmount(prompt) } });
 }

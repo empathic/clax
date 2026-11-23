@@ -3,6 +3,8 @@ import { mount } from "../test/svelte";
 import { settle, stubFetch } from "../people/fixtures";
 import { nav } from "../nav";
 import SignIn from "./SignIn.svelte";
+import type { SignInBoot } from "./signin-boot";
+import { SIGNIN_SKELETON_HTML } from "../view/gallery-frame";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", "/"); });
 
@@ -105,5 +107,67 @@ describe("the device page signed out", () => {
     const m = await signedOut(false);
     expect(m.root.querySelector("[data-testid=github-signin]")).toBeNull();
     expect(m.root.textContent).toContain("open a sign-in link from a device that is signed in");
+  });
+});
+
+describe("the first render", () => {
+  const signedOut = { origin: "https://clax.example", setup_open: false, signed_in: false, person: null, github: true, legal: { terms_url: "/terms", privacy_url: "/privacy", version: "1", agreed: null } };
+  const block = (o: Partial<SignInBoot>): SignInBoot => ({ v: 1, kind: "signin", status: {}, hosted: null, public: null, invite: null, link: null, device: null, ...o });
+
+  it("is the settled page from the daemon's block, asking nothing", () => {
+    history.replaceState(null, "", "/signin");
+    const calls = stubFetch({});
+    const m = mount(SignIn, { boot: block({ status: { hosted: 200, public: 200 }, hosted: signedOut, public: { artifacts: [{ artifact_id: "a1", title: "Roadmap", url: "https://clax.example/a/a1" }] } }) });
+    expect(m.root.querySelector("main.signin")!.hasAttribute("aria-busy")).toBe(false);
+    expect(m.root.querySelector("[data-testid=github-signin]")).not.toBeNull();
+    expect(m.root.querySelector("[data-testid=legal-notice]")).not.toBeNull();
+    expect(m.root.querySelector(".pub li a")?.textContent).toBe("Roadmap");
+    expect(m.root.querySelector(".silegal")?.textContent).toBe("Terms of Service · Privacy Policy · Source on GitHub");
+    expect(calls).toEqual([]);
+  });
+
+  it("names an invite the block read, and says a code the block found spent", () => {
+    history.replaceState(null, "", "/join/k9");
+    stubFetch({});
+    let m = mount(SignIn, { boot: block({ status: { hosted: 200, invite: 200 }, hosted: signedOut, invite: { name: "Mia", expires_at: "2026-11-14T00:00:00Z" } }) });
+    expect([...m.root.querySelectorAll(".sicard button")].map(b => b.textContent)).toEqual(["Join as Mia"]);
+    m.unmount();
+    m = mount(SignIn, { boot: block({ status: { hosted: 200, invite: 404 }, hosted: signedOut }) });
+    expect(m.root.textContent).toContain("This invite is not valid.");
+  });
+
+  it("shows the frame's skeleton until every answer is in, then the page once", async () => {
+    history.replaceState(null, "", "/join/k9");
+    let answer!: (r: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => url === "/api/hosted/me" ? new Response(JSON.stringify(signedOut)) : new Promise<Response>(r => { answer = r; })));
+    const m = mount(SignIn, {});
+    await settle();
+    expect(m.root.querySelector("main.signin")!.getAttribute("aria-busy")).toBe("true");
+    expect(m.root.querySelector(".sicard")!.innerHTML).toContain(SIGNIN_SKELETON_HTML);
+    expect(m.root.querySelector(".sicard > p, .silegal a")).toBeNull();
+    answer(new Response(JSON.stringify({ name: "Mia", expires_at: "2026-11-14T00:00:00Z" })));
+    await settle();
+    expect(m.root.querySelector("main.signin")!.hasAttribute("aria-busy")).toBe(false);
+    expect(m.root.querySelector(".sk")).toBeNull();
+    expect(m.root.textContent).toContain("You have been invited as Mia.");
+  });
+
+  it("keeps a pressed control in place, busy, until its answer, and says so", async () => {
+    history.replaceState(null, "", "/join/k9");
+    let answer!: (r: Response) => void;
+    vi.stubGlobal("fetch", vi.fn((url: string) => url.endsWith("/accept") ? new Promise<Response>(r => { answer = r; }) : Promise.resolve(new Response("{}"))));
+    const m = mount(SignIn, { boot: block({ status: { hosted: 200, invite: 200 }, hosted: signedOut, invite: { name: "Mia", expires_at: "2026-11-14T00:00:00Z" } }) });
+    const b = m.root.querySelector<HTMLButtonElement>("button.primary")!;
+    b.click();
+    await settle();
+    expect(b.getAttribute("aria-busy")).toBe("true");
+    expect(b.disabled).toBe(true);
+    expect(b.textContent).toBe("Join as Mia");
+    expect(m.root.querySelector(".vh[role=status]")?.textContent).toBe("Joining…");
+    answer(new Response(JSON.stringify({ error: { code: "invite_spent", message: "That invite was used." } }), { status: 410 }));
+    await settle();
+    expect(b.getAttribute("aria-busy")).toBe("false");
+    expect(b.disabled).toBe(false);
+    expect(m.root.querySelector("[role=alert]")?.textContent).toBe("That invite was used.");
   });
 });
