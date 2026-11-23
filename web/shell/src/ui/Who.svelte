@@ -19,6 +19,7 @@
   import { partFailed } from "../conn-notice";
   import { agentNames, summary } from "../view/working-model";
   import Roster from "./Roster.svelte";
+  import { botPart } from "./more-menu.svelte";
   import { ticker } from "./ticker.svelte";
   import WorkingSummary from "./WorkingSummary.svelte";
 
@@ -33,15 +34,20 @@
   // names a run, or where the artifact's agents list ClaxBot (`builtin`:
   // shown disabled with why, and anyone's runs read-only); each listing of
   // ClaxBot updates what this tab remembers of it.
-  let Bot: typeof import("../bot/ArtifactBot.svelte").default | null = $state(null);
+  // Where the bootstrap block says ClaxBot is on, its part came with the
+  // bar's code (`botPart`), so it shows with the bar.
+  let lazyBot: typeof import("../bot/ArtifactBot.svelte").default | null = $state(null);
+  const Bot = $derived(botPart.current ?? lazyBot);
   let wanted = $state(false);
   const builtin = $derived(p.s.agents.find(a => a.builtin));
+  // ClaxBot's part comes when it is known to show: its button and meter take
+  // the bar's free end if the bar has shown by then (`topbar-gate.svelte.ts`).
   void (location.hash.startsWith("#run") ? Promise.resolve(true) : import("../bot/me").then(m => m.botOn())).then(on => { if (on) wanted = true; }, () => {});
   $effect(() => {
     const b = builtin;
     if (b) void import("../bot/me").then(m => m.noteListed(b.live, b.unavailable ?? null), () => {});
   });
-  $effect(() => { if ((wanted || builtin) && !Bot) void import("../bot/ArtifactBot.svelte").then(m => { Bot = m.default; }, () => {}); });
+  $effect(() => { if ((wanted || builtin) && !Bot) void import("../bot/ArtifactBot.svelte").then(m => { lazyBot = m.default; }, () => {}); });
   // The elapsed clock ticks each second while anyone works.
   const tick = ticker(() => p.s.working.length > 0, () => undefined);
   // The agents as last refetched (they join and end as the stream says), the people as loaded.

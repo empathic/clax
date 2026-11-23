@@ -8,10 +8,10 @@
 import { mount, unmount } from "svelte";
 import { type InboxItem, type InboxSummary, type QuestionView, getToken } from "../api";
 import type { EventStream } from "../stream";
-import InboxLink from "./InboxLink.svelte";
 import { setBadge } from "./badge";
 import type { Notifier } from "./notify";
 import { need } from "./later.svelte";
+import { inboxSummary, listQuestions } from "./api";
 import { inThread } from "./model";
 import { shared } from "./shared";
 import SidebarQuestions from "./SidebarQuestions.svelte";
@@ -33,6 +33,17 @@ export function seed(summary: InboxSummary | null, open: QuestionView[] | null):
   const { inbox, questions } = shared();
   if (summary) inbox.seed(summary);
   if (open) questions.seed(open);
+}
+
+/** Reads the inbox's summary and the open questions and seeds the feeds
+ * with them (`seed`), for a page that holds neither (the artifact view);
+ * a read that fails leaves its feed to its first fetch. */
+export async function firstRead(): Promise<void> {
+  const [summary, open] = await Promise.all([
+    inboxSummary().then(r => (r === "forbidden" ? null : r), () => null),
+    listQuestions().then(r => (r === "forbidden" ? null : r.questions ?? null), () => null),
+  ]);
+  seed(summary, open);
 }
 
 /** The page's inbox feed: its unread count, for the gallery's header. */
@@ -105,8 +116,9 @@ const APP_SLOT = ".app-questions > .questions-slot";
  * card is left. */
 export type QuestionsChange = { open: string[]; closed: string[] };
 
-/** The artifact view's surfaces for artifact `aid`, for the owner or a connected person: **Inbox**
- * in the top bar (before the island's controls), the questions about it at
+/** The artifact view's surfaces for artifact `aid`, for the owner or a
+ * connected person: Inbox's unread count (`onCount`, with the count now
+ * and each change: the view draws Inbox itself), the questions about it at
  * the top of the sidebar (in the sidebar's `.questions-slot`, each time it
  * mounts), the questions asked in each thread inside that thread's card
  * (its `.thread-q-slot`), and the dot on the threads controls. In app mode
@@ -117,7 +129,7 @@ export type QuestionsChange = { open: string[]; closed: string[] };
  * `clax-questions` event (`QuestionsChange`). `trail` is the view's keyboard
  * trail, which its cards follow. The result removes them and stops the
  * feeds (`stop`). */
-export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Document = document): () => void {
+export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Document = document, onCount?: (n: number) => void): () => void {
   useTrail(trail);
   let off: (() => void)[] = [];
   let side: { el: Element; c: Record<string, unknown> } | null = null;
@@ -137,11 +149,10 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
     tell({ open: list.filter(q => q.status === "open").map(q => q.id), closed: list.filter(q => q.status !== "open").map(q => q.id) });
   };
   start(stream);
-  // In the top bar before the controls; at phone width in the tab bar
-  // instead, so the top bar keeps its title.
-  for (const target of doc.querySelectorAll<HTMLElement>(".topbar, .phone-tabs")) {
-    const link = mount(InboxLink, { target, anchor: target.querySelector(":scope > .island") ?? undefined, props: {} });
-    off.push(() => { void unmount(link); });
+  if (onCount) {
+    const { inbox } = shared();
+    if (inbox.owner) onCount(inbox.unread);
+    off.push(inbox.onCount(onCount));
   }
   doc.addEventListener("clax-questions-slot", onSlot);
   fill(slot(doc.querySelector(".sidebar > .questions-slot")));

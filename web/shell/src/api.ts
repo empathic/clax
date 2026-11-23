@@ -30,6 +30,8 @@ export type Artifact = {
   forked_from?: ForkedFrom;
   /** From `GET /api/artifacts/<id>`: the viewer may fork it. */
   may_fork?: boolean;
+  /** Whether this browser may share it on a hosted Clax (its Share), as its sharing route answers it; false on a local daemon. */
+  may_share?: boolean;
   /** Started from a brief in a person's browser: who, by display name. */
   brief?: { by: string };
   /** The tags it carries, sorted by name (docs/contract.md "Tags"). */

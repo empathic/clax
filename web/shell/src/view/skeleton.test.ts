@@ -10,7 +10,8 @@ describe("skeleton", () => {
     const b = skeleton(root);
     expect(root.querySelectorAll(".page")).toHaveLength(1);
     expect(b.stage).toBe(a.stage);
-    expect(a.title.textContent).toBe("Clax");
+    // Empty until the title is known: no "Clax" written and then replaced.
+    expect(a.title.textContent).toBe("");
     expect(a.stage.parentElement).toBe(a.viewer);
     expect(a.stageIsland.parentElement).toBe(a.stage);
     expect(a.sidebarIsland.parentElement).toBe(a.viewer);
@@ -18,6 +19,9 @@ describe("skeleton", () => {
     expect(a.by.parentElement?.classList.contains("ttl")).toBe(true);
     expect(a.topbar.querySelector("a.home svg.mk")).not.toBeNull();
     expect(a.title.localName).toBe("h1");
+    // The stage says it is loading; the drawer's box holds its place.
+    expect(a.stage.querySelector(":scope > .stage-wait[role=status]")).not.toBeNull();
+    expect(a.viewer.querySelector(":scope > aside.drawer.held[aria-busy=true]")).not.toBeNull();
   });
   it("adopts a page the server sent", () => {
     const root = document.createElement("div");

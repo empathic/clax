@@ -66,6 +66,25 @@ describe("the artifact's tags beside its title", () => {
     expect(box.querySelector(".tm-d")!.textContent).toBe("+2");
   });
 
+  it("hides the first chip too when it does not fit whole, leaving +N alone", () => {
+    const el = ttl();
+    setTitleTags(el, [design, q4], true, true, noop, noop);
+    const box = el.querySelector<HTMLElement>(".ttags")!;
+    const chips = box.querySelector<HTMLElement>(".tchips")!;
+    // A line 20 px wide: not even the first chip, 60 px, fits.
+    let width = 20;
+    Object.defineProperty(chips, "clientWidth", { get: () => width });
+    Object.defineProperty(chips, "scrollWidth", { get: () => [...chips.children].filter(c => !(c as HTMLElement).hidden).length * 60 });
+    fitTitleTags(box);
+    expect([...chips.children].map(c => (c as HTMLElement).hidden)).toEqual([true, true]);
+    expect(box.querySelector(".tm-d")!.textContent).toBe("+2");
+    // Room again: every chip shows, and "+N" goes.
+    width = 200;
+    fitTitleTags(box);
+    expect([...chips.children].map(c => (c as HTMLElement).hidden)).toEqual([false, false]);
+    expect(box.querySelector(".tmore")!.hasAttribute("data-over")).toBe(false);
+  });
+
   it("leaves the DOM alone when nothing changed", () => {
     const el = ttl();
     setTitleTags(el, [q4], true, true, noop, noop);

@@ -1,7 +1,7 @@
 // The artifact's tags beside its by-line (docs/contract.md "Tags"): each a
 // link to the gallery filtered by it where the viewer can reach the gallery
 // (`reach`; a hosted Clax's guest is sent to sign in), else a plain chip.
-// The chips are clipped to one line: "+N" opens the whole list
+// The chips keep to one line, each shown whole or not at all: "+N" opens the whole list
 // (`ui/tag-editor.ts` `toggleTagList`), and at phone width, where the chips
 // give way, "N tags" does, for every viewer. Then, for a viewer who may set
 // them (`may_tag`), Edit tags (Add tags while it carries none), which opens
@@ -46,9 +46,10 @@ const span = (doc: Document, cls: string, text: string): HTMLSpanElement => {
   return s;
 };
 
-/** Hides the chips of `box` that do not fit on its line, last first, and
- * says how many in its "+N" (`.tmore[data-over]`). A no-op where the chips
- * are not laid out (at phone width, or with no layout at all). */
+/** Hides the chips of `box` that do not fit whole on its line, last first
+ * (the first too: a chip is never cut to a sliver), and says how many in
+ * its "+N" (`.tmore[data-over]`). A no-op where the chips are not laid out
+ * (at phone width, or with no layout at all). */
 export function fitTitleTags(box: HTMLElement): void {
   const chips = box.querySelector<HTMLElement>(":scope > .tchips");
   const more = box.querySelector<HTMLElement>(":scope > .tmore");
@@ -56,13 +57,26 @@ export function fitTitleTags(box: HTMLElement): void {
   const all = [...chips.children] as HTMLElement[];
   for (const c of all) c.hidden = false;
   more.removeAttribute("data-over");
+  holdButtons(box, chips);
   let over = 0;
-  for (let i = all.length - 1; i > 0 && chips.scrollWidth > chips.clientWidth + 0.5; i--) {
+  for (let i = all.length - 1; i >= 0 && chips.scrollWidth > chips.clientWidth + 0.5; i--) {
     all[i].hidden = true;
     over++;
     more.dataset.over = String(over);
     more.querySelector(".tm-d")!.textContent = `+${over}`;
+    holdButtons(box, chips);
   }
+}
+
+/** Sets `box`'s min-width to what its buttons ("+N", Edit tags) take, with
+ * the gaps beside them, as they are laid out now: the title's grid gives
+ * the tags' column no less (theme.css), and the chips none of it. */
+function holdButtons(box: HTMLElement, chips: HTMLElement): void {
+  const shown = ([...box.children] as HTMLElement[]).filter(c => c.getClientRects().length > 0);
+  const gap = parseFloat(getComputedStyle(box).columnGap) || 0;
+  const w = shown.reduce((n, c) => n + (c === chips ? 0 : c.getBoundingClientRect().width), 0) + gap * Math.max(0, shown.length - 1);
+  const px = `${Math.ceil(w)}px`;
+  if (box.style.minWidth !== px) box.style.minWidth = px;
 }
 
 /** Keeps `ttl`'s tags (`.ttags`, made when first needed) showing `tags`,

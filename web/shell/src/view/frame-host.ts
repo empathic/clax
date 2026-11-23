@@ -86,6 +86,12 @@ export class FrameHost {
     this.go(this.src);
   }
 
+  /** Shows the frame (`.shown`): until then it is laid out but hidden,
+   * so the handshake's documents before the page never show (theme.css). */
+  reveal(): void {
+    this.el?.classList.add("shown");
+  }
+
   /** Removes the frame, and a served one not adopted. */
   remove(): void {
     if (!this.el) this.stage.querySelector(":scope > iframe.frame")?.remove();

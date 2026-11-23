@@ -203,7 +203,7 @@ describe("Echo top bar parts", () => {
 
   it("at phone width the more menu leads with Versions, which closes it and opens the version menu; wider, it has no Versions item", async () => {
     let phone = true;
-    vi.stubGlobal("matchMedia", (q: string) => ({ matches: phone && q === "(max-width: 700px)" }));
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: phone && (q === "(max-width: 700px)" || q === "(max-width: 1199px)") }));
     const onVersions = vi.fn();
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions });
     const b = m.root.querySelector<HTMLButtonElement>("button.icon")!;
@@ -223,7 +223,7 @@ describe("Echo top bar parts", () => {
   });
 
   it("in the Clax app the more menu has no Open raw or Copy link, and shows at phone width only", async () => {
-    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(max-width: 700px)" }));
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: (q === "(max-width: 700px)" || q === "(max-width: 1199px)") }));
     const items = async () => {
       const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn() });
       flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
@@ -254,7 +254,7 @@ describe("Echo top bar parts", () => {
   });
 
   it("at phone width on a live page the more menu reads Snapshots and lists Open page", async () => {
-    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(max-width: 700px)" }));
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: (q === "(max-width: 700px)" || q === "(max-width: 1199px)") }));
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), pageHref: "http://localhost:5173/settings" });
     flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
     await new Promise(r => setTimeout(r));
@@ -266,7 +266,7 @@ describe("Echo top bar parts", () => {
   });
 
   it("at phone width on an app's page the more menu lists Get in Clax first", async () => {
-    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(max-width: 700px)" }));
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: (q === "(max-width: 700px)" || q === "(max-width: 1199px)") }));
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), getHref: "/a/x/get" });
     flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
     await new Promise(r => setTimeout(r));
@@ -544,11 +544,15 @@ describe("the top bar and the sidebar with the Comments switch, and an app's hea
 
   it("Get in Clax shows only for apps", async () => {
     const app = await mountView(answer({ app: APP, forks: 2 }));
+    // Its link is one of the bar's chunks.
+    (await import("./ui/more-menu.svelte")).loadMoreMenu();
     const get = await waitFor(() => app.root.querySelector<HTMLAnchorElement>("a.get-in-clax"), "Get in Clax");
     expect(get.textContent?.trim()).toBe("Get in Clax");
     expect(get.getAttribute("href")).toBe(`/a/${ID}/get`);
     // At phone width the bar hides it, and the more menu lists it.
     expect(get.classList.contains("hide-sm")).toBe(true);
+    // The by-line is written as the bar shows its controls.
+    await waitFor(() => app.root.querySelector(".by")?.textContent, "the by-line");
     expect(app.root.querySelector(".by")?.textContent).toBe("v3 by @junp · by @akesling · 12 installs · 2 forks");
     app.unmount();
     const plain = await mountView(answer({ app: null }));

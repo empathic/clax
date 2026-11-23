@@ -2,7 +2,6 @@
 // HTML), one ArtifactController, the frame host, and the three islands.
 import { islands } from "./islands/svelte";
 import { type ArtifactProps, ArtifactController, type ViewState } from "./view/artifact-controller";
-import { afterPaint } from "./view/after-paint";
 import type { Boot } from "./view/boot";
 import { FrameHost } from "./view/frame-host";
 import { setBy } from "./view/publisher";
@@ -22,28 +21,34 @@ function setText(el: HTMLElement, text: string): void {
 }
 
 /** Keeps the page's own parts in step with the view: the title and its
- * by-line once the artifact is known, the top bar's comment-mode rule, and, until the frame mode is known too (or when the
- * artifact could not be loaded), a message in the page in place of the
- * viewer. Touches the DOM only where something changed. A frame the daemon
- * served is never in a viewer this takes out: it comes with the bootstrap,
- * which makes the view ready before this first runs. */
-function pageFollows(sk: Skeleton, s: ViewState, status: HTMLElement): void {
+ * by-line once the artifact is known and the top bar shows its controls
+ * (`shown`: so they come together, where the daemon did not write the
+ * title into the page; empty until then, a placeholder bar each; "Clax"
+ * when it could not be loaded), and the top bar's
+ * comment-mode rule. The viewer stays in the page from the first frame on,
+ * the stage and the drawer's box where they will be: until the view is
+ * ready the stage says it is loading (`.stage-wait`, the static frame's),
+ * and when the artifact could not be loaded the stage says why (`status`),
+ * across its whole width. Touches the DOM only where something changed. */
+function pageFollows(sk: Skeleton, s: ViewState, status: HTMLElement, shown: boolean): void {
   const ready = !s.error && !!s.data && s.origin !== undefined;
-  setText(sk.title, !s.error && s.data ? s.data.artifact.title : "Clax");
-  setBy(sk.by, !s.error && s.data ? s.data.artifact : null);
+  const known = !s.error && !!s.data && shown;
+  setText(sk.title, known ? s.data!.artifact.title : s.error ? "Clax" : "");
+  setBy(sk.by, known ? s.data!.artifact : null);
+  sk.title.parentElement!.classList.toggle("pending", !s.error && !known);
   if (sk.topbar.classList.contains("commenting") !== s.commenting) sk.topbar.classList.toggle("commenting", s.commenting);
   sk.topbar.classList.toggle("working", s.working.length > 0);
   if (ready) {
     if (status.isConnected) status.remove();
-    if (sk.viewer.parentElement !== sk.page) sk.page.append(sk.viewer);
     if (sk.viewer.classList.contains("with-sidebar") !== s.panel) sk.viewer.classList.toggle("with-sidebar", s.panel);
     return;
   }
-  if (sk.viewer.isConnected) sk.viewer.remove();
-  const cls = s.error ? "empty" : "empty muted";
-  if (status.className !== cls) status.className = cls;
-  setText(status, s.error ?? "Loading…");
-  if (status.parentElement !== sk.page) sk.page.append(status);
+  if (!s.error) return;
+  sk.viewer.querySelectorAll(":scope > :is(.drawer.held, .rail-held)").forEach(e => e.remove());
+  if (status.className !== "empty") status.className = "empty";
+  status.setAttribute("role", "alert");
+  setText(status, s.error);
+  if (status.parentElement !== sk.stage) sk.stage.append(status);
 }
 
 /** `boot`: the daemon's bootstrap (`readBoot`), for the first view only;
@@ -95,27 +100,35 @@ export function mountArtifactView(root: HTMLElement, props: ArtifactProps, opts:
         void reachesGallery().then(ok => { reach = ok; if (ok) tagsFollow(ctl.state.get()); });
       }
       setTitleTags(ttl, shown ? t.tags : [], shown && t.may, !!reach, listTags, editTags);
+      watchTags();
     };
     const refit = () => { const box = ttl.querySelector<HTMLElement>(":scope > .ttags"); if (box) fitTitleTags(box); };
     const resized = typeof ResizeObserver === "function" ? new ResizeObserver(refit) : null;
     resized?.observe(ttl);
-    // Subscribed before a start without a bootstrap, so the viewer is back in
-    // the page before the controller puts the frame in it.
+    // The tags are laid out once the top bar shows its controls: they fit their line then, in the same task, before that frame paints.
+    // The title written by the daemon shows from the first paint; else it is
+    // written as the top bar shows its controls, in the same frame.
+    let shown = !!sk.title.textContent;
+    const barShown = () => { shown = true; pageFollows(sk, ctl.state.get(), status, shown); refit(); };
+    sk.topbar.addEventListener("clax-bar-shown", barShown);
+    // The tags' box too: its column narrows when the by-line's text grows, the title's box keeping its width.
+    let watched: Element | null = null;
+    const watchTags = () => { const box = ttl.querySelector(":scope > .ttags"); if (box && box !== watched) { watched = box; resized?.observe(box); } };
     const offPage = ctl.state.subscribe(s => {
-      pageFollows(sk, s, status);
+      pageFollows(sk, s, status, shown);
       tagsFollow(s);
     });
-    // Without one, it starts once the loading page has painted, when the
-    // view's effects started before.
-    const cancelStart = b ? () => {} : afterPaint(begin);
     const offs = [islands.topbar(sk.topbarIsland, ctl), islands.stage(sk.stageIsland, ctl), islands.sidebar(sk.sidebarIsland, ctl)];
+    // Without one, it starts once the islands are mounted: its requests
+    // (the artifact and its threads, together) go out at once.
+    if (!b) begin();
     return {
       ctl,
       stop: () => {
-        cancelStart();
         for (const off of offs) off();
         offPage();
         resized?.disconnect();
+        sk.topbar.removeEventListener("clax-bar-shown", barShown);
         ctl.dispose();
         ctl.frame?.remove();
         sk.page.remove();

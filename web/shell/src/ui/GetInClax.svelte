@@ -4,7 +4,8 @@
   // Get in Clax (spec 2026-10-21-app-push-pull §5.5): on an app's page, a
   // link to its get page (`/a/<id>/get`), which opens the Clax app on a
   // phone and offers a QR code, Open in Clax for Mac and Download .clax on a
-  // desktop. Its own chunk, loaded only for an artifact that is an app. At
+  // desktop. Its own chunk, asked with the bar's other controls
+  // (`more-menu.svelte.ts`), so the bar draws it with them on an app. At
   // phone width the more menu lists it instead (`getHref`). Solid ink, the
   // page's call to action, for visitors; a ghost like the bar's other
   // actions (`ghost`) for whoever may share it, who has the app already.

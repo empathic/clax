@@ -4,8 +4,8 @@
 // carries no bootstrap block (the local owner's every load, and any load
 // through history), and for the heights the block cannot say. Kept in
 // `localStorage` under `SHAPE_KEY`, one entry per page (`topOf`'s path),
-// as the artifact page keeps its drawer: small, validated on the way in
-// and out, and never in the way (storage that throws keeps nothing).
+// in the shell's kept shapes (`kept-shape.ts`): small, validated on the way
+// in and out, and never in the way (storage that throws keeps nothing).
 //
 // An entry holds the window's width it was measured at (`w`: its heights
 // apply at that width only), the header links' width (`links`), the
@@ -19,8 +19,9 @@
 // Who the browser is matters to none of it beyond a count, and signing
 // out of a hosted Clax forgets it all (`hosted/signout.ts`).
 
-/** Where the shapes are kept. */
-export const SHAPE_KEY = "clax.shape";
+import { keepEntry, outerHeight, readShapes } from "./kept-shape";
+
+export { SHAPE_KEY, forgetShapes, outerHeight } from "./kept-shape";
 
 export type Shape = {
   w: number;
@@ -51,47 +52,15 @@ export function cleanShape(s: unknown): Shape | null {
   return { links: 0, ban: 0, sum: 0, tb: 0, ...out } as Shape;
 }
 
-function readAll(store: Storage): Record<string, Shape> {
-  try {
-    const all = JSON.parse(store.getItem(SHAPE_KEY) ?? "{}") as unknown;
-    if (!all || typeof all !== "object") return {};
-    const out: Record<string, Shape> = {};
-    for (const [k, v] of Object.entries(all)) {
-      const s = PAGE.test(k) ? cleanShape(v) : null;
-      if (s) out[k] = s;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
 /** The shape kept for the page at `path` (a `topOf` path), or null. */
 export function keptShape(path: string, store: Storage = localStorage): Shape | null {
-  return readAll(store)[path] ?? null;
+  return PAGE.test(path) ? cleanShape(readShapes(store)[path]) : null;
 }
 
 /** Keeps `s` as the shape of the page at `path`. */
 export function keepShape(path: string, s: Shape, store: Storage = localStorage): void {
   const clean = cleanShape(s);
-  if (!clean || !PAGE.test(path)) return;
-  try {
-    store.setItem(SHAPE_KEY, JSON.stringify({ ...readAll(store), [path]: clean }));
-  } catch { /* not kept */ }
-}
-
-/** Forgets every page's shape. */
-export function forgetShapes(store: Storage = localStorage): void {
-  try { store.removeItem(SHAPE_KEY); } catch { /* none kept */ }
-}
-
-/** `el`'s height with its vertical margins, 0 when it is not laid out. */
-export function outerHeight(el: Element | null): number {
-  if (!el) return 0;
-  const h = el.getBoundingClientRect().height;
-  if (!h) return 0;
-  const cs = getComputedStyle(el);
-  return h + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+  if (clean && PAGE.test(path)) keepEntry(path, clean, store);
 }
 
 /** The cards the gallery's list showed: under Needs your eyes, in the rest, the New tile, and none at all. */

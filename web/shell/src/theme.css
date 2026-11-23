@@ -203,17 +203,35 @@ code { font: 12.5px var(--mono); background: var(--hover); border: 1px solid var
    red-orange rule under the bar. */
 .topbar { position: relative; display: flex; align-items: center; gap: 10px; height: 60px; flex: none; padding: 0 var(--gutter); background: var(--bg); border-bottom: 1px solid var(--border); }
 .topbar.commenting { box-shadow: inset 0 -3px 0 var(--you); }
+.topbar > .home { flex: none; }
 .topbar > .home, .gbar > .home { display: inline-grid; place-items: center; min-width: 32px; min-height: 32px; border-radius: var(--radius-sm); }
-.ttl { min-width: 0; flex: 1; display: flex; flex-flow: row wrap; align-content: center; gap: 1px 8px; }
-/* Wider than a phone the title keeps room for a few words: what is beside it (the people pill) gives way first. */
-@media (min-width: 701px) { .ttl { min-width: min(200px, 20vw); } }
-.ttl h1 { flex: 0 0 100%; margin: 0; font-size: 15px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The title on a line of its own; under it the by-line, which gives way
+   first (to an ellipsis), and the tags, which keep room for their "+N" and
+   Edit tags and take the rest of the line: never a third line. */
+/* The tags' column is never narrower than its buttons ("+N", Edit tags:
+   the tags' box's min-width, which view/title-tags.ts measures), and the
+   by-line gives way only to them: the chips take what is left, each whole
+   or hidden. The title's box is never
+   narrower than that line: what is beside it (the people pill) gives way. */
+.ttl { min-width: 0; flex: 1000000 1 0; max-width: max-content; display: grid; grid-template-columns: minmax(0, 1fr); align-content: center; gap: 1px 8px; }
+.ttl:has(> .ttags) { grid-template-columns: minmax(0, max-content) minmax(auto, 1fr); grid-template-rows: auto 20px; }
+/* Wider than a phone the title keeps room for a few words too. */
+@media (min-width: 701px) { .ttl { min-width: min(240px, 20vw); } }
+.ttl h1 { grid-column: 1 / -1; margin: 0; font-size: 15px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ttl .by { flex: 0 1 auto; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Until the artifact is known (a page without its bootstrap block): a bar in
+   the title's line and one in the by-line's, each a line of its own height,
+   so the title sits where it will once both are written. */
+.ttl h1:empty::before, .ttl .by:empty::before { content: ""; display: inline-block; vertical-align: middle; height: .75em; border-radius: var(--radius-sm); background: var(--hover); }
+.ttl h1:empty::before { width: min(14em, 100%); }
+.ttl .by:empty::before { width: 9em; }
+/* The by-line's line is the height the tags' chips make it, with or without them. */
+.ttl .by { min-height: 20px; }
 /* The artifact's tags beside its by-line (alone under the title on a phone):
    the chips clipped to one line, "+N" for those that do not fit (at phone
    width "N tags" in their place), then Edit tags for a viewer who may set
    them (view/title-tags.ts). */
-.ttags { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; }
+.ttags { min-width: 0; display: flex; align-items: center; gap: 4px; }
 .ttags .tchips { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
 .ttags .tag { flex: none; max-width: 160px; padding: 0 6px; font-size: 11.5px; line-height: 16px; }
 .ttags .tag[hidden], .ttags .tmore:not([data-over]), .ttags .tm-p, .ttags .te-s { display: none; }
@@ -249,8 +267,10 @@ code { font: 12.5px var(--mono); background: var(--hover); border: 1px solid var
   .ttl .by.app .lineage { display: inline; font-size: inherit; }
   .topbar .version-menu { display: contents; }
   .ttl h1 { font-size: 15px; }
-  /* The title asks for 80px before the roster gets any (the roster gives way first, Who.svelte), and however narrow it gets, its tags never spill over the controls beside it. */
-  .ttl { flex: 1 1 80px; overflow: clip; overflow-clip-margin: 3px; }
+  /* The title asks for 80px before the roster gets any (the roster gives way first, Who.svelte), and however narrow it gets, its tags never spill over the controls beside it. It takes the bar's free room before the room beside the controls does (TopbarIsland.svelte's `.bar-gap`). */
+  .ttl { flex: 1000000 1 80px; overflow: clip; overflow-clip-margin: 3px; }
+  /* The tags' line under the title, held until the artifact is known (the by-line's bar is hidden here). */
+  .ttl.pending::after { content: ""; width: 6em; height: 20px; border-radius: var(--radius-sm); background: linear-gradient(var(--hover), var(--hover)) center / 100% .75em no-repeat; }
   /* Above the home indicator on a phone with no bottom bezel. */
   .phone-tabs { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 12; padding-bottom: env(safe-area-inset-bottom); background: var(--card); border-top: 1px solid var(--border); }
   .phone-tabs button { flex: 1; border: 0; border-radius: 0; background: none; font-size: 15px; color: var(--muted); min-height: 52px; }
@@ -263,6 +283,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline-offs
 input, select { line-height: 1.2; }
 @media (pointer: coarse) { button, input, select { min-height: 40px; } .topbar > .home, .gbar > .home { min-width: 44px; min-height: 44px; } }
 .frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+/* The frame shows once it holds the artifact's page (`.shown`, set by the
+   view): the site's handshake documents before it never show, so the stage
+   keeps the theme's background, and says it is loading, until the page is
+   in. The message shows after a moment, so a quick load shows none. */
+.stage > .frame:not(.shown) { visibility: hidden; }
+.stage-wait { position: absolute; inset: 0; margin: 0; display: grid; place-items: center; color: var(--muted); font-size: 14px; animation: stage-wait 0s .6s both; }
+@keyframes stage-wait { from { visibility: hidden; } }
+.stage:has(> .frame.shown) > .stage-wait, .stage:has(.empty) > .stage-wait { display: none; }
 /* Transparent bands caps/gesture.ts puts over the frame, beneath every shell
    control, after shell input there: a 9 px hole under the pointer. */
 .frame-shield { position: absolute; inset: 0; display: none; pointer-events: none; }
@@ -288,6 +316,19 @@ input, select { line-height: 1.2; }
    and made the whole window scroll. */
 .sidebar { position: relative; width: 392px; flex: none; overflow: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 @media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
+/* The drawer's box in the static frame, where the threads open docked
+   (900 px and wider, ArtifactController's first `panel`), until the sidebar
+   island draws its own. */
+.viewer > .drawer.held { display: none; }
+@media (min-width: 900px) { :root:not([data-drawer="float"]) .viewer > .drawer.held { display: block; } }
+/* The closed drawer's strip in the static frame (56 px, bordered toward the
+   page, as SidebarIsland.svelte draws it) where it shows: 701 to 899 px
+   wide, where the threads open closed, docked left or right; not where the
+   bootstrap block says the artifact has no thread (`data-rail="0"`, the
+   inline clax-dsk script). The sidebar island's own takes its place. */
+.viewer > .rail-held { display: none; flex: none; width: 56px; border: 0 solid var(--border); border-left-width: 1px; }
+[data-drawer="left"] .viewer > .rail-held { order: -1; border-width: 0 1px 0 0; }
+@media (min-width: 701px) and (max-width: 899px) { :root:not([data-drawer="bottom"], [data-drawer="float"], [data-rail="0"]) .viewer > .rail-held { display: block; } }
 /* A thread's number, on a pin over the frame and on its card. */
 .thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--you); color: var(--on-you); font: 600 11.5px/1 var(--font); font-variant-numeric: tabular-nums; flex: none; padding: 0; }
 .composer .clip { display: block; max-width: 100%; min-height: 24px; object-fit: cover; object-position: left top; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg); }

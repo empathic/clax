@@ -46,6 +46,7 @@ import type { LiveUi, LiveView } from "./live-view";
 import type { AgentView, Working } from "./working-model";
 import type { DraftChanged, DraftView } from "./draft-model";
 import type { Drafts } from "./drafts";
+import { decideInbox, decided as known, firstInbox, questionsDecided, setUnread } from "./deciders.svelte";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 /** How long a reopen asked of an unnamed viewer waits for its name. */
@@ -903,6 +904,8 @@ export class ArtifactController {
     // A draft never greets: its redemption's load ends the handshake.
     const hs = this.hs;
     if (hs?.phase === "code" && !hs.page && hs.el === this.frame?.el) hs.phase = "done";
+    // The handshake's last step loaded the page (or a draft): the frame shows.
+    if ((hs?.phase === "code" || hs?.phase === "done") && hs.el === this.frame?.el) this.frame.reveal();
     const wasOpen = this.gate.open;
     if (this.gate.load()) {
       this.leaveDocument();
@@ -993,10 +996,17 @@ export class ArtifactController {
       this.set({ threads: boot.threads });
       this.loaded(boot.artifact, boot.attention ?? null);
     } else {
-      // A daemon that does not answer, or an answer that is not Clax's, is
-      // retried (with a notice); Clax's own answer, even a refusal, is shown.
+      // The artifact, its threads and the viewer are asked at once, and the
+      // view takes them together, so its counts, its thread list and its
+      // pins are drawn once, with the artifact; with them whether this
+      // browser has an inbox (the viewer's, or the token's, answer), so
+      // the top bar draws Inbox with its controls. A daemon that does not answer, or an
+      // answer that is not Clax's, is retried (with a notice); Clax's own
+      // answer, even a refusal, is shown.
+      const me = getViewer().catch(() => null);
+      const together = Promise.all([this.loadThreads(), me, decideInbox(me)]);
       retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: unreached, wait: loadWait, trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
-        .then(d => this.loaded(d), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : failureText(ARTIFACT_FAILED, e) }); });
+        .then(d => together.then(() => this.loaded(d)), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : failureText(ARTIFACT_FAILED, e) }); });
     }
     // Leaving the page ends the view: nothing it started outlives it, also
     // into the back/forward cache (`artifact-main` reloads a restored page).
@@ -1006,7 +1016,6 @@ export class ArtifactController {
     // The stream's first `ready` reloads the threads either way; it opens
     // once the frame has loaded (or after `STREAM_WAIT_MS`), so its worker
     // and requests come after the page's first paint.
-    if (!boot) this.loadThreads();
     this.life.timeout(() => this.openStream(), STREAM_WAIT_MS);
   }
 
@@ -1028,6 +1037,16 @@ export class ArtifactController {
     this.writeSeen();
     this.watchDocs();
     this.loadDrafts();
+    // The question surfaces (Inbox's count, the thread list's questions),
+    // in a browser with an inbox, asked as the view becomes ready: the
+    // thread list shows once they are drawn (`deciders.svelte.ts`).
+    if (!this.questionsAsked) {
+      this.questionsAsked = true;
+      void decideInbox().then(() => {
+        if (this.disposed || !known.inbox) { questionsDecided(); return; }
+        void import("./artifact-questions").then(m => { if (!this.disposed) this.life.defer(m.artifactQuestions(this.id, firstInbox(), setUnread, questionsDecided)); else questionsDecided(); }, questionsDecided);
+      });
+    }
     if (!this.presenceAsked) {
       this.presenceAsked = true;
       this.life.defer(afterPaint(() => void import("./presence-live").then(m => {
@@ -1057,6 +1076,7 @@ export class ArtifactController {
   // ---- presence (spec §10, "Presence") ----
 
   private presenceAsked = false;
+  private questionsAsked = false;
   /** The ticket of the latest `presence` event (see `clock`). */
   /** @internal */
   presenceAt = 0;
@@ -1382,7 +1402,7 @@ export class ArtifactController {
         // agent's script may greet as one: it gets no capability).
         const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
         this.gate.hello(this.s.showDraft === null && helloMatches(m, this.id, this.shown()) && this.holds(greeted));
-        if (this.hs?.phase === "code") this.hs.phase = "done";
+        if (this.hs?.phase === "code") { this.hs.phase = "done"; if (this.hs.el === this.frame?.el) this.frame.reveal(); }
         this.pendingPick = null;
         this.failedParts.clear();
         // Another document's reports go with it; the same document greeting
@@ -1584,10 +1604,12 @@ export class ArtifactController {
     }
   }
 
-  /** @internal */
-  loadThreads(): void {
+  /** Loads the threads; the result settles once their answer (or its
+   * failure, said in a notice) is taken.
+   * @internal */
+  loadThreads(): Promise<void> {
     const done = this.threadLoad.begin();
-    void report(listThreads(this.id), LOAD_FAILED, this.noticeFor(LOAD_FAILED)).then(done);
+    return report(listThreads(this.id), LOAD_FAILED, this.noticeFor(LOAD_FAILED)).then(done);
   }
 
   private streamAsked = false;

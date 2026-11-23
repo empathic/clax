@@ -102,7 +102,8 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     expect(urls).not.toContain(`/api/artifacts/${ID}`);
     expect(urls.some(u => u.includes("/threads"))).toBe(false);
     expect(urls).not.toContain("/api/viewers/me");
-    expect(root.querySelector(".topbar h1")!.textContent).toBe("T");
+    // A title the daemon did not write into the page comes with the top bar's controls.
+    await waitFor(() => root.querySelector(".topbar h1")!.textContent === "T", "the title");
   });
 
   it("replays the served frame's handshake state, asks a code for it and sends the frame to the code", async () => {
@@ -273,13 +274,15 @@ describe("readBoot", () => {
     expect(readBoot()).toEqual(boot());
   });
 
-  it("leaves out the viewer and its attention of a page reached through history, which may come from the cache", async () => {
+  it("leaves out the viewer, its attention and the deciders of a page reached through history, which may come from the cache", async () => {
     const { readBoot } = await import("./view/boot");
     const attention = { addressed: [], addressed_v: null, new_replies: [], open_in: ["t1"], seen: 1, looked: {} };
-    block(JSON.stringify({ ...boot(), attention }));
+    const deciders = { status: { feedback: 200 }, feedback: { enabled: false }, bot: null, hosted: null, summary: null, questions: null, clone: null, inbox: false, owner: false };
+    block(JSON.stringify({ ...boot(), attention, deciders }));
     expect(readBoot(document, "navigate")!.viewer).toEqual(viewer);
     expect(readBoot(document, "navigate")!.attention).toEqual(attention);
-    expect(readBoot(document, "back_forward")).toEqual({ ...boot(), viewer: null, attention: null });
+    expect(readBoot(document, "navigate")!.deciders).toEqual(deciders);
+    expect(readBoot(document, "back_forward")).toEqual({ ...boot(), viewer: null, attention: null, deciders: null });
   });
 
   it("refuses a block that does not parse or is not version 1", async () => {

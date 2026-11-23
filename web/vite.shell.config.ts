@@ -47,7 +47,7 @@ export function inlineCss(): Plugin {
           }
         }
         for (const name of lazy) {
-          if (!eager.has(name) && chunks.get(name)?.viteMetadata?.importedCss.size) throw new Error(`${name} is loaded lazily by ${entry.fileName} and imports CSS that ${entry.fileName}'s HTML does not carry; the shell's CSS must come from its HTML entries`);
+          if (!eager.has(name) && chunks.get(name)?.viteMetadata?.importedCss.size) throw new Error(`${name} (imported by ${[...chunks.values()].filter(c => c.imports.includes(name) || c.dynamicImports.includes(name)).map(c => `${c.fileName} [${c.moduleIds.filter(m => m.includes("/shell/src/")).slice(0, 4).map(m => m.replace(/^.*\/shell\//, "")).join(" ")}]`).join(", ")}) is loaded lazily by ${entry.fileName} and imports CSS that ${entry.fileName}'s HTML does not carry; the shell's CSS must come from its HTML entries`);
         }
       }
       for (const f of Object.values(bundle)) {
@@ -69,11 +69,14 @@ export function inlineCss(): Plugin {
 }
 
 /** The gallery entry's lazy chunks its inline `clax-page` script preloads
- * (`<link rel="modulepreload">`), by the module each chunk is: `gallery`
+ * (`<link rel="modulepreload">`), by the modules each is: `gallery`
  * on every page of the entry but the sign-in pages, `q` and `summary` on
- * the gallery for a browser with an inbox, and each page's own chunk on
- * that page (`inbox` with `q`). */
-export const PRELOAD: Record<string, string> = {
+ * the gallery for a browser with an inbox, each page's own chunk on
+ * that page (`inbox` with `q`), and `legal` (the Terms prompt) where the
+ * bootstrap block says the person has not agreed to them. The sign-in
+ * pages preload `signin` and the landing page `landing`, alone
+ * (`ALONE`: without the gallery's). */
+export const PRELOAD: Record<string, string | string[]> = {
   gallery: "/src/ui/gallery-working.ts",
   q: "/src/q/index.ts",
   summary: "/src/q/GallerySummary.svelte",
@@ -81,20 +84,43 @@ export const PRELOAD: Record<string, string> = {
   tags: "/src/ui/TagsPage.svelte",
   queues: "/src/queues/Queues.svelte",
   settings: "/src/settings/Settings.svelte",
+  legal: ["/src/hosted/legal.ts", "/src/hosted/LegalPrompt.svelte"],
+  signin: "/src/hosted/SignIn.svelte",
+  landing: "/src/hosted/Landing.svelte",
+};
+/** The `PRELOAD` keys a page preloads without the gallery's lazy module. */
+const ALONE = new Set(["signin", "landing"]);
+
+/** The artifact entry's lazy chunks its inline `clax-preload` script
+ * preloads, by the modules each is: the top bar's controls' code (`bar`,
+ * `ui/more-menu.svelte.ts` asks it as the entry starts) on every load but
+ * the app's inspect view; Publish's (`publish`) where the browser holds the
+ * local owner's proof; the thread list's (`sidebar`) where the threads open
+ * docked (900 px and wider), with the haiku list it fetches (`fetch`, a
+ * `preload` the build adds); and the question module (`q`, with the view's
+ * loader of it) for a browser with an inbox: the bootstrap block's
+ * `deciders.inbox`, else the owner's proof; and ClaxBot's part (`bot`)
+ * where the block says ClaxBot is on for this browser. */
+export const ARTIFACT_PRELOAD: Record<string, string | string[]> = {
+  bar: ["/src/ui/MoreMenu.svelte", "/src/ui/Who.svelte", "/src/ui/Clone.svelte", "/src/ui/ForkButton.svelte", "/src/ui/GetInClax.svelte", "/src/ui/Share.svelte", "/src/ui/PermissionsPanel.svelte"],
+  publish: "/src/ui/Publish.svelte",
+  sidebar: "/src/ui/ShellSidebar.svelte",
+  q: ["/src/q/index.ts", "/src/view/artifact-questions.ts"],
+  bot: "/src/bot/ArtifactBot.svelte",
 };
 
-/** Writes each `PRELOAD` chunk's file, with the files it imports that the
- * entry (and, for any but `gallery`, the gallery's lazy module) has not
- * loaded already, into `index.html`'s `/*clax:preload*\/{}`, so the lazy
- * chunks every load needs download beside the entry instead of after it. */
+/** Writes each preloaded chunk's file, with the files it imports that the
+ * entry has not loaded already, into its HTML's `/*clax:preload*\/{}`: the
+ * gallery entry's `PRELOAD` into `index.html` (for any key but `gallery`
+ * and the `ALONE` ones, less what the gallery's lazy module loads), the
+ * artifact entry's `ARTIFACT_PRELOAD` into `artifact.html`, so the lazy
+ * chunks a load needs download beside the entry instead of after it. */
 export function preloadLazy(): Plugin {
   return {
     name: "clax-preload-lazy",
     apply: "build",
     enforce: "post",
     generateBundle(_options, bundle) {
-      const html = bundle["index.html"];
-      if (!html || html.type !== "asset") return;
       const chunks = Object.values(bundle).flatMap(c => (c.type === "chunk" ? [c] : []));
       const byName = new Map(chunks.map(c => [c.fileName, c]));
       const closure = (from: string, into = new Set<string>()) => {
@@ -103,24 +129,49 @@ export function preloadLazy(): Plugin {
         for (const i of byName.get(from)?.imports ?? []) closure(i, into);
         return into;
       };
-      const entry = chunks.find(c => c.isEntry && c.facadeModuleId?.endsWith("/shell/index.html"));
-      if (!entry) throw new Error("no chunk for shell/index.html");
-      const loaded = closure(entry.fileName);
-      const fileOf = (id: string) => {
+      const fileOf = (id: string, html: string) => {
         const c = chunks.find(x => x.facadeModuleId?.endsWith(id)) ?? chunks.find(x => x.isDynamicEntry && x.moduleIds.some(m => m.endsWith(id)));
-        if (!c) throw new Error(`${id}, which index.html preloads, is in no chunk`);
+        if (!c) throw new Error(`${id}, which ${html} preloads, is in no chunk`);
         return c.fileName;
       };
-      const gallery = closure(fileOf(PRELOAD.gallery));
-      const map: Record<string, string[]> = {};
-      for (const [key, id] of Object.entries(PRELOAD)) {
-        const files = key === "gallery" ? gallery : closure(fileOf(id));
-        map[key] = [...files].filter(f => !loaded.has(f) && (key === "gallery" || !gallery.has(f))).map(f => `/${f}`);
+      const write = (html: string, map: Record<string, string[]>) => {
+        const asset = bundle[html];
+        if (!asset || asset.type !== "asset") return;
+        const text = String(asset.source);
+        const MARK = "/*clax:preload*/{}";
+        if (!text.includes(MARK)) throw new Error(`${html} lost ${MARK}`);
+        asset.source = text.replace(MARK, () => JSON.stringify(map));
+      };
+      const entryOf = (html: string) => {
+        const e = chunks.find(c => c.isEntry && c.facadeModuleId?.endsWith(`/shell/${html}`));
+        if (!e) throw new Error(`no chunk for shell/${html}`);
+        return closure(e.fileName);
+      };
+      if (bundle["index.html"]) {
+        const loaded = entryOf("index.html");
+        const gallery = closure(fileOf(PRELOAD.gallery as string, "index.html"));
+        const map: Record<string, string[]> = {};
+        for (const [key, ids] of Object.entries(PRELOAD)) {
+          const files = new Set<string>();
+          for (const id of [ids].flat()) closure(fileOf(id, "index.html"), files);
+          map[key] = [...files].filter(f => !loaded.has(f) && (key === "gallery" || ALONE.has(key) || !gallery.has(f))).map(f => `/${f}`);
+        }
+        write("index.html", map);
       }
-      const text = String(html.source);
-      const MARK = "/*clax:preload*/{}";
-      if (!text.includes(MARK)) throw new Error(`index.html lost ${MARK}`);
-      html.source = text.replace(MARK, () => JSON.stringify(map));
+      if (bundle["artifact.html"]) {
+        const loaded = entryOf("artifact.html");
+        const map: Record<string, string[]> = {};
+        for (const [key, ids] of Object.entries(ARTIFACT_PRELOAD)) {
+          const files = new Set<string>();
+          for (const id of [ids].flat()) closure(fileOf(id, "artifact.html"), files);
+          map[key] = [...files].filter(f => !loaded.has(f)).map(f => `/${f}`);
+        }
+        // The haiku list the thread list's chunk fetches with it (`view/haiku-list.ts`), preloaded with it.
+        const haiku = Object.values(bundle).find(f => f.type === "asset" && /\/haiku-[\w-]+\.json$/.test(`/${f.fileName}`));
+        if (!haiku) throw new Error("no haiku list in the build, which artifact.html preloads");
+        map.fetch = [`/${haiku.fileName}`];
+        write("artifact.html", map);
+      }
     },
   };
 }

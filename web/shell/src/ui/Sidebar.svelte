@@ -30,6 +30,9 @@
   import { tick } from "svelte";
   import SendButton from "./SendButton.svelte";
   import ThreadCard from "./ThreadCard.svelte";
+  import type AddressedGroupT from "./AddressedGroup.svelte";
+  import type NewCommentT from "./NewComment.svelte";
+  import type WorkingStripT from "./WorkingStrip.svelte";
   import { ticker } from "./ticker.svelte";
 
   type Props = {
@@ -125,6 +128,11 @@
      * (SidebarViews.svelte). Without it (the extension's side panel), the
      * thread list alone. */
     view?: { now: SidebarView; onChange(v: SidebarView): void; side?: "left" | "right" };
+    /** The New comment box, the working strips and the Addressed group,
+     * already loaded (the artifact view's sidebar chunk carries them), so
+     * the sidebar renders them with the rest at once; without them each
+     * loads the first time it shows (the extension's side panel). */
+    parts?: { NewComment: typeof NewCommentT; WorkingStrip: typeof WorkingStripT; AddressedGroup: typeof AddressedGroupT };
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
@@ -297,16 +305,24 @@
   <!-- Below the questions for the viewer, above every thread. -->
   {#if p.compose}
     {@const c = p.compose}
-    {#await import("./NewComment.svelte") then { default: NewComment }}
-      <NewComment version={c.version} host={c.host} onText={p.live ? text => p.live!.onText(null, text) : undefined} />
-    {/await}
+    {#if p.parts}
+      <p.parts.NewComment version={c.version} host={c.host} onText={p.live ? text => p.live!.onText(null, text) : undefined} />
+    {:else}
+      {#await import("./NewComment.svelte") then { default: NewComment }}
+        <NewComment version={c.version} host={c.host} onText={p.live ? text => p.live!.onText(null, text) : undefined} />
+      {/await}
+    {/if}
   {/if}
   <!-- New comments others are writing, on a spot or the whole artifact. -->
   {#if p.live}<div class="new-writers">{@render p.live.writers(null)}</div>{/if}
   {#each newestFirst(p.working ?? []) as w (w.key)}
-    {#await import("./WorkingStrip.svelte") then { default: WorkingStrip }}
-      <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
-    {/await}
+    {#if p.parts}
+      <p.parts.WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
+    {:else}
+      {#await import("./WorkingStrip.svelte") then { default: WorkingStrip }}
+        <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
+      {/await}
+    {/if}
   {/each}
   {#if unsentCount && p.onSendUnsent && !p.readOnly && !p.noSend && pick}
     <!-- No target yet: the bar opens the Send menu to choose one. -->

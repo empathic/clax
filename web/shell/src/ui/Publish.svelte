@@ -19,8 +19,10 @@
   // token) says so, its button marked, and offers to sign in there again,
   // which keeps the link. Anywhere else (a
   // hosted daemon, another viewer) it shows nothing. At phone width the buttons are
-  // hidden and the more menu lists Publish (`setPublishOpener`). Loaded after
-  // the first paint (`more-menu.svelte.ts`).
+  // hidden and the more menu lists Publish (`setPublishOpener`). Its chunk is
+  // asked as the page starts (`more-menu.svelte.ts`), and the artifact's
+  // links beside the view's data (`view/deciders.svelte.ts`), so where they
+  // are in it shows with the bar.
   import { onMount } from "svelte";
   import { getToken } from "../api";
   import { nav } from "../nav";
@@ -28,10 +30,11 @@
   import { setUrl } from "../view/url";
   import { DEFAULT_ORIGIN, dropUnsent, hostOf, listRemotes, pollSignIn, push, remotesOf, retryLink, setDownloadOnly, startSignIn, unlink, type Link, type Mode, type Remote, type Remotes } from "./publish-api";
   import { notSentLabel, sinceLabel } from "./link-model";
+  import { remotesAsked, remotesKnown } from "../view/deciders.svelte";
   import { setPublishOpener } from "./more-menu.svelte";
 
   let { id, title, latest }: { id: string; title: string; latest: number } = $props();
-  let info = $state<Remotes | null>(null);
+  let info = $state<Remotes | null>(remotesKnown() ?? null);
   let open = $state(false);
   let busy = $state(false);
   let err = $state<string | null>(null);
@@ -188,10 +191,15 @@
   }
 
   $effect(() => () => { run++; });
+  // The first read is the one asked as the page started (when there is
+  // one); a newer version refreshes what is behind.
+  let firstRead = true;
   $effect(() => {
-    // A newer version refreshes what is behind.
     void latest;
-    void refresh();
+    const asked = firstRead ? remotesAsked() : null;
+    firstRead = false;
+    if (asked) void asked.then(r => { if (r) info = r; });
+    else void refresh();
   });
   $effect(() => {
     setPublishOpener(usable ? { label: !link || behind > 0 ? `${action}…` : `Link to ${host}…`, open: show } : null);

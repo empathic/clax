@@ -13,7 +13,7 @@ let root = "";
 afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root = ""; });
 
 /** A scratch web/ with a copy of the script, a minimal build and `budget` as the budget file. */
-const ENTRY = "<head><script id=\"clax-early\"></script><!--clax:boot--></head><body><!--clax:frame--><h1>Clax</h1></body>";
+const ENTRY = "<head><script id=\"clax-early\"></script><!--clax:boot--></head><body><!--clax:frame--><h1></h1></body>";
 
 /** The gallery entry as the build writes it: the daemon injects its bootstrap at the marker. */
 const GALLERY = "<!--clax:boot--><p>gallery</p>";
@@ -60,6 +60,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
     "src/queues/Queues.svelte": { file: "_clax/shell/u.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_ud.js"] },
     "_ud.js": { file: "_clax/shell/ud.js" },
     "src/view/artifact-stream.ts": { file: "_clax/shell/as.js", isDynamicEntry: true, imports: ["artifact.html"], dynamicImports: ["_index-q.js"] },
+    "src/view/artifact-questions.ts": { file: "_clax/shell/as.js", isDynamicEntry: true, imports: ["artifact.html"], dynamicImports: ["_index-q.js"] },
     "src/ui/MoreMenu.svelte": { file: "_clax/shell/as.js", isDynamicEntry: true },
     "src/ui/Who.svelte": { file: "_clax/shell/as.js", isDynamicEntry: true },
     "src/ui/AnalyticsPanel.svelte": { file: "_clax/shell/an.js", isDynamicEntry: true, imports: ["artifact.html", "src/ui/MoreMenu.svelte", "_and.js"] },
@@ -116,7 +117,7 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
   it("fails when the artifact entry lost a marker, or runs the early script after the page", () => {
     for (const html of [
       ENTRY.replace("<!--clax:frame-->", ""),
-      ENTRY.replace("<h1>Clax</h1>", ""),
+      ENTRY.replace("<h1></h1>", ""),
       ENTRY.replace("<script id=\"clax-early\"></script>", ""),
       ENTRY.replace("<script id=\"clax-early\"></script>", "").replace("</body>", "<script id=\"clax-early\"></script></body>"),
       ENTRY.replace("<script id=\"clax-early\"></script><!--clax:boot-->", "<!--clax:boot--><script id=\"clax-early\"></script>"),

@@ -2,8 +2,8 @@
 // artifact entry once the view knows its viewer: the `artifact:<id>`,
 // `presence:<id>` and `working:<id>` topics, and `docs:<id>` for a page that
 // declares `db`. Thread and presence deltas are applied to what the view
-// holds, and the view handles the full events they amount to. It also starts
-// the owner's question surfaces (artifact-questions.ts, a module of their own).
+// holds, and the view handles the full events they amount to. (The owner's
+// question surfaces, artifact-questions.ts, the controller starts itself.)
 import { ApiError, getArtifact, getToken, onToken } from "../api";
 import type { ArtifactEvent } from "../events";
 import { nav } from "../nav";
@@ -68,7 +68,6 @@ onToken(() => pageStream().reconnect(OWNER));
 export class ArtifactStream {
   private readonly main: () => void;
   private docs: (() => void) | null = null;
-  private questions: (() => void) | null = null;
   private stopped = false;
   /** Delivery states heard for threads this view does not hold yet, kept
    * until the thread arrives (a state may come before its thread). One is
@@ -83,7 +82,6 @@ export class ArtifactStream {
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
     this.live = [`artifact:${id}`, `presence:${id}`, `working:${id}`];
     this.main = pageStream().watch(this.live, e => this.on(e));
-    void import("./artifact-questions").then(m => { if (!this.stopped) this.questions = m.artifactQuestions(id); }, () => {});
   }
 
   /** Also watches the `docs` topic (once). */
@@ -101,8 +99,6 @@ export class ArtifactStream {
 
   stop(): void {
     this.stopped = true;
-    this.questions?.();
-    this.questions = null;
     this.main();
     this.docs?.();
     this.docs = null;

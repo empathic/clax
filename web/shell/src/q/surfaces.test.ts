@@ -84,7 +84,7 @@ describe("the questions in the artifact view", () => {
     m.unmount();
   });
 
-  it("puts Inbox in the top bar, fills the sidebar's slot each time it mounts, and marks the threads controls while a question is open", async () => {
+  it("tells the view Inbox's count, fills the sidebar's slot each time it mounts, and marks the threads controls while a question is open", async () => {
     vi.resetModules();
     const q = view();
     vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.startsWith("/api/inbox/summary") ? { unread: 4, questions: [q], latest: [] } : { questions: [q], open: 1 }))));
@@ -92,17 +92,15 @@ describe("the questions in the artifact view", () => {
     document.body.innerHTML = `<div class="page"><header class="topbar"><a class="home"></a><div class="ttl"></div><div class="island"></div></header><aside class="sidebar"><div class="questions-slot"></div></aside><div class="phone-tabs"><button>Page</button><button>Threads</button></div></div>`;
     const qmod = await import("./index");
     const stream = fakeStream();
-    const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
+    const counts: number[] = [];
+    const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never, document, n => counts.push(n));
     // Subscribed first; the topics go live, and the feeds fetch.
     expect([...stream.on.keys()].sort()).toEqual(["inbox", "questions"]);
     for (const f of stream.on.values()) f({ type: "ready" });
     await settle();
-    const bar = document.querySelector(".topbar")!;
-    const link = bar.querySelector(".inbox-link")!;
-    expect(link.nextElementSibling).toBe(bar.querySelector(".island"));
-    expect(link.querySelector(".count")!.textContent).toBe("4");
-    // And at the end of the phone's tab bar, which shows it at phone width in place of the top bar's.
-    expect(document.querySelector(".phone-tabs")!.lastElementChild!.matches("a.inbox-link")).toBe(true);
+    // The view draws Inbox itself (ui/InboxAnchor.svelte): the module tells it the count.
+    expect(counts.at(-1)).toBe(4);
+    expect(document.querySelector(".inbox-link")).toBeNull();
     expect(document.title).toBe("(4) Quarterly Review");
     expect(document.querySelectorAll(".sidebar .questions-slot .qcard")).toHaveLength(1);
     expect(document.documentElement.hasAttribute("data-questions")).toBe(true);
@@ -116,7 +114,6 @@ describe("the questions in the artifact view", () => {
     expect(document.documentElement.hasAttribute("data-questions")).toBe(false);
     stop();
     flush();
-    expect(document.querySelector(".inbox-link")).toBeNull();
     expect(slot.querySelector(".qcard")).toBeNull();
     expect(document.title).toBe("Quarterly Review");
     expect(stream.on.size).toBe(0);

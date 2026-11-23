@@ -224,27 +224,39 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
         ? Promise.resolve(new Response(JSON.stringify({ threads: [], next_cursor: null })))
         : new Promise<Response>(r => { answerViewer = () => r(new Response(JSON.stringify(viewer))); }));
     const root = view.root;
-    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
+    // The bare view takes the artifact, its threads and the viewer together:
+    // neither the frame nor the stream before the viewer answers.
+    await waitFor(() => tokenAsked, "token");
     await settled();
+    expect(root.querySelector("iframe.frame")).toBeNull();
     expect(FakeES.last).toBeUndefined();
     answerViewer();
+    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     const es = await waitFor(() => FakeES.last, "event stream");
     // The token request set the events cookie, which stands for the token.
     expect(tokenAsked).toBe(true);
-    expect(es.topics).toEqual([`artifact:${ID}`, `presence:${ID}`, `working:${ID}`]);
+    // The artifact's topics; the owner's browser (it holds the token) has an
+    // inbox, whose question surfaces subscribe its own as the view is ready.
+    expect(es.topics.filter(t => t.endsWith(ID))).toEqual([`artifact:${ID}`, `presence:${ID}`, `working:${ID}`]);
   });
 
   it("keeps a thread event that arrives while an older thread list is in flight", async () => {
     let answerList!: () => void;
+    let lists = 0;
     const t = { id: "01JB", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
+    // The first list comes with the artifact; the stream's `ready` asks again, and that answer waits.
     const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
       url => url.includes("/threads")
-        ? new Promise<Response>(r => { answerList = () => r(new Response(JSON.stringify({ threads: [], next_cursor: null }))); })
+        ? (lists++ === 0 ? Promise.resolve(new Response(JSON.stringify({ threads: [], next_cursor: null })))
+          : new Promise<Response>(r => { answerList = () => r(new Response(JSON.stringify({ threads: [], next_cursor: null }))); }))
         : Promise.resolve(new Response(JSON.stringify(viewer))));
     const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
-    (await waitFor(() => FakeES.last, "event stream")).emit("thread", { type: "thread", artifact_id: ID, thread: t });
+    const es = await waitFor(() => FakeES.last, "event stream");
+    es.emit("ready", {});
+    await waitFor(() => lists > 1, "the thread list asked again");
+    es.emit("thread", { type: "thread", artifact_id: ID, thread: t });
     await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 1", "thread from the event");
     answerList();
     await settled();

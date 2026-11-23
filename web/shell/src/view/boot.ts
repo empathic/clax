@@ -2,6 +2,7 @@ import type { Attention } from "../api";
 import type { SiteHosts } from "../origin";
 import type { Thread, Viewer } from "../threads";
 import type { Loaded } from "./artifact-controller";
+import type { Deciders } from "./deciders.svelte";
 
 /** The daemon's first-load data for `/a/…` (spec §8 Time to usable). */
 export type Boot = {
@@ -10,6 +11,11 @@ export type Boot = {
   site: SiteHosts;
   /** The cookie's viewer's attention on this artifact; absent without a viewer. */
   attention?: Attention | null;
+  /** What decides the top bar's optional controls and the thread list's
+   * questions, as their routes answer this browser
+   * (crates/clax-server/src/shell/boot.rs `deciders`); absent where the
+   * daemon left them to the shell. */
+  deciders?: Deciders | null;
 };
 
 /** How this document was reached (`back_forward` for history), from Navigation Timing. */
@@ -24,8 +30,8 @@ function navigationType(): string {
 /** The bootstrap block in `doc`, or null when there is none, it does not
  * parse, or it is not version 1. A page reached through history may come
  * from the browser's cache without asking the daemon, so its viewer can be
- * stale: it and its attention are left out (`viewer: null`, `attention:
- * null`), and the shell looks the viewer up.
+ * stale: it, its attention and the deciders are left out (`viewer: null`,
+ * `attention: null`, `deciders: null`), and the shell looks them up.
  * The threads and the artifact are reloaded on the stream's first `ready`. */
 export function readBoot(doc: Document = document, navType: string = navigationType()): Boot | null {
   const text = doc.getElementById("clax-boot")?.textContent;
@@ -33,7 +39,7 @@ export function readBoot(doc: Document = document, navType: string = navigationT
   try {
     const b = JSON.parse(text) as Boot;
     if (!(b && b.v === 1 && b.artifact?.artifact && Array.isArray(b.artifact.versions) && Array.isArray(b.threads))) return null;
-    return navType === "back_forward" ? { ...b, viewer: null, attention: null } : b;
+    return navType === "back_forward" ? { ...b, viewer: null, attention: null, deciders: null } : b;
   } catch {
     return null;
   }

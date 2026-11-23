@@ -6,6 +6,7 @@
 // anyone else that one request is all: no menu, no shortcut, no overlay.
 import type { HostContext } from "../../../overlay/overlay";
 import { type AppView, type FeedbackConfig, askConfig, configOnce, seedConfig } from "./config";
+import { setFeedbackDeciding } from "./slot.svelte";
 
 /** The config route's body as a `FeedbackConfig`, or null when this person
  * may not report (the integration off, or no person signed in) or the body
@@ -33,6 +34,8 @@ export function bootFeedback(where?: () => AppView, known?: { body: unknown }): 
   if (started) return;
   started = true;
   if (known) seedConfig(known.body);
+  setFeedbackDeciding(true);
   void configOnce().then(readConfig).then(cfg => cfg && import("./state.svelte").then(m => m.start(cfg, where)))
-    .catch(e => { console.warn("Clax feedback is off:", e); });
+    .catch(e => { console.warn("Clax feedback is off:", e); })
+    .finally(() => setFeedbackDeciding(false));
 }

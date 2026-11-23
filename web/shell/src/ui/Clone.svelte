@@ -8,15 +8,19 @@
   // with git item (`setCloneOpener`), which opens the Clone dialog (its own
   // lazy chunk); on a hosted Clax that includes whoever reads a page shared
   // by link, read-only. Elsewhere (the native daemon, a spectator, a fork
-  // whose source the link does not open) it offers nothing. Loaded after the
-  // first paint (`more-menu.svelte.ts`).
+  // whose source the link does not open) it offers nothing. Its chunk is
+  // asked as the page starts (`more-menu.svelte.ts`); what the viewer may
+  // have is the bootstrap block's, or the answer asked beside the view's
+  // data (`view/deciders.svelte.ts`).
   import type { Component } from "svelte";
   import { cloneOptions, type CloneOptions } from "./clone-api";
+  import { cloneAsked, cloneKnown } from "../view/deciders.svelte";
   import { setCloneOpener } from "./more-menu.svelte";
   import { partFailed } from "../conn-notice";
 
   let { id }: { id: string } = $props();
-  let options = $state<CloneOptions | null>(null);
+  const now = cloneKnown();
+  let options = $state<CloneOptions | null>(now ?? null);
   let Dialog: Component<{ id: string; options: CloneOptions; onClose(): void }> | null = $state(null);
   let open = $state(false);
   const usable = $derived(!!options && options.available && options.scopes.length > 0);
@@ -26,10 +30,12 @@
     else open = true;
   }
 
+  // Not known yet: the answer asked as the page started, else asked now.
   $effect(() => {
+    if (now !== undefined) return;
     let live = true;
     // svelte-ignore state_referenced_locally
-    void cloneOptions(id).then(o => { if (live) options = o; }, () => {});
+    void (cloneAsked() ?? cloneOptions(id)).then(o => { if (live) options = o; }, () => {});
     return () => { live = false; };
   });
   $effect(() => {

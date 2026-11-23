@@ -8,6 +8,7 @@ import type { Component } from "svelte";
 let menu: Component | null = $state(null);
 let rows: { keys: string[]; what: string }[] = $state([]);
 let onReportKey: (() => void) | null = null;
+let asking = $state(false);
 
 /** The header's feedback menu once the integration runs, else null. */
 export const feedbackMenu = { get current(): Component | null { return menu; } };
@@ -17,6 +18,14 @@ export function feedbackKeyRows(): { keys: string[]; what: string }[] { return r
 
 /** What F from the artifact's frame does, while the integration runs. */
 export const reportKey = { get current(): (() => void) | null { return onReportKey; } };
+
+/** Whether the shell is still finding out if the integration runs here
+ * (`bootFeedback` started and has not settled): the artifact view's top
+ * bar shows its controls once it knows. */
+export const feedbackDeciding = { get current(): boolean { return asking; } };
+
+/** Marks the finding out under way (true) or over (false). */
+export function setFeedbackDeciding(on: boolean): void { asking = on; }
 
 /** Fills the slot (the integration, once it runs); null empties it. */
 export function setFeedbackMenu(c: Component | null, keys: string[] = []): void {

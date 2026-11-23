@@ -36,14 +36,32 @@
   // island mounts) where the artifact carries `analytics`: on a hosted Clax,
   // for whoever administers it, never on a draft.
   // For a person who may report problems with Clax, the feedback menu
-  // (`feedback/`) comes before the more menu.
+  // (`feedback/`) comes before the more menu. For a browser with an inbox
+  // (the owner's, or a connected person's), Inbox comes first, with its
+  // unread count (at phone width in the tab bar instead).
+  // The controls show together, at once, in their final places
+  // (`topbar-gate.svelte.ts`): once the view is ready (the artifact with
+  // its threads, so every count is drawn once; with the bootstrap block, at
+  // the first render), its changelog decided, and the controls' chunks in
+  // (modulepreloaded with the page). No control waits on another's
+  // request. Each optional control (Inbox, Fork, Share, Publish, Get in
+  // Clax, the feedback menu, and ClaxBot's button in `Who.svelte`) is in a
+  // slot: what decides it is known at that render wherever the page knows
+  // it (the block's `deciders`, the artifact's own fields, an answer asked
+  // as the page started: `view/deciders.svelte.ts`), and then it is in its
+  // place; one that comes later takes the bar's free end, beside the title,
+  // so nothing moves. Until the controls show they are laid out, hidden.
+  import { tick } from "svelte";
   import { fromStore } from "svelte/store";
   import { getToken } from "../api";
   import { COMMENTS_OFF } from "../failure";
   import { type ArtifactController, commentsOff, viewReady } from "../view/artifact-controller";
-  import { analyticsOpen, botOpen, clone, cloneOpen, forkButton, legal, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, usage, who } from "./more-menu.svelte";
+  import { decided as known } from "../view/deciders.svelte";
+  import { analyticsOpen, botOpen, clone, cloneOpen, forkButton, getInClax, legal, loading, moreMenu, permissions, permissionsOpen, publish, publishOpen, share, shareOpen, usage, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
-  import { feedbackMenu } from "../feedback/slot.svelte";
+  import { feedbackDeciding, feedbackMenu } from "../feedback/slot.svelte";
+  import { late, markShown } from "./topbar-gate.svelte";
+  import InboxAnchor from "./InboxAnchor.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
   import VersionMenu from "./VersionMenu.svelte";
 
@@ -56,14 +74,27 @@
   const Who = $derived(who.current);
   const Clone = $derived(clone.current);
   const Fork = $derived(forkButton.current);
+  const GetInClax = $derived(getInClax.current);
   const Share = $derived(share.current);
   const Publish = $derived(publish.current);
   const Permissions = $derived(permissions.current);
   let forking = $state(false);
   // The owner's shell (it holds the token) may always fork; anyone else as
-  // the daemon says (`may_fork`).
-  let ownerShell = $state(false);
-  void getToken().then(t => { ownerShell = !!t; });
+  // the daemon says (`may_fork`). The block says whose it is; else the token's answer does.
+  let tokenHeld = $state(false);
+  void getToken().then(t => { tokenHeld = !!t; });
+  const ownerShell = $derived(known.owner ?? tokenHeld);
+  // The changelog this load decided names what the pill says first (`s.decided`).
+  const decided = $derived(viewReady(s) && s.decided !== null && !loading.current);
+  // Once the controls have painted, a slot filled later is late (`topbar-gate.svelte.ts`).
+  let marked = false;
+  $effect(() => {
+    if (!decided || marked) return;
+    marked = true;
+    // The title's tags are laid out with the controls: they fit their line now, before this frame paints.
+    document.querySelector(".page > .topbar")?.dispatchEvent(new Event("clax-bar-shown"));
+    void tick().then(markShown);
+  });
   /** Forks version `n` into an artifact of the viewer's and opens it. */
   function fork(n: number) {
     forking = true;
@@ -76,6 +107,11 @@
   {@const latest = ctl.latest(s)}
   {@const live = s.data.artifact.live}
   {@const off = commentsOff(s)}
+  {@const forkable = !!MoreMenu && (ownerShell || !!s.data.artifact.may_fork) && !live && !s.deleted}
+  {@const mayApprove = s.data.artifact.may_approve === true && !s.deleted}
+  <div class="tools" class:deciding={!decided} aria-busy={decided ? undefined : "true"}>
+  <span class="bar-gap" aria-hidden="true"></span>
+  <span class="slot by-pill" use:late>{#if known.inbox}<InboxAnchor unread={known.unread} />{/if}</span>
   <SampleCount {ctl} />
   {#if Who}<Who {ctl} {s} open={ctl.openCount(s)} />{/if}
   {#if s.declarationStale && !s.newer && !s.deleted}<button class="primary reload" onclick={() => ctl.reloadHere()}>Reload</button>{/if}
@@ -86,22 +122,59 @@
   <VersionMenu {shown} {latest} newer={s.deleted ? null : s.newer} onLatest={s.deleted ? undefined : () => ctl.reloadLatest()} live={!!live} dot={s.decided?.dot ?? false} open={s.menu === "versions"} onToggle={() => ctl.openMenu("versions")}
     input={() => ({ versions: s.data.versions, latest, shown, now: new Date(), threads: s.threads, numbers: ctl.numbers(s), me: s.me?.public_id ?? null, live: !!live })}
     hrefFor={n => ctl.here(n === latest ? null : n, s)} onChoose={n => { ctl.closeMenu(); ctl.chooseVersion(n); }} />
-  {@const forkable = !!MoreMenu && (ownerShell || !!s.data.artifact.may_fork) && !live && !s.deleted}
-  {#if forkable && Fork}<Fork {shown} disabled={forking} onFork={() => fork(shown)} />{/if}
-  {#if s.data.artifact.app && !s.deleted}
-    {#await import("./GetInClax.svelte") then { default: GetInClax }}<GetInClax id={ctl.id} ghost={ownerShell || !!shareOpen.current} />{/await}
-  {/if}
-  {#if Share && !s.deleted}<Share id={ctl.id} title={s.data.artifact.title} onComments={on => ctl.noteComments(on)} />{/if}
+  <span class="slot" use:late>{#if forkable && Fork}<Fork {shown} disabled={forking} onFork={() => fork(shown)} />{/if}</span>
+  <span class="slot" use:late>{#if GetInClax && s.data.artifact.app && !s.deleted}<GetInClax id={ctl.id} ghost={ownerShell || !!s.data.artifact.may_share} />{/if}</span>
+  <span class="slot" use:late>{#if Share && s.data.artifact.may_share && !s.deleted}<Share id={ctl.id} title={s.data.artifact.title} onComments={on => ctl.noteComments(on)} />{/if}</span>
   {#if Clone && !live && !s.deleted}<Clone id={ctl.id} />{/if}
-  {#if Publish && ownerShell && !live && !s.deleted}<Publish id={ctl.id} title={s.data.artifact.title} {latest} />{/if}
-  {@const mayApprove = s.data.artifact.may_approve === true && !s.deleted}
+  <span class="slot" use:late>{#if Publish && ownerShell && !live && !s.deleted}<Publish id={ctl.id} title={s.data.artifact.title} {latest} />{/if}</span>
   {#if Permissions && mayApprove}<Permissions {ctl} />{/if}
   {#if s.data.artifact.analytics && !s.deleted}{#await import("./AnalyticsPanel.svelte") then { default: AnalyticsPanel }}<AnalyticsPanel {ctl} />{/await}{/if}
-  {#if feedbackMenu.current}<feedbackMenu.current />{/if}
+  <!-- The feedback menu's place while its integration starts, where the page knows it will (its button's box). -->
+  <span class="slot" use:late>{#if feedbackMenu.current}<feedbackMenu.current />{:else if known.feedback && feedbackDeciding.current}<span class="fb fb-wait" aria-hidden="true"></span>{/if}</span>
   {#if MoreMenu}
     <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} getHref={s.data.artifact.app && !s.deleted ? `/a/${encodeURIComponent(ctl.id)}/get` : null} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} onPermissions={mayApprove ? permissionsOpen.current : null} onAnalytics={analyticsOpen.current} onPeople={Who ? () => ctl.openMenu("people") : null} onBot={botOpen.current} usage={usage.current} legal={legal.current} />
   {:else}
     <span class="more-slot"></span>
   {/if}
-  <span class="hide-sm"><ThemeSwitch /></span>
+  <span class="hide-sm hide-nr"><ThemeSwitch /></span>
+  </div>
 {/if}
+
+<!-- The controls' group and each slot are no box of their own: each
+     control is the bar's flex item. While the group decides it is laid out
+     and hidden. A late slot's control goes before every control (order 0)
+     and after the mark and the title (theme.css). -->
+<style>
+  /* The bar's order and its widths, the artifact page's alone (not theme.css, which the gallery carries too). */
+  :global {
+    /* The mark and the title lead the bar: a control that comes late takes the
+       place after them (`--late`, ui/topbar-gate.svelte.ts), before the others. */
+    .topbar > .home { order: -100001; }
+    .topbar > .ttl { order: -100000; }
+    /* The title takes the bar's room up to its own width (it never pushes the
+       controls: its basis is 0); the room between it and the controls
+       (TopbarIsland.svelte's `.bar-gap`) takes the rest, so a control that
+       comes late beside it takes from it, and nothing else moves. */
+    .topbar .bar-gap { flex: 1 1 0; min-width: 0; order: -100; margin-left: -10px; }
+    /* Between phone and 900 px wide the bar keeps to its width: Comment drops
+       its key, Inbox keeps its icon and count, the theme switch goes
+       (`.hide-nr`) and the bar's gaps narrow. */
+    @media (min-width: 701px) and (max-width: 900px) {
+      .topbar { gap: 8px; }
+      .topbar .bar-gap { margin-left: -8px; }
+      .topbar .hide-nr, .topbar .kc { display: none; }
+      .topbar .inbox-link .word { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    }
+  }
+  :global(.topbar .tools), :global(.topbar .slot) { display: contents; }
+  :global(.topbar .slot > *) { order: var(--late, 0); }
+  /* Inbox, the call count and the pill (`PILL_ORDER`, topbar-gate.svelte.ts): what comes late beside the pill goes after them. */
+  :global(.topbar .slot.by-pill) { --late: -50; }
+  :global(.topbar .sample-count), :global(.topbar button.who) { order: -50; }
+  :global(.topbar .tools.deciding) { visibility: hidden; }
+  /* The feedback menu's button's box (FeedbackMenu.svelte), its count a badge over its corner, so the count moves nothing. */
+  :global(.topbar .fb-wait) { flex: none; width: 32px; height: 32px; }
+  :global(.topbar .fb .fb-btn .fb-count) { position: absolute; top: -4px; right: -6px; min-width: 16px; padding: 0 4px; font-size: 10.5px; line-height: 16px; }
+  /* The title's tags fit what the controls leave them: they are laid out, and show, with the controls. */
+  :global(.page:has(.tools.deciding) .ttl > .ttags) { display: none; }
+</style>

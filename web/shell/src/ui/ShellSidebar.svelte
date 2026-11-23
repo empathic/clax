@@ -39,14 +39,17 @@
   import { BOT, botView, sendToBot, withBot } from "../bot/send.svelte";
   import { type ArtifactController, type Loaded, type ViewState, commentsOff } from "../view/artifact-controller";
   import { emptyLayer, writersIn } from "../view/live-layers";
+  import AddressedGroup from "./AddressedGroup.svelte";
   import DrawerChrome from "./DrawerChrome.svelte";
   import { drawer } from "./drawer.svelte";
   import { sidebarView } from "./sidebar-view.svelte";
   import LiveWriters from "./LiveWriters.svelte";
+  import NewComment from "./NewComment.svelte";
   import Sidebar from "./Sidebar.svelte";
   // Sidebar.svelte imports its views when it mounts (the extension's panel
   // has none); imported here too, they come with this chunk, not a fetch later.
   import "./SidebarViews.svelte";
+  import WorkingStrip from "./WorkingStrip.svelte";
 
   let { ctl, s }: { ctl: ArtifactController; s: ViewState & { data: Loaded } } = $props();
   // Who writes where now (the live layers), named as the view knows them.
@@ -79,7 +82,16 @@
       void sendToBot(ctl, [t.id]);
     }
   });
+  // Rendered with the rest of the sidebar, not each a chunk of its own.
+  const parts = { NewComment, WorkingStrip, AddressedGroup };
   const clip = async (t: Thread) => (t.clip_url ? (await import("../api-image")).apiImageSrc(t.clip_url) : null);
+  // The page the cards are laid out for: the frame's page, kept while the
+  // frame is between documents (`file` null from a load until the page
+  // greets, the handshake's included), so no card folds or relabels and
+  // back again as a page loads.
+  // svelte-ignore state_referenced_locally
+  let lastFile = s.file ?? s.startFile;
+  const pageFile = $derived((lastFile = s.file ?? lastFile));
 </script>
 
 {#snippet writers(tid: string | null)}
@@ -96,7 +108,7 @@
 {/snippet}
 
 <DrawerChrome onClose={() => ctl.togglePanel()}>
-<Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
+<Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={pageFile} holds={f => ctl.holds(f, s)} me={s.me}
   versions={s.data.versions} shown={ctl.shown(s)} agent={s.data.artifact.owner_name || s.data.artifact.owner_harness || "agent"}
   working={s.working} commenting={s.commenting} {agents} mine={s.attention?.open_in ?? []}
   decided={s.decided} onSeen={t => ctl.look(t)} {clip}
@@ -106,6 +118,6 @@
   onToggle={(t, shift, order) => ctl.toggleSelect(t, shift, order)} onClear={() => ctl.clearSelection()} onNote={v => ctl.setBatchNote(v)}
   compose={s.spectator || commentsOff(s) ? undefined : { version: ctl.shown(s), host: ctl }} readOnly={!!s.spectator} noReply={commentsOff(s) ? `${COMMENTS_OFF}.` : undefined}
   noSend={commentsOff(s) && s.data.artifact.may_resolve === false} live={s.spectator ? undefined : live}
-  onSendSelection={() => go(() => s.selection.ids, () => ctl.sendSelection())} onSendUnsent={() => go(() => unsent(s.threads, botView.claimed).map(t => t.id), () => ctl.sendUnsent(botView.claimed))} claimed={botView.claimed} onChoose={choose} {above}
+  onSendSelection={() => go(() => s.selection.ids, () => ctl.sendSelection())} onSendUnsent={() => go(() => unsent(s.threads, botView.claimed).map(t => t.id), () => ctl.sendUnsent(botView.claimed))} claimed={botView.claimed} onChoose={choose} {above} {parts}
   view={{ now: sidebarView.now, onChange: v => sidebarView.set(v), side: drawer.prefs.layout === "left" ? "left" : "right" }} />
 </DrawerChrome>

@@ -28,8 +28,13 @@
   import RunPanel from "./RunPanel.svelte";
   import UsageBanner from "./UsageBanner.svelte";
   import { setBotOpener, setUsage } from "../ui/more-menu.svelte";
+  import { late } from "../ui/topbar-gate.svelte";
+  import { botKnown } from "../view/deciders.svelte";
 
   let { ctl }: { ctl: ArtifactController } = $props();
+  // The bootstrap block's answer, so the meter shows with the bar.
+  const known = botKnown();
+  if (known && !botView.me) botView.me = known;
   // svelte-ignore state_referenced_locally
   const view = fromStore(ctl.state);
   let runs = $state<RunSummary[]>([]);
@@ -143,11 +148,13 @@
   });
 </script>
 
-{#if shown}
+<!-- In a slot of the top bar's (`ui/topbar-gate.svelte.ts`): where it
+     comes after the bar has shown, it takes the bar's free end. -->
+<span class="slot" use:late>{#if shown}
   <button type="button" class="botbtn hide-sm" class:on={active} aria-expanded={!!botView.run} aria-controls="bot-run-panel" onclick={toggleRuns}>
     <span class="dot" aria-hidden="true"></span>ClaxBot<span class="bot-sr">{active ? ", working" : ", runs"}</span>
   </button>
-{/if}
+{/if}</span>
 
 <style>
   :global {

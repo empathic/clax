@@ -89,18 +89,20 @@ describe("share model", () => {
 });
 
 describe("Share", () => {
-  it("shows nothing to who may not share, or on a daemon without sharing", async () => {
-    serve({ sharing: { artifact_id: ID, can_share: false } });
+  it("asks nothing as it shows (the top bar shows it where the artifact says the viewer may share), and opens nothing where the sharing read says they no longer may", async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ artifact_id: ID, can_share: false })));
+    vi.stubGlobal("fetch", f);
     const m = mount(Share, { id: ID, title: "Plan" });
+    const b = await until(() => m.root.querySelector<HTMLButtonElement>("button.share"));
+    expect(f).not.toHaveBeenCalled();
+    expect(shareOpen.current).not.toBeNull();
+    flush(() => b.click());
+    await until(() => f.mock.calls.length > 0 || null);
     await settled();
-    expect(m.root.querySelector("button.share")).toBeNull();
-    expect(shareOpen.current).toBeNull();
+    expect(f).toHaveBeenCalledOnce();
+    expect(document.querySelector("[role=dialog]")).toBeNull();
     m.unmount();
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 404 })));
-    const l = mount(Share, { id: ID, title: "Plan" });
-    await settled();
-    expect(l.root.querySelector("button.share")).toBeNull();
-    l.unmount();
+    expect(shareOpen.current).toBeNull();
   });
 
   it("shows Share to a sharer, offers the more menu's item, and opens the dialog", async () => {

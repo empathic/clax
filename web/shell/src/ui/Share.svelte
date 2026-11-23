@@ -2,12 +2,12 @@
 
 <script lang="ts">
   // The top bar's Share button (an icon, named Share), on a hosted Clax for whoever may share the
-  // artifact (the owner and its maker; the daemon says, `can_share`): it
-  // opens the Share dialog (its own lazy chunk). Elsewhere (a local
-  // daemon, which answers no sharing route; a reader who may not share) it
-  // shows nothing. At phone width the button is hidden and the more menu
-  // lists Share instead (`setShareOpener`). Loaded after the first paint
-  // (`more-menu.svelte.ts`). `onComments` hears the dialog's Comments switch
+  // artifact (the owner and its maker: the artifact's `may_share`, which the
+  // bar shows it for): it opens the Share dialog (its own lazy chunk), with
+  // the sharing read afresh. Elsewhere (a local daemon; a reader who may not
+  // share) the bar shows none. At phone width the button is hidden and the more menu
+  // lists Share instead (`setShareOpener`). Its chunk is asked as the page
+  // starts (`more-menu.svelte.ts`). `onComments` hears the dialog's Comments switch
   // change, so the view follows at once.
   import type { Component } from "svelte";
   import * as api from "../hosted/api";
@@ -28,20 +28,12 @@
   }
 
   $effect(() => {
-    let live = true;
-    // svelte-ignore state_referenced_locally
-    void api.sharing(id).then(s => { if (live && s.can_share) sharing = s; }, () => {});
-    return () => { live = false; };
-  });
-  $effect(() => {
-    setShareOpener(sharing ? show : null);
+    setShareOpener(show);
     return () => setShareOpener(null);
   });
 </script>
 
-{#if sharing}
-  <button type="button" class="icon share hide-sm" aria-haspopup="dialog" aria-label="Share" title="Share this artifact" onclick={show}>
-    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V2M5 4.75l3-3 3 3M5.5 7H4v7h8V7h-1.5"/></svg>
-  </button>
-  {#if open && Dialog}<Dialog {id} {title} initial={sharing} {onComments} onClose={() => { open = false; }} />{/if}
-{/if}
+<button type="button" class="icon share hide-sm" aria-haspopup="dialog" aria-label="Share" title="Share this artifact" onclick={show}>
+  <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V2M5 4.75l3-3 3 3M5.5 7H4v7h8V7h-1.5"/></svg>
+</button>
+{#if open && Dialog && sharing}<Dialog {id} {title} initial={sharing} {onComments} onClose={() => { open = false; }} />{/if}

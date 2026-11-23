@@ -57,7 +57,7 @@ const entry = html => {
   return gz(html) + files.reduce((n, f) => n + gz(f), 0);
 };
 
-for (const [html, markers] of [["index.html", ["<!--clax:boot-->"]], ["artifact.html", ["<script id=\"clax-early\">", "<!--clax:boot-->", "<!--clax:frame-->", "<h1>Clax</h1>"]]]) {
+for (const [html, markers] of [["index.html", ["<!--clax:boot-->"]], ["artifact.html", ["<script id=\"clax-early\">", "<!--clax:boot-->", "<!--clax:frame-->", "<h1></h1>"]]]) {
   const text = read(html).toString();
   if (text.includes(`<link rel="stylesheet"`)) throw new Error(`dist/${html} links a stylesheet; the CSS must be inlined`);
   for (const m of markers) if (!text.includes(m)) throw new Error(`dist/${html} lost ${m}, which the daemon injects at or the shell needs`);
@@ -115,22 +115,24 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
 // The question module: its chunk and what it imports beyond what its host
 // has loaded by then, for the larger of its two hosts: the gallery (its entry
 // and its lazy module, through which the module loads) and the artifact view
-// (its entry, the more menu and roster it loads after its first paint, and
-// its stream's lazy module, whose question surfaces' module loads it once
-// the browser is idle; that module counts here). The module is the host's dynamic
+// (its entry, the more menu and roster it loads as it starts, its stream's
+// lazy module, and its question surfaces' module, which loads it as the view
+// becomes ready; that module counts here). The module is the host's dynamic
 // import named `index` (Vite keys it by its chunk when another chunk also
 // imports from it). What the module itself loads on demand is not counted.
 {
   const key = k => Object.keys(manifest).find(m => m.endsWith(k));
   const lazy = lazyKey();
   const stream = key("src/view/artifact-stream.ts");
-  // The artifact entry loads these after its first paint, before its stream opens.
+  // The artifact entry loads these as it starts, before its stream opens;
+  // its question surfaces' module asks for the question module.
   const painted = ["src/ui/MoreMenu.svelte", "src/ui/Who.svelte"].map(key);
+  const surfaces = key("src/view/artifact-questions.ts");
   const q = lazy && (manifest[lazy].dynamicImports ?? []).find(k => manifest[k].name === "index");
-  if (!q || !stream || painted.some(k => !k)) throw new Error("dist has no question module, gallery-working or artifact-stream chunk");
+  if (!q || !stream || !surfaces || painted.some(k => !k)) throw new Error("dist has no question module, gallery-working, artifact-stream or artifact-questions chunk");
   const files = keys => new Set(keys.flatMap(h => [...closure(h)].map(k => manifest[k].file)));
   const beyond = hosts => { const loaded = files(hosts); return [...files([q])].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0); };
-  sizes.questions = Math.max(beyond(["index.html", lazy]), beyond(["artifact.html", stream, ...painted]));
+  sizes.questions = Math.max(beyond(["index.html", lazy]), beyond(["artifact.html", stream, surfaces, ...painted]));
 }
 // Settings' People screen and the Queues page: their chunks and what they
 // import beyond the gallery's entry and its lazy module, through which
