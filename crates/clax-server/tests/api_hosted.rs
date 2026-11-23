@@ -3686,10 +3686,11 @@ async fn setup_sign_in_and_guests_are_limited_per_client_on_the_clock() {
         json!({"secret": SECRET, "name": "Ada"}),
     )
     .await;
-    // Codes: ten looks or redemptions of invites and sign-in links, then 429.
+    // Codes: ten looks (each of another code: a code looked up again costs
+    // nothing more) or redemptions of invites and sign-in links, then 429.
     for i in 0..10 {
         let p = if i % 2 == 0 {
-            "/api/hosted/invites/AAAA-BBBB-CCCC".to_string()
+            format!("/api/hosted/invites/AAAA-BBBB-CCC{i}")
         } else {
             "/api/hosted/signin-links/cxl_nothing/accept".to_string()
         };

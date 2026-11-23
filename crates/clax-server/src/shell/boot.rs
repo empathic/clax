@@ -18,7 +18,7 @@ pub const FRAME_ALLOW: &str = "clipboard-write; fullscreen; storage-access";
 /// block ([`boot_script`]); removed when there is none.
 pub const BOOT_MARK: &str = "<!--clax:boot-->";
 const FRAME_MARK: &str = "<!--clax:frame-->";
-const TITLE_MARK: &str = "<h1>Clax</h1>";
+const TITLE_MARK: &str = "<h1></h1>";
 
 /// What goes into `artifact.html`: the bootstrap JSON (already escaped by
 /// [`script_json`]), the frame's markup when the page exists, the title.
@@ -242,6 +242,9 @@ pub async fn assemble(
         .get::<clax_http::hosted::HostedRequest>()
         .and_then(|h| h.member.clone());
     let member_rights = member.as_ref().map(|m| m.rights.clone());
+    let hosted_req = extensions
+        .get::<clax_http::hosted::HostedRequest>()
+        .cloned();
     let hosted = s.hosted.is_some();
     let found = s
         .store_call(move |st| {
@@ -363,6 +366,12 @@ pub async fn assemble(
             };
             artifact["may_fork"] = json!(may_fork);
             // As `GET /api/artifacts/<id>` says.
+            artifact["may_share"] = json!(crate::hosted::browser_may_share(
+                st,
+                hosted_req.as_ref(),
+                a.id.as_str()
+            )?);
+            // As `GET /api/artifacts/<id>` says.
             crate::routes::app_bundles::stamp_app_fields(st, &a, &mut artifact)?;
             // As `GET /api/artifacts/<id>` says.
             crate::routes::app_bundles::stamp_capabilities(st, &a, may_approve, &mut artifact)?;
@@ -415,6 +424,100 @@ pub async fn assemble(
         frame,
         title: a.title.clone(),
     }))
+}
+
+/// The block's `deciders`: what decides the top bar's optional controls
+/// and the thread list's questions, each the JSON body its route answers
+/// this browser, asked as the gallery's block asks its own
+/// ([`super::gallery::ask_all`], through the daemon's whole router, as the
+/// page's own `fetch`, within the same budget), with `status.<field>` that
+/// route's status (no status: the field is `null` and the shell asks):
+///
+/// - `feedback`, `GET /_app/feedback/config` (the feedback menu);
+/// - `bot`, `GET /api/me/bot` (ClaxBot's button and meter);
+/// - `hosted`, `GET /api/hosted/me` (the more menu's legal links);
+/// - `summary`, `GET /api/inbox/summary` (Inbox's count);
+/// - `questions`, `GET /api/questions?status=open&limit=200` (the
+///   questions at the top of the thread list);
+/// - `clone`, `GET /api/artifacts/<id>/git-token` (Clone);
+///
+/// and, as the gallery's block decides them, `inbox` (whether this browser
+/// has an inbox, [`super::gallery::inbox`]) and `owner`: `true` where
+/// `GET /api/token` answers `200` (the owner's browser; the token itself
+/// never enters the block), `false` where it refuses (`401`, `403`), else
+/// `null`. `None` where the gallery's block would be left out
+/// ([`super::gallery::answers_as_shell`]).
+pub async fn deciders(
+    s: &AppState,
+    instance: &crate::integrations::instance::Instance,
+    id: &str,
+    uri: &axum::http::Uri,
+    headers: &HeaderMap,
+    extensions: &axum::http::Extensions,
+) -> Option<(Value, Vec<axum::http::HeaderValue>)> {
+    use super::gallery::{Answer, answers_as_shell, ask_all, inbox};
+    if !answers_as_shell(headers, uri, extensions) {
+        return None;
+    }
+    let clone = format!("/api/artifacts/{}/git-token", encode_component(id));
+    let fields: [(&str, &str); 8] = [
+        ("feedback", "/_app/feedback/config"),
+        ("bot", "/api/me/bot"),
+        ("hosted", "/api/hosted/me"),
+        ("summary", "/api/inbox/summary"),
+        ("questions", "/api/questions?status=open&limit=200"),
+        ("clone", &clone),
+        ("viewer", "/api/viewers/me"),
+        ("token", "/api/token"),
+    ];
+    let paths: Vec<&str> = fields.iter().map(|(_, p)| *p).collect();
+    let budget = s.gallery_boot_budget.min(s.request_timeout);
+    let mut answers: Vec<Answer> = ask_all(&instance.router(), &paths, headers, extensions, budget)
+        .await
+        .into_iter()
+        .map(Result::unwrap_or_default)
+        .collect();
+    let mut cookies = Vec::new();
+    for a in &mut answers {
+        cookies.append(&mut a.cookies);
+    }
+    let token = answers.pop().expect("the token route was asked");
+    let viewer = answers.pop().expect("the viewer route was asked");
+    let mut status = serde_json::Map::new();
+    let mut block = serde_json::Map::new();
+    for ((name, _), a) in fields.iter().zip(answers) {
+        if let Some(code) = a.status {
+            status.insert((*name).into(), json!(code));
+        }
+        block.insert((*name).into(), a.body);
+    }
+    block.insert("inbox".into(), inbox(&viewer, token.status));
+    let owner = match token.status {
+        Some(200) => json!(true),
+        Some(401 | 403) => json!(false),
+        _ => Value::Null,
+    };
+    block.insert("owner".into(), owner);
+    block.insert("status".into(), Value::Object(status));
+    Some((Value::Object(block), cookies))
+}
+
+/// `boot` (a JSON object, as [`script_json`] writes it) with `key` set to
+/// `value`, escaped as [`script_json`] escapes it.
+pub fn with_field(boot: &str, key: &str, value: &Value) -> String {
+    let Some(head) = boot.strip_suffix('}') else {
+        return boot.to_string();
+    };
+    let sep = if head.trim_end().ends_with('{') {
+        ""
+    } else {
+        ","
+    };
+    format!(
+        "{head}{sep}{}:{}}}",
+        script_json(&json!(key)),
+        script_json(value)
+    )
 }
 
 /// The `clax-embed` meta an embedding app's shell documents carry: the
@@ -606,10 +709,11 @@ mod tests {
 
     #[test]
     fn inject_without_data_only_removes_the_markers() {
-        let t = "<head><!--clax:boot--></head><div class=\"stage\"><!--clax:frame--></div><h1>Clax</h1>";
+        let t =
+            "<head><!--clax:boot--></head><div class=\"stage\"><!--clax:frame--></div><h1></h1>";
         assert_eq!(
             inject(t, None),
-            "<head></head><div class=\"stage\"></div><h1>Clax</h1>"
+            "<head></head><div class=\"stage\"></div><h1></h1>"
         );
         let i = Injected {
             boot: "{\"v\":1}".into(),
@@ -623,8 +727,21 @@ mod tests {
     }
 
     #[test]
+    fn a_field_joins_the_escaped_block() {
+        let b = script_json(&json!({"v": 1}));
+        let out = with_field(&b, "deciders", &json!({"x": "</script>"}));
+        assert_eq!(
+            serde_json::from_str::<Value>(&out).unwrap(),
+            json!({"v": 1, "deciders": {"x": "</script>"}})
+        );
+        assert!(!out.contains('<'), "{out}");
+        assert_eq!(with_field("{}", "k", &json!(1)), "{\"k\":1}");
+    }
+
+    #[test]
     fn a_title_cannot_forge_a_marker() {
-        let t = "<head><!--clax:boot--></head><div class=\"stage\"><!--clax:frame--></div><h1>Clax</h1>";
+        let t =
+            "<head><!--clax:boot--></head><div class=\"stage\"><!--clax:frame--></div><h1></h1>";
         let i = Injected {
             boot: "{}".into(),
             frame: None,

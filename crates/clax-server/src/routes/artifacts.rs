@@ -997,6 +997,14 @@ pub async fn get(
     let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), hosted);
     let (caller, member) = (a.caller.clone(), a.member_rights());
     let browser_member = a.member().cloned();
+    // Whose browser asks: an agent's request shares nothing.
+    let hosted_req = (!a.caller.is_agent())
+        .then(|| {
+            extensions
+                .get::<clax_http::hosted::HostedRequest>()
+                .cloned()
+        })
+        .flatten();
     let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
     let may_resolve = super::threads::resolves(&a, &s, &id).await?;
     let mut v = s
@@ -1049,6 +1057,13 @@ pub async fn get(
                 &caller,
                 browser_member.as_ref(),
                 hosted,
+                a.id.as_str()
+            )?);
+            // Whether this browser may share it on a hosted Clax (the
+            // shell's Share), as its sharing routes answer it.
+            artifact["may_share"] = json!(crate::hosted::browser_may_share(
+                st,
+                hosted_req.as_ref(),
                 a.id.as_str()
             )?);
             // Its Comments switch, forks and app (an artifact carrying a

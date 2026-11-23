@@ -830,7 +830,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/_clax/{*path}", get(shell::static_file))
         // The gallery pages ask their routes for their first-load data
         // through the instance's own router (`shell::gallery`).
-        .layer(axum::Extension(feedback_instance))
+        .layer(axum::Extension(feedback_instance.clone()))
         .layer(clax_http::http_cache::compression());
     let r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
@@ -970,9 +970,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             .set_base_url_policy(clax_store::bot_settings::BaseUrlPolicy::Hosted);
     }
     // A hosted daemon's sign-in, sharing and agent-token routes, under the
-    // layers below as every route is.
+    // layers below as every route is. Its sign-in and landing pages ask
+    // their routes for their first-load data through the instance's own
+    // router (`shell::signin`), as the gallery pages do.
     let mut r = if state.hosted.is_some() {
-        r.merge(crate::hosted::router())
+        r.merge(crate::hosted::router().layer(axum::Extension(feedback_instance)))
     } else {
         r
     };

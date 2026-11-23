@@ -231,6 +231,8 @@ mod sample_anthropic;
 mod shell_boot;
 #[cfg(any(not(clax_split), clax_split = "shell_entries"))]
 mod shell_entries;
+#[cfg(any(not(clax_split), clax_split = "signin_boot"))]
+mod signin_boot;
 
 /// Cargo's test autodiscovery is off for this crate (`autotests = false` in
 /// its manifest), so a file in `tests/`, or a directory there with a

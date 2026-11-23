@@ -661,7 +661,7 @@ async fn a_hosted_member_gets_their_reach_and_the_owner_theirs() {
 }
 
 #[tokio::test]
-async fn a_hosted_visitor_with_no_session_is_sent_to_sign_in_with_no_block() {
+async fn a_hosted_visitor_with_no_session_is_sent_to_sign_in_with_no_gallery_block() {
     let dist = dist();
     let ts = hosted(&dist).await;
     owner_and_member(&ts).await;
@@ -678,12 +678,166 @@ async fn a_hosted_visitor_with_no_session_is_sent_to_sign_in_with_no_block() {
         .unwrap();
     assert!(res.status().is_redirection(), "{}", res.status());
     assert!(!res.text().await.unwrap().contains(OPEN));
-    // The sign-in pages show the bare entry.
+    // The sign-in page carries its own block (`shell::signin`), no gallery's.
     let res = at(&ts, reqwest::Method::GET, "/signin", None)
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
     let html = res.text().await.unwrap();
-    assert!(block(&html).is_none() && !html.contains(MARK));
+    assert!(!html.contains(MARK));
+    assert_eq!(block(&html).expect("the sign-in block")["kind"], "signin");
+}
+
+/// Each of the artifact page's `deciders` (`clax_server::shell::boot::deciders`)
+/// equals its route's answer to `fetch` (the browser's own request).
+async fn assert_deciders_are_the_routes<F, Fut>(d: &Value, id: &str, fetch: F)
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = (u16, Value)>,
+{
+    for (name, path) in [
+        ("feedback", "/_app/feedback/config".to_string()),
+        ("bot", "/api/me/bot".to_string()),
+        ("hosted", "/api/hosted/me".to_string()),
+        ("summary", "/api/inbox/summary".to_string()),
+        (
+            "questions",
+            "/api/questions?status=open&limit=200".to_string(),
+        ),
+        ("clone", format!("/api/artifacts/{id}/git-token")),
+    ] {
+        let (status, body) = fetch(path).await;
+        assert_eq!(d["status"][name], json!(status), "{name}: {d}");
+        assert_eq!(
+            d[name],
+            if status == 200 { body } else { Value::Null },
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_artifact_page_carries_what_decides_its_controls_as_their_routes_answer() {
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
+    let id = ts.publish("Report", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let cookie = format!("clax_viewer={}", ts.local_browser());
+    let res = local(&ts, &format!("/a/{id}"), &cookie).await;
+    assert_eq!(res.status(), 200);
+    let b = block(&res.text().await.unwrap()).expect("a block");
+    let d = &b["deciders"];
+    let (ts_, cookie_) = (&ts, &cookie);
+    assert_deciders_are_the_routes(d, &id, |p| async move { fetched(ts_, &p, cookie_).await })
+        .await;
+    assert_eq!(d["status"]["hosted"], 404, "a local daemon is not hosted");
+    assert_eq!(d["inbox"], false, "a LAN viewer has no inbox");
+    assert_eq!(d["owner"], false, "nor the owner's token");
+    // A local daemon shares nothing: its Share is a hosted Clax's.
+    assert_eq!(b["artifact"]["artifact"]["may_share"], false);
+    let (_, api) = fetched(&ts, &format!("/api/artifacts/{id}"), &cookie).await;
+    assert_eq!(api["artifact"]["may_share"], false);
+
+    // Another site's load gets the store's block but none of the routes' answers.
+    let res = ts
+        .client
+        .get(format!("{}/a/{id}", ts.base))
+        .header("accept", "text/html")
+        .header(COOKIE, &cookie)
+        .header("sec-fetch-site", "cross-site")
+        .send()
+        .await
+        .unwrap();
+    let b = block(&res.text().await.unwrap()).expect("the store's block");
+    assert!(b.get("deciders").is_none(), "{b}");
+}
+
+#[tokio::test]
+async fn a_hosted_artifact_page_says_who_may_share_it_and_carries_its_deciders() {
+    let dist = dist();
+    let ts = hosted(&dist).await;
+    let (owner, member) = owner_and_member(&ts).await;
+    let id = ts
+        .publish("The owner's plans", &[("index.html", "<p>x</p>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let get = |session: String| {
+        let ts = &ts;
+        move |p: String| {
+            let s = session.clone();
+            async move {
+                let r = at(ts, reqwest::Method::GET, &p, Some(&s))
+                    .send()
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                (status, r.json().await.unwrap_or(Value::Null))
+            }
+        }
+    };
+    let (b, html) = hosted_block(&ts, &format!("/a/{id}"), &owner).await;
+    let d = &b["deciders"];
+    assert_deciders_are_the_routes(d, &id, get(owner.clone())).await;
+    assert_eq!(d["inbox"], true, "the owner's browser");
+    assert_eq!(d["owner"], true, "it holds the owner's token");
+    assert!(!html.contains("cxo_"), "no shell token");
+    // The owner may share it, as its sharing route says.
+    let (status, sharing) = get(owner.clone())(format!("/api/hosted/artifacts/{id}/sharing")).await;
+    assert_eq!((status, &sharing["can_share"]), (200, &json!(true)));
+    assert_eq!(b["artifact"]["artifact"]["may_share"], true);
+    let (_, api) = get(owner.clone())(format!("/api/artifacts/{id}")).await;
+    assert_eq!(api["artifact"]["may_share"], true);
+
+    // A member it is shared with may read it but not share it.
+    let shared = at(
+        &ts,
+        reqwest::Method::PUT,
+        &format!("/api/hosted/artifacts/{id}/shares"),
+        Some(&owner),
+    )
+    .json(&json!({"person": member_id(&ts, &member).await, "access": "viewer"}))
+    .send()
+    .await
+    .unwrap();
+    assert!(shared.status().is_success(), "{}", shared.status());
+    let (b, _) = hosted_block(&ts, &format!("/a/{id}"), &member).await;
+    let d = &b["deciders"];
+    assert_deciders_are_the_routes(d, &id, get(member.clone())).await;
+    assert_eq!(d["owner"], false, "a member's browser holds no token");
+    assert_eq!(d["inbox"], true, "a connected person's browser");
+    let (_, sharing) = get(member.clone())(format!("/api/hosted/artifacts/{id}/sharing")).await;
+    assert_eq!(sharing["can_share"], false);
+    assert_eq!(b["artifact"]["artifact"]["may_share"], false);
+    let (_, api) = get(member.clone())(format!("/api/artifacts/{id}")).await;
+    assert_eq!(api["artifact"]["may_share"], false);
+    // The daemon's token speaks for no browser: it shares nothing here.
+    let api: Value = ts
+        .client
+        .get(format!("{}/api/artifacts/{id}", ts.base))
+        .header(HOST, format!("localhost:{}", ts.addr.port()))
+        .bearer_auth(&ts.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(api["artifact"]["may_share"], false, "{api}");
+}
+
+/// The public ID of the person signed in as `session`.
+async fn member_id(ts: &TestServer, session: &str) -> String {
+    let me: Value = at(ts, reqwest::Method::GET, "/api/viewers/me", Some(session))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    me["viewer"]["public_id"].as_str().unwrap().to_string()
 }

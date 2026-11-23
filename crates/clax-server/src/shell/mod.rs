@@ -1,13 +1,15 @@
 //! Serves the web UI (the daemon's [`FileTree`], `AppState::web`): the
 //! shell's two entries (the gallery and the artifact view) and static
 //! assets. `boot` is the first-load data of `/a/…`, `gallery` the gallery
-//! pages', `route` how a shell path parses, and `get_page` the Get in Clax
-//! page of an app and its app links.
+//! pages', `signin` a hosted daemon's sign-in and landing pages', `route`
+//! how a shell path parses, and `get_page` the Get in Clax page of an app
+//! and its app links.
 
 pub mod boot;
 pub mod gallery;
 pub mod get_page;
 pub mod route;
+pub mod signin;
 
 use crate::routes::artifacts::path;
 use axum::extract::rejection::PathRejection;
@@ -156,13 +158,20 @@ pub fn landing_file(
     release: &clax_core::quickstart::Release,
     req: &HeaderMap,
     file: &str,
+    reel: bool,
 ) -> Result<Response, ApiError> {
     let hidden = file.split('/').any(|c| c.starts_with('.') || c.is_empty());
     let Some(data) = (!hidden).then(|| release.files.get(file)).flatten() else {
         return Err(ApiError::not_found());
     };
     if file.ends_with(".html") {
-        let mut res = http_cache::html(req, &String::from_utf8_lossy(data));
+        let text = String::from_utf8_lossy(data);
+        let text = if reel && file == "index.html" {
+            with_reel_mark(&text)
+        } else {
+            text.into_owned()
+        };
+        let mut res = http_cache::html(req, &text);
         let h = res.headers_mut();
         h.insert(
             header::CONTENT_SECURITY_POLICY,
@@ -187,6 +196,21 @@ pub fn landing_file(
         )
             .into_response()
     }))
+}
+
+/// The meta that tells the landing page its reel is served beside it
+/// (`web/quickstart/index.html` lays the reel out from its first paint).
+pub const REEL_MARK: &str = r#"<meta name="clax-reel" content="1">"#;
+
+/// `html` with [`REEL_MARK`] after its doctype (at its start without one).
+fn with_reel_mark(html: &str) -> String {
+    const DOCTYPE: &str = "<!doctype html>";
+    match html.get(..DOCTYPE.len()) {
+        Some(d) if d.eq_ignore_ascii_case(DOCTYPE) => {
+            format!("{d}{REEL_MARK}{}", &html[DOCTYPE.len()..])
+        }
+        _ => format!("{REEL_MARK}{html}"),
+    }
 }
 
 /// The gallery shell's pages (`/`, `/inbox`, `/tags`, `/queues…`,
@@ -230,10 +254,37 @@ pub async fn gallery_page(
     Ok(res)
 }
 
-/// The gallery's entry with no first-load data: the hosted sign-in pages
-/// and the landing page, which show their own views of it.
+/// The gallery's entry with no first-load data.
 pub fn bare_gallery(s: &clax_http::state::AppState, req: &HeaderMap) -> Result<Response, ApiError> {
     entry(s, req, "index.html")
+}
+
+/// A hosted daemon's sign-in page or landing page: the gallery's entry,
+/// which shows the page its path names, with that page's first-load data
+/// ([`signin`]) where the daemon's instance is at hand. It differs by
+/// viewer: `no-store` (history loads it again rather than show another
+/// session's), with `Vary: Cookie`. A cookie a route sets in its answer
+/// is set by the page.
+pub async fn auth_page(
+    s: &clax_http::state::AppState,
+    instance: Option<&crate::integrations::instance::Instance>,
+    uri: &axum::http::Uri,
+    extensions: &axum::http::Extensions,
+    req: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let assembled = match instance {
+        Some(i) => signin::assemble(s, i, uri, req, extensions).await,
+        None => None,
+    };
+    let (block, cookies) = assembled.unzip();
+    let mut res = entry_with(s, req, "index.html", block.as_deref())?;
+    let h = res.headers_mut();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    for c in cookies.into_iter().flatten() {
+        h.append(header::SET_COOKIE, c);
+    }
+    Ok(res)
 }
 
 /// `/a/…`: `artifact.html` with the first-load data ([`boot`]), or the
@@ -251,12 +302,18 @@ pub fn bare_gallery(s: &clax_http::state::AppState, req: &HeaderMap) -> Result<R
 /// or a store slower than the API's timeout also gives the bare entry, and
 /// the shell loads the data itself.
 ///
+/// Where the daemon's instance is at hand, the block also carries what
+/// decides the top bar's optional controls ([`boot::deciders`]), asked
+/// beside the store's data; a cookie one of their routes sets in its
+/// answer is set by the page.
+///
 /// The page differs by viewer and frame mode, both read from cookies: it is
 /// `private, no-cache` with `Vary: Cookie`, and its `ETag` is over the exact
 /// bytes sent, so a revalidation answers `304` only for the same bytes.
 pub async fn artifact_page(
     axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
     d: clax_http::agent::DeniedToGrants,
+    instance: Option<axum::Extension<std::sync::Arc<crate::integrations::instance::Instance>>>,
     uri: axum::http::Uri,
     extensions: axum::http::Extensions,
     req: HeaderMap,
@@ -287,15 +344,34 @@ pub async fn artifact_page(
         && extensions
             .get::<clax_http::local_trust::OwnerSession>()
             .is_none();
-    let injected = if host_ok && !unproven {
-        within(
-            s.request_timeout,
-            boot::assemble(&s, route, uri.query(), &req, &extensions),
-        )
-        .await
-    } else {
-        None
+    let id = match &route {
+        route::ShellRoute::Artifact { id, .. } => id.as_str().to_string(),
+        _ => String::new(),
     };
+    let (mut injected, decided) = if host_ok && !unproven {
+        let deciders = async {
+            match &instance {
+                Some(axum::Extension(i)) => {
+                    boot::deciders(&s, i, &id, &uri, &req, &extensions).await
+                }
+                None => None,
+            }
+        };
+        futures::join!(
+            within(
+                s.request_timeout,
+                boot::assemble(&s, route, uri.query(), &req, &extensions),
+            ),
+            deciders
+        )
+    } else {
+        (None, None)
+    };
+    let mut cookies = Vec::new();
+    if let (Some(i), Some((d, c))) = (injected.as_mut(), decided) {
+        i.boot = boot::with_field(&i.boot, "deciders", &d);
+        cookies = c;
+    }
     let page = boot::with_embed_meta(
         &boot::inject(&template, injected.as_ref()),
         s.embed.as_ref(),
@@ -308,6 +384,9 @@ pub async fn artifact_page(
         HeaderValue::from_static(PRIVATE_REVALIDATE),
     );
     h.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    for c in cookies {
+        h.append(header::SET_COOKIE, c);
+    }
     Ok(unframeable(res))
 }
 

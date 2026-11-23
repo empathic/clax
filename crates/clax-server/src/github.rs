@@ -248,8 +248,13 @@ pub async fn callback(
     if outcome != GitHubOutcome::Owner {
         crate::quickstart::sign_in(&s, &signed.who.viewer.public_id).await;
     }
-    let mut res = (StatusCode::SEE_OTHER, [(header::LOCATION, next)]).into_response();
+    let mut res = (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        hop_page(&next),
+    )
+        .into_response();
     let hs = res.headers_mut();
+    hs.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     hs.append(header::SET_COOKIE, h.session_cookie(&signed.session));
     hs.append(header::SET_COOKIE, flow_cookie(&h, "", 0));
     hs.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -258,6 +263,29 @@ pub async fn callback(
         HeaderValue::from_static("no-referrer"),
     );
     res
+}
+
+/// The page a successful sign-in answers in place of a redirect to `next`
+/// (a path [`callback`] has checked): it goes on to `next` at once
+/// (`location.replace`, so the callback stays out of history; a
+/// `<meta refresh>` without script), painted in the theme's background
+/// meanwhile. A redirect would end the chain GitHub started, so the load of
+/// `next` would carry `Sec-Fetch-Site: cross-site` and get no bootstrap
+/// block (`crate::shell::gallery::answers_as_shell`); this page's own
+/// navigation is same-origin, as a link followed on the daemon's page is,
+/// and nothing about it is trusted that such a link would not be: the
+/// session cookie is the one this response sets. `next` is in `data-next`
+/// too.
+pub fn hop_page(next: &str) -> String {
+    use crate::shell::boot::{html_escape, script_json};
+    let attr = html_escape(next);
+    format!(
+        "<!doctype html><html lang=\"en\" data-next=\"{attr}\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>Clax</title>\
+<style>html{{background:#f7f7f5}}@media (prefers-color-scheme:dark){{html{{background:#141413}}}}html[data-theme=light]{{background:#f7f7f5}}html[data-theme=dark]{{background:#141413}}</style>\
+<script>try{{var t=localStorage.getItem(\"clax.theme\");if(t===\"light\"||t===\"dark\")document.documentElement.dataset.theme=t}}catch(e){{}}location.replace({})</script>\
+<noscript><meta http-equiv=\"refresh\" content=\"0;url={attr}\"></noscript>",
+        script_json(&serde_json::json!(next))
+    )
 }
 
 #[derive(Deserialize)]
@@ -399,6 +427,24 @@ footer{{margin-top:16px;text-align:center;font-size:12.5px;color:var(--muted)}}f
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hop_page_goes_on_to_its_path_in_the_themes_background() {
+        let theme = include_str!("../../../web/shell/src/theme.css");
+        for bg in ["--bg: #f7f7f5;", "--bg: #141413;"] {
+            assert!(theme.contains(bg), "theme.css's {bg}: hop_page paints it");
+        }
+        let page = hop_page("/a/x?q=1&t=</script>\"'");
+        assert!(
+            page.contains(r#"location.replace("/a/x?q=1\u0026t=\u003c/script\u003e\"'")"#),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"data-next="/a/x?q=1&amp;t=&lt;/script&gt;&quot;&#39;""#),
+            "{page}"
+        );
+        assert_eq!(page.matches("</script>").count(), 1);
+    }
 
     #[test]
     fn the_challenge_is_rfc_7636s() {

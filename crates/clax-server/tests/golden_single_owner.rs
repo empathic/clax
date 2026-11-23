@@ -916,7 +916,7 @@ async fn golden_now() -> Value {
 /// on every install. An artifact's `content_security_policy` says what
 /// `Content-Security-Policy` Clax sends on its own content, on every
 /// install.
-pub const ADDITIVE_KEYS: [&str; 27] = [
+pub const ADDITIVE_KEYS: [&str; 28] = [
     "owner",
     "taken_by",
     "name",
@@ -928,6 +928,7 @@ pub const ADDITIVE_KEYS: [&str; 27] = [
     "may_tag",
     "may_resolve",
     "may_edit",
+    "may_share",
     "linked",
     "wake",
     "wakes",
@@ -952,7 +953,8 @@ pub const ADDITIVE_KEYS: [&str; 27] = [
 /// the owner's public ID); a thread's `owner` or `taken_by` null or one of
 /// the owner's agents (`person` null); `rights` the owner's, `clax:full`;
 /// an artifact's `may_fork`, `may_tag`, `may_resolve` and `may_edit` true
-/// (the owner's agents may fork, tag, resolve and edit it); an answer's `linked` null (no remote is linked);
+/// (the owner's agents may fork, tag, resolve and edit it), and its
+/// `may_share` false (a local install has no sharing); an answer's `linked` null (no remote is linked);
 /// `where_to_ask` a suggestion; a question asked before them neither in the terminal nor
 /// pulled, in no thread; an artifact's `tags` none (an install migrated
 /// from before tags has none); an artifact's `comments` on, `forks` a
@@ -979,6 +981,7 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "owner" | "taken_by" => owners_agent(v),
         "rights" => *v == clax_core::rights::Rights::full().to_json(),
         "may_fork" | "may_tag" | "may_resolve" | "may_edit" => *v == json!(true),
+        "may_share" => *v == json!(false),
         "linked" => v.is_null(),
         "wake" => v["when_idle"].is_boolean() && v["do"].is_string(),
         "wakes" => v.is_boolean() || v == "unsure",

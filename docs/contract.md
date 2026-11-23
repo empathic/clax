@@ -1650,10 +1650,12 @@ app's versions with the bundle each carries.
   carry `comments`, and each change is a `comments` event on the
   artifact's stream topic. `GET /api/artifacts/<id>` and the page's
   bootstrap also carry `may_resolve`: whether the caller may resolve the
-  artifact's threads (below), and `may_edit`: whether the caller may edit
+  artifact's threads (below), `may_edit`: whether the caller may edit
   it (the owner, on a hosted daemon when the owner's rights `update` it,
   and a signed-in person whose rights `update` it; never a guest or a
-  person's agent). While it
+  person's agent), and `may_share`: whether the caller's browser may share
+  it on a hosted Clax, as `GET …/sharing` answers `can_share` (false on a
+  local daemon, and for any request with `Authorization`). While it
   is off, a new thread or comment is refused 403 `comments_off` to
   everyone, the owner included (read in the write's own transaction; a
   keyed resend still answers what it made), so Can comment acts as Can

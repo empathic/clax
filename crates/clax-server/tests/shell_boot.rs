@@ -394,7 +394,7 @@ async fn an_unknown_artifact_gets_the_bare_entry() {
     let html = res.text().await.unwrap();
     assert!(!html.contains(OPEN) && !html.contains("<!--clax:boot-->"));
     assert!(!html.contains("<iframe") && !html.contains("<!--clax:frame-->"));
-    assert!(html.contains("<h1>Clax</h1>"));
+    assert!(html.contains("<h1></h1>"));
 }
 
 #[tokio::test]
@@ -439,7 +439,7 @@ async fn a_host_the_api_refuses_gets_no_data() {
             "{host}"
         );
         assert!(
-            !html.contains("Secret plans") && html.contains("<h1>Clax</h1>"),
+            !html.contains("Secret plans") && html.contains("<h1></h1>"),
             "{host}"
         );
     }

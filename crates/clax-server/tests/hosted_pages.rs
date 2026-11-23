@@ -195,6 +195,19 @@ async fn the_landing_pages_reel_redirects_to_where_hosted_mode_serves_it() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
+    // The page is told it has its reel, so it lays it out from its first paint.
+    let r = c
+        .get(format!("{}/start/index.html", ts.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.text().await.unwrap(),
+        format!(
+            "<!doctype html>{}<title>Clax Quickstart</title><p>landing</p>",
+            clax_server::shell::REEL_MARK
+        )
+    );
 }
 
 #[tokio::test]
@@ -282,6 +295,17 @@ async fn without_a_reel_elsewhere_the_landing_page_serves_none() {
             .unwrap();
         assert_eq!(r.status(), 404, "{f}");
     }
+    let r = c
+        .get(format!("{}/start/index.html", ts.base))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !r.text()
+            .await
+            .unwrap()
+            .contains(clax_server::shell::REEL_MARK)
+    );
 }
 
 #[test]

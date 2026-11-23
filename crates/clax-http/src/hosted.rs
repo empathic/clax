@@ -267,6 +267,12 @@ const MAX_CLIENTS: usize = 10_000;
 pub struct Limits {
     clock: std::sync::Arc<dyn clax_core::working::Clock>,
     buckets: std::sync::Mutex<std::collections::HashMap<(Attempt, Counted), Bucket>>,
+    /// The codes each client looked up lately ([`Limits::take_once`]), by
+    /// a keyed hash of the code, with when.
+    looked: std::sync::Mutex<
+        std::collections::HashMap<(Attempt, Counted, u64), chrono::DateTime<chrono::Utc>>,
+    >,
+    hasher: std::collections::hash_map::RandomState,
 }
 
 /// A bucket's attempts left and when they were last counted.
@@ -277,7 +283,41 @@ impl Limits {
         Limits {
             clock,
             buckets: std::sync::Mutex::default(),
+            looked: std::sync::Mutex::default(),
+            hasher: std::collections::hash_map::RandomState::new(),
         }
+    }
+
+    /// Takes one of `key`'s `what` attempts for looking up `code`, unless
+    /// `key` looked `code` up, at the cost of an attempt, within the time
+    /// its attempts take to come back in full: a page loaded again (or a
+    /// link's preview fetched) costs nothing more, while each other code
+    /// costs one, so guessing codes is held to the rule as before. `Err`
+    /// as [`Limits::take`].
+    pub fn take_once(&self, what: Attempt, key: Counted, code: &str) -> Result<(), u64> {
+        use std::hash::BuildHasher as _;
+        let now = self.clock.now();
+        let (burst, per) = what.rule();
+        let window = chrono::Duration::milliseconds((burst * per * 1000.0) as i64);
+        let seen = (what, key.clone(), self.hasher.hash_one(code));
+        {
+            let mut m = self.looked.lock().unwrap_or_else(|e| e.into_inner());
+            if m.get(&seen).is_some_and(|at| now - *at < window) {
+                return Ok(());
+            }
+            if m.len() >= MAX_CLIENTS {
+                m.retain(|(w, _, _), at| {
+                    let (b, p) = w.rule();
+                    now - *at < chrono::Duration::milliseconds((b * p * 1000.0) as i64)
+                });
+            }
+        }
+        self.take_for(what, key)?;
+        let mut m = self.looked.lock().unwrap_or_else(|e| e.into_inner());
+        if m.len() < MAX_CLIENTS {
+            m.insert(seen, now);
+        }
+        Ok(())
     }
 
     /// Takes one of `client`'s `what` attempts; `Err` with the seconds until
@@ -620,6 +660,25 @@ impl Hosted {
     ) -> Result<(), ApiError> {
         let client = client_key(self.client(headers, extensions));
         self.limits.take(what, client).map_err(rate_limited)
+    }
+
+    /// Takes one of the client's `what` attempts for looking up `code`, as
+    /// [`Limits::take_once`] counts it: once per code per client while its
+    /// attempts come back.
+    ///
+    /// # Errors
+    /// 429 `rate_limited` when none is left.
+    pub fn attempt_once(
+        &self,
+        what: Attempt,
+        code: &str,
+        headers: &HeaderMap,
+        extensions: &axum::http::Extensions,
+    ) -> Result<(), ApiError> {
+        let client = client_key(self.client(headers, extensions));
+        self.limits
+            .take_once(what, Counted::Address(client), code)
+            .map_err(rate_limited)
     }
 
     /// Takes a world visitor's write on artifact `aid`'s site: one of the
@@ -2353,6 +2412,40 @@ mod tests {
                 "the refused write spent none of the address's"
             );
         }
+    }
+
+    #[test]
+    fn a_code_looked_up_again_costs_nothing_and_each_other_code_one() {
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-12T10:00:00Z"));
+        let l = Limits::new(clock.clone());
+        let a: std::net::IpAddr = "198.51.100.1".parse().unwrap();
+        let b: std::net::IpAddr = "198.51.100.2".parse().unwrap();
+        let once = |ip: std::net::IpAddr, code: &str| {
+            l.take_once(Attempt::SignIn, Counted::Address(ip), code)
+        };
+        // One invite's page loaded twenty times: one attempt.
+        for _ in 0..20 {
+            assert_eq!(once(a, "k9"), Ok(()));
+        }
+        // Guessing still meets the rule: nine more codes, then none.
+        for n in 0..9 {
+            assert_eq!(once(a, &format!("guess{n}")), Ok(()), "{n}");
+        }
+        assert!(once(a, "guess9").is_err());
+        assert!(
+            l.take(Attempt::SignIn, a).is_err(),
+            "the sign-in itself is counted alike"
+        );
+        // A code looked up already still answers; another client counts its own.
+        assert_eq!(once(a, "k9"), Ok(()));
+        assert_eq!(once(b, "k9"), Ok(()));
+        // Once its attempts are all back, a code costs one again.
+        clock.advance(300);
+        for n in 0..10 {
+            assert_eq!(once(a, &format!("again{n}")), Ok(()), "{n}");
+        }
+        assert!(once(a, "k9").is_err());
     }
 
     #[test]

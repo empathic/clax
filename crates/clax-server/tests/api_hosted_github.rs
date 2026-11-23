@@ -207,14 +207,12 @@ impl Site {
             .send()
             .await
             .unwrap();
-        if res.status() != 303 {
+        if res.status() != 200 {
             return Err(res.status().as_u16());
         }
-        assert_eq!(res.headers()[LOCATION], "/");
-        Ok(format!(
-            "clax_session={}",
-            cookie_of(&res, "clax_session").expect("a session")
-        ))
+        let session = cookie_of(&res, "clax_session").expect("a session");
+        assert_eq!(hop_target(res).await, "/");
+        Ok(format!("clax_session={session}"))
     }
 
     async fn me(&self, session: &str) -> Value {
@@ -661,8 +659,47 @@ async fn a_github_sign_in_returns_to_a_safe_next_and_nowhere_else() {
             .send()
             .await
             .unwrap();
-        assert_eq!(res.status(), 303, "{next:?}");
-        assert_eq!(res.headers()[LOCATION], want, "{next:?}");
+        assert_eq!(res.status(), 200, "{next:?}");
         assert!(cookie_of(&res, "clax_session").is_some(), "{next:?}");
+        assert_eq!(hop_target(res).await, want, "{next:?}");
     }
+}
+
+/// Where a sign-in's answer goes on to: the page that goes there itself, as
+/// a same-origin navigation (`clax_server::github::hop_page`), with the
+/// path in its `data-next`, its script and its refresh alike.
+async fn hop_target(res: reqwest::Response) -> String {
+    assert!(
+        res.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    assert_eq!(res.headers()["x-frame-options"], "DENY");
+    assert_eq!(res.headers()["cache-control"], "no-store");
+    let html = res.text().await.unwrap();
+    let at = html.find("data-next=\"").expect("data-next") + "data-next=\"".len();
+    let next = &html[at..at + html[at..].find('"').unwrap()];
+    assert!(
+        html.contains(&format!("content=\"0;url={next}\"")),
+        "{html}"
+    );
+    let unescaped = next
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">");
+    assert!(
+        html.contains(&format!(
+            "location.replace({})",
+            serde_json::to_string(&unescaped)
+                .unwrap()
+                .replace('<', "\\u003c")
+                .replace('>', "\\u003e")
+                .replace('&', "\\u0026")
+        )),
+        "{html}"
+    );
+    unescaped
 }

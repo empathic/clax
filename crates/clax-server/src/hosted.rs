@@ -198,13 +198,17 @@ async fn legal_page(
 /// quickstart release this build carries ([`LANDING`]), 404 when it has
 /// none by that name. `/start` itself redirects to the directory. The
 /// reel's files redirect to where hosted mode serves the reel from
-/// ([`Hosted::with_reel`]), when it names a place.
+/// ([`Hosted::with_reel`]), when it names a place; then, or when the
+/// release carries the reel, `/start/index.html` is marked as having it
+/// ([`crate::shell::REEL_MARK`]).
 ///
 /// [`Hosted::with_reel`]: clax_http::hosted::Hosted::with_reel
 async fn landing(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
+    instance: Option<Extension<std::sync::Arc<crate::integrations::instance::Instance>>>,
     uri: axum::http::Uri,
+    extensions: axum::http::Extensions,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
     let Some(release) = s.quickstart.clone() else {
@@ -215,12 +219,14 @@ async fn landing(
     }
     let file = uri.path().strip_prefix(LANDING).unwrap_or("");
     if file.is_empty() {
-        return crate::shell::bare_gallery(&s, &req);
+        let i = instance.as_ref().map(|Extension(i)| &**i);
+        return crate::shell::auth_page(&s, i, &uri, &extensions, &req).await;
     }
     if let Some(to) = reel_elsewhere(&s, file) {
         return Ok(axum::response::Redirect::temporary(&to).into_response());
     }
-    crate::shell::landing_file(&release, &req, file)
+    let reel = reel_elsewhere(&s, "reel.mp4").is_some() || release.files.contains_key("reel.mp4");
+    crate::shell::landing_file(&release, &req, file, reel)
 }
 
 /// Where a hosted daemon serves the reel's file `file` (`reel.mp4`,
@@ -334,8 +340,9 @@ async fn peek_invite(
     extensions: axum::http::Extensions,
     code: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
-    hosted_of(&s).attempt(Attempt::SignIn, &headers, &extensions)?;
     let code = crate::routes::artifacts::path(code)?;
+    // A page loaded again looks its code up again: once per code per client counts.
+    hosted_of(&s).attempt_once(Attempt::SignIn, &code, &headers, &extensions)?;
     let peek = s.store_call(move |st| st.peek_invite(&code)).await?;
     match peek {
         Some(p) => Ok(no_store(Json(json!(p)).into_response())),
@@ -492,8 +499,9 @@ async fn peek_signin_link(
     extensions: axum::http::Extensions,
     code: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
-    hosted_of(&s).attempt(Attempt::SignIn, &headers, &extensions)?;
     let code = crate::routes::artifacts::path(code)?;
+    // A page loaded again looks its code up again: once per code per client counts.
+    hosted_of(&s).attempt_once(Attempt::SignIn, &code, &headers, &extensions)?;
     match s.store_call(move |st| st.peek_signin_link(&code)).await? {
         Some(p) => Ok(no_store(Json(json!(p)).into_response())),
         None => Err(ApiError::not_found()),
@@ -857,6 +865,29 @@ pub fn may_share(
         Some(who.viewer.public_id.as_str())
     };
     Ok(who.member() && st.artifact_created_by(aid, maker)?)
+}
+
+/// Whether the browser `r` signs in may share artifact `aid`, as its
+/// sharing routes answer it (`can_share`, [`get_sharing`]): a member's
+/// session (not a guest's), the owner's only within the owner's reach
+/// ([`owner_reaches`]), and [`may_share`]. False on a local daemon (`r`
+/// `None`) and without a session (a request with `Authorization` speaks
+/// for that credential, not a browser).
+///
+/// # Errors
+/// The store's.
+pub fn browser_may_share(
+    st: &clax_store::Store,
+    r: Option<&HostedRequest>,
+    aid: &str,
+) -> clax_core::Result<bool> {
+    let Some(who) = r.and_then(|r| r.session.as_ref()) else {
+        return Ok(false);
+    };
+    if !who.member() || (who.owner && !owner_reaches(st, aid)?) {
+        return Ok(false);
+    }
+    may_share(st, who, aid)
 }
 
 /// Whether the owner reaches artifact `aid` other than by its link: the
@@ -1234,21 +1265,42 @@ async fn public_list(State(s): State<AppState>) -> Result<Response, ApiError> {
     ))
 }
 
-/// A sign-in page (`/join/<code>`, `/signin[/<code>]`): the gallery's
-/// entry, which shows it by its path, sending no referrer (its URL holds a
-/// code).
+/// A sign-in page (`/join/<code>`, `/signin[/<code>]`, `/device`): the
+/// gallery's entry, which shows it by its path with its first-load data
+/// ([`crate::shell::auth_page`]), sending no referrer (its URL holds a
+/// code). `/signin?next=<path>` in a browser already signed in redirects
+/// there (`303`), where the page would go itself
+/// ([`crate::shell::signin::signed_in_next`]).
 async fn signin_page(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,
+    instance: Option<Extension<std::sync::Arc<crate::integrations::instance::Instance>>>,
+    uri: axum::http::Uri,
+    extensions: axum::http::Extensions,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let mut res = crate::shell::bare_gallery(&s, &req)?;
+    let signed_in = extensions
+        .get::<HostedRequest>()
+        .is_some_and(|r| r.session.is_some());
+    if signed_in
+        && matches!(uri.path(), "/signin" | "/signin/")
+        && let Some(next) = crate::shell::signin::signed_in_next(uri.query())
+    {
+        let mut res = axum::response::Redirect::to(&next).into_response();
+        res.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        res.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
+        return Ok(res);
+    }
+    let i = instance.as_ref().map(|Extension(i)| &**i);
+    let mut res = crate::shell::auth_page(&s, i, &uri, &extensions, &req).await?;
     res.headers_mut().insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
-    res.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(res)
 }
 
@@ -1257,13 +1309,16 @@ async fn signin_page(
 async fn setup_page(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
+    instance: Option<Extension<std::sync::Arc<crate::integrations::instance::Instance>>>,
+    uri: axum::http::Uri,
+    extensions: axum::http::Extensions,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
     let h = hosted_of(&s);
     if h.setup_secret.is_none() || !s.store_call(|st| st.hosted_needs_setup()).await? {
         return Err(ApiError::not_found());
     }
-    signin_page(State(s), d, req).await
+    signin_page(State(s), d, instance, uri, extensions, req).await
 }
 
 #[derive(Deserialize, Default)]
