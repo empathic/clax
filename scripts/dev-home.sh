@@ -150,7 +150,8 @@ wait_gone() {
 }
 
 # stop_orphan_daemon <home>: stops the home's daemon when the executable it
-# recorded no longer exists (an earlier `just dev`, whose temporary directory
+# recorded no longer exists (an earlier `just dev` that did not stop its own
+# daemon on exit, such as one that was killed, and whose temporary directory
 # is gone), and waits for it to exit, so its port is free. A daemon whose
 # executable exists, such as `just watch`'s, is left alone, and so is
 # anything in ~/.clax, the agents' home.
@@ -159,8 +160,13 @@ stop_orphan_daemon() {
     daemon_record "$1"
     # The PID must still be that daemon: a reused PID belongs to some other
     # program, whose command line will not name the recorded binary.
+    # daemon.json records the canonical path, while the command line has the
+    # path the daemon was started by. On macOS /var and /tmp are symbolic
+    # links into /private, so a daemon started as /var/folders/…/clax records
+    # /private/var/folders/…/clax: the recorded path without its /private
+    # prefix is in the command line either way.
     if [ -n "$DAEMON_EXE" ] && [ ! -e "$DAEMON_EXE" ] && [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null \
-        && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -F -- "$DAEMON_EXE" >/dev/null; then
+        && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -F -- "${DAEMON_EXE#/private}" >/dev/null; then
         echo "clax: stopping the daemon of $1 (pid $DAEMON_PID): its binary $DAEMON_EXE is gone (an earlier \`just dev\`)"
         kill "$DAEMON_PID" 2>/dev/null || true
         wait_gone "$DAEMON_PID" || echo "clax: pid $DAEMON_PID has not exited yet" >&2

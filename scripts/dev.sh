@@ -7,8 +7,10 @@
 # ~/.clax-dev on 7481 for the main checkout, ~/.clax-dev-<name> on a port of
 # its own for a linked worktree, or $CLAX_HOME and $CLAX_DEV_PORT). It starts
 # the home's daemon before the harness, and stops with what to do when the
-# build cannot open the home's database. The agents' own home, daemon and
-# installed binary are untouched.
+# build cannot open the home's database. When the harness exits it stops the
+# home's daemon if that runs this run's binary; a daemon it joined (`just
+# watch`'s, another `just dev`'s) keeps running. The agents' own home, daemon
+# and installed binary are untouched.
 #   claude  loads the Clax plugin from this checkout for this run:
 #           claude --plugin-dir plugins/claude-code, with an installed
 #           clax@clax disabled for the session (--settings)
@@ -53,8 +55,26 @@ else
     # else Cargo's (scripts/run.sh bin).
     bin="$(scripts/run.sh bin)"
 fi
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+# Resolved (on macOS /var is a symbolic link into /private), so the daemon
+# runs as the canonical path its daemon.json records.
+tmp="$(cd "$(mktemp -d)" && pwd -P)"
+# On exit, after the harness: when the home's daemon runs this run's binary
+# (started below, or again by an agent's call through CLAX_BIN), it is
+# stopped and waited for, so no daemon outlives the binary it runs. A daemon
+# of any other executable (`just watch`'s, another `just dev`'s) is left
+# running, and so is anything in ~/.clax, the agents' home. Then the
+# temporary directory is removed.
+on_exit() {
+    if [ -n "${CLAX_HOME:-}" ] && ! is_agents_home "$CLAX_HOME"; then
+        daemon_record "$CLAX_HOME"
+        if [ "$DAEMON_EXE" = "$tmp/clax" ] && [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+            echo "clax dev: stopping this run's daemon of $CLAX_HOME (pid $DAEMON_PID)"
+            "$tmp/clax" stop >/dev/null || echo "clax dev: could not stop it; the next \`just dev\` or \`just watch\` stops it" >&2
+        fi
+    fi
+    rm -rf "$tmp"
+}
+trap on_exit EXIT
 cp "$bin" "$tmp/clax"
 # The plugins run CLAX_BIN ahead of anything else; PATH serves the shell.
 export CLAX_BIN="$tmp/clax"
@@ -86,7 +106,8 @@ else
     echo "clax dev: to sign a browser in to this dev home: just clax open (or just clax login for a link)"
 fi
 
-# Not exec: the EXIT trap removes the temporary directory after the harness.
+# Not exec: the EXIT trap stops this run's daemon and removes the temporary
+# directory after the harness.
 case "$harness" in
     claude)
         claude --plugin-dir "$ROOT/plugins/claude-code" --settings '{"enabledPlugins":{"clax@clax":false}}' "$@"
