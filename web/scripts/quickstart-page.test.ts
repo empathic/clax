@@ -243,3 +243,35 @@ describe("the reel", () => {
     } finally { vi.restoreAllMocks(); }
   });
 });
+
+describe("the quickstart's progress kept for a person", () => {
+  it("draws_the_progress_it_reads_as_its_first_state_with_no_transition", async () => {
+    const db = {
+      doc: () => ({ get: async () => ({ exists: true, data: () => ({ done: { signin: true } }) }), set: async () => {} }),
+      collection: () => ({ onSnapshot: () => () => {} }),
+    };
+    document.body.innerHTML = body;
+    vi.stubGlobal("addEventListener", (type: string, fn: EventListenerOrEventListenerObject, opts?: boolean | AddEventListenerOptions) => {
+      listeners.push([type, fn]);
+      listen(type, fn, opts);
+    });
+    vi.stubGlobal("claude", {
+      use: async (name: string) => {
+        if (name === "user") return userOf(false);
+        if (name === "db") return db;
+        if (name === "shell") return at("http://localhost:7480");
+        throw new Error(`no ${name}`);
+      },
+    });
+    // Whether the root held still each time the sign-in step's button turned on.
+    const still: boolean[] = [];
+    new MutationObserver(() => {
+      if (document.querySelector('[data-id="signin"] .fab')?.classList.contains("on")) still.push(document.documentElement.classList.contains("qs-still"));
+    }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ["class"] });
+    new Function(script)();
+    await settle();
+    expect(still[0]).toBe(true);
+    // The next frame lets later changes animate.
+    await vi.waitFor(() => expect(document.documentElement.classList.contains("qs-still")).toBe(false));
+  });
+});

@@ -133,6 +133,8 @@
   .node .n:has(> span:empty) { display: none; }
   .node.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
   .node.dim { opacity: .45; }
+  /* The progress read once the page is up is its first state: drawn, not faded into. */
+  html.qs-still :is(.node, .fab, .bar i, .edges path) { transition: none !important; animation: none !important; }
   .node.small { width: 182px; min-height: 92px; }
   .node.small.inst { width: 132px; padding-right: 10px; border-top: 3px solid var(--brand, var(--line)); }
   .node.inst:hover, .node.inst.sel { border-color: var(--brand); }

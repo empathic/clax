@@ -769,7 +769,14 @@
         if (snap.exists) { const d = snap.data(); state.agent = d.agent ?? state.agent; state.have = d.have ?? state.have; state.done = Object.assign({}, state.done, d.done || {}); knownAgent(); normalize(); wasComplete = null; }
         else save();
       } catch (_) {}
+      // The progress kept for this person is the page's first state, drawn
+      // as it is rather than faded into after the first paint: no node,
+      // button, edge or bar transitions until the next frame.
+      const root = document.documentElement;
+      root.classList.add("qs-still");
       refreshNodes();
+      void root.offsetWidth;
+      requestAnimationFrame(() => root.classList.remove("qs-still"));
     }
     noticeSignIn();
     if (IDEAS_PAGE) db.collection("extensions").onSnapshot((snap) => {
