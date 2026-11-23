@@ -440,6 +440,7 @@ pub async fn assemble(
 /// - `questions`, `GET /api/questions?status=open&limit=200` (the
 ///   questions at the top of the thread list);
 /// - `clone`, `GET /api/artifacts/<id>/git-token` (Clone);
+/// - `runs`, `GET /api/bot/runs?artifact=<id>` (ClaxBot's runs button);
 ///
 /// and, as the gallery's block decides them, `inbox` (whether this browser
 /// has an inbox, [`super::gallery::inbox`]) and `owner`: `true` where
@@ -460,13 +461,15 @@ pub async fn deciders(
         return None;
     }
     let clone = format!("/api/artifacts/{}/git-token", encode_component(id));
-    let fields: [(&str, &str); 8] = [
+    let runs = format!("/api/bot/runs?artifact={}", encode_component(id));
+    let fields: [(&str, &str); 9] = [
         ("feedback", "/_app/feedback/config"),
         ("bot", "/api/me/bot"),
         ("hosted", "/api/hosted/me"),
         ("summary", "/api/inbox/summary"),
         ("questions", "/api/questions?status=open&limit=200"),
         ("clone", &clone),
+        ("runs", &runs),
         ("viewer", "/api/viewers/me"),
         ("token", "/api/token"),
     ];
