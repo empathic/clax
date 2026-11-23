@@ -28,9 +28,11 @@
 // runs, the feedback config, the inbox's first read and this viewer's
 // approval requests, answered here for the thread the agent works on) is
 // released only after the frame's page shows, and ClaxBot's meter never
-// answers: the essential controls (Comment, Threads, the version switch,
-// More, the theme switch, and the local owner's Publish) must be shown and
-// usable when the page first shows, the thread cards, the views' tabs and
+// answers: the artifact's page waits for none of it, the essential
+// controls (Comment, Threads, the version switch, More, the theme switch,
+// and the local owner's Publish) must show and be usable together (with
+// the bootstrap block, with the page; without it, at most
+// `BAR_WAIT_MS` after the view is ready: web/shell/src/view/deciders.svelte.ts), the thread cards, the views' tabs and
 // the pins they number must show in the same frame, and nothing may move.
 // At the settled page no box of the top bar overlaps another or is cut, nor
 // the tags' chips (`overlaps`).
@@ -355,17 +357,22 @@ async function stagedVisit(page: Page, base: string, path: string, missing: (p: 
   return { order, stages, apart: await overlaps(page, APART) };
 }
 
-/** Where the page's first frame showing the artifact's page has an
- * essential control not shown (or Comment not usable), where a pin shows
+/** Where the essential controls do not all show (Comment usable) in one
+ * frame, the first that shows Comment, and, with the bootstrap block
+ * (`block`: nothing to wait for), not with the artifact's page; where a pin shows
  * before the thread cards it numbers (the drawer open): the cards may show
  * first (the pins come with the page), and where the views' tabs or (with
  * `approval`) an approval card do not show in the cards' first frame. */
-function together(stages: Stage[], panel: boolean, approval = false): string[] {
+function together(stages: Stage[], panel: boolean, approval = false, block = false): string[] {
   const out: string[] = [];
   const first = stages.find(s => s.frame.visible);
   if (!first) return ["the page never showed"];
-  const off = Object.entries(first.essentials).filter(([, ok]) => !ok).map(([k]) => k);
-  if (off.length) out.push(`the page first showed after ${first.stage} without ${off.join(", ")}`);
+  const missing = (s: Stage) => Object.entries(s.essentials).filter(([, ok]) => !ok).map(([k]) => k);
+  if (block && missing(first).length) out.push(`the page first showed after ${first.stage} without ${missing(first).join(", ")}`);
+  // The bar's controls show together, Comment among them (at phone width the views' tab bar shows with the view).
+  const bar = stages.find(s => s.essentials.Comment);
+  if (!bar) out.push("the essential controls never showed");
+  else if (missing(bar).length) out.push(`the essential controls first showed after ${bar.stage} without ${missing(bar).join(", ")}`);
   if (panel) {
     const pins = stages.findIndex(s => s.pins);
     const cards = stages.findIndex(s => s.cards);
@@ -473,7 +480,7 @@ for (const form of FORMS) {
           expect.soft(frameHolds(stages), "the content frame").toEqual([]);
           expect.soft(frame.blank, "a blank stage").toEqual([]);
           expect.soft(stages.map(s => s.status).filter(Boolean), "a message in place of the viewer").toEqual([]);
-          expect.soft(together(stages, form.panel, form.panel), released).toEqual([]);
+          expect.soft(together(stages, form.panel, form.panel, who === "member"), released).toEqual([]);
           expect.soft(apart, "boxes that overlap, or are cut, at the settled page").toEqual([]);
         });
       }
@@ -602,7 +609,7 @@ test.describe("on a desktop, with ClaxBot", () => {
       await keep(`claxbot ${who}`, { shifts, stages, order, texts: await textHistory(page) });
       expect.soft(shiftTotal(shifts), `${formatShifts(shifts)}\n${released}`).toBe(0);
       expect.soft(holds(stages), released).toEqual([]);
-      expect.soft(together(stages, true), released).toEqual([]);
+      expect.soft(together(stages, true, false, who === "member"), released).toEqual([]);
       expect.soft(apart, "boxes that overlap, or are cut, at the settled page").toEqual([]);
       // The banner lies over the viewer, under the top bar, and Dismiss hides it.
       const bar = (await page.locator(".page > .topbar").boundingBox())!;
