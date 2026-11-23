@@ -180,7 +180,7 @@ async fn max_tokens_is_bounded_by_the_credits_left_at_the_default_rates() {
     let asked = env.api.requests()[0].body["max_tokens"].as_u64().unwrap();
     assert!((1024..=10_714).contains(&asked), "{asked}");
     // A request with no image is estimated at its bytes over four.
-    assert_eq!(asked, 9_732);
+    assert_eq!(asked, 9_733);
 }
 
 #[tokio::test]
