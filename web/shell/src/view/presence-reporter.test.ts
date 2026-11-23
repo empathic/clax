@@ -39,6 +39,41 @@ describe("PresenceReporter", () => {
     r.dispose();
   });
 
+  it("backs its heartbeat off while reports fail, and beats every 30 s again once one goes through", async () => {
+    stub(true);
+    let down = true;
+    let sent = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      sent++;
+      if (down) throw new TypeError("Failed to fetch");
+      return new Response(JSON.stringify({ people: [], viewing: 1 }));
+    }));
+    const r = reporter();
+    // A beat, and its answer heard: the report's request settles within a task.
+    const beat = async () => { r.heartbeat(); await new Promise(res => setTimeout(res, 0)); };
+    await beat();
+    await vi.waitFor(() => expect(sent).toBe(1));
+    // The next beat, 30 s on, is skipped: the first wait is 30 s ±20%.
+    clock().advance(20_000);
+    await beat();
+    expect(sent).toBe(1);
+    clock().advance(17_000);
+    await beat();
+    await vi.waitFor(() => expect(sent).toBe(2));
+    // Failing again: the wait doubles.
+    clock().advance(37_000);
+    await beat();
+    expect(sent).toBe(2);
+    clock().advance(36_000);
+    down = false;
+    await beat();
+    await vi.waitFor(() => expect(sent).toBe(3));
+    // Through: the next beat goes out on time.
+    clock().advance(30_000);
+    await beat();
+    await vi.waitFor(() => expect(sent).toBe(4));
+  });
+
   it("leaves idle_ms out until the first input: a page opened in the background has none", async () => {
     stub(false);
     const r = reporter();

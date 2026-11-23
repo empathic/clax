@@ -1,4 +1,7 @@
 import type { Working } from "./view/working-model";
+import { readJson as json } from "./trouble";
+
+export { ApiError } from "./trouble";
 
 export type Artifact = {
   id: string; title: string; description: string | null; icon: string | null;
@@ -106,24 +109,6 @@ export type Version = {
   /** The agent's note on what changed; the IDs of the threads this version addresses. */
   note?: string | null; addresses?: string[];
 };
-
-/** A non-OK API response; `status` is the HTTP status code, `code` the
- * daemon's error code when the response named one. */
-export class ApiError extends Error {
-  constructor(public status: number, message: string, public code: string | null = null) {
-    super(`${status} ${message}`);
-    this.name = "ApiError";
-  }
-}
-
-async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).error?.message ?? msg; } catch { /* not json */ }
-    throw new ApiError(res.status, msg);
-  }
-  return res.json() as Promise<T>;
-}
 
 /** Every live artifact; with `only`, that artifact alone, or none when it is not live. */
 export async function listArtifacts(only?: string, init?: RequestInit): Promise<Artifact[]> {

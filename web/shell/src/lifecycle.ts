@@ -1,6 +1,7 @@
 // One owner for everything a view starts: listeners, timers, requests and
 // streams are registered with the view's Lifecycle, and its `dispose` ends
 // them all at once, so nothing outlives the view. Requests take its `signal`.
+// It imports nothing, so the browser tests' Node side can read its numbers.
 
 /** The lifecycle of one view (or one part of it, through `child`). */
 export class Lifecycle {
@@ -90,11 +91,13 @@ export const STUCK_MS = 8000;
 
 /** Runs `attempt` until it succeeds, retrying with `backoff` after a failure
  * `retry` accepts (by default any), or after it was stuck `timeoutMs`
- * (aborted through its signal). `trouble(true)` is called while it is
- * failing or stuck, `trouble(false)` once it is settled. Rejects with the
- * failure `retry` refused, or with an `AbortError` once `life` ends. */
-export async function retrying<T>(life: Lifecycle, attempt: (signal: AbortSignal) => Promise<T>, opts: { timeoutMs?: number; retry?: (e: unknown) => boolean; trouble?: (on: boolean) => void } = {}): Promise<T> {
-  const { timeoutMs = STUCK_MS, retry = () => true, trouble = () => {} } = opts;
+ * (aborted through its signal); `wait(ms, done)` runs `done` after `ms`
+ * and answers its cancel (reach.ts `loadWait` waits on the shell's clock). `trouble(true)`
+ * is called while it is failing or stuck, `trouble(false)` once it is
+ * settled. Rejects with the failure `retry` refused, or with an
+ * `AbortError` once `life` ends. */
+export async function retrying<T>(life: Lifecycle, attempt: (signal: AbortSignal) => Promise<T>, opts: { timeoutMs?: number; retry?: (e: unknown) => boolean; trouble?: (on: boolean) => void; wait?: (ms: number, done: () => void) => () => void } = {}): Promise<T> {
+  const { timeoutMs = STUCK_MS, retry = () => true, trouble = () => {}, wait = (ms, done) => life.timeout(done, ms) } = opts;
   for (let n = 0; ; n++) {
     const one = life.child();
     let stuck = false;
@@ -111,7 +114,9 @@ export async function retrying<T>(life: Lifecycle, attempt: (signal: AbortSignal
       trouble(true);
     }
     let forget = () => {};
-    await new Promise<void>(resolve => { life.timeout(resolve, backoff(n)); forget = life.defer(resolve); });
+    let stop = () => {};
+    await new Promise<void>(resolve => { stop = wait(backoff(n), resolve); forget = life.defer(resolve); });
+    stop();
     forget();
     if (life.disposed) { trouble(false); throw new DOMException("the view ended", "AbortError"); }
   }

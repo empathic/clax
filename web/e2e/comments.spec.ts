@@ -151,7 +151,7 @@ test("a failed send shows in the banner and clears on the next success", async (
   const card = page.locator(".section-open .thread-card").filter({ hasText: "send me" });
   await page.route("**/threads/*/send", route => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "internal", message: "boom" } }) }));
   await card.getByRole("button", { name: /^Send to / }).click();
-  await expect(page.locator(".banner.notice")).toHaveText(/Could not send to the agent: 500 boom/);
+  await expect(page.locator(".banner.notice")).toHaveText(/Could not send to the agent: boom/);
   await page.unroute("**/threads/*/send");
   await card.getByRole("button", { name: /^Send to / }).click();
   await expect(card.locator(".waiting")).toContainText("sent, waiting for the agent");

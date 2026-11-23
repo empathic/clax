@@ -271,6 +271,60 @@ describe("the stream hub", () => {
     expect(net.conns).toHaveLength(2);
   });
 
+  it("says why the stream is down when it can tell: an answer that is not Clax's, or none", async () => {
+    hub.close();
+    let down: "cdn" | "net" | null = null;
+    const f = (async (u: RequestInfo | URL, init?: RequestInit) => {
+      if (String(u) === "/api/stream" && down === "cdn") return new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } });
+      if (String(u) === "/api/stream" && down === "net") throw new TypeError("Failed to fetch");
+      return net.fetch(u, init);
+    }) as typeof fetch;
+    hub = new Hub({ fetch: f, send: (ids, msg) => { for (const id of ids) got.set(id, [...(got.get(id) ?? []), msg]); } });
+    hub.receive("t1", { t: "topics", topics: ["gallery"] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    // The stream alone ended: nothing more to say.
+    down = "cdn";
+    net.conns[0].end();
+    await tick();
+    expect(of("t1", "status")).toEqual([{ t: "status", up: false }]);
+    // The reconnect gets a CDN's page: the tabs hear it is not Clax answering.
+    await vi.advanceTimersByTimeAsync(BACKOFF_CAP);
+    expect(of("t1", "status").at(-1)).toEqual({ t: "status", up: false, why: "not_clax" });
+    down = "net";
+    await vi.advanceTimersByTimeAsync(BACKOFF_CAP);
+    expect(of("t1", "status").at(-1)).toEqual({ t: "status", up: false, why: "unreachable" });
+    // A tab that joins now hears why, too.
+    hub.receive("t2", { t: "topics", topics: ["gallery"] });
+    expect(of("t2", "status")).toEqual([{ t: "status", up: false, why: "unreachable" }]);
+    down = null;
+    const due = (globalThis as unknown as { claxTestClock: { dueIn(l: string): number | null } }).claxTestClock.dueIn(RETRY_LABEL)!;
+    await vi.advanceTimersByTimeAsync(due);
+    net.ready(net.open.at(-1)!, S2);
+    await tick();
+    expect(of("t1", "status").at(-1)).toEqual({ t: "status", up: true });
+  });
+
+  it("reconnects at once when a tab heard Clax answer, rather than waiting out its backoff", async () => {
+    hub.receive("t1", { t: "topics", topics: ["gallery"] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    net.conns[0].end();
+    await tick();
+    expect(of("t1", "status")).toEqual([{ t: "status", up: false }]);
+    const before = net.conns.length;
+    hub.receive("t1", { t: "wake" });
+    await tick();
+    expect(net.conns.length).toBe(before + 1);
+    // Nothing waits any more, and a wake with a stream open does nothing.
+    expect((globalThis as unknown as { claxTestClock: { dueIn(l: string): number | null } }).claxTestClock.dueIn(RETRY_LABEL)).toBeNull();
+    hub.receive("t1", { t: "wake" });
+    await tick();
+    expect(net.conns.length).toBe(before + 1);
+  });
+
   it("splits a refused request, so one topic's refusal keeps the others", async () => {
     net.refuse.set(`docs:${A}`, [403, "not_declared"]);
     hub.receive("t1", { t: "topics", topics: [`artifact:${A}`, `docs:${A}`] });

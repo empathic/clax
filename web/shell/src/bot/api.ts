@@ -11,6 +11,7 @@
 // margins integer basis points (§7.1).
 import { getToken } from "../api";
 import { Refused } from "../held";
+import { ApiError, reasonText } from "../trouble";
 
 export { Refused };
 
@@ -332,7 +333,7 @@ async function call<T>(path: string, method = "GET", body?: unknown): Promise<T>
   let b: { error?: { code?: string; message?: string; run?: { id?: string }; detail?: ErrorDetail } } = {};
   try { b = await res.json(); } catch { /* not json */ }
   if (res.status === 409 && b.error?.code === "run_active" && b.error.run?.id) throw new RunActive(b.error.run.id);
-  const message = b.error?.message ?? (res.statusText || `HTTP ${res.status}`);
+  const message = b.error?.message ?? reasonText(new ApiError(res.status, "", b.error?.code ?? null));
   const d = b.error?.detail;
   if (d && typeof d === "object" && typeof d.class === "string") throw new ModelRefused(res.status, message, b.error?.code ?? null, d);
   throw new Refused(res.status, message, b.error?.code ?? null);
@@ -469,7 +470,7 @@ export async function exportToolpath(f: Pick<AuditFilter, "artifact" | "from" | 
   if (!res.ok) {
     let b: { error?: { code?: string; message?: string } } = {};
     try { b = await res.json(); } catch { /* not json */ }
-    throw new Refused(res.status, b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
+    throw new Refused(res.status, b.error?.message ?? reasonText(new ApiError(res.status, "", b.error?.code ?? null)), b.error?.code ?? null);
   }
   return res.blob();
 }

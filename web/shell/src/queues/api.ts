@@ -29,7 +29,7 @@ async function call<T>(path: string, method = "GET", body?: unknown): Promise<T>
   if (res.ok) return (res.status === 204 ? {} : await res.json().catch(() => ({}))) as T;
   let b: { error?: { code?: string; message?: string } } = {};
   try { b = await res.json(); } catch { /* not json */ }
-  throw new Refused(res.status, b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
+  throw new Refused(res.status, b.error?.message ?? "", b.error?.code ?? null);
 }
 const e = encodeURIComponent;
 const q = (qid: string) => `/api/queues/${e(qid)}`;

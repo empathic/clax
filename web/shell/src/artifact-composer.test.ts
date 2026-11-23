@@ -30,7 +30,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => postReady(root), "post enabled");
     buttonNamed(root, "Post comment").click();
     const banner = await waitFor(() => root.querySelector(".banner.notice"), "notice banner");
-    expect(banner.textContent).toContain("Could not post: 500 disk full");
+    expect(banner.textContent).toContain("Could not post: disk full");
     expect(root.querySelector(".composer .error")).toBeNull();
     expect(root.querySelector(".composer")!.textContent).not.toContain("disk full");
     buttonNamed(root, "Comment").click();

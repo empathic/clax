@@ -345,10 +345,14 @@ input, select { line-height: 1.2; }
 /* Needs your eyes (spec §8): the rest group's swatch; the needs group's
    and the markers' styles load with them (ui/NeedsGroup.svelte, ui/Markers.svelte). */
 .rest h2 .sw { border-radius: 50%; width: 10px; height: 10px; background: var(--border-strong); }
-/* The quiet notice that the daemon cannot be reached (conn-notice.ts): the
-   page keeps retrying underneath, so it asks nothing of the viewer. */
-.conn-notice { position: fixed; left: var(--gutter); bottom: calc(var(--gutter) + env(safe-area-inset-bottom)); max-width: calc(100% - 2 * var(--gutter)); z-index: 40; display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 12px; background: var(--raised); color: var(--muted); border: 1px solid var(--border); border-radius: 999px; box-shadow: var(--elev); font-size: 12px; pointer-events: none; }
+/* The calm notice that Clax cannot be reached (conn-notice.ts): the page
+   keeps retrying underneath, so it asks nothing of the viewer and lets
+   clicks through. An answer that is not Clax's (it may have been taken
+   down) carries the warning's colours, so it is noticed. */
+.conn-notice { position: fixed; left: var(--gutter); bottom: calc(var(--gutter) + env(safe-area-inset-bottom)); max-width: calc(100% - 2 * var(--gutter)); z-index: 40; display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 12px; background: var(--raised); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 999px; box-shadow: var(--elev); font-size: 13px; pointer-events: none; }
 .conn-notice::before { content: ""; width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--border-strong); animation: conn-pulse 1.6s ease-in-out infinite; }
+.conn-notice[data-warn] { background: var(--tag-orange-bg); color: var(--tag-orange-fg); border-color: var(--tag-orange-bd); font-weight: 500; }
+.conn-notice[data-warn]::before { background: var(--tag-orange-fg); }
 .conn-notice[hidden] { display: none; }
 @keyframes conn-pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .conn-notice::before { animation: none; } }

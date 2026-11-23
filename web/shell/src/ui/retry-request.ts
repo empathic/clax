@@ -14,6 +14,6 @@ export async function retryCopies(artifact: string, remote: string): Promise<str
     await retryLink(artifact, remote);
     return null;
   } catch (e) {
-    return `Retry failed: ${e instanceof ApiError && e.status ? e.message.replace(/^\d+ /, "") : "Clax did not answer"}`;
+    return `Retry failed: ${e instanceof ApiError && e.clax ? e.reason : "Clax did not answer"}`;
   }
 }

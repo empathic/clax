@@ -1,5 +1,6 @@
 import type { Anchor } from "../../bridge/src/protocol";
-import { ApiError, getToken } from "./api";
+import { getToken } from "./api";
+import { readJson } from "./trouble";
 
 export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" | "inject";
 /** `withheld`: held until `approver` (a display name) approves an author
@@ -49,15 +50,7 @@ export type Viewer = { public_id: string; display_name: string | null; created_a
   /** The owner's browser; a connected person's (`person`). */
   owner?: boolean; person?: boolean };
 
-async function ok<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    let msg = res.statusText;
-    let code: string | null = null;
-    try { const e = (await res.json()).error; msg = e?.message ?? msg; code = typeof e?.code === "string" ? e.code : null; } catch { /* not JSON */ }
-    throw new ApiError(res.status, msg, code);
-  }
-  return res.json() as Promise<T>;
-}
+const ok = readJson;
 /** The latest name save, settled either way. A hosted daemon's visitor has
  * no guest session until it answers and is refused a write meanwhile (401
  * `guest_name_required`). */

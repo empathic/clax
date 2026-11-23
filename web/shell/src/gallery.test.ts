@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { relativeTime } from "./format";
+import { LOAD_RETRY } from "./reach";
 import { FakeWorker, workerWith } from "./test/fake-worker";
 import { freshModules } from "./test/modules";
 import { settled } from "./test/settled";
@@ -125,6 +126,23 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(cards[0].querySelector(".pin")).toBeNull();
     expect(cards[1].querySelector(".by")?.textContent).toContain("command line");
     expect(root.querySelector(".gbar .sub")?.textContent).toBe("local artifacts · seen as Ada");
+  });
+
+  it("retries a first list that found no Clax (a CDN's page) until Clax answers, and shows no failure meanwhile", async () => {
+    stubApi();
+    const base = fetch as unknown as (u: string, i?: RequestInit) => Promise<Response>;
+    let down = true;
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: RequestInit) => (down && u === "/api/artifacts" ? new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } }) : base(u, i))));
+    const { default: Gallery } = await import("./ui/Gallery.svelte");
+    const { mount } = await import("./test/svelte");
+    const { root, unmount } = mount(Gallery, {});
+    unmountGallery = unmount;
+    const clock = (globalThis as unknown as { claxTestClock: { dueIn(l: string): number | null; advance(ms: number): number } }).claxTestClock;
+    await waitFor(() => clock.dueIn(LOAD_RETRY) !== null, "the retry's wait");
+    expect(root.querySelector(".empty")).toBeNull();
+    down = false;
+    clock.advance(clock.dueIn(LOAD_RETRY)!);
+    await waitFor(() => root.querySelectorAll("a.card").length === 2, "the list");
   });
 
   it("names a hosted daemon's site in the bar, for its owner and for anyone else", async () => {
@@ -766,8 +784,8 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
         vi.stubGlobal("confirm", () => true);
         const loads = calls.filter(c => c.url === "/api/tags").length;
         rows[0].querySelector<HTMLButtonElement>("button.tdel")!.click();
-        await waitFor(() => calls.filter(c => c.url === "/api/tags").length > loads && m.root.querySelector(".terr")?.textContent === "Could not delete Q4: no such tag", "the refusal after the reload");
-        expect(m.root.querySelector(".terr")!.textContent).toBe("Could not delete Q4: no such tag");
+        await waitFor(() => calls.filter(c => c.url === "/api/tags").length > loads && m.root.querySelector(".terr")?.textContent === "Could not delete Q4: it was deleted.", "the refusal after the reload");
+        expect(m.root.querySelector(".terr")!.textContent).toBe("Could not delete Q4: it was deleted.");
       }
       unmountGallery(); unmountGallery = null; await freshModules(); vi.unstubAllGlobals();
     }

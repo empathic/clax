@@ -12,6 +12,7 @@
   import type { Component } from "svelte";
   import * as api from "../hosted/api";
   import { setShareOpener } from "./more-menu.svelte";
+  import { partFailed } from "../conn-notice";
 
   type Open = Extract<api.Sharing, { can_share: true }>;
   let { id, title, onComments }: { id: string; title: string; onComments?(on: boolean): void } = $props();
@@ -22,7 +23,7 @@
   async function show() {
     // Fresh each time: someone else may have changed it since.
     try { const s = await api.sharing(id); if (s.can_share) sharing = s; else return; } catch { return; }
-    if (!Dialog) import("./ShareDialog.svelte").then(m => { Dialog = m.default; open = true; }, () => {});
+    if (!Dialog) import("./ShareDialog.svelte").then(m => { Dialog = m.default; open = true; }, partFailed);
     else open = true;
   }
 

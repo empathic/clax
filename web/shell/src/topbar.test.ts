@@ -517,7 +517,8 @@ describe("the top bar and the sidebar with the Comments switch, and an app's hea
     const comment = await waitFor(() => view.root.querySelector<HTMLButtonElement>("button.comment"), "the Comment button");
     await waitFor(() => view.root.querySelector('[data-thread="tA"]'), "the thread's card");
     expect(comment.disabled).toBe(false);
-    view.controller().reply(thread as never, "one more");
+    // The reply box goes with comments, so the stage says why.
+    void view.controller().reply(thread as never, "one more").catch(() => {});
     await waitFor(() => comment.disabled, "Comment turned off");
     expect(comment.title).toBe("Comments are off for this page");
     expect(writes.some(u => u.endsWith("/threads/tA/comments"))).toBe(true);

@@ -13,6 +13,7 @@
   import type { Component } from "svelte";
   import { cloneOptions, type CloneOptions } from "./clone-api";
   import { setCloneOpener } from "./more-menu.svelte";
+  import { partFailed } from "../conn-notice";
 
   let { id }: { id: string } = $props();
   let options = $state<CloneOptions | null>(null);
@@ -21,7 +22,7 @@
   const usable = $derived(!!options && options.available && options.scopes.length > 0);
 
   function show() {
-    if (!Dialog) import("./CloneDialog.svelte").then(m => { Dialog = m.default; open = true; }, () => {});
+    if (!Dialog) import("./CloneDialog.svelte").then(m => { Dialog = m.default; open = true; }, partFailed);
     else open = true;
   }
 

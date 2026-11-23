@@ -6,7 +6,7 @@
 // stream), so this module does not import it: the stream's chunk stays
 // shared with the code that loads it already.
 import { mount, unmount } from "svelte";
-import type { InboxItem, InboxSummary, QuestionView } from "../api";
+import { type InboxItem, type InboxSummary, type QuestionView, getToken } from "../api";
 import type { EventStream } from "../stream";
 import InboxLink from "./InboxLink.svelte";
 import { setBadge } from "./badge";
@@ -53,12 +53,19 @@ export function start(stream: EventStream): void {
   inbox.start(stream);
   questions.start(stream);
   // The confirmations' feed and toasts load once the inbox topic goes live
-  // (`confirm-live`), which a browser that is not the owner's never fills.
+  // (`confirm-live`), and only in a local owner's browser: confirmations
+  // guard a local daemon's token, so a hosted daemon answers their routes
+  // 404, and its owner's shell token is `cxo_`. Without a token (anyone
+  // else, or a token request that failed) the next live event asks again.
   let following = false;
   const follow = (e: { type: string }) => {
     if (following || !["ready", "resync", "confirmation"].includes(e.type)) return;
     following = true;
-    void import("./confirm-live").then(m => { if (started) undo.push(m.follow(inbox)); }, () => { following = false; });
+    void getToken().then(t => {
+      if (!t) { following = false; return; }
+      if (t.startsWith("cxo_") || !started) return;
+      return import("./confirm-live").then(m => { if (started) undo.push(m.follow(inbox)); });
+    }).catch(() => { following = false; });
   };
   // The notifier's code loads with the first notification asked for.
   let notifier: Notifier | undefined;

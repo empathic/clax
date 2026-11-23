@@ -19,6 +19,7 @@
   import { fromStore } from "svelte/store";
   import { INDEX_FILE } from "../../../bridge/src/protocol";
   import { getToken } from "../api";
+  import { partFailed } from "../conn-notice";
   import { registerShield } from "../caps/gesture";
   import { shellPath } from "../route";
   import { type ArtifactController, policyOf, viewReady } from "../view/artifact-controller";
@@ -64,14 +65,14 @@
   });
   // The page in a tab, the first time the frame could not open it.
   let OpenInTab: Component<{ href: string | null }> | null = $state(null);
-  $effect(() => { if ((s.openInTab || s.elsewhere) && !OpenInTab) import("../view/open-in-tab.svelte").then(m => { OpenInTab = m.default; }, () => {}); });
+  $effect(() => { if ((s.openInTab || s.elsewhere) && !OpenInTab) import("../view/open-in-tab.svelte").then(m => { OpenInTab = m.default; }, partFailed); });
   // A spectator's banner loads with spectator mode, the first time the view is one.
   let SpectatorBanner: Component<{ code: string; joinable: boolean; onJoin(): void }> | null = $state(null);
-  $effect(() => { if (s.spectator && !SpectatorBanner) import("../view/spectator").then(m => { SpectatorBanner = m.SpectatorBanner; }, () => {}); });
+  $effect(() => { if (s.spectator && !SpectatorBanner) import("../view/spectator").then(m => { SpectatorBanner = m.SpectatorBanner; }, partFailed); });
   // The blocked notice loads the first time the page reports something blocked.
   let Blocked: typeof import("./BlockedNotice.svelte").default | null = $state(null);
   const blockedShown = $derived(!!s.blocked?.length && !s.blockedDismissed && !s.deleted);
-  $effect(() => { if (blockedShown && !Blocked) import("./BlockedNotice.svelte").then(m => { Blocked = m.default; }, () => {}); });
+  $effect(() => { if (blockedShown && !Blocked) import("./BlockedNotice.svelte").then(m => { Blocked = m.default; }, partFailed); });
   // The shield is registered while it is shown, and unregistered as it goes.
   const shield = (el: HTMLElement) => {
     registerShield(el);

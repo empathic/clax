@@ -14,6 +14,7 @@
 // Clax from the terminal, as a page load without one does.
 import { isColdRefusal, showColdBrowser } from "./cold-browser";
 import { PROOF_HEADER, withProof as addProof } from "./owner-proof-wire";
+import { type Trouble, answered, classify } from "./trouble";
 
 export { PROOF_HEADER, PROOF_PARAM } from "./owner-proof-wire";
 
@@ -84,32 +85,51 @@ function sameOrigin(url: string, origin: string): boolean {
   }
 }
 
+/** What `proofFetch` tells of the page's requests (`reach.ts`): `heard`,
+ * why a request to the API found no Clax, or null once Clax answered one;
+ * `pending`, that a write was sent, answering what to call once it settled. */
+export type Reach = { heard(t: Trouble | null): void; pending(): () => void };
+const QUIET: Reach = { heard: () => {}, pending: () => () => {} };
+
 /** `f` wrapped so every request to `origin` carries the proof `proof()`
  * gives at that moment (a login in another tab takes effect at once),
  * unless it names one already, and a 401 `no_credential` from `origin`'s
- * API calls `cold`. */
-export function proofFetch(f: typeof fetch, origin: string, proof: () => string | null = ownerProof, cold: () => void = showColdBrowser): typeof fetch {
+ * API calls `cold`; `reach` hears what each request to `origin` told of
+ * reaching Clax (a request its caller aborted tells nothing). */
+export function proofFetch(f: typeof fetch, origin: string, proof: () => string | null = ownerProof, cold: () => void = showColdBrowser, reach: Reach = QUIET): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : String(input);
     if (!sameOrigin(url, origin)) return f(input, init);
+    const path = new URL(url, origin).pathname;
     const p = proof();
+    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    const settled = method === "GET" || method === "HEAD" ? null : reach.pending();
     let res: Response;
-    if (p) {
-      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
-      if (!headers.has(PROOF_HEADER)) headers.set(PROOF_HEADER, p);
-      res = await f(input, { ...init, headers });
-    } else {
-      res = await f(input, init);
+    try {
+      if (p) {
+        const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+        if (!headers.has(PROOF_HEADER)) headers.set(PROOF_HEADER, p);
+        res = await f(input, { ...init, headers });
+      } else {
+        res = await f(input, init);
+      }
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) reach.heard(classify(e));
+      throw e;
+    } finally {
+      settled?.();
     }
-    if (res.status === 401 && new URL(url, origin).pathname.startsWith("/api/") && (await isColdRefusal(res))) cold();
+    const t = await answered(res, path);
+    if (t !== undefined) reach.heard(t);
+    if (res.status === 401 && path.startsWith("/api/") && (await isColdRefusal(res))) cold();
     return res;
   }) as typeof fetch;
 }
 
 let installed = false;
-/** Wraps the page's `fetch` with `proofFetch`, once. */
-export function installProofFetch(win: { fetch: typeof fetch; location: { origin: string } } = globalThis as unknown as Window): void {
+/** Wraps the page's `fetch` with `proofFetch`, once, telling `reach`. */
+export function installProofFetch(win: { fetch: typeof fetch; location: { origin: string } } = globalThis as unknown as Window, reach?: Reach): void {
   if (installed) return;
   installed = true;
-  win.fetch = proofFetch(win.fetch.bind(win), win.location.origin);
+  win.fetch = proofFetch(win.fetch.bind(win), win.location.origin, ownerProof, showColdBrowser, reach);
 }
