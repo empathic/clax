@@ -715,8 +715,12 @@ pub fn signin(s: &AppState, headers: &HeaderMap, next: &str) -> Response {
 /// answers the shell's `{"type": "clax:storage-access"}` with
 /// `document.requestStorageAccess()`'s outcome (`{"type":
 /// "clax:storage-access", "granted"}`), to the shell's window and origin
-/// alone. It runs only its own script (a nonce), only the shell may frame
-/// it, and it says nothing of the artifact.
+/// alone. A browser that refuses that request without the viewer's
+/// activation can grant it from a tap: on a refusal the page shows
+/// a button and answers `{"granted": false, "waiting": true}`, and the
+/// button's request sends the final answer. It runs only its own script and
+/// style (a nonce), only the shell may frame it, and it says nothing of the
+/// artifact.
 pub fn no_cookie_page(s: &AppState, headers: &HeaderMap) -> Response {
     let host = headers
         .get(header::HOST)
@@ -728,24 +732,44 @@ pub fn no_cookie_page(s: &AppState, headers: &HeaderMap) -> Response {
     let list = serde_json::json!(shells)
         .to_string()
         .replace('<', "\\u003c");
-    let html = format!(
-        "<!doctype html><meta charset=\"utf-8\"><script nonce=\"{nonce}\">const S={list};\
-addEventListener(\"message\",e=>{{if(e.source!==parent||!S.includes(e.origin)||!e.data||e.data.type!==\"clax:storage-access\")return;\
-Promise.resolve(document.requestStorageAccess?.()).then(()=>!!document.requestStorageAccess,()=>!1)\
-.then(g=>parent.postMessage({{type:\"clax:storage-access\",granted:g}},e.origin))}});\
-for(const o of S)parent.postMessage({{type:\"clax:no-cookie\"}},o);</script>"
-    );
+    // `{list}` goes in last: the nonce cannot hold it.
+    let html = NO_COOKIE_HTML
+        .replace("{nonce}", &nonce)
+        .replace("{list}", &list);
     let mut res = axum::response::Html(html).into_response();
     let h = res.headers_mut();
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     if let Ok(v) = HeaderValue::from_str(&format!(
-        "default-src 'none'; script-src 'nonce-{nonce}'; frame-ancestors {}",
+        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; frame-ancestors {}",
         shells.join(" ")
     )) {
         h.insert(header::CONTENT_SECURITY_POLICY, v);
     }
     res
 }
+
+/// [`no_cookie_page`]'s document, with `{nonce}` and `{list}` (the shell's
+/// origins as a JSON array) to fill in.
+const NO_COOKIE_HTML: &str = concat!(
+    "<!doctype html><meta charset=\"utf-8\">",
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
+    "<style nonce=\"{nonce}\">body{margin:0;min-height:100vh;display:grid;place-items:center;",
+    "background:#fff;color:#222;font:16px/1.4 system-ui,sans-serif}",
+    "main{max-width:28em;padding:24px;text-align:center}",
+    "button{font:inherit;padding:10px 20px;border-radius:8px;border:1px solid #888;background:#f4f4f4;color:#222}</style>",
+    "<main hidden><p>Your browser asks before this page can use its cookies here.</p>",
+    "<button type=\"button\">Load the page</button></main>",
+    "<script nonce=\"{nonce}\">const S={list};let O=null;",
+    "const ask=()=>Promise.resolve(document.requestStorageAccess?.()).then(()=>!!document.requestStorageAccess,()=>!1);",
+    "const M=document.querySelector(\"main\"),B=M.querySelector(\"button\");",
+    "B.addEventListener(\"click\",()=>{B.disabled=!0;",
+    "ask().then(g=>{if(O)parent.postMessage({type:\"clax:storage-access\",granted:g},O)})});",
+    "addEventListener(\"message\",e=>{if(e.source!==parent||!S.includes(e.origin)||!e.data||e.data.type!==\"clax:storage-access\")return;",
+    "O=e.origin;ask().then(g=>{if(!g&&document.requestStorageAccess){M.hidden=!1;",
+    "parent.postMessage({type:\"clax:storage-access\",granted:!1,waiting:!0},O)}",
+    "else parent.postMessage({type:\"clax:storage-access\",granted:g},O)})});",
+    "for(const o of S)parent.postMessage({type:\"clax:no-cookie\"},o);</script>",
+);
 
 /// Who a request on the public host would read an artifact's site as, and
 /// the browser session (its cookie's SHA-256) a site session made for them
