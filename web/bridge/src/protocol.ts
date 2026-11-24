@@ -261,8 +261,10 @@ export type BridgeToShell =
    * the site. The site posts the same from the document it serves a framed
    * navigation that has no session. */
   | { type: "clax:no-cookie" }
-  /** The answer to the shell's `clax:storage-access`. */
-  | { type: "clax:storage-access"; granted: boolean }
+  /** The answer to the shell's `clax:storage-access`. `waiting`: refused
+   * without the viewer's activation, the site's no-cookie page shows a
+   * button and sends the final answer once the viewer presses it. */
+  | { type: "clax:storage-access"; granted: boolean; waiting?: boolean }
   /** The page's vertical scroll position (CSS pixels) on its `file`, after a
    * welcome with `app: true`: at most every 250 ms while the page scrolls,
    * the last position of a burst always sent; only the app shell reads it

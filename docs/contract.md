@@ -11982,7 +11982,11 @@ was made; and a run's end, sent until it is acknowledged.
   document for storage access (`{"type": "clax:storage-access"}`,
   answered `{"type": "clax:storage-access", "granted"}` with
   `document.requestStorageAccess()`'s outcome) and, once it answers,
-  starts the handshake once more; a second report, or a code refused,
+  starts the handshake once more. A browser that grants storage access
+  only on the viewer's activation refuses that request: the
+  site's no-cookie page then shows "Load the page", answers `{"granted":
+  false, "waiting": true}`, which the shell waits on, and sends the
+  button's outcome as the answer. A second report, or a code refused,
   shows "Open in a tab" with the page's address on its site in place of
   the frame. The
   bridge takes orders only from the origin its tag's `data-origin` names

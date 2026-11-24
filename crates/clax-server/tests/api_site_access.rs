@@ -811,6 +811,26 @@ async fn a_frame_without_the_sites_cookies_is_told_so_rather_than_sent_to_sign_i
                 && html.contains("document.requestStorageAccess"),
             "{html}"
         );
+        // A refusal without the viewer's activation shows a button whose
+        // press asks again; its style runs under the same nonce as the script.
+        let nonce = csp
+            .split("'nonce-")
+            .nth(1)
+            .and_then(|r| r.split('\'').next())
+            .unwrap();
+        assert!(csp.contains(&format!("style-src 'nonce-{nonce}'")), "{csp}");
+        assert!(
+            html.contains(&format!("<style nonce=\"{nonce}\">"))
+                && html.contains(&format!("<script nonce=\"{nonce}\">"))
+                && html.contains("<main hidden>")
+                && html.contains("<button type=\"button\">Load the page</button>")
+                && html.contains("granted:!1,waiting:!0"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("{nonce}") && !html.contains("{list}"),
+            "{html}"
+        );
         assert!(!html.contains("secret words"), "{html}");
     }
     // A frame that holds the state cookie, and any top-level visit, still

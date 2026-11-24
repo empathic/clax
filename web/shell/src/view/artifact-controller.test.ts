@@ -1492,6 +1492,52 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       ctl.dispose();
     });
 
+    it("waits for the viewer's press when the frame's answer is waiting, then starts once more", async () => {
+      const { ctl, frame } = await started();
+      codes(sent);
+      const went = await goes();
+      const win = frame.contentWindow!;
+      const posted: unknown[] = [];
+      win.postMessage = ((m: unknown) => { posted.push(m); }) as Window["postMessage"];
+      const asks = () => posted.filter(m => (m as { type?: string }).type === "clax:storage-access").length;
+      fromFrame(win, STATE);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
+      fromFrame(win, { type: "clax:no-cookie" });
+      expect(asks()).toBe(1);
+      // Refused without activation: the frame shows its button, the shell waits.
+      fromFrame(win, { type: "clax:storage-access", granted: false, waiting: true });
+      expect(went).toEqual([CODE]);
+      expect(ctl.state.get().openInTab).toBeNull();
+      // A report while it waits asks nothing more.
+      fromFrame(win, { type: "clax:no-cookie" });
+      expect(asks()).toBe(1);
+      // The press's grant starts the handshake once more.
+      fromFrame(win, { type: "clax:storage-access", granted: true });
+      expect(went).toEqual([CODE, START]);
+      expect(ctl.state.get().openInTab).toBeNull();
+      ctl.dispose();
+    });
+
+    it("offers the page in a tab when the viewer's press is refused too", async () => {
+      const { ctl, frame } = await started();
+      codes(sent);
+      const went = await goes();
+      const win = frame.contentWindow!;
+      win.postMessage = (() => {}) as Window["postMessage"];
+      fromFrame(win, STATE);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
+      fromFrame(win, { type: "clax:no-cookie" });
+      fromFrame(win, { type: "clax:storage-access", granted: false, waiting: true });
+      fromFrame(win, { type: "clax:storage-access", granted: false });
+      expect(went).toEqual([CODE, START]);
+      fromFrame(win, { type: "clax:no-cookie" });
+      fromFrame(win, { type: "clax:storage-access", granted: false, waiting: true });
+      expect(ctl.state.get().openInTab).toBeNull();
+      fromFrame(win, { type: "clax:storage-access", granted: false });
+      expect(ctl.state.get().openInTab).toBe(`${SITE}/_clax/v/2/`);
+      ctl.dispose();
+    });
+
     it("is done once the page greets before its load", async () => {
       const { ctl, frame } = await started();
       codes(sent);

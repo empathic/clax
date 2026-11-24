@@ -1374,7 +1374,9 @@ export class ArtifactController {
     if (!m) return;
     switch (m.type) {
       case "clax:no-cookie": this.noCookie(); break;
-      case "clax:storage-access": this.storageAnswered(); break;
+      // A `waiting` answer is no answer yet: the frame shows the viewer a
+      // button, and its press sends the final one.
+      case "clax:storage-access": if (!m.waiting) this.storageAnswered(); break;
       case "clax:hello": {
         // A stale or foreign document in the frame, or one naming a page
         // this version does not hold, gets no welcome, no anchors, and no pins;
