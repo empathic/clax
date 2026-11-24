@@ -9,6 +9,7 @@
   // Pause stops it where it is. Nothing plays by itself, so a reader who
   // asked for less motion sees a still frame until they choose to play it.
   import { onDestroy } from "svelte";
+  import { blobUrl, contentPath } from "./content-url";
 
   let { run, clip, label }: {
     /** The run whose content holds the clip and its frames. */
@@ -20,7 +21,10 @@
   } = $props();
 
   type Frame = { item: string; at_ms: number };
-  const item = (id: string) => `/api/bot/runs/${encodeURIComponent(run)}/content/${encodeURIComponent(id)}`;
+  const item = (id: string) => contentPath(run, id);
+  // Each frame's bytes, fetched through the shell (`content-url.ts`) once
+  // the manifest is read, as a `blob:` URL revoked when the clip goes.
+  let shown = $state<Record<string, string>>({});
   let frames = $state<Frame[]>([]);
   let size = $state<{ width: number; height: number } | null>(null);
   let at = $state(0);
@@ -31,15 +35,24 @@
   $effect(() => {
     const url = item(clip);
     let gone = false;
+    let made: string[] = [];
     void fetch(url, { credentials: "same-origin" }).then(async r => {
       if (!r.ok) throw new Error(String(r.status));
       const m = await r.json() as { width?: number; height?: number; frames?: Frame[] };
       if (gone) return;
-      frames = Array.isArray(m.frames) ? m.frames.filter(f => typeof f?.item === "string") : [];
+      const fs = Array.isArray(m.frames) ? m.frames.filter(f => typeof f?.item === "string") : [];
+      const urls = await Promise.all([...new Set(fs.map(f => f.item))].map(async id => {
+        const u = await blobUrl(item(id));
+        if (gone) URL.revokeObjectURL(u); else made.push(u);
+        return [id, u] as const;
+      }));
+      if (gone) return;
+      shown = Object.fromEntries(urls);
+      frames = fs;
       size = m.width && m.height ? { width: m.width, height: m.height } : null;
       at = 0;
     }).catch(() => { if (!gone) failed = true; });
-    return () => { gone = true; stop(); };
+    return () => { gone = true; stop(); made.forEach(u => URL.revokeObjectURL(u)); };
   });
 
   function stop() {
@@ -69,7 +82,7 @@
   <span class="flip-gone">The recording is not available.</span>
 {:else if frames.length}
   <figure class="flip" role="group" aria-label={label}>
-    <img src={item(frames[at].item)} alt={`Frame ${at + 1} of ${frames.length}`} width={size?.width} height={size?.height} />
+    <img src={shown[frames[at].item]} alt={`Frame ${at + 1} of ${frames.length}`} width={size?.width} height={size?.height} />
     <figcaption>
       <button type="button" class="ghost" onclick={toggle}>{playing ? "Pause" : "Play"}</button>
       <span class="at">{at + 1} / {frames.length}</span>

@@ -12,6 +12,7 @@ import type { ArtifactController } from "../view/artifact-controller";
 import ArtifactBot from "./ArtifactBot.svelte";
 import { nav } from "../nav";
 import { usage } from "../ui/more-menu.svelte";
+import { blobUrls } from "../test/blob-urls";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
 const button = (root: Element, text: string) => [...root.querySelectorAll("button")].find(b => b.textContent?.trim() === text)!;
@@ -162,7 +163,10 @@ describe("the run panel", () => {
         { op: "browser.test", ok: true, ms: 4100, cost_milli: 10, browser: { target: "draft", path: "index.html", viewport: "phone", ms: 4100, passed: true, steps: [3, 0], errors: 0, console: 2, blocked: 1, screenshots: ["c_one", "c_two"] } },
       ] }] })),
       "GET /api/bot/runs/r5/events": () => new Response(stream.body, { headers: { "content-type": "text/event-stream" } }),
+      "GET /api/bot/runs/r5/content/c_one": () => new Response("one", { headers: { "content-type": "image/png" } }),
+      "GET /api/bot/runs/r5/content/c_two": () => new Response("two", { headers: { "content-type": "image/png" } }),
     });
+    const blobs = blobUrls();
     const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
     botView.open("r5");
     flush();
@@ -171,11 +175,13 @@ describe("the run panel", () => {
     expect(row.textContent).toContain("browser.test");
     expect(row.querySelector(".bl")!.textContent).toBe("draft · phone · passed · 0 errors · 2 console · 1 blocked · 4.1 s · 0.01 credits");
     const shots = [...row.querySelectorAll<HTMLImageElement>(".shots img")];
-    expect(shots.map(i => [i.getAttribute("src"), i.alt])).toEqual([
-      ["/api/bot/runs/r5/content/c_one", "Screenshot 1 of the browser test"],
-      ["/api/bot/runs/r5/content/c_two", "Screenshot 2 of the browser test"],
+    // Each is fetched through the shell's fetch (which carries the owner's
+    // proof) and shown from a blob: URL, the link opening the same.
+    expect(await Promise.all(shots.map(async i => [await blobs.text(i.getAttribute("src")), i.alt]))).toEqual([
+      ["one", "Screenshot 1 of the browser test"],
+      ["two", "Screenshot 2 of the browser test"],
     ]);
-    expect(shots[0].closest("a")!.getAttribute("href")).toBe("/api/bot/runs/r5/content/c_one");
+    expect(shots[0].closest("a")!.getAttribute("href")).toBe(shots[0].getAttribute("src"));
     // A live call event shows the same.
     stream.send("call", { step: 1, call: { op: "browser.test", ok: true, ms: 9000, cost_milli: 20, browser: { target: "v2", path: "about.html", viewport: "desktop", ms: 9000, passed: true, steps: [1, 0], tests: { passed: 4, failed: 0 }, errors: 0, console: 0, blocked: 0, screenshots: [] } } });
     await settle();
@@ -183,6 +189,27 @@ describe("the run panel", () => {
     expect(last.querySelector(".bl")!.textContent).toBe("v2 about.html · desktop · passed · 4 tests passed · 0 errors · 9 s · 0.02 credits");
     expect(last.querySelector(".shots")).toBeNull();
     m.unmount();
+    // Unmounted, the panel lets its blob: URLs go.
+    expect(blobs.revoked.sort()).toEqual(blobs.made().sort());
+    blobs.restore();
+  });
+
+  it("a_screenshot_the_daemon_refuses_says_it_is_not_available", async () => {
+    daemon({
+      "GET /api/bot/runs/r6": json(run({ id: "r6", steps: [{ n: 1, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Test", calls: [
+        { op: "browser.test", ok: true, ms: 100, cost_milli: 10, browser: { target: "draft", path: "index.html", viewport: "phone", ms: 100, passed: true, steps: [1, 0], errors: 0, console: 0, blocked: 0, screenshots: ["c_gone"] } },
+      ] }] })),
+    });
+    const blobs = blobUrls();
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r6");
+    flush();
+    await settle();
+    const row = document.querySelector("#bot-run-panel .calls li")!;
+    expect(row.querySelector(".shots img")).toBeNull();
+    expect(row.querySelector(".shot-gone")!.textContent).toBe("Screenshot 1 of the browser test: not available.");
+    m.unmount();
+    blobs.restore();
   });
 
   it("a_session_is_one_line_with_its_calls", async () => {
@@ -200,7 +227,9 @@ describe("the run panel", () => {
           { op: "browser.close", ok: true, ms: 8000, cost_milli: 10, browser: { session: "s1", op: "close", ms: 8000, ok: true } },
         ] },
       ] })),
+      "GET /api/bot/runs/r8/content/c_s": () => new Response("s", { headers: { "content-type": "image/png" } }),
     });
+    const blobs = blobUrls();
     const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
     botView.open("r8");
     flush();
@@ -210,11 +239,12 @@ describe("the run panel", () => {
     expect(lines[0].querySelector("summary")!.textContent).toBe("draft · phone · 4 calls · 2 min 10 s · 0.04 credits · closed");
     const calls = [...lines[0].querySelectorAll(".scalls li")].map(li => li.querySelector("code")!.textContent);
     expect(calls).toEqual(["browser.open({ artifact: 'draft' })", "page.screenshot()", "getByRole('button', { name: 'Book' }).click()", "page.close()"]);
-    expect(lines[0].querySelector<HTMLImageElement>(".shots img")!.getAttribute("src")).toBe("/api/bot/runs/r8/content/c_s");
+    expect(await blobs.text(lines[0].querySelector<HTMLImageElement>(".shots img")!.getAttribute("src"))).toBe("s");
     // The script's card names each session call as the script wrote it too.
     const card = [...document.querySelectorAll("#bot-run-panel li.script .calls li")].map(li => li.querySelector(".bl")?.textContent);
     expect(card[2]).toBe("getByRole('button', { name: 'Book' }).click()");
     m.unmount();
+    blobs.restore();
   });
 
   it("a_host_end_shows_its_reason", async () => {
@@ -266,7 +296,8 @@ describe("the run panel", () => {
       { op: "browser.browse", ok: true, ms: 0, cost_milli: 10, browser: { url: "https://news.example/story", viewport: "desktop", ms: 2500, passed: true, steps: [1, 0], errors: 0, console: 0, blocked: 3, screenshots: ["c_b"] } },
       { op: "browser.browse", ok: false, ms: 0, cost_milli: 0, error: "url_not_allowed", browser: { url: long, viewport: "phone" } },
       { op: "browser.browse", ok: false, ms: 0, cost_milli: 0, error: "invalid_args", browser: { url: 42 as unknown as string } },
-    ] }] })) });
+    ] }] })), "GET /api/bot/runs/r7/content/c_b": () => new Response("b", { headers: { "content-type": "image/png" } }) });
+    const blobs = blobUrls();
     const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
     botView.open("r7");
     flush();
@@ -279,6 +310,7 @@ describe("the run panel", () => {
     expect(rows[1].textContent).toContain("url_not_allowed");
     expect(rows[2].querySelector(".bl")!.textContent).toBe("a URL");
     m.unmount();
+    blobs.restore();
   });
 
   it("a_script_step_shows_its_state", async () => {

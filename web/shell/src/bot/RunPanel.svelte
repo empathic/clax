@@ -29,6 +29,7 @@
   import { type BotRun, type BotStep, type RunEvent, type RunSummary, cancelRun } from "./api";
   import { browserLine, callCost, callName, credits, ended, meter, openByDefault, runCost, runStatus, sessionViews, stepLine, tail, turnActivity, webSource } from "./model";
   import Flipbook from "./Flipbook.svelte";
+  import RunImage from "./RunImage.svelte";
   import RunExports from "./RunExports.svelte";
   import { RunFeed } from "./run-feed.svelte";
   import { botView } from "./send.svelte";
@@ -98,7 +99,6 @@
   const what = $derived(!run ? "" : run.request === "brief" ? "Building from the brief" : run.thread_ids.length === 1 ? "Answering one thread" : `Answering ${run.thread_ids.length} threads`);
   const answers = $derived(run ? quotes(run.thread_ids) : []);
   const callsLine = (s: BotStep) => { const c = s.calls ?? []; const ms = c.reduce((n, x) => n + x.ms, 0); return s.status === "running" ? `running · ${c.length} call${c.length === 1 ? "" : "s"}` : `${c.length} call${c.length === 1 ? "" : "s"} · ${ms} ms`; };
-  const shot = (id: string) => `/api/bot/runs/${encodeURIComponent(run?.id ?? "")}/content/${encodeURIComponent(id)}`;
   const sessions = $derived(run ? sessionViews(run.steps, run.browser_sessions) : []);
   const output = (s: BotStep) => (s.value === undefined ? null : typeof s.value === "string" ? s.value : JSON.stringify(s.value, null, 2));
   async function stop() {
@@ -139,7 +139,7 @@
           <li><details>
             <summary>{v.line}</summary>
             <ol class="scalls" aria-label={`Calls of browser session ${i + 1}`}>
-              {#each v.calls as c, k (k)}<li class:bad={!c.ok || c.browser?.ok === false}><span aria-label={c.ok && c.browser?.ok !== false ? "ok" : "failed"}>{c.ok && c.browser?.ok !== false ? "✓" : "✗"}</span> <code>{callName(c) ?? c.op}</code>{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}{#if c.browser?.screenshots?.length}<span class="shots">{#each c.browser.screenshots as id, n (id)}<a href={shot(id)} target="_blank" rel="noopener noreferrer"><img src={shot(id)} alt={`Screenshot ${n + 1} of browser session ${i + 1}`} loading="lazy" /></a>{/each}</span>{/if}{#if c.browser?.clip}<span class="shots"><Flipbook run={run.id} clip={c.browser.clip} label={`Recording of browser session ${i + 1}`} /></span>{/if}</li>{/each}
+              {#each v.calls as c, k (k)}<li class:bad={!c.ok || c.browser?.ok === false}><span aria-label={c.ok && c.browser?.ok !== false ? "ok" : "failed"}>{c.ok && c.browser?.ok !== false ? "✓" : "✗"}</span> <code>{callName(c) ?? c.op}</code>{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}{#if c.browser?.screenshots?.length}<span class="shots">{#each c.browser.screenshots as id, n (id)}<RunImage run={run.id} item={id} alt={`Screenshot ${n + 1} of browser session ${i + 1}`} />{/each}</span>{/if}{#if c.browser?.clip}<span class="shots"><Flipbook run={run.id} clip={c.browser.clip} label={`Recording of browser session ${i + 1}`} /></span>{/if}</li>{/each}
             </ol>
           </details></li>
         {/each}
@@ -162,7 +162,7 @@
               {#if s.code}<pre class="code" aria-label="Code"><code>{s.code}</code></pre>{/if}
               {#if s.calls?.length}
                 <ul class="calls" aria-label="Calls">
-                  {#each s.calls as c, i (i)}<li class:bad={!c.ok}><span aria-label={c.ok ? "ok" : "failed"}>{c.ok ? "✓" : "✗"}</span> <code>{c.op}</code>{#if callName(c)}{" "}<span class="bl" class:bad={c.browser?.ok === false}>{callName(c)}</span>{:else if browserLine(c)}{" "}<span class="bl" class:bad={c.browser?.passed === false}>{browserLine(c)}</span>{:else}{#if c.web?.query ?? c.web?.url ?? c.target}{" "}<span class="tg">{c.web?.query ?? c.web?.url ?? c.target}</span>{/if}{#if webSource(c.web?.source)}{" "}<span class="src">{webSource(c.web?.source)}</span>{/if}{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}{#if c.browser?.screenshots?.length && run}<span class="shots">{#each c.browser.screenshots as id, k (id)}<a href={shot(id)} target="_blank" rel="noopener noreferrer"><img src={shot(id)} alt={`Screenshot ${k + 1} of the ${c.op === "browser.browse" ? "browse" : c.op === "browser.test" ? "browser test" : "browser session"}`} loading="lazy" /></a>{/each}</span>{/if}{#if c.browser?.clip && run}<span class="shots"><Flipbook run={run.id} clip={c.browser.clip} label="Recording" /></span>{/if}</li>{/each}
+                  {#each s.calls as c, i (i)}<li class:bad={!c.ok}><span aria-label={c.ok ? "ok" : "failed"}>{c.ok ? "✓" : "✗"}</span> <code>{c.op}</code>{#if callName(c)}{" "}<span class="bl" class:bad={c.browser?.ok === false}>{callName(c)}</span>{:else if browserLine(c)}{" "}<span class="bl" class:bad={c.browser?.passed === false}>{browserLine(c)}</span>{:else}{#if c.web?.query ?? c.web?.url ?? c.target}{" "}<span class="tg">{c.web?.query ?? c.web?.url ?? c.target}</span>{/if}{#if webSource(c.web?.source)}{" "}<span class="src">{webSource(c.web?.source)}</span>{/if}{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}{#if c.browser?.screenshots?.length && run}<span class="shots">{#each c.browser.screenshots as id, k (id)}<RunImage run={run.id} item={id} alt={`Screenshot ${k + 1} of the ${c.op === "browser.browse" ? "browse" : c.op === "browser.test" ? "browser test" : "browser session"}`} />{/each}</span>{/if}{#if c.browser?.clip && run}<span class="shots"><Flipbook run={run.id} clip={c.browser.clip} label="Recording" /></span>{/if}</li>{/each}
                 </ul>
               {/if}
               {#if s.logs?.length}<pre class="out" aria-label="Logs">{s.logs.join("\n")}</pre>{/if}
