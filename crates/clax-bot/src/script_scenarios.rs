@@ -708,14 +708,18 @@ fn refused_at_check_2(row: &Value) -> bool {
 }
 
 /// Checks that each journal row of a web operation refused at check 2
-/// in what `left` holds is `{code, message}` alone, and answers how
+/// in what `left` holds is `{capability, code, message}` alone, and answers how
 /// many there are.
 fn the_refused_rows_are_the_run_loops(left: &Left) -> usize {
     let mut rows = 0;
     for row in left.journal.as_array().expect("the journal") {
         if refused_at_check_2(row) {
             let keys: Vec<&String> = row["result"].as_object().unwrap().keys().collect();
-            assert_eq!(keys, ["code", "message"], "the run loop's row: {row}");
+            assert_eq!(
+                keys,
+                ["capability", "code", "message"],
+                "the run loop's row: {row}"
+            );
             rows += 1;
         }
     }
@@ -927,7 +931,7 @@ const again = await clax.web.fetch("https://example.com/a", {offset: 3});
 const out = [found, page, again];
 const tries = [
   () => clax.web.fetch("https://example.com/unnamed"),
-  () => clax.web.fetch("https://example.com/a", {format: "raw"}),
+  () => clax.web.fetch("https://example.com/a", {offset: -1}),
   () => clax.web.search(""),
   () => clax.web.fetch("not a url"),
   () => clax.web.fetch("https://example.com/linked"),
@@ -946,7 +950,7 @@ fn the_web_calls_were_made(steps: &Value) {
     assert_eq!(out[1]["totalChars"], 16);
     assert_eq!(out[2]["offset"], 3, "a window from the page store");
     assert_eq!(out[3][0], "url_not_in_prior_context");
-    assert_eq!(out[4][0], "invalid_args", "the page was read as auto");
+    assert_eq!(out[4][0], "invalid_args", "an offset below 0");
     assert_eq!(out[5][0], "invalid_args", "a search for nothing");
     assert_eq!(out[6][0], "invalid_args", "what is no URL");
     assert_eq!(

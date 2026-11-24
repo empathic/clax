@@ -182,7 +182,7 @@ async fn a_search_then_a_fetch_of_a_result_is_answered_and_charged_twice() {
     let web: Vec<Value> = env
         .bot_events()
         .into_iter()
-        .filter(|(k, _)| k == "bot.web")
+        .filter(|(k, _)| k == "bot.spend")
         .map(|(_, b)| b)
         .collect();
     assert_eq!(web.len(), 2);
@@ -1124,31 +1124,71 @@ async fn a_missing_web_cost_line_refuses_before_the_source() {
     assert!(web_rows(&env).is_empty());
 }
 
+/// The page store keeps a page per URL and format: a fetch of a URL the
+/// run read in another format is a new request, counted and charged, and
+/// each format's later windows come from the store (spec
+/// 2026-11-19-claxbot-browser §5.2).
 #[tokio::test]
-async fn a_stored_page_must_be_read_in_its_format() {
+async fn two_formats_of_one_page_are_two_requests() {
     let env = Env::new().await;
     let a = "https://example.com/a";
     sender_says(&env, &format!("Read {a}"));
     env.web().page(a, page_at(a, "# A", &[]));
-    let (_, v) = one_script(
+    let (run, v) = one_script(
         &env,
         "fetch",
         &format!(
-            "const p = await clax.web.fetch({a:?});
-             try {{ await clax.web.fetch({a:?}, {{format: 'raw'}}); return 'read'; }}
-             catch (e) {{ return [p.text, e.code, e.message]; }}"
+            "const md = await clax.web.fetch({a:?});
+             const raw = await clax.web.fetch({a:?}, {{format: 'raw'}});
+             const again = await clax.web.fetch({a:?}, {{format: 'raw'}});
+             return [md.left.fetches, raw.left.fetches, again.left.fetches];"
         ),
     )
     .await;
-    assert_eq!(v[0], "# A");
-    assert_eq!(v[1], "invalid_args");
-    assert!(
-        v[2].as_str()
-            .unwrap()
-            .contains("already read https://example.com/a as auto"),
-        "{v}"
+    assert_eq!(v, json!([19, 18, 18]), "two counted, the third free");
+    assert_eq!(env.web().calls(), fetches(&[a, a]));
+    assert_eq!(web_rows(&env), ["web.fetch", "web.fetch"]);
+    let formats: Vec<String> = env
+        .store
+        .web_pages(&run)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.format)
+        .collect();
+    assert_eq!(formats, ["markdown", "raw"]);
+}
+
+/// A fetch with main's `format: "auto"` is a Markdown fetch: it answers
+/// from a page the store keeps as `markdown` (as migration 69 keeps
+/// main's pages), and a Markdown fetch's entry names `markdown`.
+#[tokio::test]
+async fn an_auto_fetch_from_main_answers_from_the_store() {
+    let env = Env::new().await;
+    let a = "https://example.com/a";
+    sender_says(&env, &format!("Read {a}"));
+    env.web().page(a, page_at(a, "# A", &[]));
+    let (run, v) = one_script(
+        &env,
+        "fetch",
+        &format!(
+            "const p = await clax.web.fetch({a:?}, {{format: 'markdown'}});
+             const q = await clax.web.fetch({a:?}, {{format: 'auto'}});
+             return [p.text, q.text, q.left.fetches];"
+        ),
+    )
+    .await;
+    assert_eq!(v, json!(["# A", "# A", 19]));
+    assert_eq!(
+        env.web().calls(),
+        fetches(&[a]),
+        "the second from the store"
     );
-    assert_eq!(env.web().calls(), fetches(&[a]));
+    let journal = env.store.bot_web_calls(&run).unwrap();
+    let formats: Vec<&str> = journal
+        .iter()
+        .map(|e| e.result()["format"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(formats, ["markdown", "markdown"]);
 }
 
 #[tokio::test]
@@ -1169,7 +1209,7 @@ async fn a_page_over_the_store_limit_is_cut_on_a_character() {
     )
     .await;
     assert_eq!(v, json!([288, null, 600_000, 524_288, "", null]));
-    let kept = env.store.web_page(&run, a).unwrap().unwrap();
+    let kept = env.store.web_page(&run, a, "markdown").unwrap().unwrap();
     assert_eq!(kept.text.len(), 1 << 20);
     assert_eq!(kept.text.chars().count(), 524_288);
     assert_eq!(kept.total_chars, 600_000);
@@ -1256,7 +1296,7 @@ async fn a_resumed_fetch_answers_from_the_journal_with_its_source_and_cost() {
         entry.result()["source"]["comment_id"],
         format!("c-{}", env.t1)
     );
-    assert_eq!(entry.result()["format"], "auto");
+    assert_eq!(entry.result()["format"], "markdown");
 }
 
 #[tokio::test]
@@ -1292,7 +1332,7 @@ async fn refused_and_stored_fetches_are_in_the_audit_trail() {
     let web: Vec<Value> = env
         .bot_events()
         .into_iter()
-        .filter(|(k, _)| k == "bot.web")
+        .filter(|(k, _)| k == "bot.spend")
         .map(|(_, b)| b)
         .collect();
     assert_eq!(web.len(), 3, "{web:?}");
@@ -1330,6 +1370,7 @@ use clax_bot::web::page::sources_markdown;
 fn stored(url: &str, final_url: &str, text: &str) -> WebPageRow {
     WebPageRow {
         url: url.into(),
+        format: "markdown".into(),
         step_n: 2,
         seq: 0,
         final_url: final_url.into(),
@@ -1652,7 +1693,10 @@ async fn a_web_operation_a_run_lacks_is_refused_as_itself_when_the_claim_is_lost
                 code: Some("web_disabled".into()),
                 ms: 0,
                 cost_milli: Some(0),
-                web: Some(json!({"url": "https://example.com/a"})),
+                fields: clax_bot::surface::Fields::from_iter([(
+                    "web".to_string(),
+                    json!({"url": "https://example.com/a"})
+                )]),
             }],
             "{shape:?}"
         );
@@ -1848,6 +1892,7 @@ impl WebSource for RacedToThePage {
                 usage: None,
                 page: Some(WebPageRow {
                     url: url.normalized().to_string(),
+                    format: "markdown".into(),
                     step_n: step.n,
                     seq,
                     final_url: page.final_url.clone(),
@@ -1857,6 +1902,8 @@ impl WebSource for RacedToThePage {
                     total_chars: i64::try_from(page.text.chars().count()).unwrap(),
                     links: Vec::new(),
                 }),
+                session: None,
+                grant: None,
                 audit: AuditRecord::new(AuditKind::BotWeb, self.store.now())
                     .with("op", "web.fetch"),
             };

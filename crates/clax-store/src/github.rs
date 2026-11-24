@@ -264,12 +264,13 @@ impl Store {
                 ));
             };
             let id = new_ulid();
+            let public_id = new_public_id();
             tx.execute(
                 "INSERT INTO viewers (id, public_id, display_name, created_at, person, rights_json)
                  VALUES (?1, ?2, ?3, ?4, 1, ?5)",
                 params![
                     id,
-                    new_public_id(),
+                    public_id,
                     name,
                     now,
                     super::people::write_rights(&member_rights())
@@ -277,6 +278,7 @@ impl Store {
             )?;
             // A new person: not `*unconnected` (multi-person M14, M17).
             self.visibility_changed();
+            self.issue_joined_grants_in(tx, ctx, &public_id)?;
             link(self, tx, user, &id)?;
             let signed = self.signed_in(tx, ctx, &id, SignInVia::GitHub, &extra)?;
             Ok((signed, GitHubOutcome::New))

@@ -157,8 +157,10 @@ struct Status {
 fn main() -> std::process::ExitCode {
     clax_core::set_build_commit(env!("CLAX_BUILD_COMMIT"));
     let cli = Cli::parse();
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let filter = clax_server::browser_source::hiding_credentials(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+    );
     match cli.log_format {
         LogFormat::Text => tracing_subscriber::fmt().with_env_filter(filter).init(),
         LogFormat::Json => tracing_subscriber::fmt()

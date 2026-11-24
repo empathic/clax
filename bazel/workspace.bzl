@@ -29,6 +29,7 @@ CRATES = {
         },
         "version": "0.7.1",
         "wasm_deps": [
+            "@crates_wasm//:base64-0.22.1",
             "@crates_wasm//:chrono-0.4.45",
             "@crates_wasm//:encoding_rs-0.8.42",
             "@crates_wasm//:futures-0.3.34",

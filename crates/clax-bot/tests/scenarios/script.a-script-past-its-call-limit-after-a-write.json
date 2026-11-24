@@ -438,7 +438,7 @@
           ],
           "is_error": true,
           "published": null,
-          "result": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.write\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"}],\"error\":{\"kind\":\"call_limit\",\"message\":\"the script made more than its 3 host calls\"},\"logs\":[],\"value\":null}",
+          "result": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.write\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"}],\"error\":{\"kind\":\"call_limit\",\"message\":\"the script made more than its 3 host calls\"},\"logs\":[],\"state\":{\"saved\":false,\"why\":\"the script made too many calls, before its state could be written: the state the last script left stands\"},\"value\":null}",
           "title": "Script"
         }
       },
@@ -614,7 +614,7 @@
           "tool_use_id": "tu_1"
         },
         "stop_reason": "tool_use",
-        "system": "<12940 bytes, sha256 ad43597d4fe66079deade3ddce8486aaba465d744af3d43fc33ac80f87ee8252, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
+        "system": "<13159 bytes, sha256 4b3ac7268b5c8675817e9da8734fde05c5881c21d2e249bce1e3a761adf94b4d, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
         "usage": {
           "cache_creation_input_tokens": 500,
           "cache_read_input_tokens": 2000,
@@ -704,7 +704,7 @@
         "published": null,
         "replied": [],
         "result": {
-          "content": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.write\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"}],\"error\":{\"kind\":\"call_limit\",\"message\":\"the script made more than its 3 host calls\"},\"logs\":[],\"value\":null}",
+          "content": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.write\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"},{\"code\":null,\"ok\":true,\"op\":\"files.list\"}],\"error\":{\"kind\":\"call_limit\",\"message\":\"the script made more than its 3 host calls\"},\"logs\":[],\"state\":{\"saved\":false,\"why\":\"the script made too many calls, before its state could be written: the state the last script left stands\"},\"value\":null}",
           "is_error": true,
           "tool_use_id": "tu_1",
           "type": "tool_result"

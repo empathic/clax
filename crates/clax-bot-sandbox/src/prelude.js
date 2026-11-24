@@ -32,6 +32,11 @@
   const imul = Math.imul;
   const RealDate = Date;
   const dateToString = Date.prototype.toString;
+  const isArray = Array.isArray;
+  const keys = Object.keys;
+  const ObjectProto = Object.prototype;
+  const setPrototypeOf = Object.setPrototypeOf;
+  const objectTag = Object.prototype.toString;
   const maxArgs = options.maxCallArgsBytes;
 
   // The sandbox's own host errors, by identity: what they carry is read from
@@ -60,11 +65,14 @@
     return wellFormed(s);
   };
 
-  const hostError = (code, message, retryable) => {
+  const hostError = (code, message, retryable, capability) => {
     const e = new ErrorCtor(message);
     defineProperty(e, "name", { value: "HostError", writable: true, configurable: true });
     defineProperty(e, "code", { value: code, writable: true, configurable: true });
     defineProperty(e, "retryable", { value: retryable === true, writable: true, configurable: true });
+    if (typeof capability === "string") {
+      defineProperty(e, "capability", { value: capability, writable: true, configurable: true });
+    }
     const info = create(null);
     info.code = code;
     info.message = message;
@@ -74,8 +82,15 @@
 
   // clax: one null-prototype namespace per segment, one function per op.
   const segment = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-  const opFunction = (op) => (...args) =>
-    new PromiseCtor((resolve, reject) => {
+  // A host call, its arguments sent from a null-prototype array so that
+  // no Array.prototype.toJSON sees them. With a box (the browser layer's
+  // calls), the answer lands in box.v, its own prototype null, and the
+  // promise resolves to undefined with an own constructor: neither
+  // Object.prototype.then nor Promise.prototype.then or constructor, which
+  // a script can set, is consulted on it.
+  const hostCall = (op, args, box) => {
+    setPrototypeOf(args, null);
+    const q = new PromiseCtor((resolve, reject) => {
       if (finished) {
         reject(hostError("script_finished", "the script has finished; this call was not made"));
         return;
@@ -91,8 +106,15 @@
       const p = create(null);
       p.resolve = resolve;
       p.reject = reject;
+      p.box = box;
       pending[id] = p;
     });
+    if (box !== undefined) defineProperty(q, "constructor", { value: PromiseCtor });
+    return q;
+  };
+  const opFunction = (op) => (...args) => hostCall(op, args);
+  // For the browser layer: (box, ...args), the answer in box.v.
+  const boxedOp = (op) => (box, ...args) => hostCall(op, args, box);
   // The segments no operation name may have (RESERVED_SEGMENTS in
   // lib.rs): names JavaScript calls on an object by itself.
   const reservedSegment = (part) => {
@@ -145,6 +167,158 @@
     log(line);
   };
   defineProperty(globalThis, "console", { value: consoleObject, writable: true, configurable: true });
+
+  // What the browser layer gives state (spec §17.2): encode(x), a handle
+  // entry for an object of its own, and revive(entry), the object again.
+  const stateHooks = create(null);
+  // browser-layer
+
+  // state (spec §17.1): the one global that outlives a script, restored
+  // from options.state ({value, handles}, handles as {"$clax": i}).
+  let current = {};
+  if (typeof options.state === "string") {
+    const saved = parse(options.state);
+    const handles = isArray(saved.handles) ? saved.handles : [];
+    const back = (v) => {
+      if (v === null || typeof v !== "object") return v;
+      const k = keys(v);
+      if (!isArray(v) && k.length === 1 && k[0] === "$clax") {
+        const h = handles[v.$clax];
+        return h !== undefined && stateHooks.revive !== undefined ? stateHooks.revive(h) : null;
+      }
+      for (let i = 0; i < k.length; i++) v[k[i]] = back(v[k[i]]);
+      return v;
+    };
+    if (saved.value !== null && typeof saved.value === "object" && !isArray(saved.value)) current = back(saved.value);
+  }
+  defineProperty(globalThis, "state", {
+    get: () => current,
+    set: (v) => {
+      const pr = v !== null && typeof v === "object" && !isArray(v) ? getPrototypeOf(v) : undefined;
+      if (pr !== ObjectProto && pr !== null) throw new TypeErrorCtor("state must be a plain object");
+      current = v;
+    },
+    configurable: false,
+  });
+  // What the script left in state, as {value, handles, dropped, more}: what
+  // cannot be kept is left out and listed with its path, never silently.
+  const plain = () => setPrototypeOf([], null);
+  const putIn = (a, v) => defineProperty(a, a.length, { value: v, writable: true, enumerable: true, configurable: true });
+  const saveState = () => {
+    const handles = plain();
+    const made = plain();
+    const dropped = plain();
+    const stack = plain();
+    let more = 0;
+    const drop = (path, why) => {
+      if (dropped.length >= 20) {
+        more++;
+        return;
+      }
+      const d = create(null);
+      d.path = wellFormed(path);
+      d.why = why;
+      putIn(dropped, d);
+    };
+    // Each member is read on its own: a getter that throws leaves out
+    // that member alone.
+    const unread = create(null);
+    const read = (x, k, at) => {
+      try {
+        return x[k];
+      } catch (_) {
+        drop(at, "reading it threw");
+        return unread;
+      }
+    };
+    const enc = (x, path, depth) => {
+      const t = typeof x;
+      if (t === "string") return wellFormed(x);
+      if (x === null || t === "boolean") return x;
+      if (t === "number") {
+        if (x - x === 0) return x;
+        drop(path, "a number JSON cannot hold");
+        return undefined;
+      }
+      if (t === "undefined") return undefined;
+      if (t !== "object") {
+        drop(path, t === "function" ? "a function" : "a " + t);
+        return undefined;
+      }
+      for (let i = 0; i < made.length; i++) {
+        if (made[i] === x) {
+          const m = create(null);
+          m.$clax = i;
+          return m;
+        }
+      }
+      const h = stateHooks.encode === undefined ? undefined : stateHooks.encode(x);
+      if (h !== undefined) {
+        putIn(made, x);
+        putIn(handles, h);
+        const m = create(null);
+        m.$clax = made.length - 1;
+        return m;
+      }
+      for (let i = 0; i < stack.length; i++) {
+        if (stack[i] === x) {
+          drop(path, "a cycle");
+          return undefined;
+        }
+      }
+      if (depth >= 64) {
+        drop(path, "nested deeper than 64 levels");
+        return undefined;
+      }
+      try {
+        let out;
+        putIn(stack, x);
+        if (isArray(x)) {
+          out = plain();
+          for (let i = 0; i < x.length; i++) {
+            const at = path + "[" + i + "]";
+            const m = read(x, i, at);
+            const v = m === unread ? undefined : enc(m, at, depth + 1);
+            putIn(out, v === undefined ? null : v);
+          }
+        } else {
+          const pr = getPrototypeOf(x);
+          if (pr !== ObjectProto && pr !== null) {
+            drop(path, "not plain data: " + apply(objectTag, x, []));
+            return undefined;
+          }
+          out = create(null);
+          const k = keys(x);
+          for (let i = 0; i < k.length; i++) {
+            // A name with a lone surrogate is kept with it as U+FFFD.
+            const n = wellFormed(k[i]);
+            const at = apply(regexpTest, segment, [n]) ? path + "." + n : path + "[" + stringify(n) + "]";
+            if (n === "$clax") drop(at, "a member named $clax, which state keeps for handles");
+            else if (n in out) drop(at, "a name that is the same as another's once made well-formed text");
+            else {
+              const m = read(x, k[i], at);
+              const v = m === unread ? undefined : enc(m, at, depth + 1);
+              if (v !== undefined) out[n] = v;
+            }
+          }
+        }
+        return out;
+      } catch (_) {
+        drop(path, "reading it threw");
+        return undefined;
+      } finally {
+        stack.length = stack.length - 1;
+      }
+    };
+    let value = enc(current, "state", 0);
+    if (value === null || typeof value !== "object" || isArray(value)) value = create(null);
+    const out = create(null);
+    out.value = value;
+    out.handles = handles;
+    out.dropped = dropped;
+    out.more = more;
+    return stringify(out);
+  };
 
   const lineOf = (stack) => {
     if (typeof stack !== "string") return undefined;
@@ -243,7 +417,13 @@
     const ended = (ok, payload) => {
       if (finished) return;
       finished = true;
-      done(ok, payload);
+      let saved;
+      try {
+        saved = saveState();
+      } catch (_) {
+        saved = undefined;
+      }
+      done(ok, payload, saved);
     };
     let p;
     try {
@@ -272,11 +452,17 @@
     if (p === undefined) return;
     delete pending[id];
     if (ok) {
-      p.resolve(parse(json));
+      const v = parse(json);
+      if (p.box === undefined) p.resolve(v);
+      else {
+        if (v !== null && typeof v === "object") setPrototypeOf(v, null);
+        p.box.v = v;
+        p.resolve(undefined);
+      }
       return;
     }
     const h = parse(json);
-    p.reject(hostError(h.code, h.message, h.retryable));
+    p.reject(hostError(h.code, h.message, h.retryable, h.capability));
   };
 
   const api = create(null);

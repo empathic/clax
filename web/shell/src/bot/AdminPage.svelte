@@ -3,7 +3,7 @@
 <script lang="ts">
   // Settings' screens for admins (spec 2026-10-21-claxbot §5, §11.5), one
   // at a time by `tab`: Roles & ClaxBot access (`people`), Model provider,
-  // Web access, Pricing and Usage. Anyone else is told the screen is for
+  // Web access, Browser, Pricing and Usage. Anyone else is told the screen is for
   // admins and fetches nothing more. The owner alone changes roles (other
   // admins see them read-only).
   import { onMount, type Component } from "svelte";
@@ -12,12 +12,13 @@
   import BotPage from "./BotPage.svelte";
   import { holdReveal } from "../settings/first-data";
 
-  export type Tab = "people" | "provider" | "web" | "pricing" | "usage";
+  export type Tab = "people" | "provider" | "web" | "browser" | "pricing" | "usage";
   let { now, tab = "people" }: { now?: () => Date; tab?: Tab } = $props();
   const TABS: Record<Tab, { title: string; lede: string; load: () => Promise<{ default: unknown }> }> = {
     people: { title: "Roles & ClaxBot access", lede: "Who is an admin, who may use ClaxBot, and with how many credits each week. The owner is always an admin and alone makes others admins.", load: () => import("./AdminPeople.svelte") },
     provider: { title: "Model provider", lede: "The API ClaxBot calls, its key and models, and the caps on a run.", load: () => import("./AdminProvider.svelte") },
     web: { title: "Web access", lede: "Whether ClaxBot may search the web and fetch pages, and how.", load: () => import("./AdminWeb.svelte") },
+    browser: { title: "Browser", lede: "Whether ClaxBot may open a browser on a public URL, on the run's own page or on content it supplies, and what a session may cost.", load: () => import("./AdminBrowser.svelte") },
     pricing: { title: "Pricing", lede: "What a credit costs, the free credits each week, and what each model costs.", load: () => import("./AdminPricing.svelte") },
     usage: { title: "Usage", lede: "What a week cost, by person and by cost line.", load: () => import("./AdminUsage.svelte") },
   };

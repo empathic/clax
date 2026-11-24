@@ -435,6 +435,7 @@ impl WorkerBot {
                 store: parts.store.clone(),
                 enabled: parts.enabled,
                 // A hosted run is shown no image.
+                image_models: Vec::new(),
                 model_takes_images: false,
             },
         });

@@ -102,7 +102,7 @@ fn check_prints_what_a_model_would_read() {
     refused(
         &["check", "clax.d.ts"],
         dir.path(),
-        "`clax` is a reserved name: a host's surface may not be named `clax` or as one of Clax's own namespaces (artifact, artifacts, clax, content, db, draft, files, runs, threads, web)",
+        "`clax` is a reserved name: a host's surface may not be named `clax` or as one of Clax's own namespaces (artifact, artifacts, browser, clax, content, db, draft, files, runs, threads, web)",
     );
     let own = printed(&["check", "--own", "clax.d.ts"], dir.path());
     assert!(
@@ -720,14 +720,22 @@ fn a_run_of_claxbots_own_kinds_and_of_the_fakes_is_given_its_operations() {
     let clax = clax_bot::api::definition();
     let all: Vec<&str> = clax.operations().map(|o| o.name).collect();
     for kind in ["thread", "brief"] {
-        // Its kinds say no `@allow`, and none of its operations holds
-        // content: a run has every one.
-        let ops = clax.run_operations(kind, &Default::default()).unwrap();
+        // Its kinds say no `@allow`, and no operation's declared types
+        // hold content (a browser screenshot is an answer's `unknown`
+        // value): a run has every one, wherever Clax keeps content.
+        let scope = clax_bot::clax_surface::RunScope {
+            content: true,
+            ..Default::default()
+        };
+        let ops = clax.run_operations(kind, &scope).unwrap();
         assert_eq!(ops.granted, all, "{kind}");
         assert!(
             ops.withheld.is_empty() && ops.elsewhere.is_empty(),
             "{kind}"
         );
+        let ops = clax.run_operations(kind, &Default::default()).unwrap();
+        assert_eq!(ops.granted, all, "{kind}");
+        assert!(ops.withheld.is_empty(), "{kind}");
         assert_eq!(format!("{:?}", ops.request_content), "None");
     }
     // A comment's text is a `string`: nothing of the request is typed

@@ -4,7 +4,8 @@
   // The run panel (spec 2026-10-21-claxbot §11.3), beside the artifact (a
   // sheet at phone width): one ClaxBot run, live. Its narration, each script
   // as a card (its title, its code, every `clax` call it made with how it
-  // went and how long it took, and its output), collapsed except the live
+  // went and how long it took, a browser test's line and its screenshots
+  // as thumbnails, and its output), collapsed except the live
   // one and any that failed; the credits the run has spent and the week's
   // meter; Stop while it runs; a link to its events in the audit log; and,
   // once it stopped with an unpublished draft, Open the draft. A step that
@@ -17,11 +18,19 @@
   // the artifact are a choice away. Its head names the threads the run
   // answers (each one's first line, which shows it in the view), and a
   // polite live line says each step as it finishes. Escape or Close closes
-  // it, and the focus goes back to what opened it.
+  // it, and the focus goes back to what opened it. Each browser session the
+  // run opened is one line (its source, viewport, calls, time, cost and how
+  // it ended, a host's end with its reason) that opens to its calls in
+  // order, each named as the script wrote it, with its screenshots as
+  // thumbnails and its recordings as flipbooks (spec
+  // 2026-11-19-claxbot-browser §12).
   import { onDestroy } from "svelte";
   import { refusal } from "../people/refusal";
   import { type BotRun, type BotStep, type RunEvent, type RunSummary, cancelRun } from "./api";
-  import { callCost, credits, ended, meter, openByDefault, runCost, runStatus, stepLine, tail, turnActivity, webSource } from "./model";
+  import { browserLine, callCost, callName, credits, ended, meter, openByDefault, runCost, runStatus, sessionViews, stepLine, tail, turnActivity, webSource } from "./model";
+  import Flipbook from "./Flipbook.svelte";
+  import RunImage from "./RunImage.svelte";
+  import RunExports from "./RunExports.svelte";
   import { RunFeed } from "./run-feed.svelte";
   import { botView } from "./send.svelte";
   import Meter from "./Meter.svelte";
@@ -90,6 +99,7 @@
   const what = $derived(!run ? "" : run.request === "brief" ? "Building from the brief" : run.thread_ids.length === 1 ? "Answering one thread" : `Answering ${run.thread_ids.length} threads`);
   const answers = $derived(run ? quotes(run.thread_ids) : []);
   const callsLine = (s: BotStep) => { const c = s.calls ?? []; const ms = c.reduce((n, x) => n + x.ms, 0); return s.status === "running" ? `running · ${c.length} call${c.length === 1 ? "" : "s"}` : `${c.length} call${c.length === 1 ? "" : "s"} · ${ms} ms`; };
+  const sessions = $derived(run ? sessionViews(run.steps, run.browser_sessions) : []);
   const output = (s: BotStep) => (s.value === undefined ? null : typeof s.value === "string" ? s.value : JSON.stringify(s.value, null, 2));
   async function stop() {
     if (!run || stopping) return;
@@ -123,6 +133,19 @@
         {#each answers as q (q.id)}<li>{#if onThread}<button type="button" class="ghost" onclick={() => onThread(q.id)}>“{q.text}”</button>{:else}“{q.text}”{/if}</li>{/each}
       </ul>
     {/if}
+    {#if sessions.length && run}
+      <ul class="sessions" aria-label="Browser sessions">
+        {#each sessions as v, i (v.session)}
+          <li><details>
+            <summary>{v.line}</summary>
+            <ol class="scalls" aria-label={`Calls of browser session ${i + 1}`}>
+              {#each v.calls as c, k (k)}<li class:bad={!c.ok || c.browser?.ok === false}><span aria-label={c.ok && c.browser?.ok !== false ? "ok" : "failed"}>{c.ok && c.browser?.ok !== false ? "✓" : "✗"}</span> <code>{callName(c) ?? c.op}</code>{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}{#if c.browser?.screenshots?.length}<span class="shots">{#each c.browser.screenshots as id, n (id)}<RunImage run={run.id} item={id} alt={`Screenshot ${n + 1} of browser session ${i + 1}`} />{/each}</span>{/if}{#if c.browser?.clip}<span class="shots"><Flipbook run={run.id} clip={c.browser.clip} label={`Recording of browser session ${i + 1}`} /></span>{/if}</li>{/each}
+            </ol>
+          </details></li>
+        {/each}
+      </ul>
+      {#if mine(run)}<RunExports run={run.id} />{/if}
+    {/if}
     <p class="bot-sr" aria-live="polite">{said}</p>
     {#if err}<p class="err" role="alert">{err}</p>{/if}
     {#if feed?.error}<p class="err" role="alert">{feed.error}</p>{/if}
@@ -139,11 +162,12 @@
               {#if s.code}<pre class="code" aria-label="Code"><code>{s.code}</code></pre>{/if}
               {#if s.calls?.length}
                 <ul class="calls" aria-label="Calls">
-                  {#each s.calls as c, i (i)}<li class:bad={!c.ok}><span aria-label={c.ok ? "ok" : "failed"}>{c.ok ? "✓" : "✗"}</span> <code>{c.op}</code>{#if c.web?.query ?? c.web?.url ?? c.target}{" "}<span class="tg">{c.web?.query ?? c.web?.url ?? c.target}</span>{/if}{#if webSource(c.web?.source)}{" "}<span class="src">{webSource(c.web?.source)}</span>{/if}{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}</li>{/each}
+                  {#each s.calls as c, i (i)}<li class:bad={!c.ok}><span aria-label={c.ok ? "ok" : "failed"}>{c.ok ? "✓" : "✗"}</span> <code>{c.op}</code>{#if callName(c)}{" "}<span class="bl" class:bad={c.browser?.ok === false}>{callName(c)}</span>{:else if browserLine(c)}{" "}<span class="bl" class:bad={c.browser?.passed === false}>{browserLine(c)}</span>{:else}{#if c.web?.query ?? c.web?.url ?? c.target}{" "}<span class="tg">{c.web?.query ?? c.web?.url ?? c.target}</span>{/if}{#if webSource(c.web?.source)}{" "}<span class="src">{webSource(c.web?.source)}</span>{/if}{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}{#if c.browser?.screenshots?.length && run}<span class="shots">{#each c.browser.screenshots as id, k (id)}<RunImage run={run.id} item={id} alt={`Screenshot ${k + 1} of the ${c.op === "browser.browse" ? "browse" : c.op === "browser.test" ? "browser test" : "browser session"}`} />{/each}</span>{/if}{#if c.browser?.clip && run}<span class="shots"><Flipbook run={run.id} clip={c.browser.clip} label="Recording" /></span>{/if}</li>{/each}
                 </ul>
               {/if}
               {#if s.logs?.length}<pre class="out" aria-label="Logs">{s.logs.join("\n")}</pre>{/if}
               {#if output(s) !== null}<pre class="out" aria-label="Output">{output(s)}</pre>{/if}
+              {#if s.state}<pre class="out" aria-label="State">{JSON.stringify(s.state, null, 2)}</pre>{/if}
               {#if s.error}<p class="err">{s.error}</p>{/if}
             </details>
           {:else if s.kind === "finish"}
@@ -222,7 +246,25 @@
     .runp .sources a { color: var(--accent-ink); text-decoration: underline; }
     .runp .calls .ms { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
     .runp .calls .ce { flex-basis: 100%; color: var(--danger); }
+    .runp .calls .bl { color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
+    .runp .calls .bl.bad { color: var(--danger); }
+    .runp .calls .shots { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .runp .calls .shots a { display: block; line-height: 0; border: 1px solid var(--border); border-radius: var(--radius-xs); overflow: hidden; background: var(--hover); }
+    .runp .calls .shots img { display: block; width: auto; height: 72px; max-width: 128px; object-fit: cover; }
     .runp details .err { margin: 0 10px 8px; }
+    .runp .sessions { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+    .runp .sessions summary { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+    .runp .scalls { list-style: none; margin: 0 10px 8px; padding: 0; display: grid; gap: 2px; font-size: 12.5px; }
+    .runp .scalls li { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; }
+    .runp .scalls li > span:first-child { color: var(--agent-ink); }
+    .runp .scalls li.bad > span:first-child { color: var(--danger); }
+    .runp .scalls code { font: 12px var(--mono); overflow-wrap: anywhere; min-width: 0; }
+    .runp .scalls .cc { color: var(--muted); font-size: 12px; }
+    .runp .scalls .ms { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .runp .scalls .ce { flex-basis: 100%; color: var(--danger); }
+    .runp .scalls .shots { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .runp .scalls .shots a { display: block; line-height: 0; border: 1px solid var(--border); border-radius: var(--radius-xs); overflow: hidden; background: var(--hover); }
+    .runp .scalls .shots img { display: block; width: auto; height: 72px; max-width: 128px; object-fit: cover; }
     .runp .err { margin: 0; color: var(--danger); font-size: 12.5px; }
     .runp .merr { font-size: 13px; }
     .runp .merr-next a { font-weight: 600; }

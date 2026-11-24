@@ -6,14 +6,17 @@
   // provider with its price from the Pricing lines, the per-run caps, which
   // URLs a fetch may take (and the allowlist's hosts), and, on the daemon,
   // the Cloudflare account ID and API token (write-only, as the model key
-  // is). Each field shows where its value comes from; one set in
-  // `config.toml` or the environment is read-only here. Save sends the
-  // fields changed.
+  // is). Each of search and fetch is its own capability (spec
+  // 2026-11-19-claxbot-browser §4.2): its switch offers it and grants it to
+  // no one, and its card lists who holds it and grants it. Each field shows
+  // where its value comes from; one set in `config.toml` or the environment
+  // is read-only here. Save sends the fields changed.
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
-  import { type UrlRule, type WebPatch, type WebProvider, type WebSettings, deleteWebToken, getAdminWeb, pricing, putAdminWeb, putWebToken } from "./api";
+  import { type AdminGrant, type AdminPerson, type UrlRule, type WebPatch, type WebProvider, type WebSettings, adminPeople, deleteWebToken, getAdminGrants, getAdminWeb, pricing, putAdminWeb, putWebToken } from "./api";
   import { hosted } from "./me";
   import { UNITS, credits, readOnlySource, webPrices } from "./model";
+  import CapabilityCard from "./CapabilityCard.svelte";
   import KeyField from "./KeyField.svelte";
   import SourceBadge from "./SourceBadge.svelte";
   import Switch from "./Switch.svelte";
@@ -21,6 +24,8 @@
 
   let { now }: { now?: () => Date } = $props();
   let w = $state<WebSettings | null>(null);
+  let grants = $state<AdminGrant[]>([]);
+  let people = $state<AdminPerson[]>([]);
   let err = $state<string | null>(null);
   let saved = $state("");
   let busy = $state(false);
@@ -91,6 +96,8 @@
   onMount(() => {
     void Promise.allSettled([
       getAdminWeb().then(take, e => { err = refusal(e); }),
+      getAdminGrants().then(g => { grants = g.grants; }, () => {}),
+      adminPeople().then(p => { people = p; }, () => {}),
       pricing().then(p => { prices = webPrices(p.lines, p.credit_price_micro_usd); }, () => {}),
       hosted().then(h => { local = !h; }),
     ]).then(release);
@@ -138,6 +145,7 @@
         <input id="aw-max-search" type="number" min="1" step="1" inputmode="numeric" bind:value={maxSearch} readonly={ro("search.max_per_run")} />
       </div>
     </div>
+    <CapabilityCard capability="clax-web:search" label="web search" {grants} {people} onchange={g => { grants = g; }} />
   </section>
   <section class="bcard" aria-labelledby="aw-f">
     <h3 id="aw-f">Fetch</h3>
@@ -161,6 +169,7 @@
         <input id="aw-max-fetch" type="number" min="1" step="1" inputmode="numeric" bind:value={maxFetch} readonly={ro("fetch.max_per_run")} />
       </div>
     </div>
+    <CapabilityCard capability="clax-web:fetch" label="web fetch" {grants} {people} onchange={g => { grants = g; }} />
   </section>
   {#if local}
     <section class="bcard" aria-labelledby="aw-cf">

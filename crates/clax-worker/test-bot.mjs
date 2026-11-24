@@ -100,6 +100,14 @@ async function call(base, method, path, body) {
   return { status: res.status, json };
 }
 
+/** The admin grants both web capabilities to everyone on the instance: a
+ * switch turned on offers a capability and grants it to no one. */
+async function grantWeb(base) {
+  for (const capability of ["clax-web:search", "clax-web:fetch"]) {
+    await ok(base, "POST", "/api/admin/bot/grants", { capability, grantee: "everyone" });
+  }
+}
+
 async function ok(base, method, path, body) {
   const r = await call(base, method, path, body);
   if (r.status >= 300) throw new Error(`${method} ${path}: ${r.status} ${JSON.stringify(r.json)}`);
@@ -411,6 +419,7 @@ async function main() {
     await ok(base, "POST", "/_worker/web-fixtures", WEB_FIXTURES);
     const web = await ok(base, "PUT", "/api/admin/web", { search: { enabled: true }, fetch: { enabled: true } });
     check(web.configured?.search === true && web.configured?.fetch === true && web.search.enabled === true && web.fetch.enabled === true, "with the test web source the host's web use is configured, and the admin turns it on", web);
+    await grantWeb(base);
     await ok(base, "PUT", "/api/me/bot", { web: true });
     r = await call(base, "POST", "/api/bot/runs", { thread_ids: [tid], artifact_id: aid });
     check(r.status === 201, "a thread is sent to ClaxBot", r);
@@ -576,6 +585,7 @@ async function main() {
     await ok(base, "PUT", "/api/admin/provider", { base_url: fake.base });
     await ok(base, "PUT", "/api/admin/provider/key", { key: KEY });
     await ok(base, "PUT", "/api/admin/web", { search: { enabled: true }, fetch: { enabled: true } });
+    await grantWeb(base);
     await ok(base, "PUT", "/api/me/bot", { web: true });
     const bid = (await ok(base, "POST", "/api/artifacts", {
       title: "Local tides", files: { "index.html": { content: page, encoding: "utf8" } },

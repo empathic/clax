@@ -916,6 +916,10 @@ pub fn recorded(entry: &CallEntry) -> Result<Value, HostError> {
         r["code"].as_str().unwrap_or("call_failed"),
         r["message"].as_str().unwrap_or(""),
     );
+    let failure = match r["capability"].as_str() {
+        Some(c) => failure.with_capability(c),
+        None => failure,
+    };
     Err(if r["retryable"] == json!(true) {
         failure.retryable()
     } else {
@@ -924,11 +928,15 @@ pub fn recorded(entry: &CallEntry) -> Result<Value, HostError> {
 }
 
 /// A failure as a journal entry keeps it: `code`, `message`, and
-/// `retryable` when it is. What [`recorded`] reads back.
+/// `retryable` when it is and `capability` when it names one. What
+/// [`recorded`] reads back.
 pub(crate) fn err_json(e: &HostError) -> Value {
     let mut v = json!({"code": e.code, "message": e.message});
     if e.retryable {
         v["retryable"] = json!(true);
+    }
+    if let Some(c) = &e.capability {
+        v["capability"] = json!(c);
     }
     v
 }
@@ -1123,10 +1131,10 @@ impl CallNote {
 
     /// The provider's own fields of the call, which the run view shows
     /// beside the core's: for a web call of `clax`, `web`, its `{query}`
-    /// or `{url, source}`. The field named `web` is the one the core
-    /// puts in a `call` event's `web` (`Event::Call`, which has that
-    /// one field for a provider's today); every field goes into the
-    /// step's `calls` ([`CallNote::add_to`]).
+    /// or `{url, source}`; for a browser call, `browser`, its summary.
+    /// The fields named in [`crate::events::CALL_FIELDS`] are the ones
+    /// the core puts in a `call` event (`Event::Call`'s `fields`); every
+    /// field goes into the step's `calls` ([`CallNote::add_to`]).
     #[must_use]
     pub fn extra(&self) -> &Fields {
         &self.extra
@@ -1779,8 +1787,9 @@ fn without_a_charge_the_core_would_journal(mut answer: Answer, op: &str) -> Answ
 /// `result` of a finish of any other kind (`crate::finish`); `code`
 /// and `reason` of a give-up; `reason` and `error` of a failure. And
 /// `images`, a script step's images shown to the model
-/// (`crate::images`).
-pub const PAYLOAD_KEYS: [&str; 11] = [
+/// (`crate::images`), and `state`, the run's state a script step kept
+/// (`crate::state`).
+pub const PAYLOAD_KEYS: [&str; 12] = [
     "calls",
     "code",
     "error",
@@ -1789,6 +1798,7 @@ pub const PAYLOAD_KEYS: [&str; 11] = [
     "outcome",
     "reason",
     "result",
+    "state",
     "summary",
     "title",
     "tool_use_id",
@@ -1796,8 +1806,10 @@ pub const PAYLOAD_KEYS: [&str; 11] = [
 
 /// The names the core gives fields of what a model is told of a script
 /// (`tool_result_content`, `script.rs`): `value`, `logs`,
-/// `calls`, `error`, `replay`, `images`.
-pub const TOOL_RESULT_KEYS: [&str; 6] = ["calls", "error", "images", "logs", "replay", "value"];
+/// `calls`, `error`, `replay`, `images`, `state`.
+pub const TOOL_RESULT_KEYS: [&str; 7] = [
+    "calls", "error", "images", "logs", "replay", "state", "value",
+];
 
 /// The names `clax`'s provider puts at the top of a step's payload
 /// ([`merge_fields`]): a script step's session's (`changed`, `replied`,
@@ -2454,6 +2466,15 @@ pub trait SurfaceProvider: MaybeSendSync {
     /// passes it on, and nothing is answered. Nothing, unless the
     /// provider says otherwise.
     fn progress(&self, _run: &RunInfo, _progress: &Progress<'_>) {}
+
+    /// The handles of the run's state as script step `step` committed it
+    /// (`crate::state::pages`): told to every binding's provider after the
+    /// step's commit, so a provider ends what no handle of the committed
+    /// state holds (for `clax`, the run's browser sessions, spec
+    /// 2026-11-19-claxbot-browser §17.4). Reachability is the committed
+    /// state's alone, so a step executed again decides the same. Nothing,
+    /// unless the provider says otherwise.
+    async fn state_committed(&self, _run: &RunInfo, _step: i64, _held: &[String]) {}
 
     /// Opens the session of the attempt `cx` describes, for a step that
     /// runs a script. A provider loads here what the step works on, as
@@ -3218,9 +3239,9 @@ mod tests {
 
     #[test]
     fn a_stored_binding_gives_the_standing_operations_and_the_granted_ones() {
-        let standing = |op: &str| !op.starts_with("web.");
-        let of = |web: &str| {
-            let stored = Bindings::clax("7q3k9mzx2b4t", web);
+        let standing = |op: &str| !op.starts_with("web.") && !op.starts_with("browser.");
+        let of = |caps: &str| {
+            let stored = Bindings::clax("7q3k9mzx2b4t", caps);
             Binding::from_stored(
                 stored.of(CLAX_SURFACE).expect("the clax binding"),
                 crate::api::definition(),
@@ -3233,9 +3254,13 @@ mod tests {
         assert_eq!(plain.scope, json!({"artifact": "7q3k9mzx2b4t"}));
         assert_eq!(plain.operations.len(), 22);
         assert!(plain.has("draft.publish") && !plain.has("web.search") && !plain.has("web.fetch"));
-        let fetch = of("fetch");
+        assert!(!plain.has("browser.test") && !plain.has("browser.browse"));
+        let fetch = of("clax-web:fetch");
         assert!(fetch.has("web.fetch") && !fetch.has("web.search"));
-        let both = of("search,fetch");
+        let test = of("clax-browser:open-artifact");
+        assert!(test.has("browser.test") && !test.has("browser.browse"));
+        let both =
+            of("clax-web:search,clax-web:fetch,clax-browser:open-artifact,clax-browser:open-url");
         let names: Vec<&str> = crate::api::definition()
             .operations()
             .map(|o| o.name)
@@ -3337,7 +3362,11 @@ mod tests {
             (None, Some(Value::Null)),
         ] {
             let mut today = base();
-            crate::events::with_web_fields(&mut today, cost, web.as_ref());
+            crate::events::with_call_fields(
+                &mut today,
+                cost,
+                &web.as_ref().map_or(Value::Null, |w| json!({"web": w})),
+            );
             let mut answer = Answer::written(Ok(Value::Null));
             if let Some(cost) = cost {
                 answer = answer.charged(cost);

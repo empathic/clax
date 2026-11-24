@@ -36,6 +36,7 @@ pub mod icon;
 pub mod ids;
 pub mod live;
 pub mod live_layers;
+pub mod macaroon;
 pub mod manifest;
 pub mod media;
 pub mod mentions;

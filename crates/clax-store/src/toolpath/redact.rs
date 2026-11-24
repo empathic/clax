@@ -294,7 +294,11 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("grant.request", "grant_id" | "flow" | "key_sha256" | "access") => Safe,
         ("grant.approve", "grant_id" | "person" | "access" | "code_checked") => Safe,
         ("grant.deny", "grant_id" | "reason") => Safe,
-        ("grant.revoke", "grant_id" | "by" | "sessions_ended") => Safe,
+        ("grant.revoke", "grant_id" | "by" | "sessions_ended" | "reason") => Safe,
+        (
+            "grant.issue",
+            "grant_id" | "granter" | "grantee" | "access" | "parent" | "event" | "expires_at",
+        ) => Safe,
         ("grant.token", "grant_id" | "op") => Safe,
         ("grant.narrow", "grant_id" | "narrow") => Safe,
         ("person.rights", "person" | "rights") => Safe,
@@ -367,9 +371,22 @@ fn body_class(kind: &str, field: &str) -> Class {
             | "code" | "stored",
         ) => Safe,
         ("bot.web", "query" | "url" | "response") => Text,
+        // A call of any capability (spec 2026-11-19-claxbot-browser-design
+        // §4.8): the capability, op, outcome, charge, the source kind, a
+        // session's ID, its viewport, version, path and time, a host end's
+        // reason, a fetch's format and source and Cloudflare's request ID
+        // are codes and numbers; a query, a URL and a search provider's
+        // whole answer are the model's or a page's text.
+        (
+            "bot.spend",
+            "capability" | "run" | "step" | "op" | "ok" | "code" | "credits_milli" | "provider"
+            | "source" | "format" | "request_id" | "stored" | "session" | "kind" | "viewport"
+            | "version" | "path" | "ms" | "passed" | "reason",
+        ) => Safe,
+        ("bot.spend", "query" | "url" | "response") => Text,
         ("bot.run_end", "run" | "outcome" | "credits_milli") => Safe,
         ("bot.run_end", "reason") => Text,
-        ("bot.cancel", "run" | "by") => Safe,
+        ("bot.cancel", "run" | "by" | "reason") => Safe,
         // A refusal before any model call: who, why (a code) and where.
         ("bot.refused", "person" | "reason" | "artifact") => Safe,
         // A registered surface: its name is one word of the host's, its
@@ -398,6 +415,11 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("admin.settings", "fields") => Safe,
         // A person's own choice of the web tools: their key and a flag.
         ("me.web", "person" | "value") => Safe,
+        // A person's own choice of browser use: their key and a flag.
+        ("me.browser", "person" | "value") => Safe,
+        // A capability grant issued or revoked: IDs, a capability's ID,
+        // `instance`, `migration` or a person key, a grantee
+        // (`everyone`, `person:<key>`, `runs_of:<key>`) and the op.
         // External artifacts and report queues (spec
         // 2026-10-27-clax-sdk-design §6.6): an app's opaque IDs, titles,
         // revisions and metadata are its users' text; a page URL can carry

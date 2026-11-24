@@ -9,7 +9,7 @@
 //!   once. [`RunLimits::images_per_step`] of them at most, each of
 //!   [`RunLimits::image_bytes`] at most and [`RunLimits::image_side`]
 //!   pixels a side at most (as its header says), and none while the run
-//!   sends the model none ([`crate::RunSettings::model_takes_images`]):
+//!   sends the model none ([`crate::RunSettings::takes_images`]):
 //!   each one left out is listed with why ([`choose`]).
 //! - **What the tool result says.** Its JSON gains `images`, one entry
 //!   for each such handle, `{"id", "shown": true}` or `{"id", "shown":
@@ -44,10 +44,11 @@ use serde_json::{Value, json};
 pub const IMAGES_SHOWN_ONCE: &str =
     "The images of this result were shown once, with it, and are not shown again.";
 
-/// Why an image is not shown when the run sends the model none
-/// ([`crate::RunSettings::model_takes_images`] is false): what was done,
+/// Why an image is not shown when the run sends its model none
+/// ([`crate::RunSettings::takes_images`] is false for it): what was done,
 /// not a claim about the model, which nothing here knows.
-const NOT_SENT: &str = "images are not sent to the model here ([bot] model_takes_images is off)";
+const NOT_SENT: &str =
+    "images are not sent to the model here (this instance's [bot.models] images does not list it)";
 
 /// The most values [`found`] looks at in one script's value: one past the
 /// sandbox's result limit could hold no more.

@@ -96,6 +96,19 @@ settings! {
     WebFetchUrlRule = "web.fetch.url_rule", UrlRule, "sourced";
     WebFetchAllowlist = "web.fetch.allowlist", Hosts, Vec::<String>::new();
     WebCloudflareAccountId = "web.cloudflare.account_id", AccountId, "";
+    BrowserMaxConcurrent = "browser.max_concurrent", OneTo50, 2;
+    BrowserOpenUrlEnabled = "browser.open-url.enabled", Bool, false;
+    BrowserOpenUrlUrlRule = "browser.open-url.url_rule", UrlRule, "sender";
+    BrowserOpenUrlAllowlist = "browser.open-url.allowlist", Hosts, Vec::<String>::new();
+    BrowserOpenUrlMaxPerRun = "browser.open-url.max_per_run", Positive, 5;
+    BrowserOpenArtifactEnabled = "browser.open-artifact.enabled", Bool, false;
+    BrowserOpenArtifactMaxPerRun = "browser.open-artifact.max_per_run", Positive, 10;
+    BrowserOpenContentEnabled = "browser.open-content.enabled", Bool, false;
+    BrowserOpenContentMaxPerRun = "browser.open-content.max_per_run", Positive, 10;
+    BrowserCallSeconds = "browser.call_seconds", TenTo120, 60;
+    BrowserSessionIdleSeconds = "browser.session.idle_seconds", SixtyTo1200, 300;
+    BrowserSessionMaxSeconds = "browser.session.max_seconds", SixtyTo7200, 1_800;
+    BrowserMaxOpenPerRun = "browser.max_open_per_run", OneTo4, 1;
 }
 
 /// What a setting's value is.
@@ -124,8 +137,22 @@ enum Kind {
     Ident,
     /// An integer from 1 to 10.
     OneToTen,
-    /// Which URLs a fetch may take: `sourced`, `any_public` or `allowlist`.
+    /// Which URLs a capability that takes one admits (spec
+    /// 2026-11-19-claxbot-browser-design §4.5): `sender`, `sourced`,
+    /// `allowlist` or `any_public`.
     UrlRule,
+    /// An integer from 10 to 120 (a browser call's time cap, in seconds).
+    TenTo120,
+    /// An integer from 1 to 50 (browsers open at once on the instance).
+    OneTo50,
+    /// An integer from 60 to 1,200 (a browser session's idle time, in
+    /// seconds).
+    SixtyTo1200,
+    /// An integer from 60 to 7,200 (a browser session's lifetime, in
+    /// seconds).
+    SixtyTo7200,
+    /// An integer from 1 to 4 (a run's browser sessions open at once).
+    OneTo4,
     /// At most 100 lowercase hostnames, each optionally `*.`-prefixed.
     Hosts,
     /// Empty (unset), or a Cloudflare account ID: 32 hex digits.
@@ -262,9 +289,29 @@ impl Setting {
                 Some(n) if (1..=10).contains(&n) => Ok(Value::from(n)),
                 _ => Err(bad("a whole number from 1 to 10")),
             },
+            Kind::TenTo120 => match value.as_i64() {
+                Some(n) if (10..=120).contains(&n) => Ok(Value::from(n)),
+                _ => Err(bad("a whole number from 10 to 120")),
+            },
+            Kind::OneTo50 => match value.as_i64() {
+                Some(n) if (1..=50).contains(&n) => Ok(Value::from(n)),
+                _ => Err(bad("a whole number from 1 to 50")),
+            },
+            Kind::SixtyTo1200 => match value.as_i64() {
+                Some(n) if (60..=1_200).contains(&n) => Ok(Value::from(n)),
+                _ => Err(bad("a whole number from 60 to 1200")),
+            },
+            Kind::SixtyTo7200 => match value.as_i64() {
+                Some(n) if (60..=7_200).contains(&n) => Ok(Value::from(n)),
+                _ => Err(bad("a whole number from 60 to 7200")),
+            },
+            Kind::OneTo4 => match value.as_i64() {
+                Some(n) if (1..=4).contains(&n) => Ok(Value::from(n)),
+                _ => Err(bad("a whole number from 1 to 4")),
+            },
             Kind::UrlRule => match value.as_str().map(str::trim) {
-                Some(r @ ("sourced" | "any_public" | "allowlist")) => Ok(Value::from(r)),
-                _ => Err(bad("one of sourced, any_public, allowlist")),
+                Some(r @ ("sender" | "sourced" | "any_public" | "allowlist")) => Ok(Value::from(r)),
+                _ => Err(bad("one of sender, sourced, any_public, allowlist")),
             },
             Kind::Hosts => {
                 let what =
@@ -1196,5 +1243,95 @@ mod tests {
             .unwrap()
             .body;
         assert!(!body.contains("key_cleared"), "{body}");
+    }
+
+    /// Every browser capability's settings and the browser's own (spec
+    /// 2026-11-19-claxbot-browser-design §11.1), each off or at its
+    /// default until the admin sets it.
+    #[test]
+    fn the_capability_settings_default_off() {
+        let (_d, st) = store();
+        let want = [
+            ("browser.open-url.enabled", json!(false)),
+            ("browser.open-url.url_rule", json!("sender")),
+            ("browser.open-url.allowlist", json!([])),
+            ("browser.open-url.max_per_run", json!(5)),
+            ("browser.open-artifact.enabled", json!(false)),
+            ("browser.open-artifact.max_per_run", json!(10)),
+            ("browser.open-content.enabled", json!(false)),
+            ("browser.open-content.max_per_run", json!(10)),
+            ("browser.call_seconds", json!(60)),
+            ("browser.session.idle_seconds", json!(300)),
+            ("browser.session.max_seconds", json!(1_800)),
+            ("browser.max_open_per_run", json!(1)),
+            ("browser.max_concurrent", json!(2)),
+            ("web.search.enabled", json!(false)),
+            ("web.fetch.enabled", json!(false)),
+            ("web.fetch.url_rule", json!("sourced")),
+        ];
+        for (key, v) in want {
+            let s = Setting::parse(key).unwrap();
+            assert_eq!(s.key(), key);
+            assert_eq!(st.bot_setting(s).unwrap(), v, "{key}");
+            assert!(!s.is_pricing(), "{key}");
+        }
+    }
+
+    #[test]
+    fn url_rule_accepts_sender_for_fetch_and_open() {
+        let (_d, st) = store();
+        for s in [Setting::WebFetchUrlRule, Setting::BrowserOpenUrlUrlRule] {
+            for rule in ["sender", "sourced", "allowlist", "any_public"] {
+                st.set_bot_settings(DAEMON, &[(s, Some(json!(format!(" {rule} "))))])
+                    .unwrap();
+                assert_eq!(st.bot_setting(s).unwrap(), json!(rule), "{}", s.key());
+            }
+            for bad in [json!("open"), json!("Sender"), json!(1)] {
+                assert!(s.check(&bad).is_err(), "{} = {bad}", s.key());
+            }
+        }
+    }
+
+    #[test]
+    fn bad_session_times_are_refused() {
+        let (_d, st) = store();
+        for (s, bad) in [
+            (Setting::BrowserSessionIdleSeconds, json!(59)),
+            (Setting::BrowserSessionIdleSeconds, json!(1_201)),
+            (Setting::BrowserSessionIdleSeconds, json!(0)),
+            (Setting::BrowserSessionMaxSeconds, json!(59)),
+            (Setting::BrowserSessionMaxSeconds, json!(7_201)),
+            (Setting::BrowserMaxOpenPerRun, json!(0)),
+            (Setting::BrowserMaxOpenPerRun, json!(5)),
+            (Setting::BrowserCallSeconds, json!(9)),
+            (Setting::BrowserCallSeconds, json!(121)),
+            (Setting::BrowserOpenUrlMaxPerRun, json!(0)),
+            (Setting::BrowserOpenUrlAllowlist, json!(["Example.com"])),
+        ] {
+            assert!(
+                matches!(
+                    st.set_bot_settings(DAEMON, &[(s, Some(bad.clone()))]),
+                    Err(CoreError::Invalid {
+                        code: "invalid_setting",
+                        ..
+                    })
+                ),
+                "{} = {bad}",
+                s.key()
+            );
+        }
+        assert!(st.stored_bot_settings().unwrap().is_empty());
+        for (s, good) in [
+            (Setting::BrowserSessionIdleSeconds, 60),
+            (Setting::BrowserSessionIdleSeconds, 1_200),
+            (Setting::BrowserSessionMaxSeconds, 60),
+            (Setting::BrowserSessionMaxSeconds, 7_200),
+            (Setting::BrowserMaxOpenPerRun, 1),
+            (Setting::BrowserMaxOpenPerRun, 4),
+            (Setting::BrowserCallSeconds, 10),
+            (Setting::BrowserCallSeconds, 120),
+        ] {
+            assert_eq!(s.check(&json!(good)).unwrap(), json!(good), "{}", s.key());
+        }
     }
 }

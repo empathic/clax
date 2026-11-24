@@ -46,7 +46,7 @@
     account: people("account"), agents: people("agents"), sharing: people("sharing"), people: people("people"),
     claxbot: { load: () => import("../bot/MePage.svelte") },
     confirmations: { load: () => import("./Confirmations.svelte") },
-    roles: admin("people"), provider: admin("provider"), web: admin("web"), pricing: admin("pricing"), usage: admin("usage"),
+    roles: admin("people"), provider: admin("provider"), web: admin("web"), browser: admin("browser"), pricing: admin("pricing"), usage: admin("usage"),
     config: { load: () => import("../bot/SettingsPage.svelte") },
     remotes: { load: () => import("./Remotes.svelte") },
     audit: { load: () => import("../bot/AuditPage.svelte") },

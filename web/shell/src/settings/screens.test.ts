@@ -12,7 +12,7 @@ describe("Settings' screens", () => {
     expect(ids(LOCAL_OWNER)).toEqual([
       ["You", ["agents", "claxbot", "confirmations"]],
       ["People", ["people", "roles"]],
-      ["ClaxBot", ["provider", "web", "pricing", "usage"]],
+      ["ClaxBot", ["provider", "web", "browser", "pricing", "usage"]],
       ["System", ["config", "remotes", "audit"]],
     ]);
   });

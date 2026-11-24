@@ -22,8 +22,8 @@
 
 use crate::api;
 use crate::bot_surfaces::{Snapshot, allow_patterns};
+use crate::capability::CapSet;
 use crate::surface::Binding;
-use crate::web::WebShape;
 use clax_store::bot_runs::{Bindings, CLAX_SURFACE, StoredBinding};
 use clax_surface::{Access, Limits, RunScope};
 use serde_json::Value;
@@ -33,18 +33,19 @@ use serde_json::Value;
 pub const MAX_JOINED: usize = 7;
 
 /// The `clax` binding of a run of Clax's own kind on artifact
-/// `artifact_id` whose web grant has the shape `web` ([`clax_store::bot_runs::Run::web`]),
-/// as a binding of version 2: every operation the run would have with
+/// `artifact_id` holding the capabilities `caps`
+/// ([`clax_store::bot_runs::Run::caps`]), as a binding of version 2:
+/// every operation the run would have with
 /// bindings of version 1 ([`Bindings::clax`], read as
 /// [`Binding::from_stored`] reads it with Clax's standing rule), listed,
 /// on the scope `{"artifact": "<ID>"}`, with no hash, registration or
 /// prompt file.
 #[must_use]
-pub fn clax_binding(artifact_id: &str, web: &str) -> StoredBinding {
-    let v1 = Bindings::clax(artifact_id, web);
+pub fn clax_binding(artifact_id: &str, caps: &str) -> StoredBinding {
+    let v1 = Bindings::clax(artifact_id, caps);
     let stored = v1.of(CLAX_SURFACE).expect("a clax run's one binding");
     let had = Binding::from_stored(stored, api::definition(), |op| {
-        api::declared(op, WebShape::default())
+        api::declared(op, &CapSet::default())
     });
     StoredBinding::bound(
         CLAX_SURFACE,
@@ -147,8 +148,9 @@ pub fn joined_scope(artifact_id: &str, thread_ids: &[String]) -> Value {
     serde_json::json!({"clax": {"artifact": artifact_id, "thread_ids": thread_ids}})
 }
 
-/// The bindings of a run of Clax's own kind on `artifact_id`, with web
-/// grant `web`, that the joins' bindings `joined` were bound into: its
+/// The bindings of a run of Clax's own kind on `artifact_id`, holding
+/// the capabilities `caps`, that the joins' bindings `joined` were bound
+/// into: its
 /// `clax` binding ([`clax_binding`]) first, then the first
 /// [`MAX_JOINED`] of `joined` in their order; those past it are left out
 /// and named in the log. `None` for no joined binding, and for a set
@@ -156,7 +158,11 @@ pub fn joined_scope(artifact_id: &str, thread_ids: &[String]) -> Value {
 /// which is logged: the run is made with bindings of version 1, as a run
 /// with no join is, and is not refused for its joins.
 #[must_use]
-pub fn bindings_with(artifact_id: &str, web: &str, joined: Vec<StoredBinding>) -> Option<Bindings> {
+pub fn bindings_with(
+    artifact_id: &str,
+    caps: &str,
+    joined: Vec<StoredBinding>,
+) -> Option<Bindings> {
     if joined.is_empty() {
         return None;
     }
@@ -171,7 +177,7 @@ pub fn bindings_with(artifact_id: &str, web: &str, joined: Vec<StoredBinding>) -
             left.join(", ")
         );
     }
-    let mut all = vec![clax_binding(artifact_id, web)];
+    let mut all = vec![clax_binding(artifact_id, caps)];
     all.extend(joined.into_iter().take(MAX_JOINED));
     match Bindings::bound(all) {
         Ok(bindings) => Some(bindings),
@@ -198,10 +204,15 @@ mod tests {
     #[test]
     fn the_clax_binding_lists_what_a_run_of_its_web_grant_has() {
         let def = api::definition();
-        for web in ["", "search", "fetch", "search,fetch"] {
+        for web in [
+            "",
+            "clax-web:search",
+            "clax-web:fetch",
+            "clax-web:search,clax-web:fetch",
+        ] {
             let v1 = Bindings::clax("a1", web);
             let had = Binding::from_stored(v1.of(CLAX_SURFACE).unwrap(), def, |op| {
-                api::declared(op, WebShape::default())
+                api::declared(op, &CapSet::default())
             });
             let v2 = clax_binding("a1", web);
             assert_eq!(v2.operations(), Some(had.operations.as_slice()), "{web:?}");

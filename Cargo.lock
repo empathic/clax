@@ -462,6 +462,7 @@ name = "clax-bot"
 version = "0.7.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "clax-bot-js",
  "clax-bot-sandbox",
@@ -3681,7 +3682,10 @@ checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
 ]
 
@@ -3904,6 +3908,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror",
 ]

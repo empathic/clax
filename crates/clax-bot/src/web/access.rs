@@ -30,7 +30,6 @@ use crate::host::RequestContext;
 use clax_core::Result;
 use clax_store::Store;
 use clax_store::bot_runs::CallEntry;
-use clax_store::bot_settings::Setting;
 use clax_store::bot_web::WebPageRow;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -92,6 +91,9 @@ pub enum WebOff {
     /// The admin turned both search and fetch off ("off on this
     /// instance").
     AdminOff,
+    /// No live admin grant gives the person either capability ("not
+    /// granted to you").
+    NotGranted,
     /// The person turned web use off for themselves ("off by your
     /// choice").
     PersonOff,
@@ -102,49 +104,32 @@ pub enum WebOff {
 }
 
 impl WebOff {
-    /// `admin_off`, `person_off` or `not_configured`.
+    /// `admin_off`, `not_granted`, `person_off` or `not_configured`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             WebOff::AdminOff => "admin_off",
+            WebOff::NotGranted => "not_granted",
             WebOff::PersonOff => "person_off",
             WebOff::NotConfigured => "not_configured",
         }
     }
-}
 
-/// Which URLs a fetch may ask for (`web.fetch.url_rule`, spec §5.3).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum UrlRule {
-    /// Only URLs a source of the run holds (spec §5.2): the default.
-    Sourced,
-    /// Any public URL.
-    AnyPublic,
-    /// URLs a source of the run holds, on these hosts (lowercase, as
-    /// `web.fetch.allowlist` keeps them): `example.com` is that host
-    /// alone, `*.example.com` its subdomains and not `example.com`.
-    Allowlist(Vec<String>),
-}
-
-impl UrlRule {
-    /// Whether the rule lets a fetch reach `host` (lowercase, as
-    /// [`PublicUrl::host`] gives it): always, but under
-    /// [`UrlRule::Allowlist`], where the host must be on the list. It is
-    /// the host check of a redirect target too (spec §5.3).
+    /// The reason [`Off`](crate::capability::Off) gives, in this enum's
+    /// words.
     #[must_use]
-    pub fn allows_host(&self, host: &str) -> bool {
-        let UrlRule::Allowlist(hosts) = self else {
-            return true;
-        };
-        let host = host.strip_suffix('.').unwrap_or(host);
-        hosts.iter().any(|h| match h.strip_prefix("*.") {
-            Some(base) => host
-                .strip_suffix(base)
-                .is_some_and(|sub| sub.len() > 1 && sub.ends_with('.')),
-            None => host == h,
-        })
+    pub fn of(off: crate::capability::Off) -> WebOff {
+        use crate::capability::Off;
+        match off {
+            Off::NotOffered => WebOff::AdminOff,
+            Off::NotConfigured => WebOff::NotConfigured,
+            Off::NotGranted => WebOff::NotGranted,
+            Off::PersonOff => WebOff::PersonOff,
+        }
     }
 }
+
+pub use crate::capability::UrlRule;
 
 /// What a run may search, as the admin set it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -334,89 +319,108 @@ pub fn sources(
     out
 }
 
+/// Why [`admit`] refused a URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// One of the instance's own hosts: `url_not_allowed`.
+    OwnHost,
+    /// Under [`UrlRule::Allowlist`], a host not on the list:
+    /// `url_not_allowed`.
+    NotListed,
+    /// It looks like it holds a credential, and the sender did not write
+    /// it: `url_not_allowed`.
+    Credentialed,
+    /// No source the rule takes holds it (`sender`: not in the sender's
+    /// words; `sourced`, `allowlist`: in no source of the run):
+    /// `url_not_in_prior_context`.
+    NotInPriorContext,
+}
+
+impl Refused {
+    /// Its code: [`crate::web::CODE_URL_NOT_ALLOWED`] or
+    /// [`crate::web::CODE_URL_NOT_IN_PRIOR_CONTEXT`].
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Refused::NotInPriorContext => super::CODE_URL_NOT_IN_PRIOR_CONTEXT,
+            Refused::OwnHost | Refused::NotListed | Refused::Credentialed => {
+                super::CODE_URL_NOT_ALLOWED
+            }
+        }
+    }
+}
+
+/// Whether `url` passes `rule` (spec 2026-11-19-claxbot-browser-design
+/// §4.5), the one URL check of `web.fetch` and of a browser session on a
+/// URL: not one of the instance's own hosts (`own`), on the allowlist
+/// under [`UrlRule::Allowlist`], a credential-looking URL only in the
+/// sender's own words, and held by a source the rule takes, of `found`
+/// (the run's sources, [`sources`]): under [`UrlRule::Sender`] the
+/// sender's words alone, under [`UrlRule::Sourced`] and
+/// [`UrlRule::Allowlist`] any, under [`UrlRule::AnyPublic`] none needed
+/// ([`UrlSource::AnyPublic`] when none holds it). Checked in that order;
+/// the caller has parsed `url` as a [`PublicUrl`] (no credentials, no
+/// private literal, `localhost` or other scheme) and words each refusal.
+///
+/// # Errors
+/// Why it is refused.
+pub fn admit(
+    url: &PublicUrl,
+    rule: &UrlRule,
+    found: &BTreeMap<String, UrlSource>,
+    own: &super::OwnHosts,
+) -> std::result::Result<UrlSource, Refused> {
+    if own.holds(url.host()) {
+        return Err(Refused::OwnHost);
+    }
+    if !rule.allows_host(url.host()) {
+        return Err(Refused::NotListed);
+    }
+    let src = found.get(url.normalized()).cloned();
+    if super::url::looks_credentialed(url) && !matches!(src, Some(UrlSource::Request { .. })) {
+        return Err(Refused::Credentialed);
+    }
+    match (rule, src) {
+        (UrlRule::Sender, Some(s @ UrlSource::Request { .. })) => Ok(s),
+        (UrlRule::Sender, _) => Err(Refused::NotInPriorContext),
+        (_, Some(s)) => Ok(s),
+        (UrlRule::AnyPublic, None) => Ok(UrlSource::AnyPublic),
+        (_, None) => Err(Refused::NotInPriorContext),
+    }
+}
+
 impl WebAccess {
-    /// Now, for `person`: off when the admin turned both operations off
-    /// ([`WebOff::AdminOff`]), when the host's source can perform none of
-    /// those the admin turned on (`configured`, [`WebOff::NotConfigured`]),
-    /// or when the person chose off ([`WebOff::PersonOff`]), in that
-    /// order: the instance's reasons come first, since the person's switch
-    /// would not turn web use on. Else the operations the admin turned on
-    /// that the source can perform, with their settings.
+    /// Now, for `person`: a view of [`Capabilities::now`] over the two
+    /// web capabilities, the host able to perform those `configured`
+    /// names. Off when neither is live, for the reason closest to on
+    /// ([`Capabilities::why_off`]): the admin turned both off
+    /// ([`WebOff::AdminOff`]), the source can perform none of those
+    /// offered ([`WebOff::NotConfigured`]), no admin grant gives them
+    /// ([`WebOff::NotGranted`]), or the person's grants are revoked
+    /// ([`WebOff::PersonOff`]). Else the live ones, with their settings.
+    ///
+    /// [`Capabilities::now`]: crate::capability::Capabilities::now
+    /// [`Capabilities::why_off`]: crate::capability::Capabilities::why_off
     ///
     /// # Errors
     /// The store's.
     pub fn now(store: &Store, person: &str, configured: WebShape) -> Result<WebAccess> {
-        let on = |s: Setting| -> Result<bool> { Ok(store.bot_setting(s)?.as_bool() == Some(true)) };
-        let search_on = on(Setting::WebSearchEnabled)?;
-        let fetch_on = on(Setting::WebFetchEnabled)?;
-        if !search_on && !fetch_on {
-            return Ok(WebAccess::Off(WebOff::AdminOff));
+        use crate::capability::{Capabilities, Capability, Terms};
+        let caps = Capabilities::now(store, person, &|c| match c {
+            Capability::WebSearch => configured.search,
+            Capability::WebFetch => configured.fetch,
+            _ => false,
+        })?;
+        if let Some(off) = caps.why_off(&[Capability::WebSearch, Capability::WebFetch]) {
+            return Ok(WebAccess::Off(WebOff::of(off)));
         }
-        let search_on = search_on && configured.search;
-        let fetch_on = fetch_on && configured.fetch;
-        if !search_on && !fetch_on {
-            return Ok(WebAccess::Off(WebOff::NotConfigured));
-        }
-        if !store.web_choice(person)? {
-            return Ok(WebAccess::Off(WebOff::PersonOff));
-        }
-        let text = |s: Setting| -> Result<String> {
-            Ok(store.bot_setting(s)?.as_str().unwrap_or("").to_string())
+        let search = match caps.get(Capability::WebSearch) {
+            Ok(Terms::Search(g)) => Some(g.clone()),
+            _ => None,
         };
-        let count = |s: Setting| -> Result<u32> {
-            let v = store.bot_setting(s)?;
-            Ok(v.as_u64()
-                .and_then(|n| u32::try_from(n).ok())
-                .or_else(|| {
-                    s.default_value()
-                        .as_u64()
-                        .and_then(|n| u32::try_from(n).ok())
-                })
-                .unwrap_or(0))
-        };
-        let search = if search_on {
-            // The setting is checked on write (`Setting::check`), so the
-            // fallback is never reached in practice.
-            let provider = match text(Setting::WebSearchProvider)?.as_str() {
-                "exa" => Provider::Exa,
-                "linkup" => Provider::Linkup,
-                _ => Provider::Ceramic,
-            };
-            let alias = text(Setting::WebSearchByokAlias)?;
-            Some(SearchGrant {
-                provider,
-                gateway: text(Setting::WebSearchGateway)?,
-                byok_alias: (!alias.is_empty()).then_some(alias),
-                limit: u8::try_from(count(Setting::WebSearchLimit)?.clamp(1, 10)).unwrap_or(5),
-                max_per_run: count(Setting::WebMaxSearchesPerRun)?,
-            })
-        } else {
-            None
-        };
-        let fetch = if fetch_on {
-            let rule = match text(Setting::WebFetchUrlRule)?.as_str() {
-                "any_public" => UrlRule::AnyPublic,
-                "allowlist" => UrlRule::Allowlist(
-                    store
-                        .bot_setting(Setting::WebFetchAllowlist)?
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_string)
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                ),
-                _ => UrlRule::Sourced,
-            };
-            Some(FetchGrant {
-                rule,
-                max_per_run: count(Setting::WebMaxFetchesPerRun)?,
-                limits: FetchLimits::default(),
-            })
-        } else {
-            None
+        let fetch = match caps.get(Capability::WebFetch) {
+            Ok(Terms::Fetch(g)) => Some(g.clone()),
+            _ => None,
         };
         Ok(WebAccess::On(WebGrant { search, fetch }))
     }
@@ -440,6 +444,7 @@ mod tests {
     use super::*;
     use clax_core::audit::AuditCtx;
     use clax_store::bot_runs::{NewRun, RequestKind};
+    use clax_store::bot_settings::Setting;
     use clax_store::credits::KeySource;
     use clax_store::roles::OWNER;
     use serde_json::json;
@@ -454,6 +459,26 @@ mod tests {
         let changes: Vec<(Setting, Option<Value>)> =
             changes.iter().map(|(s, v)| (*s, Some(v.clone()))).collect();
         st.set_bot_settings(&AuditCtx::DAEMON, &changes).unwrap();
+        grant_everyone(st);
+    }
+
+    /// The instance-wide grant of every capability, once: no capability
+    /// reaches a run without one (migration 69).
+    fn grant_everyone(st: &Store) {
+        use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GrantFilter};
+        let live = st
+            .cap_grants(&GrantFilter {
+                grantee: Some(EVERYONE.into()),
+                live: true,
+                ..GrantFilter::default()
+            })
+            .unwrap();
+        for cap in CAPABILITIES {
+            if !live.iter().any(|g| g.lists(cap)) {
+                st.issue_cap_grant(&AuditCtx::DAEMON, cap, clax_store::roles::OWNER, EVERYONE)
+                    .unwrap();
+            }
+        }
     }
 
     #[test]
@@ -625,7 +650,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: shape.as_str().into(),
+                    caps: clax_store::bot_runs::caps_of_web(shape.as_str()),
                 },
             )
             .unwrap();
@@ -662,6 +687,123 @@ mod tests {
             ["https://e.example/d", "https://f.example/"]
         );
         assert!(urls_in("no links, just https:// alone").is_empty());
+    }
+
+    /// The one URL check, as a fetch asks it: each rule against the
+    /// sender's words, a search answer and a fetched link, and the checks
+    /// every rule makes.
+    #[test]
+    fn sender_admits_only_the_senders_urls() {
+        let own = super::super::OwnHosts::new(Some("https://clax.example"), None).unwrap();
+        let request = UrlSource::Request {
+            comment_id: Some("c1".into()),
+        };
+        let search = UrlSource::Search {
+            step: 1,
+            seq: 0,
+            n: 1,
+        };
+        let page = UrlSource::Fetched {
+            step: 1,
+            seq: 1,
+            n: 1,
+        };
+        let found: BTreeMap<String, UrlSource> = [
+            ("https://said.example/a", request.clone()),
+            ("https://said.example/?token=1", request.clone()),
+            ("https://found.example/b", search.clone()),
+            ("https://linked.example/c", page.clone()),
+            ("https://found.example/?api_key=2", search.clone()),
+            ("https://clax.example/x", request.clone()),
+        ]
+        .into_iter()
+        .map(|(u, s)| (u.to_string(), s))
+        .collect();
+        let check =
+            |url: &str, rule: &UrlRule| admit(&PublicUrl::parse(url).unwrap(), rule, &found, &own);
+        let allow = UrlRule::Allowlist(vec!["said.example".into(), "found.example".into()]);
+        for (url, rule, want) in [
+            (
+                "https://said.example/a",
+                UrlRule::Sender,
+                Ok(request.clone()),
+            ),
+            (
+                "https://found.example/b",
+                UrlRule::Sender,
+                Err(Refused::NotInPriorContext),
+            ),
+            (
+                "https://linked.example/c",
+                UrlRule::Sender,
+                Err(Refused::NotInPriorContext),
+            ),
+            (
+                "https://found.example/b",
+                UrlRule::Sourced,
+                Ok(search.clone()),
+            ),
+            (
+                "https://linked.example/c",
+                UrlRule::Sourced,
+                Ok(page.clone()),
+            ),
+            (
+                "https://else.example/",
+                UrlRule::Sourced,
+                Err(Refused::NotInPriorContext),
+            ),
+            ("https://found.example/b", allow.clone(), Ok(search.clone())),
+            (
+                "https://linked.example/c",
+                allow.clone(),
+                Err(Refused::NotListed),
+            ),
+            (
+                "https://said.example/z",
+                allow.clone(),
+                Err(Refused::NotInPriorContext),
+            ),
+            (
+                "https://else.example/",
+                UrlRule::AnyPublic,
+                Ok(UrlSource::AnyPublic),
+            ),
+            (
+                "https://found.example/b",
+                UrlRule::AnyPublic,
+                Ok(search.clone()),
+            ),
+        ] {
+            assert_eq!(check(url, &rule), want, "{url} under {rule:?}");
+        }
+        for rule in [
+            UrlRule::Sender,
+            UrlRule::Sourced,
+            allow.clone(),
+            UrlRule::AnyPublic,
+        ] {
+            assert_eq!(
+                check("https://clax.example/x", &rule),
+                Err(Refused::OwnHost),
+                "{rule:?}"
+            );
+            assert_eq!(
+                check("https://found.example/?api_key=2", &rule),
+                Err(Refused::Credentialed),
+                "{rule:?}: a credential the sender did not write"
+            );
+            assert_eq!(
+                check("https://said.example/?token=1", &rule),
+                Ok(request.clone()),
+                "{rule:?}: one the sender wrote"
+            );
+        }
+        assert_eq!(
+            Refused::NotInPriorContext.code(),
+            "url_not_in_prior_context"
+        );
+        assert_eq!(Refused::OwnHost.code(), "url_not_allowed");
     }
 
     #[test]
@@ -732,7 +874,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: "search,fetch".into(),
+                    caps: "clax-web:fetch,clax-web:search".into(),
                 },
             )
             .unwrap();
@@ -762,6 +904,7 @@ mod tests {
         ];
         let pages = vec![WebPageRow {
             url: "https://example.com/a".into(),
+            format: "markdown".into(),
             step_n: 3,
             seq: 4,
             final_url: "https://example.com/a".into(),

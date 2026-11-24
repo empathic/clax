@@ -1104,6 +1104,7 @@ async fn a_run_with_no_artifact_is_its_persons_and_an_admins() {
                     absorbed: false,
                     estimated: false,
                     rate: None,
+                    after: 0,
                 }],
                 ..StepCommit::default()
             },

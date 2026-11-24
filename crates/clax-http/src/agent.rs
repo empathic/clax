@@ -301,6 +301,10 @@ need!(QueueArtifactPatch, Artifacts, "update", Own, DEFAULT_LIMIT);
 need!(QueueFix, Comments, "reply", Own, DEFAULT_LIMIT);
 need!(QueueDiagnostics, Comments, "read", Own, DEFAULT_LIMIT);
 need!(QueueCommentClip, Comments, "read", Own, DEFAULT_LIMIT);
+// A page exported to a machine grant (spec
+// 2026-11-19-claxbot-browser-design §18.5): the route checks the page's
+// capability and its grant row, no right of an artifact.
+need!(BotPageCall, None, Own, DEFAULT_LIMIT);
 
 /// Every route an agent of another machine may reach, by method and the
 /// path it is routed at (`MatchedPath`), with its need: [`verify_layer`]
@@ -585,6 +589,7 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         "/api/queues/{qid}/reports/{tid}/comments/{cid}/clip",
         QueueCommentClip::INFO,
     ),
+    ("POST", "/api/bot/pages", BotPageCall::INFO),
 ];
 
 /// A [`ROUTE_NEEDS`] entry: handler, right (type and action), class.
@@ -693,6 +698,7 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("queue_agent::fix", QueueFix),
     route_need!("queue_agent::diagnostics", QueueDiagnostics),
     route_need!("queue_agent::comment_clip", QueueCommentClip),
+    route_need!("bot::page_call", BotPageCall),
 ];
 
 /// The `Filtered` needs whose filter is live: a person's agent reaches

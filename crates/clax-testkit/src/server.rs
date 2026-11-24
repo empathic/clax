@@ -465,6 +465,17 @@ impl TestServer {
         Self::start(dir, bind, clock, |_| {}, false, None).await
     }
 
+    /// [`TestServer::spawn_on_with_clock`] with `f` applied to the state
+    /// before it serves, as [`TestServer::spawn_with`] does.
+    pub async fn spawn_on_with_clock_and(
+        bind: IpAddr,
+        clock: Arc<ManualClock>,
+        f: impl FnOnce(&mut AppState),
+    ) -> TestServer {
+        let dir = tempfile::tempdir().unwrap();
+        Self::start(dir, bind, clock, f, false, None).await
+    }
+
     /// A hosted test daemon ([`clax_http::hosted`]) whose public origin is
     /// `http://localhost:<its port>` and whose setup takes `secret` (`None`:
     /// setup closed), every time read from `clock`.

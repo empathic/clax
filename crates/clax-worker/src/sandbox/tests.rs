@@ -38,8 +38,9 @@ fn the_script_module_puts_code_line_n_on_module_line_n_plus_one() {
 fn the_driver_imports_the_script_module_by_its_quoted_name() {
     let driver = driver_module("my \"script\"");
     assert!(driver.starts_with("import make from \"my \\\"script\\\"\";\n"));
-    assert!(prelude_module().starts_with("module.exports = "));
-    assert!(prelude_module().ends_with(PRELUDE));
+    assert!(prelude_module(false).starts_with("module.exports = "));
+    assert!(prelude_module(false).ends_with(PRELUDE));
+    assert!(prelude_module(true).contains(clax_bot_sandbox::BROWSER_LAYER));
 }
 
 #[test]
@@ -276,6 +277,7 @@ fn the_job_carries_the_limits_the_driver_applies() {
         &Limits::default(),
         "my script",
         None,
+        None,
     ))
     .unwrap();
     assert_eq!(job["ops"], json!(["echo"]));
@@ -290,11 +292,37 @@ fn the_job_carries_the_limits_the_driver_applies() {
         seed: 7,
     };
     let job: Value =
-        serde_json::from_str(&job_json(&[], &Limits::default(), "s", Some(det))).unwrap();
+        serde_json::from_str(&job_json(&[], &Limits::default(), "s", Some(det), None)).unwrap();
     assert_eq!(
         (&job["nowMs"], &job["seed"]),
         (&json!(1_700_000_000_000i64), &json!(7))
     );
+    assert!(job.get("state").is_none());
+    // A script's starting state goes as the JSON text the prelude parses.
+    let saved = json!({"value": {"n": 1}, "handles": []});
+    let job: Value =
+        serde_json::from_str(&job_json(&[], &Limits::default(), "s", None, Some(&saved))).unwrap();
+    assert_eq!(job["state"], json!(saved.to_string()));
+}
+
+/// The state the prelude wrote comes back with the end, whether the
+/// script returned or threw; an end without `done` has none.
+#[test]
+fn the_end_carries_the_state_the_prelude_wrote() {
+    let state = json!({"value": {"a": 1}, "handles": [], "dropped": [], "more": 0}).to_string();
+    let out = ended(
+        json!({"done": {"ok": true, "payload": "1", "state": state}}),
+        Limits::default(),
+    );
+    assert_eq!(out.state.unwrap().value, json!({"a": 1}));
+    let thrown = json!({"name": "Error", "message": "x"}).to_string();
+    let out = ended(
+        json!({"done": {"ok": false, "payload": thrown, "state": state}}),
+        Limits::default(),
+    );
+    assert_eq!(out.state.unwrap().value, json!({"a": 1}));
+    let out = ended(json!({"never": true}), Limits::default());
+    assert_eq!(out.state, None);
 }
 
 fn report(records: Value) -> String {

@@ -8,7 +8,8 @@
 //! The script's code passes [`check_body`] first, as on every sandbox. The
 //! dynamic Worker is then loaded (`LOADER.load`, a fresh isolate per
 //! script, never cached) with three modules: the driver (`driver.js`, its
-//! main module), the shared [`PRELUDE`] as `clax-prelude.js`, and the
+//! main module), the shared [`PRELUDE`] (with the browser layer for a
+//! script that asks for it, [`prelude_module`]) as `clax-prelude.js`, and the
 //! script, a CommonJS module whose export makes [`wrap`]`(code)`: CommonJS
 //! is compiled as script code, so the body is sloppy-mode code with
 //! HTML-like comments allowed, as the native sandbox compiles it, and line
@@ -364,10 +365,17 @@ pub fn script_module(code: &str) -> String {
     format!("{SCRIPT_PREFIX}{}{SCRIPT_SUFFIX}", wrap(code))
 }
 
-/// The prelude's CommonJS module, exporting [`PRELUDE`]'s function.
+/// The prelude's CommonJS module, exporting the function of
+/// [`clax_bot_sandbox::prelude_source`]: [`PRELUDE`], with the browser
+/// layer when `browser` ([`clax_bot_sandbox::Script::browser`]).
 #[must_use]
-pub fn prelude_module() -> String {
-    format!("module.exports = {PRELUDE}")
+pub fn prelude_module(browser: bool) -> String {
+    let source = if browser {
+        clax_bot_sandbox::prelude_source(true)
+    } else {
+        PRELUDE.into()
+    };
+    format!("module.exports = {source}")
 }
 
 /// The driver module, importing the script's module `name`.
@@ -388,6 +396,7 @@ pub fn job_json(
     limits: &Limits,
     file: &str,
     determinism: Option<clax_bot_sandbox::Determinism>,
+    state: Option<&Value>,
 ) -> String {
     let mut job = json!({
         "ops": ops,
@@ -400,6 +409,9 @@ pub fn job_json(
     if let Some(d) = determinism {
         job["nowMs"] = json!(d.now_ms);
         job["seed"] = json!(d.seed);
+    }
+    if let Some(state) = state {
+        job["state"] = json!(state.to_string());
     }
     job.to_string()
 }
@@ -424,6 +436,9 @@ pub struct Done {
     pub ok: bool,
     #[serde(default)]
     pub payload: Option<String>,
+    /// The `state` the script left, as the prelude wrote it.
+    #[serde(default)]
+    pub state: Option<String>,
 }
 
 /// How the script ended, as the driver reports it.
@@ -683,6 +698,12 @@ impl RunState {
     pub fn outcome(mut self, end: End, busy_us: u64, wall_us: u64) -> ScriptOutcome {
         // A run that loaded no isolate held no memory.
         let loaded = !matches!(end, End::NotLoaded(_));
+        let state = match &end {
+            End::Final(f) => {
+                clax_bot_sandbox::StateOut::read(f.done.as_ref().and_then(|d| d.state.as_deref()))
+            }
+            _ => None,
+        };
         let ended: Result<Option<Value>, ScriptError> = match end {
             End::Final(mut end) => {
                 let records = std::mem::take(&mut end.records);
@@ -737,6 +758,7 @@ impl RunState {
             busy_us,
             mem_peak_bytes,
             wall_us,
+            state,
         }
     }
 

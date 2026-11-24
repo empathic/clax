@@ -64,13 +64,22 @@ export type MeBot = {
   can_export?: boolean;
   provider_host?: string | null;
   web?: MeWeb;
+  capabilities?: MeCapability[];
+};
+/** The five capabilities, each granted, priced and turned off on its own (spec 2026-11-19-claxbot-browser §4.2). */
+export type CapabilityId = "clax-web:search" | "clax-web:fetch" | "clax-browser:open-url" | "clax-browser:open-artifact" | "clax-browser:open-content";
+/** One capability as `GET /api/me/bot` shows it to the person: `offered` the admin's switch is on and the host can perform it, `granted` an admin grant gives it to them, `on` it reaches their runs now, `why_off` why not, and what one `per` costs them in milli-credits (null without its line). */
+export type MeCapability = {
+  id: CapabilityId; offered: boolean; granted: boolean; on: boolean;
+  why_off: "not_offered" | "not_configured" | "not_granted" | "person_off" | null;
+  price_milli: number | null; per: "request" | "minute";
 };
 /** Whether ClaxBot may search and read the web for this person (`GET
  * /api/me/bot`): `on` their own choice (on by default), `offered` whether
  * the admin turned on a web operation the host's source can perform, and
  * `operations` which, `why_off` why their runs have none now, else `null`. */
 export type MeWeb = {
-  on: boolean; offered: boolean; operations: { search: boolean; fetch: boolean }; why_off: "admin_off" | "person_off" | "not_configured" | null;
+  on: boolean; offered: boolean; operations: { search: boolean; fetch: boolean }; why_off: "admin_off" | "not_granted" | "person_off" | "not_configured" | null;
   /** Milli-credits one request costs them: a search on the active provider's line, a fetch (null for a line that does not exist). */
   prices: { search_milli: number | null; fetch_milli: number | null };
 };
@@ -102,7 +111,22 @@ export type BotCall = {
   cost_milli?: number;
   /** A web call's query (search) or URL (fetch), and for a fetch the source that allowed it: `comment`, `search #<seq>` or `page #<seq>`. */
   web?: { query?: string; url?: string; source?: string };
+  /** A browser call's summary (absent to a reader of the artifact, who does not see the draft it shows). */
+  browser?: BrowserSummary;
 };
+/** What the run shows of a browser call: a test's target (`draft` or `v<n>`; before its arguments were read, the target as the script gave it) and path, or a browse's URL (as the script gave it), and its viewport, then, once a test ran, its time, whether it passed, its steps as `[ok, failed]`, its saved tests, the counts of uncaught errors, console messages and blocked requests, and its screenshots' content IDs. */
+export type BrowserSummary = {
+  target?: string | { version?: number } | null; path?: string; viewport?: string; url?: string;
+  ms?: number; passed?: boolean; steps?: [number, number]; tests?: { passed: number; failed: number };
+  errors?: number; console?: number; blocked?: number; screenshots?: string[];
+  /** A session's calls (spec 2026-11-19-claxbot-browser §6.9, §12): the session's ID and source kind, the flat operation (`page`, `act`, `expect`, `close`), its action or matcher and its locator's steps (null for `expect(page)`), whether it passed, and a recording's clip (its frame manifest's content ID). `ms` is the browser time the call charged. */
+  session?: string; kind?: "url" | "artifact" | "content"; op?: string;
+  action?: string; locator?: unknown[] | null; ok?: boolean; clip?: string;
+};
+/** How a browser session ended: `page.close()`, or an end the host made. */
+export type SessionEnd = "closed" | "idle" | "lifetime" | "revoked" | "credits" | "run_ended" | "dropped" | "lost";
+/** A browser session of a run as the store keeps it: its kind, when it opened, the time charged so far, and when and why it ended (null while open). */
+export type BrowserSessionRow = { session: string; kind: "url" | "artifact" | "content"; opened_at: string; charged_ms: number; closed_at: string | null; reason: SessionEnd | null };
 export type StepKind = "turn" | "script" | "finish" | "give_up" | "stopped" | "failed";
 /** One step of a run (§4.2). A `turn` carries the model's narration
  * (`text`) and tokens; a `script` its title, code, calls, logs, return
@@ -112,6 +136,9 @@ export type BotStep = {
   credits_milli: number;
   text?: string; model?: string; input_tokens?: number; cached_tokens?: number; output_tokens?: number; key_source?: "instance" | "own";
   title?: string; code?: string; calls?: BotCall[]; logs?: string[]; value?: unknown; error?: string | null; cpu_ms?: number;
+  /** The run's state a script step kept, each browser page in it shown as
+   * "<browser page>"; absent when the step left it as it was. */
+  state?: Record<string, unknown>;
   summary?: string; reason?: string;
   /** A `stopped` or `failed` step's failed model call, for admins, and for
    * the run's own person on their own key (never a reader's, nor an older
@@ -144,6 +171,8 @@ export type BotRun = {
   tokens?: { input: number; cached: number; output: number };
   draft?: { url: string } | null;
   last_event_id?: string | null;
+  /** The run's browser sessions (absent to an overseer and to a reader of the artifact). */
+  browser_sessions?: BrowserSessionRow[];
   steps: BotStep[];
 };
 /** A run as `GET /api/bot/runs?artifact=` lists it: without its steps. */
@@ -208,7 +237,7 @@ export type ProviderPatch = { api?: ModelApi; base_url?: string; models?: Partia
  * the credits `null` when it resolves to no price). */
 export type PriceSummary = { source: Exclude<RateSource, "provider"> | "mixed" | null; estimated: boolean; input_credits_milli_per_mtok: number | null; output_credits_milli_per_mtok: number | null };
 export type ProviderModels = { models: { id: string; display_name: string; pricing?: PriceSummary | null }[]; fetched_at: string };
-export type Unit = "mtok_input" | "mtok_cached_input" | "mtok_cache_write" | "mtok_output" | "cpu_gb_s" | "mreq" | "gb_month" | "run" | "kreq";
+export type Unit = "mtok_input" | "mtok_cached_input" | "mtok_cache_write" | "mtok_output" | "cpu_gb_s" | "mreq" | "gb_month" | "run" | "kreq" | "browser_s";
 /** A cost line (§7.2). `fixed_credits_milli`: a line charged at fixed credits per
  * unit (the harness fee) rather than from its cost. */
 export type CostLine = {
@@ -353,6 +382,8 @@ export const clearOwnKey = () => call<MeBot>("/api/me/bot/key", "DELETE");
 export const useOwnKey = (use_own: boolean) => call<MeBot>("/api/me/bot", "PUT", { use_own });
 /** Lets ClaxBot's runs for this person search and read the web, or not. */
 export const setWebChoice = (web: boolean) => call<MeBot>("/api/me/bot", "PUT", { web });
+/** Turns the person's grant of one capability to their runs on or off. */
+export const setCapabilityChoice = (id: CapabilityId, on: boolean) => call<MeBot>("/api/me/bot", "PUT", { capabilities: { [id]: on } });
 export const meUsage = (week?: string) => call<MeUsage>(`/api/me/usage${query({ week })}`);
 
 /** A refusal from a failed model call (502 `provider_error`), with how it failed. */
@@ -424,21 +455,63 @@ export type WebSettings = {
   /** Why web use is off whatever the credentials: the instance's configured public origin or site domain names no host, or the host's own source cannot run where it runs (a Worker under `wrangler dev --local`). Null otherwise. */
   unavailable: string | null;
   checking: boolean;
-  search: { enabled: boolean; provider: WebProvider; gateway: string; byok_alias: string; limit: number; max_per_run: number };
-  fetch: { enabled: boolean; url_rule: UrlRule; allowlist: string[]; max_per_run: number };
+  search: { enabled: boolean; provider: WebProvider; gateway: string; byok_alias: string; limit: number; max_per_run: number } & CapabilityState;
+  fetch: { enabled: boolean; url_rule: UrlRule; allowlist: string[]; max_per_run: number } & CapabilityState;
   cloudflare: { account_id: string; token: KeyInfo };
   sources: Record<string, Source>;
 };
 /** What `PUT /api/admin/web` changes: any of the editable fields. */
 export type WebPatch = {
   search?: Partial<Pick<WebSettings["search"], "enabled" | "provider" | "gateway" | "byok_alias" | "limit" | "max_per_run">>;
-  fetch?: Partial<WebSettings["fetch"]>;
+  fetch?: Partial<Pick<WebSettings["fetch"], "enabled" | "url_rule" | "allowlist" | "max_per_run">>;
   cloudflare?: { account_id?: string };
 };
 export const getAdminWeb = () => call<WebSettings>("/api/admin/web");
 export const putAdminWeb = (patch: WebPatch) => call<WebSettings>("/api/admin/web", "PUT", patch);
 export const putWebToken = (token: string) => call<WebSettings>("/api/admin/web/token", "PUT", { token });
 export const deleteWebToken = () => call<WebSettings>("/api/admin/web/token", "DELETE");
+/** What the admin page shows of a capability beside its settings, read-only: one request's price (`price_milli`) or a browser minute's, whether the host can perform it now, and why not whatever the settings. */
+export type CapabilityState = { price_milli?: number | null; price_milli_per_minute?: number | null; configured: boolean; unavailable: string | null };
+/** Which public URLs a browser session may open: those in the sender's own words, those a source of the run holds, the allowlist's hosts, or any. */
+export type BrowseRule = "sender" | "sourced" | "allowlist" | "any_public";
+/** `GET /api/admin/browser`: the three `browser.open` capabilities (`url`, `artifact`, `content`), each with its switch, its per-run cap and its state; the browser family's settings; `configured` whether the host can open browsers now (on a daemon, with the Cloudflare account ID and token of Web access), `unavailable` why browser use is off whatever the settings (else null), whether the Cloudflare account ID and token are set, and where each value comes from by its dotted name (`artifact.enabled`, `max_concurrent`). */
+export type BrowserSettings = {
+  url: { enabled: boolean; url_rule: BrowseRule; allowlist: string[]; max_per_run: number } & CapabilityState;
+  artifact: { enabled: boolean; max_per_run: number } & CapabilityState;
+  content: { enabled: boolean; max_per_run: number } & CapabilityState;
+  call_seconds: number; idle_seconds: number; max_seconds: number; max_open_per_run: number; max_concurrent: number;
+  configured: boolean;
+  unavailable: string | null;
+  cloudflare: { account: boolean; token: boolean };
+  sources: Record<string, Source>;
+};
+/** What `PUT /api/admin/browser` changes: any of the settings' fields. */
+export type BrowserPatch = {
+  url?: Partial<Pick<BrowserSettings["url"], "enabled" | "url_rule" | "allowlist" | "max_per_run">>;
+  artifact?: Partial<Pick<BrowserSettings["artifact"], "enabled" | "max_per_run">>;
+  content?: Partial<Pick<BrowserSettings["content"], "enabled" | "max_per_run">>;
+  call_seconds?: number; idle_seconds?: number; max_seconds?: number; max_open_per_run?: number; max_concurrent?: number;
+};
+export const getAdminBrowser = () => call<BrowserSettings>("/api/admin/browser");
+export const putAdminBrowser = (patch: BrowserPatch) => call<BrowserSettings>("/api/admin/browser", "PUT", patch);
+/** One live grant an admin made (`GET /api/admin/bot/grants`): of `capability`, to everyone on the instance or to one person; `granter` the admin's person key, or `migration`/`config` for the instance's own; `conveys` false once its granter is no longer an admin. */
+export type AdminGrant = { id: string; capability: CapabilityId; grantee: "everyone" | "person"; person: PersonKey | null; granter?: string; conveys?: boolean; issued_at: string };
+/** One live page share or export (spec 2026-11-19-claxbot-browser §18.4, §18.5): within `run`, or to the machine grant `grant`, conveying `actions` until `expires_at`. */
+export type AdminShare = { id: string; run: string | null; grant: string | null; granter: string; actions: string[]; origins: string[] | null; expires_at: string | null; issued_at: string };
+/** A run's pages its person may export to their machine grants, those grants, and their live exports (spec 2026-11-19-claxbot-browser §18.5); `released` true when each export's capability is released to its person ([`getExportCapability`]). */
+export type RunExports = { pages: { path: string }[]; grants: { id: string; name: string }[]; exports: { id: string; grant: string | null; actions: string[]; expires_at: string | null; issued_at: string }[]; released: boolean };
+export const getRunExports = (run: string) => call<RunExports>(`/api/bot/runs/${e(run)}/exports`);
+/** Exports the page at `path` of the run's state to machine grant `grant`, narrowed to `actions` (all five when absent). */
+export const postRunExport = (run: string, body: { path: string; grant: string; actions?: string[]; expires_s?: number }) => call<RunExports>(`/api/bot/runs/${e(run)}/exports`, "POST", body);
+export const deleteRunExport = (run: string, id: string) => call<RunExports>(`/api/bot/runs/${e(run)}/exports/${e(id)}`, "DELETE");
+/** Export `id`'s capability, for the person to give their machine, which calls the page with it (`POST /api/bot/pages`). */
+export const getExportCapability = (run: string, id: string) => call<{ id: string; capability: string; shown: string }>(`/api/bot/runs/${e(run)}/exports/${e(id)}/capability`);
+export const getAdminGrants = () => call<{ grants: AdminGrant[]; shares?: AdminShare[] }>("/api/admin/bot/grants");
+/** Grants `capability` to everyone on the instance, or to one person. */
+export const grantCapability = (capability: CapabilityId, to: "everyone" | PersonKey) =>
+  call<{ grants: AdminGrant[] }>("/api/admin/bot/grants", "POST", { capability, grantee: to === "everyone" ? "everyone" : { person: to } });
+/** Revokes one of the admin's grants, and the grants it issued. */
+export const revokeGrant = (id: string) => call<{ grants: AdminGrant[]; shares?: AdminShare[] }>(`/api/admin/bot/grants/${e(id)}`, "DELETE");
 export const providerModels = () => call<ProviderModels>("/api/admin/provider/models");
 /** `POST /api/admin/pricing/tokenulator`: refreshes the price catalog, then
  * prices `model`'s token lines from it, as `providerId` (its tokenulator.dev

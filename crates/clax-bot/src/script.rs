@@ -32,9 +32,9 @@ use crate::events::Event;
 use crate::host::args_hash;
 use crate::registry::CODE_OPS_INVALID;
 use crate::run::Observed;
-use crate::run::{CANCELLED, Next, Tick, TickOutcome, Wait, compute_qty, step_usage, watched};
+use crate::run::{Next, Tick, TickOutcome, Wait, compute_qty, step_usage, watched};
 use crate::surface::{
-    Answer, Binding, Bound, CallNote, CallPlace, Claim, End, FieldClash, Fields, Progress, RunInfo,
+    Answer, Binding, Bound, CallNote, CallPlace, Claim, FieldClash, Fields, Progress, RunInfo,
     StepCx, StepEnd, StepJoin, StepSession, SurfaceProvider, Unjournaled, dispatch, no_place,
     route,
 };
@@ -316,6 +316,7 @@ fn tool_result_content(
     calls: &Calls,
     told: &Fields,
     images: Option<&[Value]>,
+    state: Option<&Value>,
     max: usize,
 ) -> (String, bool) {
     let made: Vec<Value> = o
@@ -333,6 +334,11 @@ fn tool_result_content(
     // only for a value that holds one.
     if let Some(images) = images {
         v["images"] = json!(images);
+    }
+    // What was not kept of the run's state ([`crate::state`]): only when
+    // something was not.
+    if let Some(state) = state {
+        v["state"] = state.clone();
     }
     if let Some((at, why)) = &calls.diverged {
         let done: Vec<&str> = calls
@@ -481,9 +487,25 @@ impl Tick<'_> {
         let now_ms = chrono::DateTime::parse_from_rfc3339(&s.started_at)
             .map(|t| t.timestamp_millis())
             .unwrap_or(0);
-        let script = Script::new(title, code)
+        let mut script = Script::new(title, code)
             .with_ops(ops.iter().cloned())
             .with_determinism(now_ms, seed_of(&self.run.id, self.n));
+        // The browser layer, for a run one of whose bindings has the
+        // session operations among its own (spec 2026-11-19-claxbot-browser
+        // §17.5): every other run's prelude is without it.
+        if info.bindings.iter().any(|b| {
+            clax_bot_sandbox::BROWSER_SESSION_OPS
+                .iter()
+                .all(|op| b.operations.iter().any(|o| o == op))
+        }) {
+            script = script.with_browser();
+        }
+        // The run's state, as the last committed script step kept it: a
+        // step executed again starts from the same one.
+        let before = crate::state::last_committed(&self.steps);
+        if let Some(saved) = &before {
+            script = script.with_state(saved.clone());
+        }
         let limits = self.limits.script;
         let lost = AtomicBool::new(false);
         let mut outcome = watched(
@@ -549,6 +571,9 @@ impl Tick<'_> {
             drop(sessions);
             return self.park(waited).await;
         }
+        // The state the script left is the run's, not the outcome's: it is
+        // kept apart from what the step stores of the outcome.
+        let left = outcome.state.take();
         let StepHost { calls, journal, .. } = host;
         let mut calls = calls.into_inner().unwrap_or_else(|e| e.into_inner());
         // A script that waited for a call and, run again with its
@@ -662,7 +687,7 @@ impl Tick<'_> {
             // The sessions' fields go to the stop as they were joined,
             // for the bindings' `ending` fields to join.
             core.insert("outcome".into(), json!(outcome));
-            let mut stop = Ending::stopped(End::stopped(CANCELLED));
+            let mut stop = Ending::stopped(self.stopped_end());
             stop.core.extend(core);
             return self
                 .end(Ending {
@@ -676,11 +701,23 @@ impl Tick<'_> {
                 .await;
         }
         events.extend(self.unreported_calls(&reported));
+        // A script the sandbox stopped before its body settled wrote no
+        // state; one that never ran has nothing to tell.
+        let stopped = outcome.error.as_ref().and_then(|e| match e.kind {
+            ErrorKind::CpuLimit => Some("the script ran out of CPU time"),
+            ErrorKind::MemoryLimit => Some("the script ran out of memory"),
+            ErrorKind::CallLimit => Some("the script made too many calls"),
+            ErrorKind::Thrown | ErrorKind::HostError if left.is_none() => {
+                Some("the script was stopped")
+            }
+            _ => None,
+        });
+        let state = crate::state::fit(left, stopped);
         let images = crate::images::of_step(
             self.store,
             &self.run.id,
             outcome.value.as_ref(),
-            self.settings.model_takes_images,
+            self.settings.takes_images(&self.run.model),
             &self.limits,
         )?;
         let (content, is_error) = tool_result_content(
@@ -688,11 +725,22 @@ impl Tick<'_> {
             &calls,
             join.told(),
             images.as_ref().map(|i| &i.told[..]),
+            state.told.as_ref(),
             self.limits.tool_result_bytes,
         );
         if let Some(images) = images.as_ref().filter(|i| !i.shown.is_empty()) {
             core.insert("images".into(), images.kept());
         }
+        // Kept when it changed: the last state kept stands otherwise.
+        let start = before.unwrap_or_else(crate::state::empty);
+        let committed = match state.saved {
+            Some(saved) if saved != start => {
+                core.insert("state".into(), saved.clone());
+                saved
+            }
+            _ => start,
+        };
+        let held = crate::state::pages(&committed);
         core.insert("tool_use_id".into(), json!(tool_use_id));
         core.insert("outcome".into(), json!(outcome));
         core.insert(
@@ -714,6 +762,13 @@ impl Tick<'_> {
             join.commit(payload, usage, events),
             Observed::default(),
         )?;
+        // What the committed state no longer holds ends now (spec
+        // 2026-11-19-claxbot-browser §17.4).
+        if c.is_ok() {
+            for surface in &surfaces {
+                surface.provider.state_committed(info, self.n, &held).await;
+            }
+        }
         Ok(self.outcome(StepKind::Script, c))
     }
 
@@ -899,17 +954,18 @@ mod tests {
     #[test]
     fn a_result_is_cut_to_its_bound_with_the_sessions_fields_in_it() {
         let (outcome, calls, told) = logged(40);
-        let (whole, is_error) = tool_result_content(&outcome, &calls, &told, None, usize::MAX);
+        let (whole, is_error) =
+            tool_result_content(&outcome, &calls, &told, None, None, usize::MAX);
         assert!(!is_error);
         assert!(whole.contains(r#""published":{"version":2}"#), "{whole}");
         assert!(whole.contains(r#""line 39""#));
         // At its own length it is left whole.
         assert_eq!(
-            tool_result_content(&outcome, &calls, &told, None, whole.len()).0,
+            tool_result_content(&outcome, &calls, &told, None, None, whole.len()).0,
             whole
         );
         // One byte under: the logs are cut, and the result fits.
-        let (cut, _) = tool_result_content(&outcome, &calls, &told, None, whole.len() - 1);
+        let (cut, _) = tool_result_content(&outcome, &calls, &told, None, None, whole.len() - 1);
         assert!(cut.len() < whole.len(), "{} bytes", cut.len());
         assert!(cut.contains(clax_bot_sandbox::LOGS_TRUNCATED));
         assert!(cut.contains(r#""published":{"version":2}"#), "{cut}");
@@ -918,7 +974,7 @@ mod tests {
         let field = r#""published":{"version":2},"#.len();
         for under in 1..=field {
             let max = whole.len() - under;
-            let (text, _) = tool_result_content(&outcome, &calls, &told, None, max);
+            let (text, _) = tool_result_content(&outcome, &calls, &told, None, None, max);
             assert!(
                 text.len() <= max,
                 "{} bytes for a bound of {max}",
@@ -935,7 +991,8 @@ mod tests {
     fn a_cut_result_counts_its_marker_within_its_bound() {
         let (mut outcome, calls, told) = logged(0);
         outcome.value = Some(json!("x".repeat(200)));
-        let result = |o: &ScriptOutcome, max| tool_result_content(o, &calls, &told, None, max).0;
+        let result =
+            |o: &ScriptOutcome, max| tool_result_content(o, &calls, &told, None, None, max).0;
         let whole = result(&outcome, usize::MAX);
         // At its bound and one byte under it, it is left whole.
         assert_eq!(result(&outcome, whole.len()), whole);

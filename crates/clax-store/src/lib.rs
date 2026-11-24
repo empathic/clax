@@ -105,6 +105,7 @@ pub mod backfill;
 pub mod backup;
 pub mod batches;
 pub mod bot_content;
+pub mod bot_grants;
 pub mod bot_joins;
 pub mod bot_messages;
 pub mod bot_pending;

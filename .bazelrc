@@ -108,5 +108,9 @@ build:ci --disk_cache=
 # Five minutes a test target, where a loaded developer machine gets
 # fifteen (bazel/cargo.bzl): a test that hangs must not use up the job.
 test:ci --test_timeout=300
+# The browser lanes' Playwright workers: the whole runner is CI's, so they
+# run the 8 their `cpu:8` reserves, where a developer machine runs as many
+# as it has cores free (web/playwright.config.ts).
+test:ci --test_env=CLAX_E2E_WORKERS=8
 
 try-import %workspace%/user.bazelrc

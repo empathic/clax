@@ -251,3 +251,35 @@ async fn a_cancel_after_the_model_asked_to_end_the_run_stops_it() {
         assert!(env.replies().is_empty(), "{:?}", env.replies());
     }
 }
+
+/// A run asked to stop because a grant it needed was revoked ends
+/// `stopped` with that reason, `grant_revoked`, not `cancelled` (spec
+/// 2026-11-19-claxbot-browser-design §4.4).
+#[tokio::test]
+async fn a_run_stopped_for_a_revoked_grant_ends_with_its_reason() {
+    let env = Env::new().await;
+    env.api.push(finish_turn("All done."));
+    let run = env.run();
+    let deps = env.deps();
+    let d = DriverId::mint();
+    assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
+    env.store
+        .cancel_run_for(
+            &clax_bot::run::bot_ctx("*owner"),
+            &run,
+            Some(clax_bot::run::GRANT_REVOKED),
+        )
+        .unwrap();
+    let out = env.tick(&deps, &run, &d).await;
+    assert_eq!(out.next, Next::Done(RunStatus::Stopped));
+    let r = env.run_row(&run);
+    assert_eq!(
+        (r.status, r.reason.as_deref()),
+        (RunStatus::Stopped, Some("grant_revoked"))
+    );
+    let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
+    assert_eq!(
+        steps[1].payload.as_ref().unwrap()["reason"],
+        "grant_revoked"
+    );
+}

@@ -706,6 +706,14 @@ impl Store {
                 // No longer `*unconnected` (multi-person M14, M17).
                 self.visibility_changed();
             }
+            let public_id: Option<String> = tx.query_row(
+                "SELECT public_id FROM viewers WHERE id = ?1",
+                params![viewer_id],
+                |r| r.get(0),
+            )?;
+            if let Some(p) = public_id {
+                self.issue_joined_grants_in(tx, ctx, &p)?;
+            }
             self.signed_in(
                 tx,
                 ctx,
@@ -1237,6 +1245,41 @@ mod tests {
             code_of(st.create_signin_link(&s.who.viewer.id).unwrap_err()),
             "forbidden"
         );
+    }
+
+    /// A revoke ends the person's sign-in sessions: a cookie from before
+    /// it is refused after they are reinstated, and each end is recorded.
+    #[test]
+    fn a_reinstated_persons_old_session_stays_ended() {
+        let (_d, st, _c) = store();
+        st.hosted_setup(&AuditCtx::DAEMON, "Ada").unwrap();
+        let (_, code) = st
+            .create_invite(&AuditCtx::DAEMON, InvitePerson::New("Sam".into()), None)
+            .unwrap();
+        let s = st
+            .redeem_invite_in_browser(&AuditCtx::DAEMON, code.expose())
+            .unwrap();
+        let pid = s.who.viewer.public_id.clone();
+        assert!(st.browser_session(s.session.expose()).unwrap().is_some());
+        st.revoke_person(&AuditCtx::DAEMON, &pid).unwrap();
+        st.reinstate_person(&AuditCtx::DAEMON, &pid).unwrap();
+        assert!(
+            st.viewer_by_public_id(&pid)
+                .unwrap()
+                .unwrap()
+                .person_revoked_at
+                .is_none()
+        );
+        assert!(st.browser_session(s.session.expose()).unwrap().is_none());
+        let ends: Vec<serde_json::Value> = st
+            .events_after(0, 10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "session.end")
+            .map(|e| serde_json::from_str(&e.body).unwrap())
+            .collect();
+        assert_eq!(ends.len(), 1, "{ends:?}");
+        assert_eq!(ends[0]["reason"], "person_revoked");
     }
 
     #[test]

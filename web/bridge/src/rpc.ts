@@ -9,7 +9,7 @@ export const USE_TIMEOUT_MS = 10_000;
 /** A capability call's rejection: `code` is the contract's error code; extra
  * fields the shell sent (`live`, `paths`, ...) are copied onto the error. */
 export class CapabilityError extends Error {
-  readonly code: string;
+  declare readonly code: string;
   constructor(code: string, message: string, extra: Record<string, unknown> = {}) {
     super(message);
     this.name = "CapabilityError";
@@ -27,15 +27,25 @@ export function isCapabilityError(e: unknown): e is CapabilityError {
 
 type Pending = { resolve(v: unknown): void; reject(e: unknown): void };
 
+// Fields are `declare`d and set in the constructor: a field declaration
+// compiles, at the eager bridge's build target, to a defineProperty helper
+// and a call per field, bytes the eager bridge's gzip budget does not have.
 export class Rpc {
-  private seq = 0;
-  private open = false;
-  private readonly queue: BridgeToShell[] = [];
-  private readonly uses = new Map<string, (r: { config: unknown } | null) => void>();
-  private readonly calls = new Map<string, Pending>();
-  private readonly listeners = new Map<string, Set<(data: unknown) => void>>();
+  private declare seq: number;
+  private declare open: boolean;
+  private declare readonly queue: BridgeToShell[];
+  private declare readonly uses: Map<string, (r: { config: unknown } | null) => void>;
+  private declare readonly calls: Map<string, Pending>;
+  private declare readonly listeners: Map<string, Set<(data: unknown) => void>>;
 
-  constructor(private readonly post: (m: BridgeToShell) => void, private readonly timeoutMs = USE_TIMEOUT_MS) {}
+  constructor(private readonly post: (m: BridgeToShell) => void, private readonly timeoutMs = USE_TIMEOUT_MS) {
+    this.seq = 0;
+    this.open = false;
+    this.queue = [];
+    this.uses = new Map();
+    this.calls = new Map();
+    this.listeners = new Map();
+  }
 
   /** The shell answered: send what queued, in order, and everything after at once. */
   connect(): void {

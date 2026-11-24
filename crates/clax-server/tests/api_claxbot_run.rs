@@ -15,6 +15,28 @@ use serde_json::{Value, json};
 
 const KEY: &str = "sk-ant-api03-FAKEKEYFORTESTS-wxyz";
 
+/// The grant to everyone of every capability: none reaches a run
+/// without one (migration 69). Whether the instance offers each is its
+/// settings'.
+fn grant_everyone(ts: &TestServer) {
+    use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GrantFilter};
+    let live = ts
+        .store
+        .cap_grants(&GrantFilter {
+            grantee: Some(EVERYONE.into()),
+            live: true,
+            ..GrantFilter::default()
+        })
+        .unwrap();
+    for cap in CAPABILITIES {
+        if !live.iter().any(|g| g.lists(cap)) {
+            ts.store
+                .issue_cap_grant(&AuditCtx::DAEMON, cap, clax_store::roles::OWNER, EVERYONE)
+                .unwrap();
+        }
+    }
+}
+
 /// The settings of a daemon driving runs against the fake at `base`. A
 /// script's watchdog runs on real time, four times its CPU budget while
 /// the engine is busy (`clax_bot_js::Watchdog`): the budget is set far past
@@ -36,6 +58,7 @@ async fn daemon(fake: &FakeMessages) -> TestServer {
     ts.store
         .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
         .unwrap();
+    grant_everyone(&ts);
     let res = ts
         .client
         .put(format!("{}/api/admin/provider/key", ts.base))
@@ -294,7 +317,7 @@ async fn the_servers_host_passes_the_bot_host_conformance_suite() {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: String::new(),
+                    caps: String::new(),
                 },
             )
             .unwrap()
@@ -365,6 +388,7 @@ async fn a_run_edits_publishes_and_replies_as_claxbot_for_its_person() {
     ts.store
         .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
         .unwrap();
+    grant_everyone(&ts);
     // A new base URL drops the stored key: the admin enters it again.
     let res = ts
         .client
@@ -445,6 +469,7 @@ async fn held_daemon(fake: &FakeMessages) -> (TestServer, std::sync::Arc<clax_bo
     ts.store
         .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
         .unwrap();
+    grant_everyone(&ts);
     let res = ts
         .client
         .put(format!("{}/api/admin/provider/key", ts.base))
@@ -820,7 +845,7 @@ async fn a_reader_of_the_artifact_sees_a_runs_outline_alone_and_loses_it_with_th
                 key_source: clax_store::credits::KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
+                caps: String::new(),
             },
         )
         .unwrap();
@@ -1411,7 +1436,7 @@ async fn a_runs_clax_json_that_changes_the_declaration_is_its_makers() {
                 key_source: KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
+                caps: String::new(),
             },
         )
         .unwrap()
@@ -1484,7 +1509,7 @@ async fn a_runs_events_end_when_the_owner_logs_out() {
                 key_source: clax_store::credits::KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
+                caps: String::new(),
             },
         )
         .unwrap();
@@ -1672,6 +1697,7 @@ async fn a_host_source_that_cannot_run_here_reads_not_configured_and_says_why() 
 /// Turns search and fetch on at `/admin` and sets the Cloudflare account
 /// ID and token, so the daemon's web use is configured.
 async fn web_on(ts: &TestServer) {
+    grant_everyone(ts);
     for (path, body) in [
         (
             "/api/admin/web",
@@ -1894,4 +1920,1356 @@ async fn a_run_whose_step_does_not_read_fails_no_usage_page_and_no_listing() {
     let (s, two) = get(format!("/api/bot/runs/{}", runs[1])).await;
     assert_eq!(s, 200, "{two}");
     assert_eq!(two["steps"][0]["n"], 1, "{two}");
+}
+
+/// Sets the Cloudflare account ID and token at `/admin` and turns browser
+/// testing on, so the daemon's browser use is configured.
+async fn browser_on(ts: &TestServer) {
+    grant_everyone(ts);
+    for (path, body) in [
+        (
+            "/api/admin/web",
+            json!({"cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"}}),
+        ),
+        (
+            "/api/admin/web/token",
+            json!({"token": "cf-token-for-tests-1234"}),
+        ),
+        ("/api/admin/browser", json!({"artifact": {"enabled": true}})),
+    ] {
+        let res = ts
+            .client
+            .put(format!("{}{path}", ts.base))
+            .header("cookie", ts.owner_cookie())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn a_run_started_with_browser_on_declares_it() {
+    use clax_core::ArtifactId;
+    use clax_server::routes::bot::{Sender, start_run};
+    use clax_store::bot_runs::RequestKind;
+    use clax_store::roles::OWNER;
+    let fake = FakeMessages::start(vec![]).await;
+    let ts = daemon(&fake).await;
+    let id_of = |v: &Value| v["id"].as_str().unwrap().to_string();
+    let aid = id_of(&ts.publish("Page", &[("index.html", "<p>hi</p>")]).await["artifact"]);
+    let threads: Vec<String> = futures::future::join_all(
+        ["One?", "Two?", "Three?", "Four?"].map(|t| ts.thread(&aid, 1, t)),
+    )
+    .await
+    .iter()
+    .map(id_of)
+    .collect();
+    let aid = ArtifactId::parse(&aid).unwrap();
+    let sender = Sender {
+        person: OWNER.into(),
+        agent_grant: None,
+    };
+    let start = |bot: &clax_http::bot::Bot, tid: &str| {
+        let run = start_run(
+            &ts.store,
+            bot,
+            &AuditCtx::DAEMON,
+            &sender,
+            &aid,
+            RequestKind::Thread,
+            vec![tid.to_string()],
+        )
+        .unwrap();
+        ts.store.run(&run.id).unwrap().unwrap()
+    };
+    browser_on(&ts).await;
+    // The daemon's own bot, whose driver gave its runs a browser source.
+    let run = start(&ts.state.bot, &threads[0]);
+    assert!(ts.state.bot.browser);
+    assert_eq!(run.caps, "clax-browser:open-artifact");
+    let (_, as_made) = ts.store.run_as_made(&run.id).unwrap().unwrap();
+    let granted = as_made.bindings().unwrap().all()[0].granted().to_vec();
+    assert!(granted.iter().any(|o| o == "browser.test"), "{granted:?}");
+    assert!(
+        !granted.iter().any(|o| o == "browser.browse"),
+        "browsing is off by default: {granted:?}"
+    );
+    // A host with no browser source (the Worker) never gives the shape.
+    let no_source = clax_http::bot::Bot {
+        kek: ts.state.bot.kek.clone(),
+        ..Default::default()
+    };
+    assert!(!no_source.browser);
+    assert_eq!(start(&no_source, &threads[1]).caps, "");
+    // A person who turned the capability off gets a run without it.
+    ts.store
+        .set_cap_choice(
+            &AuditCtx::DAEMON,
+            OWNER,
+            "clax-browser:open-artifact",
+            false,
+        )
+        .unwrap();
+    assert_eq!(start(&ts.state.bot, &threads[2]).caps, "");
+    ts.store
+        .set_cap_choice(&AuditCtx::DAEMON, OWNER, "clax-browser:open-artifact", true)
+        .unwrap();
+    // Without the Cloudflare token, not configured.
+    let res = ts
+        .client
+        .delete(format!("{}/api/admin/web/token", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(start(&ts.state.bot, &threads[3]).caps, "");
+}
+
+#[tokio::test]
+async fn a_run_made_with_the_url_switch_on_holds_browser_open_url() {
+    use clax_core::ArtifactId;
+    use clax_server::routes::bot::{Sender, start_run};
+    use clax_store::bot_runs::RequestKind;
+    use clax_store::roles::OWNER;
+    let fake = FakeMessages::start(vec![]).await;
+    let ts = daemon(&fake).await;
+    let id_of = |v: &Value| v["id"].as_str().unwrap().to_string();
+    let aid = id_of(&ts.publish("Page", &[("index.html", "<p>hi</p>")]).await["artifact"]);
+    let threads: Vec<String> =
+        futures::future::join_all(["One?", "Two?", "Three?"].map(|t| ts.thread(&aid, 1, t)))
+            .await
+            .iter()
+            .map(id_of)
+            .collect();
+    let aid = ArtifactId::parse(&aid).unwrap();
+    let sender = Sender {
+        person: OWNER.into(),
+        agent_grant: None,
+    };
+    let start = |tid: &str| {
+        let run = start_run(
+            &ts.store,
+            &ts.state.bot,
+            &AuditCtx::DAEMON,
+            &sender,
+            &aid,
+            RequestKind::Thread,
+            vec![tid.to_string()],
+        )
+        .unwrap();
+        ts.store.run(&run.id).unwrap().unwrap()
+    };
+    browser_on(&ts).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/browser", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"url": {"enabled": true, "url_rule": "any_public"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let run = start(&threads[0]);
+    assert_eq!(run.caps, "clax-browser:open-artifact,clax-browser:open-url");
+    let (_, as_made) = ts.store.run_as_made(&run.id).unwrap().unwrap();
+    let granted = as_made.bindings().unwrap().all()[0].granted().to_vec();
+    assert!(granted.iter().any(|o| o == "browser.open"), "{granted:?}");
+    // Browsing is its own capability: the person's web choice off leaves
+    // it in, and the run keeps what was live when it was made.
+    ts.store
+        .set_web_choice(&AuditCtx::DAEMON, OWNER, false)
+        .unwrap();
+    let both = start(&threads[1]);
+    assert_eq!(
+        both.caps,
+        "clax-browser:open-artifact,clax-browser:open-url"
+    );
+    // Testing off, browsing on: a run that browses alone.
+    ts.store
+        .set_bot_settings(
+            &AuditCtx::DAEMON,
+            &[(Setting::BrowserOpenArtifactEnabled, Some(json!(false)))],
+        )
+        .unwrap();
+    assert_eq!(start(&threads[2]).caps, "clax-browser:open-url");
+}
+
+/// A fake Browser Run on 127.0.0.1: each WebSocket it accepts is a
+/// browser with one page (`clax_bot::browser::FakeChrome`) that requests
+/// the bridge, its frames carried both ways; the upgrades it saw (path and
+/// query, `Authorization`) and each browser's log kept.
+struct FakeBrowserRun {
+    base: url::Url,
+    upgrades: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    logs: std::sync::Arc<std::sync::Mutex<Vec<clax_bot::browser::ChromeLog>>>,
+    /// The artifact the page's bridge request names.
+    artifact: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl FakeBrowserRun {
+    async fn start() -> FakeBrowserRun {
+        FakeBrowserRun::start_with(|bridge| {
+            clax_bot::browser::PageModel::new().requests(&[(bridge, "Script")])
+        })
+        .await
+    }
+
+    /// A fake Browser Run whose every browser shows `model(bridge)`, the
+    /// bridge's URL for the artifact [`FakeBrowserRun::artifact`] names.
+    async fn start_with(
+        model: impl Fn(&str) -> clax_bot::browser::PageModel + Send + Sync + 'static,
+    ) -> FakeBrowserRun {
+        use clax_bot::browser::{CdpTransport, FakeChrome};
+        use futures::{FutureExt, SinkExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = url::Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let upgrades = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let artifact = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let (u, l, a) = (upgrades.clone(), logs.clone(), artifact.clone());
+        let model = std::sync::Arc::new(model);
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                let (u, l, a, model) = (u.clone(), l.clone(), a.clone(), model.clone());
+                tokio::spawn(async move {
+                    #[expect(
+                        clippy::result_large_err,
+                        reason = "tungstenite's Callback answers its ErrorResponse by value"
+                    )]
+                    let seen =
+                        move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                              resp| {
+                            u.lock().unwrap().push((
+                                req.uri().to_string(),
+                                req.headers()
+                                    .get("authorization")
+                                    .and_then(|v| v.to_str().ok())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            ));
+                            Ok(resp)
+                        };
+                    let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(sock, seen).await else {
+                        return;
+                    };
+                    let bridge = format!(
+                        "https://{}.clax-test.invalid/_clax/bridge.js",
+                        a.lock().unwrap()
+                    );
+                    let mut chrome = FakeChrome::page(model(&bridge));
+                    l.lock().unwrap().push(chrome.log());
+                    while let Some(Ok(m)) = ws.next().await {
+                        let Message::Text(t) = m else { continue };
+                        if chrome.send(t.as_str().to_string()).await.is_err() {
+                            break;
+                        }
+                        // The page answers each command at once: send what
+                        // it has, and end when it closed.
+                        loop {
+                            match chrome.recv().now_or_never() {
+                                Some(Ok(Some(f))) => {
+                                    let _ = ws.send(Message::text(f)).await;
+                                }
+                                Some(Ok(None) | Err(_)) => {
+                                    let _ = ws.close(None).await;
+                                    return;
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        FakeBrowserRun {
+            base,
+            upgrades,
+            logs,
+            artifact,
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_whole_browser_test_through_the_daemon() {
+    let fake = FakeMessages::start(vec![
+        Turn::script(
+            "tu_1",
+            "Test the page",
+            "const r = await clax.browser.test();
+             return {passed: r.passed, tests: r.tests === undefined, cost: r.cost,
+                     failed: r.requests.failed, blocked: r.requests.blocked};",
+        ),
+        Turn::finish("The page loads."),
+    ])
+    .await;
+    let run = FakeBrowserRun::start().await;
+    let base = run.base.clone();
+    let ts = TestServer::spawn_with(move |s| {
+        let browser =
+            std::sync::Arc::new(clax_server::browser_source::DaemonBrowser::of(s).sending_to(base));
+        let web = std::sync::Arc::new(clax_bot::web::FakeWebSource::new());
+        let d = clax_server::bot::driver_with_sources(s, web, browser);
+        clax_server::bot::start_driver(&d);
+    })
+    .await;
+    ts.store
+        .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
+        .unwrap();
+    grant_everyone(&ts);
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/provider/key", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"key": KEY}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    browser_on(&ts).await;
+    let aid = ts
+        .publish("Page", &[("index.html", "<p>hi there</p>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    *run.artifact.lock().unwrap() = aid.clone();
+    let tid = ts.thread(&aid, 1, "Does it load?").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .client
+        .post(format!("{}/api/bot/runs", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"thread_ids": [tid], "artifact_id": aid}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let rid = res.json::<Value>().await.unwrap()["run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        ts.store.run(&rid).unwrap().unwrap().caps,
+        "clax-browser:open-artifact"
+    );
+    let all = events(&ts, &rid, None).await;
+    assert_eq!(all.last().map(|(_, e, _)| e.as_str()), Some("run_end"));
+    // The prompt declared the browser, and the script's answer reached
+    // the model.
+    let requests = fake.requests();
+    let first = serde_json::to_string(&requests[0]).unwrap();
+    assert!(first.contains("test(source?:"), "declared");
+    let sent = serde_json::to_string(&requests).unwrap();
+    assert!(sent.contains(r#"\"passed\":true"#), "{sent}");
+    assert!(
+        sent.contains(r#"\"tests\":true"#),
+        "no saved tests ran: {sent}"
+    );
+    // One socket, to Browser Run's path with the instance's token.
+    let upgrades = run.upgrades.lock().unwrap().clone();
+    assert_eq!(
+        upgrades,
+        [(
+            "/client/v4/accounts/0123456789abcdef0123456789abcdef/browser-run/devtools/browser?keep_alive=60000".to_string(),
+            "Bearer cf-token-for-tests-1234".to_string()
+        )]
+    );
+    // The page was served by the daemon: the draft's index wrapped with
+    // the bridge, the bridge itself, each under the site's policy.
+    let log = run.logs.lock().unwrap()[0].clone();
+    let fulfilled = log.sent("Fetch.fulfillRequest");
+    assert_eq!(fulfilled.len(), 2, "{fulfilled:?}");
+    let body = |c: &Value| {
+        use base64::Engine as _;
+        let b = c["params"]["body"].as_str().unwrap_or_default();
+        String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b).unwrap()).unwrap()
+    };
+    let index = body(&fulfilled[0]);
+    assert!(index.contains("<p>hi there</p>"), "{index}");
+    assert!(index.contains("/_clax/bridge.js"), "{index}");
+    assert_eq!(fulfilled[0]["params"]["responseCode"], 200);
+    assert_eq!(fulfilled[1]["params"]["responseCode"], 200, "the bridge");
+    let headers = fulfilled[0]["params"]["responseHeaders"].to_string();
+    assert!(headers.contains("connect-src 'self'"), "{headers}");
+    assert_eq!(log.sent("Browser.close").len(), 1);
+    // Charged its browser time.
+    let rows: Vec<_> = ts
+        .store
+        .usage_of_run(&rid)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.line == clax_store::credits::LINE_BROWSER_TIME)
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].credits_milli > 0, "{rows:?}");
+}
+
+/// A page of one button, Book, titled "Hello".
+fn booking_page(bridge: &str) -> clax_bot::browser::PageModel {
+    use clax_bot::browser::fake::{Dom, el, value};
+    clax_bot::browser::PageModel::new()
+        .requests(&[(bridge, "Script")])
+        .dom(Dom::new(vec![
+            el("button")
+                .text("Book")
+                .rect(0.0, 0.0, 100.0, 40.0)
+                .role("button", "Book"),
+        ]))
+        .evaluate(|p| {
+            if p["expression"] == "document.title" {
+                value(json!("Hello"))
+            } else {
+                value(json!(true))
+            }
+        })
+}
+
+/// A daemon driving runs against `fake`, its browsers opened on `run`,
+/// its instance key set, the browser configured, every capability granted
+/// to everyone and the three `browser.open` kinds offered.
+async fn browser_daemon(fake: &FakeMessages, run: &FakeBrowserRun) -> TestServer {
+    let base = run.base.clone();
+    let ts = TestServer::spawn_with(move |s| {
+        let browser =
+            std::sync::Arc::new(clax_server::browser_source::DaemonBrowser::of(s).sending_to(base));
+        let web = std::sync::Arc::new(clax_bot::web::FakeWebSource::new());
+        let d = clax_server::bot::driver_with_sources(s, web, browser);
+        clax_server::bot::start_driver(&d);
+    })
+    .await;
+    ts.store
+        .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
+        .unwrap();
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/provider/key", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"key": KEY}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    browser_on(&ts).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/browser", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"content": {"enabled": true}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    ts
+}
+
+/// Sends a thread on a new artifact to ClaxBot on `ts`, and answers the
+/// run's ID once it ended, and the artifact's.
+async fn browser_run(ts: &TestServer, run: &FakeBrowserRun) -> (String, String) {
+    let aid = ts
+        .publish("Page", &[("index.html", "<p>hi there</p>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    *run.artifact.lock().unwrap() = aid.clone();
+    let tid = ts.thread(&aid, 1, "Does it book?").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .client
+        .post(format!("{}/api/bot/runs", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"thread_ids": [tid], "artifact_id": aid}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let rid = res.json::<Value>().await.unwrap()["run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let all = events(ts, &rid, None).await;
+    assert_eq!(all.last().map(|(_, e, _)| e.as_str()), Some("run_end"));
+    (rid, aid)
+}
+
+/// The milliseconds of each browser time row charged to run `rid`.
+fn browser_rows(ts: &TestServer, rid: &str) -> Vec<i64> {
+    ts.store
+        .usage_of_run(rid)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.line == clax_store::credits::LINE_BROWSER_TIME)
+        .map(|r| r.qty)
+        .collect()
+}
+
+/// The ID of run `rid`'s one browser session, as the store keeps it.
+fn only_session(store: &clax_store::Store, rid: &str) -> String {
+    let rows = store.bot_browser_sessions(rid).unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    rows[0].session_id.clone()
+}
+
+/// A session opened in one step on the daemon and clicked through a
+/// `Page` in the next, by the same browser over the same socket: the
+/// daemon's one registry holds it between the steps, and its time is
+/// charged once.
+#[tokio::test]
+async fn a_session_across_two_steps_through_the_daemon() {
+    let fake = FakeMessages::start(vec![
+        Turn::script(
+            "tu_1",
+            "Open the page",
+            "const page = await clax.browser.open({ artifact: 'draft' });
+             state.page = page;
+             return 1;",
+        ),
+        Turn::script(
+            "tu_2",
+            "Book",
+            "const page = state.page;
+             await page.getByRole('button', { name: 'Book' }).click();
+             return await page.close();",
+        ),
+        Turn::finish("Booked."),
+    ])
+    .await;
+    let run = FakeBrowserRun::start_with(booking_page).await;
+    let ts = browser_daemon(&fake, &run).await;
+    let (rid, _) = browser_run(&ts, &run).await;
+    let sent = serde_json::to_string(&fake.requests()).unwrap();
+    assert!(sent.contains(r#"\"ms\":"#), "the close answered: {sent}");
+    assert!(!sent.contains("browser_session_lost"), "{sent}");
+    let session = only_session(&ts.store, &rid);
+    let row = ts
+        .store
+        .bot_browser_session(&rid, &session)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::Closed));
+    // One browser, one socket, three mouse events for the click.
+    assert_eq!(run.upgrades.lock().unwrap().len(), 1);
+    let log = run.logs.lock().unwrap()[0].clone();
+    assert_eq!(log.sent("Input.dispatchMouseEvent").len(), 3);
+    assert_eq!(log.sent("Browser.close").len(), 1);
+    let rows = browser_rows(&ts, &rid);
+    assert_eq!(rows.len(), 3, "open, click and close: {rows:?}");
+    assert_eq!(rows.iter().sum::<i64>(), row.charged_ms);
+}
+
+/// A run that ends with a session open has it closed, `run_ended`, and
+/// its last segment charged.
+#[tokio::test]
+async fn the_run_end_closes_and_charges() {
+    let fake = FakeMessages::start(vec![
+        Turn::script(
+            "tu_1",
+            "Render",
+            "const page = await clax.browser.open({ html: '<h1>Two directions</h1>' });
+             state.page = page;
+             return 1;",
+        ),
+        Turn::finish("Rendered."),
+    ])
+    .await;
+    let run = FakeBrowserRun::start().await;
+    let ts = browser_daemon(&fake, &run).await;
+    let (rid, _) = browser_run(&ts, &run).await;
+    let session = only_session(&ts.store, &rid);
+    // The run's surfaces are told it ended once its end is committed, after
+    // `run_end` is sent.
+    let row = clax_testkit::until("the session closed at the run's end", || async {
+        ts.store
+            .bot_browser_session(&rid, &session)
+            .unwrap()
+            .filter(|r| !r.is_open())
+    })
+    .await;
+    assert_eq!(row.reason, Some(clax_store::bot_web::SessionEnd::RunEnded));
+    assert_eq!(run.logs.lock().unwrap()[0].sent("Browser.close").len(), 1);
+    let rows = browser_rows(&ts, &rid);
+    assert_eq!(rows.len(), 2, "the open and the end: {rows:?}");
+    assert_eq!(rows.iter().sum::<i64>(), row.charged_ms);
+    // The run panel reads the session and how it ended.
+    let res = ts
+        .client
+        .get(format!("{}/api/bot/runs/{rid}", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["browser_sessions"][0]["session"], session.as_str(), "{v}");
+    assert_eq!(v["browser_sessions"][0]["kind"], "content");
+    assert_eq!(v["browser_sessions"][0]["reason"], "run_ended");
+    assert_eq!(v["browser_sessions"][0]["charged_ms"], row.charged_ms);
+}
+
+/// A daemon whose browsers come from `source`, its driver not started
+/// (the tests open sessions in its registry themselves), the browser
+/// configured and offered, every capability granted to everyone.
+async fn registry_daemon(
+    source: std::sync::Arc<clax_bot::browser::FakeBrowserSource>,
+) -> TestServer {
+    let ts = TestServer::spawn_with(move |s| {
+        let web = std::sync::Arc::new(clax_bot::web::FakeWebSource::new());
+        let _ = clax_server::bot::driver_with_sources(s, web, source);
+    })
+    .await;
+    browser_on(&ts).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/browser", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"content": {"enabled": true}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    ts
+}
+
+/// A run of the owner's on a new artifact, made with `caps`, not driven.
+async fn run_with_caps(ts: &TestServer, caps: &str) -> String {
+    use clax_store::bot_runs::{NewRun, RequestKind};
+    use clax_store::credits::KeySource;
+    let aid = ts.publish("Page", &[("index.html", "<p>hi</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.store
+        .create_run(
+            &AuditCtx::DAEMON,
+            NewRun {
+                artifact_id: aid,
+                person: clax_store::roles::OWNER.into(),
+                request: RequestKind::Thread,
+                thread_ids: vec!["t1".into()],
+                model: "claude-sonnet-5-5".into(),
+                key_source: KeySource::Instance,
+                base_version: 1,
+                agent_grant: None,
+                caps: caps.into(),
+            },
+        )
+        .unwrap()
+        .id
+}
+
+/// Opens a session of `kind` for run `rid` in `ts`'s registry, on content
+/// for a content session and on the run's clax otherwise.
+async fn open_in_registry(
+    ts: &TestServer,
+    rid: &str,
+    kind: clax_store::bot_web::SessionKind,
+) -> String {
+    opened_in_registry(ts, rid, kind).await.session
+}
+
+/// [`open_in_registry`], answering what the open answered, its handle
+/// included.
+async fn opened_in_registry(
+    ts: &TestServer,
+    rid: &str,
+    kind: clax_store::bot_web::SessionKind,
+) -> clax_bot::browser::live::Opened {
+    use clax_bot::browser::live::{SessionTimes, new_session_id};
+    use clax_bot::browser::serve::{ContentSite, Origin};
+    use clax_bot::browser::session::{ContentPolicy, Start};
+    use clax_store::bot_web::SessionKind;
+    let sessions = ts.state.bot.browser_sessions.clone().unwrap();
+    let id = new_session_id();
+    let site = ContentSite::new(&id, b"<p>hi</p>".to_vec(), Default::default());
+    let start = match kind {
+        SessionKind::Content => Start::Content {
+            host: format!("{id}.clax-content.invalid"),
+        },
+        _ => Start::Test {
+            origin: Origin::new(&clax_core::ArtifactId::parse("abcdefghjkmn").unwrap()),
+            path: "index.html".into(),
+        },
+    };
+    sessions
+        .open(
+            rid,
+            id,
+            kind,
+            start,
+            std::sync::Arc::new(ContentPolicy(site)),
+            clax_bot::browser::opts::Viewport::desktop(),
+            SessionTimes {
+                call_seconds: 60,
+                idle_seconds: 300,
+                max_seconds: 1_800,
+            },
+            ts.store.now_utc() + chrono::Duration::seconds(60),
+            &clax_bot_sandbox::CancelToken::new(),
+        )
+        .await
+        .unwrap()
+}
+
+/// What a call of session `session` of run `rid` would meet now: `None`
+/// while it is open, else the error's code and message.
+fn session_state(ts: &TestServer, rid: &str, session: &str) -> Option<(String, String)> {
+    let sessions = ts.state.bot.browser_sessions.clone().unwrap();
+    sessions
+        .check(rid, session)
+        .err()
+        .map(|e| (e.code.to_string(), e.message.clone()))
+}
+
+/// The person turning `clax-browser:open-content` off on the Me page closes
+/// their runs' content sessions before `PUT /api/me/bot` answers; their
+/// next call meets `browser_session_closed`, `revoked`.
+#[tokio::test]
+async fn a_revoke_closes_the_session_before_it_answers() {
+    use clax_store::bot_web::SessionKind;
+    let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
+    source.opens(|| {
+        Ok(clax_bot::browser::FakeChrome::page(
+            clax_bot::browser::PageModel::new(),
+        ))
+    });
+    let ts = registry_daemon(source.clone()).await;
+    let rid = run_with_caps(&ts, "clax-browser:open-artifact,clax-browser:open-content").await;
+    let content = open_in_registry(&ts, &rid, SessionKind::Content).await;
+    let artifact = open_in_registry(&ts, &rid, SessionKind::Artifact).await;
+    assert_eq!(session_state(&ts, &rid, &content), None);
+    let res = ts
+        .client
+        .put(format!("{}/api/me/bot", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"capabilities": {"clax-browser:open-content": false}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let (code, message) = session_state(&ts, &rid, &content).expect("closed");
+    assert_eq!(code, "browser_session_closed");
+    assert!(message.contains("revoked"), "{message}");
+    assert_eq!(
+        session_state(&ts, &rid, &artifact),
+        None,
+        "its own capability stays"
+    );
+    assert_eq!(source.logs()[0].sent("Browser.close").len(), 1);
+    // The run lost a capability it declared: it is asked to stop, for the
+    // grant revoked (spec §4.4).
+    let run = ts.store.run(&rid).unwrap().unwrap();
+    assert_eq!(
+        (run.status, run.reason.as_deref()),
+        (
+            clax_store::bot_runs::RunStatus::Stopping,
+            Some(clax_bot::run::GRANT_REVOKED)
+        )
+    );
+    let cancel = ts
+        .store
+        .events_after(0, 10_000)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "bot.cancel")
+        .expect("a bot.cancel");
+    assert!(cancel.body.contains("grant_revoked"), "{}", cancel.body);
+}
+
+/// The admin turning a kind's switch off closes every session of that
+/// kind, every run's, before `PUT /api/admin/browser` answers; another
+/// kind's stay open.
+#[tokio::test]
+async fn an_admin_switch_off_closes_every_session_of_its_kind() {
+    use clax_store::bot_web::SessionKind;
+    let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
+    source.opens(|| {
+        Ok(clax_bot::browser::FakeChrome::page(
+            clax_bot::browser::PageModel::new(),
+        ))
+    });
+    let ts = registry_daemon(source.clone()).await;
+    let caps = "clax-browser:open-artifact,clax-browser:open-content";
+    let (one, two) = (
+        run_with_caps(&ts, caps).await,
+        run_with_caps(&ts, caps).await,
+    );
+    let c1 = open_in_registry(&ts, &one, SessionKind::Content).await;
+    let c2 = open_in_registry(&ts, &two, SessionKind::Content).await;
+    let a2 = open_in_registry(&ts, &two, SessionKind::Artifact).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/browser", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"content": {"enabled": false}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    for (rid, s) in [(&one, &c1), (&two, &c2)] {
+        let (code, message) = session_state(&ts, rid, s).expect("closed");
+        assert_eq!(code, "browser_session_closed");
+        assert!(message.contains("revoked"), "{message}");
+    }
+    assert_eq!(session_state(&ts, &two, &a2), None);
+    // A switch is the instance's terms, not a grant: no run is stopped.
+    for rid in [&one, &two] {
+        assert_ne!(
+            ts.store.run(rid).unwrap().unwrap().status,
+            clax_store::bot_runs::RunStatus::Stopping
+        );
+    }
+}
+
+/// A daemon starting marks every session the store still holds open
+/// lost: the new process's registry holds none of them.
+#[tokio::test]
+async fn a_restart_marks_sessions_lost() {
+    use clax_store::bot_runs::DriverId;
+    use clax_store::bot_web::{SessionEnd, SessionKind, SessionSpend, Spend};
+    use clax_store::credits::{KeySource, LINE_BROWSER_TIME, Metered};
+    let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
+    let ts = registry_daemon(source.clone()).await;
+    let rid = run_with_caps(&ts, "clax-browser:open-content").await;
+    let d = DriverId::mint();
+    ts.store.claim_run(&rid, &d, 60).unwrap().unwrap();
+    ts.store
+        .begin_step(&rid, &d, 1, clax_store::bot_runs::StepKind::Script)
+        .unwrap();
+    let run = ts.store.run(&rid).unwrap().unwrap();
+    let entry = ts
+        .store
+        .call_entry(&rid, &d, 1, 1, 0, "browser.open", "h")
+        .unwrap()
+        .answered(true, json!({"value": {"session": "s1"}}));
+    ts.store
+        .spend_journaled(
+            &run,
+            &d,
+            Spend {
+                entry,
+                usage: Some(Metered::new(LINE_BROWSER_TIME, 10, KeySource::Instance)),
+                page: None,
+                session: Some(SessionSpend::Open {
+                    session: "s1".into(),
+                    kind: SessionKind::Content,
+                    opened_at: ts.store.now_utc(),
+                    through_ms: 10,
+                }),
+                grant: None,
+                audit: clax_core::audit::AuditRecord::new(
+                    clax_core::audit::AuditKind::BotSpend,
+                    ts.store.now(),
+                )
+                .with("capability", "clax-browser:open-content")
+                .with("op", "browser.open"),
+            },
+        )
+        .unwrap();
+    assert!(
+        ts.store
+            .bot_browser_session(&rid, "s1")
+            .unwrap()
+            .unwrap()
+            .is_open()
+    );
+    // The daemon starts again on the same store.
+    let mut again = ts.state.clone();
+    let web = std::sync::Arc::new(clax_bot::web::FakeWebSource::new());
+    let _ = clax_server::bot::driver_with_sources(&mut again, web, source);
+    let row = ts.store.bot_browser_session(&rid, "s1").unwrap().unwrap();
+    assert_eq!(row.reason, Some(SessionEnd::Lost));
+    assert_eq!(row.charged_ms, 10);
+}
+
+/// The person a run acts for sees the pages of its last committed state
+/// they may export, and their machine grants and exports; exporting to a
+/// grant that is not theirs, or another's run, is 404 (spec §18.5).
+#[tokio::test]
+async fn a_runs_pages_are_listed_for_export_to_the_persons_grants() {
+    use clax_store::bot_runs::{DriverId, StepCommit, StepKind};
+    use clax_store::bot_web::SessionKind;
+    let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
+    source.opens(|| {
+        Ok(clax_bot::browser::FakeChrome::page(
+            clax_bot::browser::PageModel::new(),
+        ))
+    });
+    let ts = registry_daemon(source.clone()).await;
+    let rid = run_with_caps(&ts, "clax-browser:open-content").await;
+    let opened = opened_in_registry(&ts, &rid, SessionKind::Content).await;
+    let d = DriverId::mint();
+    ts.store.claim_run(&rid, &d, 60).unwrap().unwrap();
+    ts.store.begin_step(&rid, &d, 1, StepKind::Script).unwrap();
+    ts.store
+        .commit_bot_step(
+            &clax_bot::run::bot_ctx(clax_store::roles::OWNER),
+            &rid,
+            &d,
+            1,
+            StepCommit {
+                payload: json!({"state": {
+                    "value": {"page": {"$clax": 0}},
+                    "handles": [{"page": opened.handle, "url": "about:blank", "of": "Page"}]
+                }}),
+                usage: vec![],
+                events: vec![],
+                draft: vec![],
+                reason: None,
+                delivered: vec![],
+            },
+        )
+        .unwrap();
+    let url = format!("{}/api/bot/runs/{rid}/exports", ts.base);
+    let v: Value = ts
+        .client
+        .get(&url)
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["pages"], json!([{"path": "state.page"}]), "{v}");
+    assert_eq!(v["exports"], json!([]));
+    assert_eq!(v["released"], true, "an export is released to its person");
+    let res = ts
+        .client
+        .post(&url)
+        .header("cookie", ts.owner_cookie())
+        .header("origin", &ts.base)
+        .json(&json!({"path": "state.page", "grant": "g_notmine", "actions": ["read"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    let res = ts
+        .client
+        .post(&url)
+        .header("cookie", ts.owner_cookie())
+        .header("origin", &ts.base)
+        .json(&json!({"path": "state.page", "grant": "g_notmine", "actions": ["write"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert!(
+        ts.store.live_share_grants().unwrap().is_empty(),
+        "nothing written"
+    );
+}
+
+/// A registry daemon on every interface (it may invite the owner's
+/// machine) whose store and registry read `clock`, with a content session
+/// of a run of the owner's open, charged through its open and held by
+/// the run's last committed state as `state.page`, and the owner's
+/// machine connected: what an export is made of (spec §18.5).
+struct Exportable {
+    ts: TestServer,
+    clock: std::sync::Arc<clax_core::working::ManualClock>,
+    rid: String,
+    session: String,
+    machine: clax_testkit::TestClient,
+}
+
+async fn exportable() -> Exportable {
+    use clax_store::bot_runs::{DriverId, StepCommit, StepKind};
+    use clax_store::bot_web::{SessionKind, SessionSpend, Spend};
+    use clax_store::credits::{KeySource, LINE_BROWSER_TIME, Metered};
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-11-20T10:00:00Z"));
+    let source = std::sync::Arc::new(clax_bot::browser::FakeBrowserSource::new());
+    source.opens(|| {
+        Ok(clax_bot::browser::FakeChrome::page(
+            clax_bot::browser::PageModel::new().screenshot(vec![137, 80, 78, 71]),
+        ))
+    });
+    let src = source.clone();
+    let ts =
+        TestServer::spawn_on_with_clock_and("0.0.0.0".parse().unwrap(), clock.clone(), move |s| {
+            let web = std::sync::Arc::new(clax_bot::web::FakeWebSource::new());
+            let _ = clax_server::bot::driver_with_sources(s, web, src);
+        })
+        .await;
+    browser_on(&ts).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/browser", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"content": {"enabled": true}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let rid = run_with_caps(&ts, "clax-browser:open-content").await;
+    let opened = opened_in_registry(&ts, &rid, SessionKind::Content).await;
+    let d = DriverId::mint();
+    ts.store.claim_run(&rid, &d, 60).unwrap().unwrap();
+    ts.store.begin_step(&rid, &d, 1, StepKind::Script).unwrap();
+    let run = ts.store.run(&rid).unwrap().unwrap();
+    let entry = ts
+        .store
+        .call_entry(&rid, &d, 1, 1, 0, "browser.open", "h")
+        .unwrap()
+        .answered(true, json!({"value": {"session": opened.session}}));
+    ts.store
+        .spend_journaled(
+            &run,
+            &d,
+            Spend {
+                entry,
+                usage: Some(Metered::new(
+                    LINE_BROWSER_TIME,
+                    opened.at_ms,
+                    KeySource::Instance,
+                )),
+                page: None,
+                session: Some(SessionSpend::Open {
+                    session: opened.session.clone(),
+                    kind: SessionKind::Content,
+                    opened_at: ts.store.now_utc(),
+                    through_ms: opened.at_ms,
+                }),
+                grant: None,
+                audit: clax_core::audit::AuditRecord::new(
+                    clax_core::audit::AuditKind::BotSpend,
+                    ts.store.now(),
+                )
+                .with("capability", "clax-browser:open-content")
+                .with("op", "browser.open"),
+            },
+        )
+        .unwrap();
+    ts.store
+        .commit_bot_step(
+            &clax_bot::run::bot_ctx(clax_store::roles::OWNER),
+            &rid,
+            &d,
+            1,
+            StepCommit {
+                payload: json!({"state": {
+                    "value": {"page": {"$clax": 0}},
+                    "handles": [{"page": opened.handle, "url": "about:blank", "of": "Page"}]
+                }}),
+                usage: vec![],
+                events: vec![],
+                draft: vec![],
+                reason: None,
+                delivered: vec![],
+            },
+        )
+        .unwrap();
+    let machine = machine_of(&ts, json!({"me": true})).await;
+    Exportable {
+        ts,
+        clock,
+        rid,
+        session: opened.session,
+        machine,
+    }
+}
+
+/// A machine connected by an invite made with `body`.
+async fn machine_of(ts: &TestServer, body: Value) -> clax_testkit::TestClient {
+    let cmd = ts.invite_with(body).await;
+    let code = cmd.rsplit_once("/i/").unwrap().1;
+    let m = clax_testkit::TestClient::new(ts);
+    m.grant_request(json!({"access_token": {"access": ["clax:full"]}, "clax": {"invite": code}}))
+        .await;
+    m
+}
+
+impl Exportable {
+    /// Exports `state.page` to the owner's machine with `body`'s
+    /// `actions`, `expires_s` and `origins`: the export's ID.
+    async fn export(&self, body: Value) -> String {
+        let before: Vec<String> = self
+            .ts
+            .store
+            .exports_of(clax_store::roles::OWNER)
+            .unwrap()
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        let mut b = json!({"path": "state.page", "grant": self.machine.grant_id()});
+        for (k, v) in body.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        let res = self
+            .ts
+            .client
+            .post(format!(
+                "{}/api/bot/runs/{}/exports",
+                self.ts.base, self.rid
+            ))
+            .header("cookie", self.ts.owner_cookie())
+            .header("origin", &self.ts.base)
+            .json(&b)
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let v: Value = res.json().await.unwrap();
+        assert_eq!(status, 200, "{v}");
+        // The new one: the exports issued at one instant list by ID.
+        let new: Vec<String> = v["exports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["id"].as_str().unwrap().to_string())
+            .filter(|id| !before.contains(id))
+            .collect();
+        assert_eq!(new.len(), 1, "{v}");
+        new[0].clone()
+    }
+
+    /// `GET …/exports/<eid>/capability` with `cookie`.
+    async fn capability(&self, eid: &str, cookie: &str) -> reqwest::Response {
+        self.ts
+            .client
+            .get(format!(
+                "{}/api/bot/runs/{}/exports/{eid}/capability",
+                self.ts.base, self.rid
+            ))
+            .header("cookie", cookie)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// The owner's release of export `eid`'s capability.
+    async fn released(&self, eid: &str) -> String {
+        let res = self.capability(eid, &self.ts.owner_cookie()).await;
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.headers()["cache-control"], "no-store");
+        let v: Value = res.json().await.unwrap();
+        v["capability"].as_str().unwrap().to_string()
+    }
+
+    /// `machine`'s call of `page` with `call`: its status, code and body.
+    async fn call(
+        &self,
+        machine: &clax_testkit::TestClient,
+        page: &str,
+        mut call: Value,
+    ) -> (u16, Value) {
+        call["page"] = json!(page);
+        let res = machine
+            .agent("POST", "/api/bot/pages", None, Some(call))
+            .await;
+        let status = res.status().as_u16();
+        (status, res.json().await.unwrap())
+    }
+
+    fn charged_ms(&self) -> i64 {
+        self.ts
+            .store
+            .bot_browser_session(&self.rid, &self.session)
+            .unwrap()
+            .unwrap()
+            .charged_ms
+    }
+}
+
+fn shot() -> Value {
+    json!({"op": "page", "action": "screenshot"})
+}
+
+/// The person exports a page of their run to their machine, which reads
+/// it through `POST /api/bot/pages` with the released capability: its
+/// grant row is issued under the person's runs grant and listed, the
+/// call is answered as a script's (the screenshot as its image), and its
+/// time is charged to the person on the run with a `bot.spend` record
+/// naming the export and the grant and never the capability (spec
+/// §18.5, §18.8).
+#[tokio::test]
+async fn an_exported_page_is_called_by_its_machine_and_charged_to_its_person() {
+    let x = exportable().await;
+    let eid = x.export(json!({"actions": ["read", "close"]})).await;
+    let row = x.ts.store.cap_grant(&eid).unwrap().unwrap();
+    assert_eq!(row.grantee, format!("grant:{}", x.machine.grant_id()));
+    assert_eq!(
+        row.parent,
+        x.ts.store.person_caps(clax_store::roles::OWNER).unwrap()["clax-browser:open-content"]
+            .runs_grant
+    );
+    assert!(
+        x.ts.store
+            .events_after(0, 10_000)
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "grant.issue" && e.body.contains(&eid)),
+        "recorded as grant.issue"
+    );
+    let page = x.released(&eid).await;
+    assert!(page.starts_with("cxk_"), "{page}");
+    let before = x.charged_ms();
+    x.clock.advance(2);
+    let (status, v) = x.call(&x.machine, &page, shot()).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["value"]["media_type"], "image/png", "{v}");
+    assert!(x.charged_ms() > before, "the call's time is charged");
+    let spend: Vec<Value> =
+        x.ts.store
+            .events_after(0, 10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "bot.spend" && e.body.contains(&eid))
+            .map(|e| serde_json::from_str(&e.body).unwrap())
+            .collect();
+    assert_eq!(spend.len(), 1, "{spend:?}");
+    assert_eq!(spend[0]["grant"], x.machine.grant_id().as_str());
+    assert_eq!(spend[0]["run"], x.rid.as_str());
+    assert_eq!(spend[0]["ms"], json!(x.charged_ms() - before));
+    assert!(
+        !spend[0].to_string().contains(&page[4..20]),
+        "no capability"
+    );
+    // A close ends the session, and the page with it.
+    let (status, v) = x.call(&x.machine, &page, json!({"op": "close"})).await;
+    assert_eq!((status, v["ok"].clone()), (200, json!(true)), "{v}");
+    assert!(
+        !x.ts
+            .store
+            .bot_browser_session(&x.rid, &x.session)
+            .unwrap()
+            .unwrap()
+            .is_open()
+    );
+    let (status, v) = x.call(&x.machine, &page, shot()).await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (410, Some("browser_session_closed")),
+        "{v}"
+    );
+}
+
+/// What the capability and its grant do not allow is refused, and a
+/// refusal charges nothing: another person's release, another machine's
+/// call (lost to it, as a forged page is) and a caller that is no machine; an action or an origin outside the export's caveats;
+/// a call once it expired, once it was revoked, and once the run ended.
+#[tokio::test]
+async fn an_exported_page_refuses_what_its_capability_does_not_allow() {
+    let x = exportable().await;
+    let read = x
+        .export(json!({"actions": ["read", "navigate"], "origins": ["https://allowed.example"]}))
+        .await;
+    let page = x.released(&read).await;
+    let forbidden = |(status, v): (u16, Value)| {
+        assert_eq!(
+            (status, v["error"]["code"].as_str()),
+            (403, Some("browser_forbidden")),
+            "{v}"
+        );
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    // Another person: no release, and their machine's call is not the
+    // grant's.
+    let (sam_browser, base) = x.ts.lan_person("Sam").await;
+    let res = sam_browser
+        .get(format!(
+            "{base}/api/bot/runs/{}/exports/{read}/capability",
+            x.rid
+        ))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status();
+    let text = res.text().await.unwrap();
+    assert_eq!(status, 404, "{text}");
+    assert!(!text.contains("cxk_"), "{text}");
+    // Another machine's call is not the grant's: the page is lost to it,
+    // as a forged one is, and says nothing of the session.
+    let mia = x.ts.connect_person("Mia", "clax:full").await;
+    let before = x.charged_ms();
+    let (status, v) = x.call(&mia, &page, shot()).await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (404, Some("browser_session_lost")),
+        "{v}"
+    );
+    // Not a machine grant at all.
+    let res =
+        x.ts.client
+            .post(format!("{}/api/bot/pages", x.ts.base))
+            .header("cookie", x.ts.owner_cookie())
+            .json(&json!({"page": page, "op": "page", "action": "title"}))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(res.status(), 403);
+    // An action and an origin outside the caveats.
+    forbidden(
+        x.call(
+            &x.machine,
+            &page,
+            json!({"op": "act", "action": "click", "locator": [{"css": "p"}]}),
+        )
+        .await,
+    );
+    let why = forbidden(
+        x.call(
+            &x.machine,
+            &page,
+            json!({"op": "page", "action": "goto", "args": {"url": "https://other.example/"}}),
+        )
+        .await,
+    );
+    assert!(why.contains("other.example"), "{why}");
+    assert_eq!(x.charged_ms(), before, "a refusal charges nothing");
+    // Expired.
+    let soon = x
+        .export(json!({"actions": ["read"], "expires_s": 60}))
+        .await;
+    let soon_page = x.released(&soon).await;
+    let (status, v) = x.call(&x.machine, &soon_page, shot()).await;
+    assert_eq!(status, 200, "{v}");
+    x.clock.advance(61);
+    forbidden(x.call(&x.machine, &soon_page, shot()).await);
+    // Revoked: refused at once, and no longer released.
+    let res =
+        x.ts.client
+            .delete(format!(
+                "{}/api/bot/runs/{}/exports/{read}",
+                x.ts.base, x.rid
+            ))
+            .header("cookie", x.ts.owner_cookie())
+            .header("origin", &x.ts.base)
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(res.status(), 200);
+    forbidden(x.call(&x.machine, &page, shot()).await);
+    assert_eq!(
+        x.capability(&read, &x.ts.owner_cookie()).await.status(),
+        404
+    );
+    // The run's end closes its session and the registry forgets it: every
+    // page of it is lost.
+    let all = x.export(json!({})).await;
+    let all_page = x.released(&all).await;
+    x.ts.state
+        .bot
+        .browser_sessions
+        .clone()
+        .unwrap()
+        .end_run(&x.rid)
+        .await;
+    let (status, v) = x.call(&x.machine, &all_page, shot()).await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (404, Some("browser_session_lost")),
+        "{v}"
+    );
 }

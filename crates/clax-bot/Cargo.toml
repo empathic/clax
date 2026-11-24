@@ -19,6 +19,9 @@ clax-bot-sandbox = { path = "../clax-bot-sandbox" }
 # The surface file `src/clax.d.ts` is read with (src/api.rs).
 clax-surface = { path = "../clax-surface" }
 async-trait = "0.1"
+# A screenshot's bytes and a fulfilled request's body, as CDP carries
+# them (src/browser).
+base64.workspace = true
 chrono.workspace = true
 # Decodes a fetched page by its declared charset (src/web/page.rs).
 encoding_rs = "0.8"

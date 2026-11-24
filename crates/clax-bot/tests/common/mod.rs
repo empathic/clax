@@ -2,10 +2,12 @@
 //! one scripted reply per request, in order, recording the usage it
 //! reported), a store on a scratch home with an injected clock, a run on a
 //! one-page artifact, and the deps that drive it (the QuickJS sandbox, a
-//! [`FakeBotHost`] over the store, a [`FakeWebSource`]).
+//! [`FakeBotHost`] over the store, a [`FakeWebSource`], a
+//! [`FakeBrowserSource`]).
 
 #![allow(dead_code)]
 
+use clax_bot::browser::FakeBrowserSource;
 use clax_bot::host::{ArtifactMeta, CommentMeta, FakeBotHost, RequestContext, ThreadMeta};
 use clax_bot::run::{Deps, Keys, RunSettings, SettingsSource};
 use clax_bot::web::{FakeWebSource, WebShape};
@@ -433,6 +435,8 @@ pub struct Env {
     pub instance_key: bool,
     /// The web source [`Env::deps`] gives runs.
     pub web: Arc<FakeWebSource>,
+    /// The browser source [`Env::deps`] gives runs.
+    pub browser: Arc<FakeBrowserSource>,
     /// The run's thread, another thread of the artifact, and a thread of
     /// another artifact, all in the store.
     pub t1: String,
@@ -564,6 +568,7 @@ impl Env {
             hub: Arc::new(EventHub::new()),
             instance_key: true,
             web: Arc::new(FakeWebSource::new()),
+            browser: Arc::new(FakeBrowserSource::new()),
             t1,
             t2,
             foreign,
@@ -641,7 +646,7 @@ impl Env {
     }
 
     pub fn run_with(&self, request: RequestKind, model: &str, key_source: KeySource) -> String {
-        self.run_shaped(request, model, key_source, "", vec![self.t1.clone()])
+        self.run_shaped(request, model, key_source, "", "", vec![self.t1.clone()])
     }
 
     /// The web source runs get from [`Env::deps`].
@@ -656,6 +661,28 @@ impl Env {
         self.store
             .set_bot_settings(&AuditCtx::DAEMON, &changes)
             .unwrap();
+        self.grant_everyone();
+    }
+
+    /// The instance-wide grant of every capability, once: no capability
+    /// reaches a run without one (migration 69).
+    pub fn grant_everyone(&self) {
+        use clax_store::bot_grants::{CAPABILITIES, EVERYONE, GrantFilter};
+        let live = self
+            .store
+            .cap_grants(&GrantFilter {
+                grantee: Some(EVERYONE.into()),
+                live: true,
+                ..GrantFilter::default()
+            })
+            .unwrap();
+        for cap in CAPABILITIES {
+            if !live.iter().any(|g| g.lists(cap)) {
+                self.store
+                    .issue_cap_grant(&AuditCtx::DAEMON, cap, clax_store::roles::OWNER, EVERYONE)
+                    .unwrap();
+            }
+        }
     }
 
     /// A thread run that declares the web operations of `shape`
@@ -667,8 +694,63 @@ impl Env {
             "claude-sonnet-5-5",
             KeySource::Instance,
             shape,
+            "",
             vec![self.t1.clone()],
         )
+    }
+
+    /// A thread run holding the browser capabilities `shape` names
+    /// (`"test"` for `clax-browser:open-artifact`, `"browse"` for
+    /// `clax-browser:open-url`, or both, comma-separated), the admin offering
+    /// them.
+    pub fn run_with_browser(&self, shape: &str) -> String {
+        self.run_shaped(
+            RequestKind::Thread,
+            "claude-sonnet-5-5",
+            KeySource::Instance,
+            "",
+            shape,
+            vec![self.t1.clone()],
+        )
+    }
+
+    /// A thread run holding the browser capabilities `caps` (IDs,
+    /// comma-separated: `clax-browser:open-url`, `open-artifact`,
+    /// `open-content`),
+    /// each turned on by the admin.
+    pub fn run_with_caps(&self, caps: &str) -> String {
+        let on: Vec<(Setting, Value)> = caps
+            .split(',')
+            .filter_map(|c| match c {
+                "clax-browser:open-url" => Some(Setting::BrowserOpenUrlEnabled),
+                "clax-browser:open-artifact" => Some(Setting::BrowserOpenArtifactEnabled),
+                "clax-browser:open-content" => Some(Setting::BrowserOpenContentEnabled),
+                "clax-web:search" => Some(Setting::WebSearchEnabled),
+                "clax-web:fetch" => Some(Setting::WebFetchEnabled),
+                _ => None,
+            })
+            .map(|s| (s, json!(true)))
+            .collect();
+        if !on.is_empty() {
+            self.admin_sets(&on);
+        }
+        self.store
+            .create_run(
+                &clax_bot::run::bot_ctx(OWNER),
+                NewRun {
+                    artifact_id: self.aid.clone(),
+                    person: OWNER.into(),
+                    request: RequestKind::Thread,
+                    thread_ids: vec![self.t1.clone()],
+                    model: "claude-sonnet-5-5".into(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                    caps: clax_store::bot_runs::caps_text(caps.split(',')),
+                },
+            )
+            .unwrap()
+            .id
     }
 
     /// [`Env::run_with_web`] (`""` for no web operation) on both of the
@@ -680,27 +762,36 @@ impl Env {
             "claude-sonnet-5-5",
             KeySource::Instance,
             shape,
+            "",
             vec![self.t1.clone(), self.t2.clone()],
         )
     }
 
-    /// A run on `threads` that declares the web operations of `web`,
-    /// which the admin turns on.
+    /// A run on `threads` that declares the web operations of `web` and
+    /// the browser operations of `browser`, which the admin turns on.
     fn run_shaped(
         &self,
         request: RequestKind,
         model: &str,
         key_source: KeySource,
         web: &str,
+        browser: &str,
         threads: Vec<String>,
     ) -> String {
         let shape = WebShape::parse(web);
+        let has = |part: &str| browser.split(',').any(|p| p.trim() == part);
         let mut on = Vec::new();
         if shape.search {
             on.push((Setting::WebSearchEnabled, json!(true)));
         }
         if shape.fetch {
             on.push((Setting::WebFetchEnabled, json!(true)));
+        }
+        if has("test") {
+            on.push((Setting::BrowserOpenArtifactEnabled, json!(true)));
+        }
+        if has("browse") {
+            on.push((Setting::BrowserOpenUrlEnabled, json!(true)));
         }
         if !on.is_empty() {
             self.admin_sets(&on);
@@ -717,7 +808,12 @@ impl Env {
                     key_source,
                     base_version: 1,
                     agent_grant: None,
-                    web: shape.as_str().into(),
+                    caps: clax_store::bot_runs::caps_text(
+                        clax_store::bot_runs::caps_of_web(shape.as_str())
+                            .split(',')
+                            .chain(has("test").then_some("clax-browser:open-artifact"))
+                            .chain(has("browse").then_some("clax-browser:open-url")),
+                    ),
                 },
             )
             .unwrap()
@@ -742,6 +838,7 @@ impl Env {
             ..RetryPolicy::default()
         };
         d.with_web(self.web.clone())
+            .with_browser(self.browser.clone())
     }
 
     pub fn deps(&self) -> Deps {

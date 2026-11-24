@@ -416,7 +416,7 @@ fn left(env: &Env, run: &str, n: i64, came: Came) -> Left {
     let web_records = env
         .bot_events()
         .iter()
-        .filter(|(kind, _)| kind == "bot.web")
+        .filter(|(kind, _)| kind == "bot.spend")
         .count();
     let n = |v: Value| named(env, run, v);
     Left {
@@ -989,15 +989,19 @@ return out;"#,
         json!({"url": "https://example.com/a"})
     );
     assert_eq!(seam.written, json!([]));
-    // Uncharged, uncounted and with no `bot.web` record.
+    // Uncharged, uncounted and with no `bot.spend` record.
     assert_eq!(seam.web_records, 0);
     // Each of the two `web_disabled` rows is the run loop's own form:
-    // the failure, and neither `cost_milli` nor `web`.
-    for (at, op) in [(1, "web.search"), (2, "web.fetch")] {
+    // the failure naming its capability, and neither `cost_milli` nor
+    // `web`.
+    for (at, op, cap) in [
+        (1, "web.search", "clax-web:search"),
+        (2, "web.fetch", "clax-web:fetch"),
+    ] {
         assert_eq!(
             seam.journal[at],
             json!({"step": 2, "attempt": 1, "seq": at, "op": op, "ok": false,
-                   "result": {"code": "web_disabled",
+                   "result": {"code": "web_disabled", "capability": cap,
                               "message": format!("clax.{op} is not available to this run")}})
         );
     }
@@ -1186,7 +1190,7 @@ catch (e) { return [e.code, e.message]; }"#,
     assert_eq!(
         seam.journal,
         json!([{"step": 2, "attempt": 1, "seq": 0, "op": "web.search", "ok": false,
-                "result": {"code": "web_disabled",
+                "result": {"code": "web_disabled", "capability": "clax-web:search",
                            "message": "clax.web.search is not available to this run"}}])
     );
 }

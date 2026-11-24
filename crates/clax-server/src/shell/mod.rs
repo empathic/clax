@@ -520,13 +520,7 @@ pub async fn static_file(
     if let Some(ty) = embed_file(&path) {
         return Ok(embed_answer(ty, f.data.into_owned()));
     }
-    let ct = if path.ends_with(".js") {
-        "text/javascript".to_string()
-    } else {
-        mime_guess::from_path(&path)
-            .first_or_octet_stream()
-            .to_string()
-    };
+    let ct = served_type(&path);
     if file == BRIDGE || file == TRANSPORT {
         let cc = versioned_cache_control(query.as_deref(), &short_hash(&f.sha256));
         return Ok(http_cache::tagged(&req, &f.data, cc, || {
@@ -568,6 +562,36 @@ pub async fn static_file(
         f.data.into_owned(),
     )
         .into_response())
+}
+
+/// The content type `/_clax/<path>` is served with: JavaScript for a
+/// `.js` file, else by its extension.
+fn served_type(path: &str) -> String {
+    if path.ends_with(".js") {
+        "text/javascript".to_string()
+    } else {
+        mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string()
+    }
+}
+
+/// The bridge's bundle or one of its lazy parts, as `/_clax/<path>` serves
+/// it to a site's page, by the URL path a page asks for it with
+/// (`/_clax/bridge.js`, `/_clax/bridge/<part>`): its content type and
+/// bytes. `None` for any other path, a hidden name (a bundler's
+/// manifest), a `..` segment, or a file `web` does not hold. A browser
+/// test's page is served these (`crate::browser_source`).
+pub fn bridge_file(web: &dyn FileTree, url_path: &str) -> Option<(String, Vec<u8>)> {
+    let path = url_path.strip_prefix("/_clax/")?;
+    let part = path.strip_prefix("bridge/").is_some_and(|p| {
+        !p.is_empty() && p.split('/').all(|c| !c.is_empty() && !c.starts_with('.'))
+    });
+    if path != "bridge.js" && !part {
+        return None;
+    }
+    let f = web.get(&format!("_clax/{path}"))?;
+    Some((served_type(path), f.data.into_owned()))
 }
 
 /// The embeddable overlay's files under `/_clax/` (`overlay.js`, its ES

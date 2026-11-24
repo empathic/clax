@@ -38,6 +38,32 @@
 //!   token (503 `no_kek` without a key-encryption key); the token is
 //!   write-only, shown as `key_info` (`last4`), and bound to Cloudflare's
 //!   API origin whatever the model base URL is.
+//!   Each of `search` and `fetch` also answers, read-only, its capability's
+//!   `price_milli` (one request on its line, at the instance's key; null
+//!   without the line), `configured` and `unavailable`.
+//! - `GET/PUT /api/admin/browser`: the three `browser.open` capabilities,
+//!   each `{enabled, max_per_run, price_milli_per_minute, configured,
+//!   unavailable}` (`url` also `url_rule` and `allowlist`), under `url`,
+//!   `artifact` and `content`, and the browser family's settings
+//!   (`call_seconds`, `idle_seconds`, `max_seconds`, `max_open_per_run`,
+//!   `max_concurrent`), with `configured` (the host can open browsers now:
+//!   on a daemon, with the Cloudflare account ID and token of
+//!   `/api/admin/web`), `unavailable` (why browser use is off whatever the
+//!   settings, else null), `cloudflare {account, token}` (whether each is
+//!   set) and `sources` keyed `artifact.enabled`, `max_concurrent` and so
+//!   on; `PUT` takes the settings' shape, any field may be left out and a
+//!   null puts it back to its default, refused as `PUT /api/admin/web`
+//!   refuses. A capability switched on is granted to no one: the admin
+//!   grants it (`/api/admin/bot/grants`).
+//! - `GET /api/admin/bot/grants` lists the live grants admins made (to
+//!   everyone, or to a person), each with its granter and whether it
+//!   conveys now (its granter still an admin); `POST` `{capability,
+//!   grantee: "everyone" | {person}}` issues one with the caller as its
+//!   granter (a grant to everyone issues each person's child and their
+//!   grant to their runs), `DELETE /api/admin/bot/grants/<id>` revokes one
+//!   and what it issued (reason `granter` for the caller's own, `owner`
+//!   for another admin's); each row is recorded as `grant.issue` or
+//!   `grant.revoke`.
 //! - `GET/PUT /api/admin/pricing`: the credit price, the free tier, the
 //!   default token rates, `require_explicit_price` and the cost lines,
 //!   with each priced model's rates and where they come from (`models`)
@@ -59,6 +85,11 @@
 //! page); every change by the store's own kinds (`admin.flag`,
 //! `admin.role`, `admin.credits`, `admin.provider`, `admin.key`,
 //! `admin.cost_line`).
+//!
+//! A change that can take a browser capability from a run (`PUT
+//! /api/admin/web` and `/browser`, `DELETE /api/admin/web/token`, a grant
+//! issued or revoked) closes, `revoked`, every browser session whose run no
+//! longer holds it before it answers ([`crate::bot::reevaluate_browser`]).
 
 use super::artifacts::{body, path};
 use super::bot::{line_labels, line_total, week_at, week_of};
@@ -258,6 +289,9 @@ pub async fn set_role(
             person_view(st, &bot, &person)
         })
         .await?;
+    // A grant an admin issued conveys only while they are one.
+    crate::bot::stop_revoked_runs(&s).await?;
+    crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
 
@@ -553,6 +587,30 @@ pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         "the Cloudflare token",
     )?;
     let configured = crate::bot::web_configured(st, bot)?;
+    let provider = st.bot_setting(Setting::WebSearchProvider)?;
+    let lines = [
+        (
+            "search",
+            format!("web.search.{}", provider.as_str().unwrap_or("ceramic")),
+            configured.search,
+        ),
+        (
+            "fetch",
+            clax_store::credits::LINE_WEB_FETCH.to_string(),
+            configured.fetch,
+        ),
+    ];
+    for (group, line, on) in lines {
+        let g = groups.entry(group.to_string()).or_insert_with(|| json!({}));
+        g["price_milli"] = match st.cost_line(&line)? {
+            Some(_) => {
+                json!(st.one_request_milli(&line, clax_store::credits::KeySource::Instance)?)
+            }
+            None => Value::Null,
+        };
+        g["configured"] = json!(on);
+        g["unavailable"] = json!(bot.web_check.why());
+    }
     let mut v = json!({
         "configured": {"search": configured.search, "fetch": configured.fetch},
         "unavailable": bot.web_check.why(),
@@ -641,6 +699,7 @@ pub async fn set_web(
             web_view(st, &bot)
         })
         .await?;
+    crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
 
@@ -692,6 +751,376 @@ pub async fn clear_web_token(
             web_view(st, &bot)
         })
         .await?;
+    crate::bot::reevaluate_browser(&s).await?;
+    Ok(Json(v))
+}
+
+// ---------------------------------------------------------------------------
+// Browser
+// ---------------------------------------------------------------------------
+
+/// The browser settings by their place in the page: (group, field,
+/// setting); the empty group is the top level. Each `browser.open` kind
+/// is a group of its own (`url`, `artifact`, `content`); the family's
+/// settings are the top level.
+const BROWSER: &[(&str, &str, Setting)] = &[
+    ("url", "enabled", Setting::BrowserOpenUrlEnabled),
+    ("url", "url_rule", Setting::BrowserOpenUrlUrlRule),
+    ("url", "allowlist", Setting::BrowserOpenUrlAllowlist),
+    ("url", "max_per_run", Setting::BrowserOpenUrlMaxPerRun),
+    ("artifact", "enabled", Setting::BrowserOpenArtifactEnabled),
+    (
+        "artifact",
+        "max_per_run",
+        Setting::BrowserOpenArtifactMaxPerRun,
+    ),
+    ("content", "enabled", Setting::BrowserOpenContentEnabled),
+    (
+        "content",
+        "max_per_run",
+        Setting::BrowserOpenContentMaxPerRun,
+    ),
+    ("", "call_seconds", Setting::BrowserCallSeconds),
+    ("", "idle_seconds", Setting::BrowserSessionIdleSeconds),
+    ("", "max_seconds", Setting::BrowserSessionMaxSeconds),
+    ("", "max_open_per_run", Setting::BrowserMaxOpenPerRun),
+    ("", "max_concurrent", Setting::BrowserMaxConcurrent),
+];
+
+/// The groups of [`BROWSER`]: one per `browser.open` kind.
+const BROWSER_KINDS: [&str; 3] = ["url", "artifact", "content"];
+
+/// A browser setting's name in `sources` and in a refusal.
+fn browser_field(group: &str, field: &str) -> String {
+    if group.is_empty() {
+        field.to_string()
+    } else {
+        format!("{group}.{field}")
+    }
+}
+
+/// The browser settings as `GET /api/admin/browser` shows them (see the
+/// module documentation).
+///
+/// # Errors
+/// The store's.
+pub fn browser_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
+    let eff = st.effective_bot_settings()?;
+    let mut v = json!({"url": {}, "artifact": {}, "content": {}});
+    let mut sources = serde_json::Map::new();
+    for (group, field, setting) in BROWSER {
+        let entry = eff.get(setting);
+        let value = entry.map(|e| e.value.clone()).unwrap_or(Value::Null);
+        let source = entry
+            .map(|e| e.source.label())
+            .unwrap_or_else(|| "default".into());
+        if group.is_empty() {
+            v[*field] = value;
+        } else {
+            v[*group][*field] = value;
+        }
+        sources.insert(browser_field(group, field), json!(source));
+    }
+    let account = st
+        .bot_setting(Setting::WebCloudflareAccountId)?
+        .as_str()
+        .is_some_and(|a| !a.trim().is_empty());
+    let token = st.secret_meta(&SecretSlot::Cloudflare)?.is_some();
+    let configured = crate::bot::browser_configured(st, bot)?;
+    let unavailable =
+        match browser_unavailable(configured, bot.browser, bot.kek.is_some(), account && token) {
+            Some(why) => json!(why),
+            None => Value::Null,
+        };
+    let price = super::bot::minute_milli(st, clax_store::credits::KeySource::Instance)?;
+    for kind in BROWSER_KINDS {
+        v[kind]["price_milli_per_minute"] = json!(price);
+        v[kind]["configured"] = json!(configured);
+        v[kind]["unavailable"] = unavailable.clone();
+    }
+    v["configured"] = json!(configured);
+    v["unavailable"] = unavailable;
+    v["cloudflare"] = json!({"account": account, "token": token});
+    v["sources"] = Value::Object(sources);
+    Ok(v)
+}
+
+/// Why browser use is off whatever the settings say, or `None` when the
+/// host can open browsers (`configured`): the host opens none
+/// (`host_opens`), it holds no key-encryption key (`kek`), the account ID
+/// and token are not both set (`both_set`), or they are and the token does
+/// not open with this key (sealed under another, or for another origin).
+fn browser_unavailable(
+    configured: bool,
+    host_opens: bool,
+    kek: bool,
+    both_set: bool,
+) -> Option<&'static str> {
+    if configured {
+        None
+    } else if !host_opens {
+        Some("this host opens no browser")
+    } else if !kek {
+        Some("no key-encryption key holds the Cloudflare token")
+    } else if both_set {
+        Some(
+            "the Cloudflare API token cannot be opened with this instance's key-encryption key; \
+             set it again (Web access)",
+        )
+    } else {
+        Some("the Cloudflare account ID and API token are not both set (Web access)")
+    }
+}
+
+/// `GET /api/admin/browser` (see the module documentation).
+pub async fn browser(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let (caller, _) = admin(&s, &d).await?;
+    let bot = s.bot.clone();
+    let v = s
+        .store_call(move |st| {
+            let v = browser_view(st, &bot)?;
+            viewed(st, &bot, &who, &caller, "browser", None)?;
+            Ok(v)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `PUT /api/admin/browser {url?, artifact?, content?, call_seconds?, …}`: each field
+/// given is set (null: back to its default). 400 `unknown_setting` for a
+/// field the page does not show; a value its kind refuses is 400 and one
+/// the daemon's configuration sets 409 `setting_overridden`, as `PUT
+/// /api/admin/web`.
+pub async fn set_browser(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    req: Result<Json<serde_json::Map<String, Value>>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let b = body(req)?;
+    let unknown = |name: String| {
+        ApiError::bad_request("unknown_setting", format!("no setting is named {name}"))
+    };
+    let setting_of = |group: &str, field: &str| {
+        BROWSER
+            .iter()
+            .find(|(g, f, _)| *g == group && *f == field)
+            .map(|(_, _, s)| *s)
+            .ok_or_else(|| unknown(browser_field(group, field)))
+    };
+    let mut changes: Vec<(Setting, Option<Value>)> = Vec::new();
+    for (k, v) in b {
+        match (k.as_str(), v) {
+            (group @ ("url" | "artifact" | "content"), Value::Object(fields)) => {
+                for (field, v) in fields {
+                    changes.push((setting_of(group, &field)?, (!v.is_null()).then_some(v)));
+                }
+            }
+            ("url" | "artifact" | "content", _) => {
+                return Err(ApiError::bad_request(
+                    "invalid_body",
+                    format!("{k} must be an object of its fields"),
+                ));
+            }
+            (field, v) => changes.push((setting_of("", field)?, (!v.is_null()).then_some(v))),
+        }
+    }
+    let bot = s.bot.clone();
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.set_bot_settings(&ctx, &changes)?;
+            browser_view(st, &bot)
+        })
+        .await?;
+    crate::bot::reevaluate_browser(&s).await?;
+    Ok(Json(v))
+}
+
+// ---------------------------------------------------------------------------
+// Grants
+// ---------------------------------------------------------------------------
+
+/// The live grants admins made, as `GET /api/admin/bot/grants` lists
+/// them: each `{id, capability, grantee, person, granter, conveys,
+/// issued_at}`, `grantee` `everyone` or `person`, `person` the person's
+/// key (null for everyone), `granter` the admin's person key, `migration`
+/// (main's web switches) or `config` (config.toml's, at the daemon's
+/// start), `conveys` false once its granter is no longer an admin; the
+/// grants to everyone first, then by capability. A selector's children
+/// and a person's grants to their runs are not listed. `shares` lists each
+/// live page share and export (spec §18.4, §18.5): `{id, run, grant,
+/// granter, actions, origins, expires_at, issued_at}`, `run` the run it is
+/// a share within, `grant` the machine grant an export is to.
+///
+/// # Errors
+/// The store's.
+pub fn grants_view(st: &Store) -> clax_core::Result<Value> {
+    use clax_store::bot_grants::{GrantFilter, Grantee};
+    let mut rows: Vec<(bool, String, Value)> = Vec::new();
+    for g in st.cap_grants(&GrantFilter {
+        live: true,
+        ..GrantFilter::default()
+    })? {
+        let person = match Grantee::parse(&g.grantee) {
+            Ok(Grantee::Everyone) => None,
+            Ok(Grantee::Person(k)) if g.parent.is_none() => Some(k),
+            _ => continue,
+        };
+        let Some(cap) = g.capability() else { continue };
+        let row = json!({
+            "id": g.id,
+            "capability": cap,
+            "grantee": if person.is_some() { "person" } else { "everyone" },
+            "person": person,
+            "granter": g.granter,
+            "conveys": st.grant_conveys(&g)?,
+            "issued_at": g.issued_at,
+        });
+        rows.push((person.is_some(), cap.to_string(), row));
+    }
+    rows.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    let shares: Vec<Value> = st
+        .live_share_grants()?
+        .into_iter()
+        .map(|g| {
+            let holder = g.grantee.split_once(':').map_or("", |(_, h)| h).to_string();
+            let (run, grant) = if g.grantee.starts_with("grant:") {
+                (Value::Null, json!(holder))
+            } else {
+                (json!(holder), Value::Null)
+            };
+            json!({
+                "id": g.id,
+                "run": run,
+                "grant": grant,
+                "granter": g.granter,
+                "actions": g.access.first().map(|a| a.actions.clone()).unwrap_or_default(),
+                "origins": g.access.first().and_then(|a| a.locations.clone()),
+                "expires_at": g.conditions.get("expires_at"),
+                "issued_at": g.issued_at,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "grants": rows.into_iter().map(|(_, _, r)| r).collect::<Vec<_>>(),
+        "shares": shares,
+    }))
+}
+
+/// `GET /api/admin/bot/grants` (see the module documentation).
+pub async fn grants(State(s): State<AppState>, d: DeniedToGrants) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    Ok(Json(s.store_call(grants_view).await?))
+}
+
+/// `POST /api/admin/bot/grants`'s body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantBody {
+    capability: String,
+    grantee: GranteeBody,
+}
+
+/// Whom an admin grant is to: `"everyone"`, or `{"person": <key>}`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum GranteeBody {
+    Everyone(String),
+    Person { person: String },
+}
+
+/// `POST /api/admin/bot/grants {capability, grantee}`: issues the
+/// admin's grant of `capability` to everyone or to one person; answers
+/// the grants. 400 `unknown_capability`, `invalid_grantee` (not
+/// `everyone`, or a person this instance does not have) or
+/// `grant_exists`.
+pub async fn grant(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    req: Result<Json<GrantBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    use clax_store::bot_grants::Grantee;
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let b = body(req)?;
+    let v = s
+        .store_call(move |st| {
+            let grantee = match b.grantee {
+                GranteeBody::Everyone(e) if e == "everyone" => Grantee::Everyone,
+                GranteeBody::Person { person } if st.person_keys()?.contains(&person) => {
+                    Grantee::Person(person)
+                }
+                _ => {
+                    return Err(CoreError::invalid(
+                        "invalid_grantee",
+                        "grant to \"everyone\" or to {\"person\": <a person of this instance>}",
+                    ));
+                }
+            };
+            let ctx = audit.resolve(st)?;
+            let granter = clax_store::roles::actor_person(&ctx.actor).ok_or_else(|| {
+                CoreError::invalid("not_held", "only a person who is an admin grants")
+            })?;
+            st.issue_cap_grant(&ctx, &b.capability, &granter, &grantee.as_text())?;
+            grants_view(st)
+        })
+        .await?;
+    crate::bot::reevaluate_browser(&s).await?;
+    Ok(Json(v))
+}
+
+/// `DELETE /api/admin/bot/grants/<id>`: revokes the admin's grant, page
+/// share or export `id` and every grant issued under it; answers the
+/// grants. 404 for no such grant of that ID.
+pub async fn revoke_grant(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    id: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    use clax_store::bot_grants::{Grantee, RevokeReason};
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let id = path(id)?;
+    let v = s
+        .store_call(move |st| {
+            let g = st.cap_grant(&id)?.ok_or(CoreError::NotFound)?;
+            let ours = match Grantee::parse(&g.grantee) {
+                Ok(Grantee::Everyone) => true,
+                Ok(Grantee::Person(_)) => g.parent.is_none(),
+                Ok(Grantee::Run(_) | Grantee::Grant(_)) => g.event == "share",
+                _ => false,
+            };
+            if !ours {
+                return Err(CoreError::NotFound);
+            }
+            let ctx = audit.resolve(st)?;
+            let reason = if clax_store::roles::actor_person(&ctx.actor).as_deref()
+                == Some(g.granter.as_str())
+            {
+                RevokeReason::Granter
+            } else {
+                RevokeReason::Owner
+            };
+            st.revoke_cap_grant(&ctx, &id, reason)?;
+            grants_view(st)
+        })
+        .await?;
+    crate::bot::stop_revoked_runs(&s).await?;
+    crate::bot::reevaluate_browser(&s).await?;
     Ok(Json(v))
 }
 
@@ -1725,4 +2154,35 @@ pub async fn usage(
         })
         .await?;
     Ok(Json(v))
+}
+
+#[cfg(test)]
+#[warn(clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+
+    /// A token that is set but does not open is told apart from one that
+    /// is not set, so the admin knows to set it again.
+    #[test]
+    fn a_set_token_that_does_not_open_says_to_set_it_again() {
+        assert_eq!(browser_unavailable(true, true, true, true), None);
+        assert_eq!(
+            browser_unavailable(false, false, true, true),
+            Some("this host opens no browser")
+        );
+        assert_eq!(
+            browser_unavailable(false, true, false, true),
+            Some("no key-encryption key holds the Cloudflare token")
+        );
+        assert!(
+            browser_unavailable(false, true, true, false)
+                .unwrap()
+                .contains("not both set")
+        );
+        assert!(
+            browser_unavailable(false, true, true, true)
+                .unwrap()
+                .contains("set it again")
+        );
+    }
 }

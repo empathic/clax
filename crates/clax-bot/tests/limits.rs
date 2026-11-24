@@ -136,7 +136,7 @@ async fn a_turn_asks_for_no_more_output_than_the_credits_left_pay_for() {
 #[tokio::test]
 async fn a_turn_that_shows_an_image_is_not_priced_at_its_bytes_as_text() {
     let env = Env::new().await;
-    env.settings.0.lock().unwrap().model_takes_images = true;
+    env.settings.0.lock().unwrap().image_models = vec!["claude-sonnet-5-5".into()];
     let run = env.run();
     let pixels = vec![7u8; 1 << 20];
     let row = env

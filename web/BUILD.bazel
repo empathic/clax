@@ -291,6 +291,7 @@ UNIT_DATA = [
     "//apps/clax_app:home_unit",
     "//apps/clax_app:kit",
     "//apps/clax_app:relay_fixture",
+    "//crates/clax-bot:browser_declarations_bin",
     "//crates/clax-core:toolpath_vectors_bin",
     "//demo:files",
 ]
@@ -397,7 +398,10 @@ E2E_SKIPS = ["crates/clax-cli/clax"]
         project,
     ],
     data = E2E_DATA,
-    env = E2E_ENV | {"CLAX_E2E_WORKERS": "8"},
+    # At most as many workers as the cores the lane reserves (`cpu:8`),
+    # fewer on a busy host (web/playwright.config.ts); CI's `test:ci` sets
+    # CLAX_E2E_WORKERS=8 (.bazelrc).
+    env = E2E_ENV | {"CLAX_E2E_MAX_WORKERS": "8"},
     skips = E2E_SKIPS,
     # The pinned browsers stay where their repository put them.
     no_copy_to_bin = ["@chromium//:browsers"],

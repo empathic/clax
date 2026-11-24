@@ -4313,6 +4313,83 @@
     "registered_by": "u_4be1q8"
    },
    "backfilled": false
+  },
+  {
+   "seq": 128,
+   "at": "2026-10-06T14:09:37.128Z",
+   "kind": "grant.issue",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "grant_id": "01JBCB0T000000000000000G02",
+    "granter": "*owner",
+    "grantee": "person:u_77c0zz",
+    "access": [
+     {
+      "type": "clax-browser",
+      "actions": [
+       "open-content",
+       "read",
+       "act",
+       "navigate",
+       "record",
+       "close"
+      ]
+     }
+    ],
+    "parent": "01JBCB0T000000000000000G01",
+    "event": "admin"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 129,
+   "at": "2026-10-06T14:09:38.129Z",
+   "kind": "bot.spend",
+   "actor": {
+    "type": "bot",
+    "on_behalf_of": "u_77c0zz"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "daemon",
+    "capability": "clax-browser:open-content",
+    "run": "01JBCB0T000000000000000R01",
+    "step": 4,
+    "op": "browser.session.end",
+    "session": "bs-7a2c91",
+    "kind": "content",
+    "reason": "idle",
+    "ms": 300000,
+    "credits_milli": 13
+   },
+   "backfilled": false
   }
  ]
 }

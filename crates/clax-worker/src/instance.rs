@@ -747,6 +747,11 @@ fn worker_bot(
                 as Arc<dyn clax_http::bot::AdminWebCheck>
         }),
         joins: None,
+        // The Worker opens no browser (its content store keeps no
+        // screenshots): its runs never have the browser shape.
+        browser: false,
+        #[cfg(not(target_arch = "wasm32"))]
+        browser_sessions: None,
     });
     (bot, web)
 }

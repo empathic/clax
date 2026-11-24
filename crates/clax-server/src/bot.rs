@@ -1168,16 +1168,36 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
     driver_with_web(state, web)
 }
 
-/// [`driver`], with `web` as the runs' web source.
+/// [`driver`], with `web` as the runs' web source, and the daemon's own
+/// browser source ([`crate::browser_source::DaemonBrowser::of`]).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn driver_with_web(
     state: &mut AppState,
     web: Arc<dyn clax_bot::web::WebSource>,
 ) -> Arc<clax_bot::Driver> {
+    let browser: Arc<dyn clax_bot::browser::BrowserSource> =
+        Arc::new(crate::browser_source::DaemonBrowser::of(state));
+    driver_with_sources(state, web, browser)
+}
+
+/// [`driver`], with `web` as the runs' web source and `browser` as where
+/// their browsers come from.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn driver_with_sources(
+    state: &mut AppState,
+    web: Arc<dyn clax_bot::web::WebSource>,
+    browser: Arc<dyn clax_bot::browser::BrowserSource>,
+) -> Arc<clax_bot::Driver> {
     let bot = state.bot.clone();
     let host = ServerHost::new(state.clone());
     let wake = host.wake.clone();
     let host: Arc<dyn BotHost> = Arc::new(host);
+    let sessions = browser_sessions(state, browser.clone());
+    let configured_bot = state
+        .settings
+        .running
+        .as_ref()
+        .and_then(|cfg| cfg.bot().ok());
     let deps = clax_bot::Deps::new(
         state.store.clone(),
         crate::routes::admin::messages_client(&state.store),
@@ -1186,17 +1206,21 @@ pub fn driver_with_web(
         Arc::new(clax_http::bot::Settings {
             store: state.store.clone(),
             enabled: bot.enabled,
-            model_takes_images: state
-                .settings
-                .running
+            image_models: configured_bot
                 .as_ref()
-                .and_then(|cfg| cfg.bot().ok())
+                .map(|b| b.models.images.clone())
+                .unwrap_or_default(),
+            model_takes_images: configured_bot
+                .as_ref()
                 .is_some_and(|b| b.model_takes_images),
         }),
         bot.keys(),
         Arc::new(StoreClock(state.store.clone())),
     )
-    .with_web(web);
+    .with_web(web)
+    .with_browser(browser)
+    .with_browser_sessions(sessions.clone())
+    .with_content_limits(state.bot_surfaces.limits().content_limits());
     // A run bound to a surface a host registered calls its host through
     // the daemon's broker, which the host's routes serve
     // (`clax_http::bot_surfaces`).
@@ -1246,8 +1270,145 @@ pub fn driver_with_web(
             let hub: Arc<dyn clax_http::bot_joins::JoinedSurfaces> = state.bot_surfaces.clone();
             hub
         }),
+        browser: true,
+        browser_sessions: Some(sessions),
     });
     driver
+}
+
+/// The daemon's one registry of browser sessions over `browser`, which
+/// every run shares (spec
+/// docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §7.4). A
+/// new registry holds no session, so every session the store still holds
+/// open is marked lost first (§6.4: a daemon starting holds none of the
+/// previous process's). Its capabilities are keyed from the home's KEK
+/// (spec §18.2). Each end the registry makes is charged as it is
+/// made ([`clax_bot::clax::charge`]), so an idle end while the model
+/// thinks is charged then, not at the run's next call.
+#[cfg(not(target_arch = "wasm32"))]
+fn browser_sessions(
+    state: &AppState,
+    browser: Arc<dyn clax_bot::browser::BrowserSource>,
+) -> Arc<clax_bot::browser::live::BrowserSessions> {
+    let store = state.store.clone();
+    match store.lose_open_bot_browser_sessions(store.now_utc()) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(count = n, "marked the browser sessions left open lost"),
+        Err(e) => tracing::warn!(error = %e, "could not mark the browser sessions left open lost"),
+    }
+    // The capabilities' instance key is the KEK's (spec §18.2): a
+    // capability from before a restart verifies, and answers lost; without
+    // a KEK, a key of this process's own.
+    let keys = state
+        .bot
+        .kek
+        .as_ref()
+        .map_or_else(clax_bot::browser::cap::Keys::random, |k| {
+            clax_bot::browser::cap::Keys::new(k.instance_key(clax_bot::browser::cap::KEY_PURPOSE))
+        });
+    let sessions = Arc::new(
+        clax_bot::browser::live::BrowserSessions::new(
+            browser,
+            Arc::new(StoreClock(store.clone())),
+            clax_bot::browser::session::SessionLimits {
+                image_side: clax_bot::policy::DEFAULT_IMAGE_SIDE,
+            },
+        )
+        .with_keys(keys),
+    );
+    sessions.charge_with(Arc::new(move |ended| clax_bot::clax::charge(&store, ended)));
+    sessions
+}
+
+/// Asks every run not yet ended whose person no longer holds, by grants,
+/// a capability it declared (`bot_runs.caps`) to stop, with the reason
+/// `grant_revoked` ([`clax_store::Store::cancel_run_for`]), before the
+/// caller answers (spec docs/superpowers/specs/2026-11-19-claxbot-browser-design.md
+/// §4.4): what a grant revoked, a parent's end or an admin's role removed
+/// does to the runs acting for the holder. A switch turned off or
+/// credentials removed are not grants, and stop nothing. Answers the runs
+/// asked to stop.
+///
+/// # Errors
+/// The store's.
+pub async fn stop_revoked_runs(s: &AppState) -> Result<Vec<String>, clax_http::error::ApiError> {
+    s.store_call(|st| {
+        let ctx = clax_core::audit::AuditCtx::DAEMON;
+        let mut stopped = Vec::new();
+        for run in st.live_runs()? {
+            if run.status == clax_store::bot_runs::RunStatus::Stopping {
+                continue;
+            }
+            let held = st.person_caps(&run.person)?;
+            let lost = run
+                .caps
+                .split(',')
+                .filter(|c| !c.is_empty())
+                .any(|c| !held.get(c).is_some_and(|h| h.reaches_runs()));
+            if lost {
+                st.cancel_run_for(&ctx, &run.id, Some(clax_bot::run::GRANT_REVOKED))?;
+                stopped.push(run.id);
+            }
+        }
+        Ok(stopped)
+    })
+    .await
+}
+
+/// [`reevaluate_browser`] on wasm32 (the Worker), which holds no browser
+/// session: nothing.
+///
+/// # Errors
+/// Never.
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::unused_async)]
+pub async fn reevaluate_browser(_s: &AppState) -> Result<(), clax_http::error::ApiError> {
+    Ok(())
+}
+
+/// Closes, `revoked`, every open browser session whose run no longer
+/// holds its kind's capability now, each one's tail charged by the
+/// registry's charger (`browser_sessions`), before the caller answers (spec
+/// docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §4.4): a
+/// grant revoked, a switch turned off, the credentials removed. A run
+/// holds a kind while it declared it (`bot_runs.caps`) and
+/// [`crate::routes::bot::run_caps`] still gives it to the run's person.
+///
+/// # Errors
+/// The store's, before any session is closed.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn reevaluate_browser(s: &AppState) -> Result<(), clax_http::error::ApiError> {
+    use clax_bot::capability::{CapSet, Capability};
+    let Some(sessions) = s.bot.browser_sessions.clone() else {
+        return Ok(());
+    };
+    let runs = sessions.open_runs();
+    if runs.is_empty() {
+        return Ok(());
+    }
+    let bot = s.bot.clone();
+    let held: std::collections::BTreeMap<String, CapSet> = s
+        .store_call(move |st| {
+            let mut held = std::collections::BTreeMap::new();
+            for id in runs {
+                let Some(run) = st.run(&id)? else { continue };
+                let live = crate::routes::bot::run_caps(st, &bot, &run.person)?;
+                let caps: CapSet = CapSet::parse(&run.caps)
+                    .iter()
+                    .filter(|c| live.has(*c))
+                    .collect();
+                held.insert(id, caps);
+            }
+            Ok(held)
+        })
+        .await?;
+    sessions
+        .reevaluate(&|run, kind| {
+            Capability::parse(kind.capability())
+                .is_some_and(|c| held.get(run).is_some_and(|caps| caps.has(c)))
+        })
+        .await;
+    Ok(())
 }
 
 /// Which of ClaxBot's web operations are configured on this host now:
@@ -1259,7 +1420,7 @@ pub fn driver_with_web(
 /// daemon's own source), and, for a native host whose source fetches but
 /// does not search on its own (the daemon's), search once the instance
 /// holds a key-encryption key, a Cloudflare account ID and a sealed token
-/// ([`crate::web_source::has_credentials`]), read at each call so an
+/// ([`crate::cloudflare::has_credentials`]), read at each call so an
 /// admin's change takes effect without a restart.
 ///
 /// # Errors
@@ -1283,9 +1444,31 @@ pub fn web_configured(
     }
     #[cfg(not(target_arch = "wasm32"))]
     if shape.fetch && !shape.search {
-        shape.search = crate::web_source::has_credentials(st, bot.kek.as_ref())?;
+        shape.search = crate::cloudflare::has_credentials(st, bot.kek.as_ref())?;
     }
     Ok(shape)
+}
+
+/// Whether ClaxBot's browser use is configured on this host now: the
+/// host gave its runs a browser source ([`clax_http::bot::Bot::browser`],
+/// the native daemon's driver alone) and the instance holds a
+/// key-encryption key, a Cloudflare account ID and a sealed token
+/// ([`crate::cloudflare::has_credentials`]), read at each call so an
+/// admin's change takes effect without a restart. Never on the Worker.
+///
+/// # Errors
+/// The store's.
+pub fn browser_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Result<bool> {
+    if !bot.browser {
+        return Ok(false);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    return crate::cloudflare::has_credentials(st, bot.kek.as_ref());
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = st;
+        Ok(false)
+    }
 }
 
 /// Whether an admin turned web search or web fetch on.

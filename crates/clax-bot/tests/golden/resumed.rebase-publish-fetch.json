@@ -3,7 +3,7 @@
     "kinds": [
       "bot.run_start",
       "bot.turn",
-      "bot.web",
+      "bot.spend",
       "bot.script",
       "bot.call",
       "bot.call",
@@ -85,6 +85,7 @@
         },
         "at": "2026-10-21T10:00:00.000Z",
         "body": {
+          "capability": "clax-web:fetch",
           "clax_commit": "<commit>",
           "clax_version": "<version>",
           "credits_milli": 100,
@@ -107,7 +108,7 @@
           "session": null,
           "thread": null
         },
-        "kind": "bot.web"
+        "kind": "bot.spend"
       },
       {
         "actor": {
@@ -448,7 +449,7 @@
       "result": {
         "cost_milli": 100,
         "counted": true,
-        "format": "auto",
+        "format": "markdown",
         "source": {
           "comment_id": "<comment>",
           "kind": "comment",

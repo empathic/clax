@@ -123,6 +123,23 @@ pub struct Bot {
     /// daemon's and the Worker's): no run is made with a join, and
     /// nothing is read for one.
     pub joins: Option<Arc<dyn crate::bot_joins::JoinedSurfaces>>,
+    /// The host gave its runs a browser source (the native daemon's run
+    /// driver, `clax_server::bot::driver`, which opens Browser Run
+    /// sessions once the instance holds the Cloudflare account ID and
+    /// token, read at each call: `clax_server::bot::browser_configured`).
+    /// False (the default, the Worker's and every host without one):
+    /// every run's browser use is off, not configured, and no run is made
+    /// with a browser capability (`clax_bot::capability::Capabilities::now`).
+    pub browser: bool,
+    /// The host's browser sessions (`clax_bot::browser::live`), which
+    /// its runs share and its grant routes re-evaluate before they answer
+    /// (`clax_server::bot::reevaluate_browser`, spec
+    /// docs/superpowers/specs/2026-11-19-claxbot-browser-design.md §4.4).
+    /// `None` (the default, every host without a browser source): no
+    /// session is ever open. Not on wasm32 (the Worker), which opens no
+    /// browser and whose registry would not be shared between threads.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub browser_sessions: Option<Arc<clax_bot::browser::live::BrowserSessions>>,
 }
 
 /// The host's check of its web source for the admin's view of the web
@@ -165,6 +182,9 @@ impl Default for Bot {
             web_check: Arc::default(),
             admin_web_check: None,
             joins: None,
+            browser: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            browser_sessions: None,
         }
     }
 }
@@ -184,6 +204,8 @@ impl clax_core::working::Clock for StoreClock<'_> {
 pub struct Settings {
     pub store: Arc<Store>,
     pub enabled: bool,
+    /// `[bot.models] images` ([`clax_bot::RunSettings::image_models`]).
+    pub image_models: Vec<String>,
     /// `[bot] model_takes_images` ([`clax_bot::RunSettings::model_takes_images`]).
     pub model_takes_images: bool,
 }
@@ -192,6 +214,7 @@ impl clax_bot::SettingsSource for Settings {
     fn settings(&self) -> clax_core::Result<clax_bot::RunSettings> {
         Ok(clax_bot::RunSettings {
             enabled: self.enabled,
+            image_models: self.image_models.clone(),
             model_takes_images: self.model_takes_images,
             ..clax_bot::RunSettings::from_store(&self.store)?
         })

@@ -244,10 +244,80 @@ pub struct Run {
     /// as much as its person's do; `None` for a person's own send and the
     /// owner's agents.
     pub agent_grant: Option<String>,
-    /// The shape of the run's web grant when it was made: `""` (no web
-    /// tools), `"search"`, `"fetch"` or `"search,fetch"`. Written when the
-    /// run is made and never changed.
+    /// The run's capabilities when it was made (`bot_runs.caps`):
+    /// capability IDs ([`crate::bot_grants::CAPABILITIES`]) sorted and
+    /// comma-separated, `""` for none. Written when the run is made and
+    /// never changed.
+    pub caps: String,
+    /// The web operations its capabilities allow, as main spelled a run's
+    /// web shape: `""`, `"search"`, `"fetch"` or `"search,fetch"`
+    /// ([`web_shape`] of [`Run::caps`]), for the run's JSON's `web` field.
     pub web: String,
+}
+
+/// The browser's source capabilities: each opens a session of its kind.
+const OPEN_CAPS: &[&str] = &[
+    "clax-browser:open-url",
+    "clax-browser:open-artifact",
+    "clax-browser:open-content",
+];
+
+/// The operations of Clax's own surface the capabilities allow, as
+/// [`Bindings::clax`] grants them: each operation with the capabilities
+/// any one of which allows it, in the order a binding lists them (spec
+/// 2026-11-19-claxbot-browser §4.2, §6.9): the session operations with
+/// any `clax-browser:open-*`, `browser.test` with `clax-browser:open-artifact`.
+pub const CLAX_GRANTED: [(&str, &[&str]); 8] = [
+    ("web.search", &["clax-web:search"]),
+    ("web.fetch", &["clax-web:fetch"]),
+    ("browser.open", OPEN_CAPS),
+    ("browser.page", OPEN_CAPS),
+    ("browser.act", OPEN_CAPS),
+    ("browser.expect", OPEN_CAPS),
+    ("browser.close", OPEN_CAPS),
+    ("browser.test", &["clax-browser:open-artifact"]),
+];
+
+/// The capabilities text (`bot_runs.caps`) of a run whose web shape (main's
+/// `bot_runs.web`) is `web`: `search` for `clax-web:search`, `fetch` for
+/// `clax-web:fetch`, comma-separated; any other part names nothing. Sorted,
+/// each once.
+pub fn caps_of_web(web: &str) -> String {
+    let mut caps: Vec<&str> = web
+        .split(',')
+        .filter_map(|p| match p {
+            "search" => Some("clax-web:search"),
+            "fetch" => Some("clax-web:fetch"),
+            _ => None,
+        })
+        .collect();
+    caps.sort_unstable();
+    caps.dedup();
+    caps.join(",")
+}
+
+/// `caps` (capability IDs, comma-separated, any order) as
+/// [`Store::create_run`] keeps them: the known ones sorted, each once.
+pub fn caps_text<'a>(caps: impl IntoIterator<Item = &'a str>) -> String {
+    let mut caps: Vec<&str> = caps
+        .into_iter()
+        .filter(|c| crate::bot_grants::CAPABILITIES.contains(c))
+        .collect();
+    caps.sort_unstable();
+    caps.dedup();
+    caps.join(",")
+}
+
+/// The web shape of capabilities text `caps`: `search` for
+/// `clax-web:search`, `fetch` for `clax-web:fetch`, in that order.
+pub fn web_shape(caps: &str) -> String {
+    let has = |c: &str| caps.split(',').any(|p| p == c);
+    [("clax-web:search", "search"), ("clax-web:fetch", "fetch")]
+        .into_iter()
+        .filter(|(c, _)| has(c))
+        .map(|(_, s)| s)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// What `bot_runs` keeps of a run's parking, beside [`Run`]
@@ -362,8 +432,8 @@ pub struct NewRun {
     pub base_version: u32,
     /// The grant of the agent that asked for it ([`Run::agent_grant`]).
     pub agent_grant: Option<String>,
-    /// The shape of its web grant ([`Run::web`]).
-    pub web: String,
+    /// Its capabilities ([`Run::caps`], [`caps_text`]).
+    pub caps: String,
 }
 
 /// The surface every run made so far is of: Clax's own, which declares
@@ -583,7 +653,9 @@ impl StoredBinding {
     /// beyond those every run of the surface has, as the surface names
     /// them, without the surface's name. For `clax` these are the web
     /// operations the run was made with (`web.search`, `web.fetch`, in
-    /// that order: what [`Run::web`] records). An empty list is a run
+    /// that order: what [`Run::web`] records), then its browser operations
+    /// (`browser.test`, `browser.browse`, in that order: what
+    /// [`Run::browser`] records). An empty list is a run
     /// with the surface's standing operations and no more, not a run
     /// with none. Empty for a binding of version 2, which says its
     /// operations whole ([`StoredBinding::operations`]).
@@ -651,17 +723,26 @@ fn names(value: &Value) -> Option<Vec<String>> {
 }
 
 impl Bindings {
-    /// The bindings of a `clax` run on artifact `artifact_id` whose web
-    /// grant has the shape `web` ([`Run::web`]: `search` and `fetch`,
-    /// comma-separated; any other part names no operation): version 1.
+    /// The bindings of a `clax` run on artifact `artifact_id` whose
+    /// capabilities are `caps` ([`Run::caps`]: capability IDs,
+    /// comma-separated): version 1, granting each operation a capability
+    /// of `caps` allows ([`CLAX_GRANTED`]), in that table's order. A part
+    /// that names no capability grants nothing. The scope is
+    /// `{"artifact": <ID>}`, with `"caps"`, the capabilities text, when
+    /// one of them is the browser's: the session operations are the same
+    /// whichever source kinds a run holds, so the binding says which.
     #[must_use]
-    pub fn clax(artifact_id: &str, web: &str) -> Bindings {
-        let has = |part: &str| web.split(',').any(|p| p == part);
-        let granted = [("search", "web.search"), ("fetch", "web.fetch")]
-            .into_iter()
-            .filter(|(part, _)| has(part))
-            .map(|(_, op)| op.to_string())
+    pub fn clax(artifact_id: &str, caps: &str) -> Bindings {
+        let has = |c: &str| caps.split(',').any(|p| p == c);
+        let granted = CLAX_GRANTED
+            .iter()
+            .filter(|(_, by)| by.iter().any(|c| has(c)))
+            .map(|(op, _)| (*op).to_string())
             .collect();
+        let mut scope = serde_json::json!({ "artifact": artifact_id });
+        if OPEN_CAPS.iter().any(|c| has(c)) {
+            scope["caps"] = serde_json::json!(caps_text(caps.split(',')));
+        }
         Bindings {
             v: BINDINGS_VERSION,
             bindings: vec![StoredBinding {
@@ -670,7 +751,7 @@ impl Bindings {
                 registration: None,
                 prompt: None,
                 settings: None,
-                scope: serde_json::json!({ "artifact": artifact_id }),
+                scope,
                 granted,
                 operations: None,
             }],
@@ -940,7 +1021,7 @@ impl NewRun {
     /// on its artifact.
     #[must_use]
     pub fn bindings(&self) -> Bindings {
-        Bindings::clax(&self.artifact_id, &self.web)
+        Bindings::clax(&self.artifact_id, &self.caps)
     }
 
     /// The run's request (`bot_runs.request_json`).
@@ -1004,7 +1085,7 @@ pub struct Committed {
 
 const RUN_COLS: &str = "id, artifact_id, person, request, thread_ids_json, status, reason, model,
     key_source, base_version, credits_milli, claimed_by, claimed_at, created_at, updated_at, ended_at,
-    agent_grant, due_at, web";
+    agent_grant, due_at, caps";
 
 /// Column `i` of a `bot_runs` row, `column`, as the `T` its text names.
 /// A value `parse` does not know is an error naming the column and the
@@ -1092,7 +1173,8 @@ fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
         ended_at: r.get(15)?,
         agent_grant: r.get(16)?,
         due_at: r.get(17)?,
-        web: s(18)?,
+        web: web_shape(&s(18)?),
+        caps: s(18)?,
     })
 }
 
@@ -1116,7 +1198,7 @@ fn as_made(
         key_source: run.key_source,
         base_version: run.base_version,
         agent_grant: run.agent_grant.clone(),
-        web: run.web.clone(),
+        caps: run.caps.clone(),
     };
     RunAsMade {
         kind: kind.unwrap_or_else(|| before_64().kind()),
@@ -1181,6 +1263,29 @@ pub(crate) fn run_in(c: &Connection, id: &str) -> Result<Option<Run>> {
         c.prepare_cached(&format!("SELECT {RUN_COLS} FROM bot_runs WHERE id = ?1"))?
             .query_row(params![id], row_to_run)
             .optional()?,
+    )
+}
+
+/// [`run_in`] on a database migrated only as far as migrations 63 to 66
+/// leave `bot_runs`, before migration 69 adds `bot_runs.caps`: the run
+/// reads with the capabilities migration 69 gives it from its web shape
+/// ([`caps_of_web`]).
+#[cfg(test)]
+#[warn(clippy::disallowed_methods)]
+pub(crate) fn run_before_browser_in(c: &Connection, id: &str) -> Result<Option<Run>> {
+    let cols = RUN_COLS.replace(", caps", ", web");
+    Ok(
+        c.prepare(&format!("SELECT {cols} FROM bot_runs WHERE id = ?1"))?
+            .query_row(params![id], row_to_run)
+            .optional()?
+            .map(|run| {
+                let caps = caps_of_web(&run.caps);
+                Run {
+                    web: web_shape(&caps),
+                    caps,
+                    ..run
+                }
+            }),
     )
 }
 
@@ -1795,9 +1900,9 @@ impl Store {
             tx.execute(
                 "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
                     model, key_source, base_version, created_at, updated_at, agent_grant, web,
-                    kind, bindings_json, request_json)
+                    kind, bindings_json, request_json, caps)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?9, ?10, ?11,
-                    ?12, ?13, ?14)",
+                    ?12, ?13, ?14, ?15)",
                 params![
                     id,
                     new.artifact_id,
@@ -1809,10 +1914,11 @@ impl Store {
                     new.base_version,
                     now,
                     new.agent_grant,
-                    new.web,
+                    web_shape(&new.caps),
                     new.kind(),
                     bindings.map_or_else(|| new.bindings().to_json(), Bindings::to_json),
-                    serde_json::to_string(&new.clax_request()).expect("serialisable IDs")
+                    serde_json::to_string(&new.clax_request()).expect("serialisable IDs"),
+                    caps_text(new.caps.split(','))
                 ],
             )?;
             let mut rec = AuditRecord::new(AuditKind::BotRunStart, now)
@@ -2577,15 +2683,27 @@ impl Store {
     /// # Errors
     /// `NotFound`; the store's.
     pub fn cancel_run(&self, ctx: &AuditCtx, id: &str) -> Result<Run> {
+        self.cancel_run_for(ctx, id, None)
+    }
+
+    /// [`Store::cancel_run`] for `reason`: the run, asked to stop, keeps
+    /// it in its `reason` while it is `stopping`, its driver ends it
+    /// `stopped` with it, and the `bot.cancel` record names it (spec
+    /// 2026-11-19-claxbot-browser-design §4.4: `grant_revoked`). `None`
+    /// is a cancel's, ended `cancelled`.
+    ///
+    /// # Errors
+    /// As [`Store::cancel_run`].
+    pub fn cancel_run_for(&self, ctx: &AuditCtx, id: &str, reason: Option<&str>) -> Result<Run> {
         self.with_tx(|tx| {
             let now = self.now();
             // A parked run is queued again, unclaimed, before it is asked
             // to stop.
             unpark_in(tx, id, &now)?;
             let changed = tx.execute(
-                "UPDATE bot_runs SET status = 'stopping', updated_at = ?2
+                "UPDATE bot_runs SET status = 'stopping', updated_at = ?2, reason = ?3
                   WHERE id = ?1 AND status IN ('queued', 'running')",
-                params![id, now],
+                params![id, now, reason],
             )?;
             let run = run_in(tx, id)?.ok_or(CoreError::NotFound)?;
             if changed > 0 {
@@ -2597,6 +2715,9 @@ impl Store {
                 let mut rec = AuditRecord::new(AuditKind::BotCancel, now)
                     .with("run", id)
                     .with("by", set_by(ctx));
+                if let Some(r) = reason {
+                    rec = rec.with("reason", r);
+                }
                 rec.ids.artifact = run.artifact().map(str::to_string);
                 self.record_audit(tx, ctx, rec)?;
             }
@@ -3225,6 +3346,11 @@ fn prune_run_in(
                    (SELECT rowid FROM bot_pending_calls WHERE run_id = ?1 LIMIT ?2)",
                 &mut pruned.pending_calls,
             ),
+            (
+                "DELETE FROM bot_browser_sessions WHERE run_id = ?1 AND session_id IN
+                   (SELECT session_id FROM bot_browser_sessions WHERE run_id = ?1 LIMIT ?2)",
+                &mut pruned.browser_sessions,
+            ),
         ] {
             let n = delete_some(c, delete, &run.id, *budget)?;
             if !take(count, n, budget) {
@@ -3279,6 +3405,8 @@ pub struct Pruned {
     pub draft_files: usize,
     /// Pending calls.
     pub pending_calls: usize,
+    /// Browser sessions' rows (`bot_browser_sessions`), with the journal.
+    pub browser_sessions: usize,
     /// Run ends kept for a registration.
     pub run_ends: usize,
     /// Messages of runs' inboxes ([`crate::bot_messages`]).
@@ -3308,6 +3436,7 @@ impl Pruned {
         self.pages += other.pages;
         self.draft_files += other.draft_files;
         self.pending_calls += other.pending_calls;
+        self.browser_sessions += other.browser_sessions;
         self.run_ends += other.run_ends;
         self.messages += other.messages;
         self.contents += other.contents;
@@ -3627,7 +3756,7 @@ mod tests {
                 key_source: KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
+                caps: String::new(),
             },
         )
     }
@@ -3753,6 +3882,105 @@ mod tests {
     }
 
     #[test]
+    fn a_run_keeps_its_capabilities() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None).to_string();
+        let made = st
+            .create_run_exclusive(
+                &bot(),
+                NewRun {
+                    artifact_id: aid.clone(),
+                    person: OWNER.into(),
+                    request: RequestKind::Thread,
+                    thread_ids: vec!["t1".into()],
+                    model: "claude-sonnet-5-5".into(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                    caps:
+                        "clax-browser:open-content,clax-browser:open-artifact,web.crawl,clax-browser:open-content"
+                            .into(),
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let (run, as_made) = st.run_as_made(&made.id).unwrap().unwrap();
+        assert_eq!(
+            run.caps, "clax-browser:open-artifact,clax-browser:open-content",
+            "known capabilities, sorted, each once"
+        );
+        assert_eq!(run.web, "");
+        assert_eq!(st.run(&run.id).unwrap().unwrap().caps, run.caps);
+        assert_eq!(
+            caps_of_web("fetch,search,search,x"),
+            "clax-web:fetch,clax-web:search"
+        );
+        assert_eq!(caps_of_web(" search"), "");
+        assert_eq!(
+            web_shape("clax-web:fetch,clax-web:search"),
+            "search,fetch",
+            "in main's order"
+        );
+        let bindings = as_made.bindings().unwrap();
+        assert_eq!(
+            bindings.bindings[0].granted(),
+            [
+                "browser.open",
+                "browser.page",
+                "browser.act",
+                "browser.expect",
+                "browser.close",
+                "browser.test"
+            ]
+        );
+        assert_eq!(kept(&st, &run.id).1, bindings, "kept as made");
+        // The browser's operations follow the web's, in a fixed order,
+        // whatever order the capabilities are named in.
+        assert_eq!(
+            Bindings::clax(
+                &aid,
+                "clax-web:fetch,clax-browser:open-url,clax-web:search,clax-browser:open-artifact"
+            )
+            .bindings[0]
+                .granted(),
+            [
+                "web.search",
+                "web.fetch",
+                "browser.open",
+                "browser.page",
+                "browser.act",
+                "browser.expect",
+                "browser.close",
+                "browser.test"
+            ]
+        );
+        let url = Bindings::clax(&aid, "clax-browser:open-url");
+        assert_eq!(
+            url.bindings[0].granted(),
+            [
+                "browser.open",
+                "browser.page",
+                "browser.act",
+                "browser.expect",
+                "browser.close"
+            ]
+        );
+        assert_eq!(url.bindings[0].scope["caps"], "clax-browser:open-url");
+        // Content allows the session operations, and the scope names it.
+        let content = Bindings::clax(&aid, "clax-browser:open-content,Test,web,search");
+        assert_eq!(content.bindings[0].granted().len(), 5);
+        assert_eq!(
+            content.bindings[0].scope["caps"],
+            "clax-browser:open-content"
+        );
+        // A web run's scope is the artifact alone.
+        assert_eq!(
+            Bindings::clax(&aid, "clax-web:search").bindings[0].scope,
+            serde_json::json!({"artifact": aid})
+        );
+    }
+
+    #[test]
     fn a_new_run_keeps_its_kind_its_clax_binding_and_its_request() {
         let (_d, st) = store();
         let aid = artifact(&st, None).to_string();
@@ -3768,7 +3996,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: web.into(),
+                    caps: caps_of_web(web),
                 },
             )
             .unwrap()
@@ -4083,7 +4311,7 @@ mod tests {
 
     #[test]
     fn bindings_are_read_only_at_the_version_this_build_knows() {
-        let made = Bindings::clax("7q3k9mzx2b4t", "search,fetch");
+        let made = Bindings::clax("7q3k9mzx2b4t", "clax-web:search,clax-web:fetch");
         let text = made.to_json();
         assert_eq!(
             text,
@@ -4104,7 +4332,7 @@ mod tests {
         assert!(read.of("shell").is_none());
         assert_eq!(read.all(), std::slice::from_ref(clax));
         assert!(
-            Bindings::clax("a", "fetch,other,Search")
+            Bindings::clax("a", "clax-web:fetch,other,web.Search")
                 .of("clax")
                 .unwrap()
                 .granted()
@@ -4309,7 +4537,7 @@ mod tests {
                 key_source: KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
+                caps: String::new(),
             },
         );
         assert!(matches!(again, Err(CoreError::NotFound)), "{again:?}");
@@ -4606,7 +4834,7 @@ mod tests {
             key_source,
             base_version: 1,
             agent_grant: None,
-            web: String::new(),
+            caps: String::new(),
         };
         assert_eq!(
             code(st.create_run(&bot(), new(KeySource::Instance))),
@@ -5615,7 +5843,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: String::new(),
+                    caps: String::new(),
                 },
             )
             .unwrap();
@@ -5865,7 +6093,7 @@ mod tests {
 
         // A binding of version 1 says no operations, no registration and
         // no prompt file, whatever its text holds.
-        let v1 = Bindings::clax("7q3k9mzx2b4t", "fetch");
+        let v1 = Bindings::clax("7q3k9mzx2b4t", "clax-web:fetch");
         assert_eq!(v1.version(), 1);
         let clax = v1.of("clax").unwrap();
         assert_eq!((clax.operations(), clax.registration()), (None, None));
@@ -6208,6 +6436,7 @@ mod tests {
                 ended_at: None,
                 due_at: None,
                 agent_grant: None,
+                caps: String::new(),
                 web: String::new(),
             }
         );

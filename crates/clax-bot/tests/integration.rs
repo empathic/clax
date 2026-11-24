@@ -5,6 +5,7 @@
 
 mod common;
 
+mod browser;
 mod cancel;
 mod driver;
 mod endings;
@@ -24,5 +25,6 @@ mod resume;
 mod rules;
 mod runs;
 mod seam;
+mod state;
 mod unreadable;
 mod web;

@@ -111,6 +111,18 @@ impl Kek {
         Kek(clax_core::secret::random_bytes::<32>())
     }
 
+    /// The instance's key for `purpose`: `HMAC-SHA256(KEK,
+    /// "clax-instance-key/v1/" + purpose)`, derived from this one and never
+    /// stored, so whatever signs a token of its own (the browser's
+    /// capabilities, purpose `browser-capabilities`, spec
+    /// 2026-11-19-claxbot-browser §18.2) takes a purpose rather than a
+    /// sealed slot. Each purpose's key is its own, and knowing one reveals
+    /// nothing of the KEK or another.
+    #[must_use]
+    pub fn instance_key(&self, purpose: &str) -> [u8; 32] {
+        clax_core::macaroon::derive_key(&self.0, &format!("clax-instance-key/v1/{purpose}"))
+    }
+
     /// The first 4 bytes of the SHA-256 of the key's 32 bytes, in
     /// lowercase hex: which key this is, without the key. The hosted key
     /// is 64 hex digits, so `xxd -r -p | shasum -a 256 | cut -c1-8` gives
@@ -626,6 +638,21 @@ mod tests {
     use super::*;
     use crate::roles::OWNER;
     use crate::test_util::{DAEMON, store};
+
+    #[test]
+    fn an_instance_key_depends_on_its_purpose_and_kek() {
+        let k = Kek::from_bytes([1; 32]);
+        let key = |k: &Kek, p: &str| k.instance_key(p);
+        assert_eq!(key(&k, "a"), key(&Kek::from_bytes([1; 32]), "a"));
+        assert_ne!(key(&k, "a"), key(&k, "b"));
+        assert_ne!(key(&k, "a"), key(&Kek::from_bytes([2; 32]), "a"));
+        assert_ne!(key(&k, "a"), [1; 32]);
+        assert_eq!(
+            key(&k, "a"),
+            clax_core::macaroon::derive_key(&[1; 32], "clax-instance-key/v1/a"),
+            "the purpose under one versioned prefix"
+        );
+    }
 
     const KEY: &str = "sk-ant-api03-SECRETSECRETSECRET-wxyz";
     /// The default base URL, which keys set in these tests are bound to.

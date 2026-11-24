@@ -1,3 +1,4 @@
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("//bazel:cargo.bzl", "cargo_package")
 
 cargo_package(
@@ -30,4 +31,18 @@ cargo_package(
 exports_files(
     ["src/clax.d.ts"],
     visibility = ["//crates/clax-cli:__pkg__"],
+)
+
+# The browser declarations api::dts writes (its goldens) and the scripts
+# written as Playwright's documentation writes them, which the web UI's
+# unit tests compile with TypeScript (web/scripts/claxbot-browser-dts.test.ts).
+filegroup(
+    name = "browser_declarations",
+    srcs = glob(["src/api.browser-*.d.ts.golden"]) + ["src/browser.examples.ts"],
+)
+
+copy_to_bin(
+    name = "browser_declarations_bin",
+    srcs = [":browser_declarations"],
+    visibility = ["//web:__pkg__"],
 )

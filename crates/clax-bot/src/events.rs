@@ -22,6 +22,7 @@
 //! The channel is tokio's `broadcast` (its `sync` feature builds for
 //! wasm32), so the hub works on the Worker's one thread as natively.
 
+use crate::surface::Fields;
 use clax_bot_sandbox::MaybeSendSync;
 use clax_core::Result;
 use clax_store::Store;
@@ -85,14 +86,17 @@ pub enum Event {
         ok: bool,
         code: Option<String>,
         /// How long the call took, in milliseconds (0 for one answered
-        /// from the journal).
+        /// from the journal); a browser call's is the browser time its
+        /// journal entry charged ([`call_ms`]), live and replayed alike.
         ms: u64,
-        /// What a web call charged, in millicredits; `None` for any other
-        /// call and for one answered from the journal.
+        /// What a charged call (`web.*`, `browser.*`) charged, in
+        /// millicredits; `None` for any other call and for one answered
+        /// from the journal.
         cost_milli: Option<i64>,
-        /// A web call's `{query}` or `{url, source}`; `None` for any other
-        /// call.
-        web: Option<Value>,
+        /// The provider's fields of the call named in [`CALL_FIELDS`],
+        /// each only when present: a web call's `web` (`{query}` or
+        /// `{url, source}`), a browser call's `browser` (its summary).
+        fields: Fields,
     },
     /// The step committed. `summary` is [`step_summary`] of its payload.
     StepDone {
@@ -108,24 +112,59 @@ pub enum Event {
     },
 }
 
-/// Adds a call's web fields to its JSON object `v` (a step's `calls`, a
-/// `call` event, the run panel's views of either), each only when
-/// present: `cost_milli`, what a web call charged, and `web`, its
-/// `{query}` or `{url, source}`.
-pub fn with_web_fields(v: &mut Value, cost_milli: Option<i64>, web: Option<&Value>) {
+/// A provider's fields of a call that its `call` event and the run
+/// panel's views carry: `web`, a web call's `{query}` or `{url, source}`,
+/// and `browser`, a browser call's summary (`crate::clax::browser`).
+/// A step's `calls` keep every field of the provider's
+/// ([`crate::surface::CallNote::add_to`]).
+pub const CALL_FIELDS: [&str; 2] = ["web", "browser"];
+
+/// The fields of `extra` (a JSON object: a provider's fields, a step's
+/// call, a `call` event's data) named in [`CALL_FIELDS`], each only when
+/// present and not `null`.
+#[must_use]
+pub fn call_fields(extra: &Value) -> Fields {
+    CALL_FIELDS
+        .iter()
+        .filter_map(|&name| {
+            extra
+                .get(name)
+                .filter(|v| !v.is_null())
+                .map(|v| (name.to_string(), v.clone()))
+        })
+        .collect()
+}
+
+/// Adds a call's charge and its provider's fields to its JSON object `v`
+/// (a step's `calls`, a `call` event, the run panel's views of either),
+/// each only when present: `cost_milli`, what the call charged, and the
+/// fields of `extra` named in [`CALL_FIELDS`] ([`call_fields`]).
+pub fn with_call_fields(v: &mut Value, cost_milli: Option<i64>, extra: &Value) {
     if let Some(cost) = cost_milli {
         v["cost_milli"] = json!(cost);
     }
-    if let Some(w) = web.filter(|w| !w.is_null()) {
-        v["web"] = w.clone();
+    for (name, field) in call_fields(extra) {
+        v[name] = field;
     }
+}
+
+/// A call's `ms` as the run panel shows it: a browser call's own (its
+/// summary's `ms`, the browser time its journal entry charged, which a
+/// replay keeps), else `ms`, the run loop's.
+#[must_use]
+pub fn call_ms(ms: u64, extra: &Value) -> u64 {
+    extra
+        .get("browser")
+        .and_then(|b| b.get("ms"))
+        .and_then(Value::as_u64)
+        .unwrap_or(ms)
 }
 
 impl Event {
     /// The `call` event of a script's call to `op` that ended `ok` (with
     /// `code` when it failed) after `ms` milliseconds, with what its
     /// surface's provider says of it: its target, what it charged, and
-    /// the provider's field named `web`
+    /// the provider's fields named in [`CALL_FIELDS`]
     /// ([`crate::surface::CallNote::extra`]).
     #[must_use]
     pub fn call(
@@ -135,14 +174,30 @@ impl Event {
         ms: u64,
         note: &crate::surface::CallNote,
     ) -> Event {
+        let extra = Value::Object(note.extra().clone());
         Event::Call {
             op: op.to_string(),
             target: note.target().map(str::to_string),
             ok,
             code,
-            ms,
+            ms: call_ms(ms, &extra),
             cost_milli: note.cost_milli(),
-            web: note.extra().get("web").cloned(),
+            fields: call_fields(&extra),
+        }
+    }
+
+    /// The `call` event of call `c`, as a committed step's `calls` keep
+    /// it: replayed from the store, so its `ms` is what was kept.
+    #[must_use]
+    pub fn call_of_entry(c: &Value) -> Event {
+        Event::Call {
+            op: c["op"].as_str().unwrap_or("").into(),
+            target: c["target"].as_str().map(str::to_string),
+            ok: c["ok"].as_bool().unwrap_or(false),
+            code: c["code"].as_str().map(str::to_string),
+            ms: call_ms(c["ms"].as_u64().unwrap_or(0), c),
+            cost_milli: c["cost_milli"].as_i64(),
+            fields: call_fields(c),
         }
     }
 
@@ -171,10 +226,10 @@ impl Event {
                 code,
                 ms,
                 cost_milli,
-                web,
+                fields,
             } => {
                 let mut v = json!({"op": op, "target": target, "ok": ok, "code": code, "ms": ms});
-                with_web_fields(&mut v, *cost_milli, web.as_ref());
+                with_call_fields(&mut v, *cost_milli, &Value::Object(fields.clone()));
                 v
             }
             Event::StepDone {
@@ -395,18 +450,7 @@ fn canonical(
             .flatten()
             .enumerate()
         {
-            push(
-                2 + i as u32,
-                Event::Call {
-                    op: c["op"].as_str().unwrap_or("").into(),
-                    target: c["target"].as_str().map(str::to_string),
-                    ok: c["ok"].as_bool().unwrap_or(false),
-                    code: c["code"].as_str().map(str::to_string),
-                    ms: c["ms"].as_u64().unwrap_or(0),
-                    cost_milli: c["cost_milli"].as_i64(),
-                    web: c.get("web").filter(|w| !w.is_null()).cloned(),
-                },
-            );
+            push(2 + i as u32, Event::call_of_entry(c));
         }
     }
     push(
@@ -562,10 +606,10 @@ mod tests {
     use super::*;
 
     /// A call's event is made of what its provider's note says: the
-    /// target, the charge, and the field named `web` alone.
+    /// target, the charge, and the fields of [`CALL_FIELDS`] alone.
     #[test]
     fn a_calls_event_carries_its_notes_target_charge_and_web() {
-        use crate::surface::{Answer, Fields};
+        use crate::surface::Answer;
         let shown = serde_json::json!({"url": "https://example.com/a"});
         let answer = Answer::written(Ok(Value::Null))
             .naming(Some("a.css".into()))
@@ -583,7 +627,7 @@ mod tests {
                 code: Some("web_cap".into()),
                 ms: 3,
                 cost_milli: Some(100),
-                web: Some(shown),
+                fields: Fields::from_iter([("web".to_string(), shown)]),
             }
         );
         let plain = Answer::of(Ok(Value::Null));
@@ -596,8 +640,74 @@ mod tests {
                 code: None,
                 ms: 0,
                 cost_milli: None,
-                web: None,
+                fields: Fields::new(),
             }
+        );
+    }
+
+    /// A browser session call's `ms` is the browser time its journal
+    /// entry charged, live and replayed: the run loop's record has none
+    /// (it is 0), and a web call keeps the run loop's.
+    #[test]
+    fn a_session_call_takes_its_ms_from_its_journal_entry() {
+        use crate::surface::Answer;
+        let summary = json!({"session": "s1", "kind": "artifact", "op": "act", "action": "click",
+                             "locator": [{"role": "button", "name": "Book"}], "ms": 3100, "ok": true});
+        let answer = Answer::written(Ok(Value::Null))
+            .charged(2)
+            .showing(Fields::from_iter([(
+                "browser".to_string(),
+                summary.clone(),
+            )]));
+        let live = Event::call("browser.act", true, None, 0, answer.note());
+        let Event::Call { ms, .. } = &live else {
+            panic!("a call")
+        };
+        assert_eq!(*ms, 3100);
+        let mut entry =
+            json!({"op": "browser.act", "target": null, "ok": true, "code": null, "ms": 0});
+        answer.note().add_to(&mut entry);
+        assert_eq!(Event::call_of_entry(&entry), live);
+        assert_eq!(call_ms(7, &json!({"web": {"query": "q"}})), 7);
+    }
+
+    /// A browser call's event, live and replayed from its step's
+    /// `calls`, carries its `browser` summary and its charge, and the
+    /// run panel's view of it gets both.
+    #[test]
+    fn a_browser_call_carries_its_summary_and_cost() {
+        use crate::surface::Answer;
+        let summary = json!({"target": "draft", "viewport": "phone", "ms": 4100,
+                             "passed": true, "steps": [2, 0], "errors": 0, "console": 1,
+                             "blocked": 0, "screenshots": ["c1"]});
+        let answer = Answer::written(Ok(Value::Null))
+            .charged(12)
+            .showing(Fields::from_iter([(
+                "browser".to_string(),
+                summary.clone(),
+            )]));
+        let live = Event::call("browser.test", true, None, 4100, answer.note());
+        let mut entry = json!({"op": "browser.test", "target": null, "ok": true,
+                               "code": null, "ms": 4100});
+        answer.note().add_to(&mut entry);
+        assert_eq!(Event::call_of_entry(&entry), live);
+        let data = live.data(EventId {
+            step: 2,
+            attempt: 1,
+            seq: 2,
+        });
+        assert_eq!(data["browser"], summary);
+        assert_eq!(data["cost_milli"], 12);
+        let mut view = json!({"op": "browser.test"});
+        with_call_fields(&mut view, data["cost_milli"].as_i64(), &data);
+        assert_eq!(
+            view,
+            json!({"op": "browser.test", "cost_milli": 12, "browser": summary})
+        );
+        // A field no view carries, and a null one, are left out.
+        assert_eq!(
+            call_fields(&json!({"browser": null, "shell": 1, "web": {"query": "q"}})),
+            Fields::from_iter([("web".to_string(), json!({"query": "q"}))])
         );
     }
 

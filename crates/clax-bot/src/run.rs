@@ -96,12 +96,15 @@ pub struct RunSettings {
     /// Messages API's whatever it is.
     pub api: ModelApi,
     pub base_url: String,
-    /// The model takes images in a tool result: what
-    /// `Block::tool_result_with_images` is told. Nothing in a model's
-    /// metadata says so (`ModelInfo`, the price catalog), so it is a
-    /// setting, off by default: a model is shown no image unless this says
-    /// it takes them. The daemon's `[bot] model_takes_images` sets it for
-    /// every model of the instance; nothing stored sets it.
+    /// The models that take images in a tool result, by ID: a run's model
+    /// is shown the images a script step returns only when it is one of
+    /// these ([`RunSettings::takes_images`], what
+    /// `Block::tool_result_with_images` is told). Nothing in a model's
+    /// metadata says so (`ModelInfo`, the price catalog), so the instance
+    /// names them: the daemon's `[bot.models] images`; none by default.
+    pub image_models: Vec<String>,
+    /// Every model takes images, whatever `image_models` lists: the
+    /// daemon's older `[bot] model_takes_images`, still taken.
     pub model_takes_images: bool,
     pub max_tokens: u32,
     pub max_steps: u32,
@@ -143,6 +146,7 @@ impl Default for RunSettings {
             enabled: true,
             api: ModelApi::Anthropic,
             base_url: "https://api.anthropic.com".into(),
+            image_models: Vec::new(),
             model_takes_images: false,
             max_tokens: 32_000,
             max_steps: 40,
@@ -197,6 +201,14 @@ impl RunSettings {
                 .unwrap_or(d.script_max_calls),
             ..d
         })
+    }
+
+    /// Whether a run on `model` is shown the images its script steps
+    /// return: `model` is one [`RunSettings::image_models`] names, or
+    /// [`RunSettings::model_takes_images`] says every model takes them.
+    #[must_use]
+    pub fn takes_images(&self, model: &str) -> bool {
+        self.model_takes_images || self.image_models.iter().any(|m| m == model)
     }
 
     /// The sandbox limits of one script.
@@ -346,6 +358,40 @@ impl Deps {
     #[must_use]
     pub fn with_web(mut self, web: Arc<dyn WebSource>) -> Deps {
         self.providers.set_clax_web(Some(web));
+        self
+    }
+
+    /// These deps, opening the browsers of Clax's own surface from
+    /// `browser` (the registry's `set_clax_browser`).
+    #[must_use]
+    pub fn with_browser(mut self, browser: Arc<dyn crate::browser::BrowserSource>) -> Deps {
+        self.providers.set_clax_browser(Some(browser));
+        self
+    }
+
+    /// These deps, holding the browser sessions of Clax's own surface in
+    /// `sessions`, the host's one registry (the registry's
+    /// `set_clax_browser_sessions`): the host keeps it too, to close the
+    /// sessions a revoke no longer covers and to charge the ends it makes.
+    /// Given after [`Deps::with_browser`], which makes a registry of its
+    /// own otherwise.
+    #[must_use]
+    pub fn with_browser_sessions(
+        mut self,
+        sessions: Arc<crate::browser::live::BrowserSessions>,
+    ) -> Deps {
+        self.providers.set_clax_browser_sessions(sessions);
+        self
+    }
+
+    /// These deps, keeping a browser test's screenshots under `limits`,
+    /// the host's content limits (the registry's
+    /// `set_clax_content_limits`); [`ContentLimits::default`] otherwise.
+    ///
+    /// [`ContentLimits::default`]: clax_store::bot_content::ContentLimits
+    #[must_use]
+    pub fn with_content_limits(mut self, limits: clax_store::bot_content::ContentLimits) -> Deps {
+        self.providers.set_clax_content_limits(limits);
         self
     }
 
@@ -1293,6 +1339,10 @@ fn expire_waits(store: &Store, run_id: &str, now: chrono::DateTime<chrono::Utc>)
 /// The reason of a run stopped because it was cancelled.
 pub(crate) const CANCELLED: &str = "cancelled";
 
+/// The reason of a run stopped because a grant it needed was revoked
+/// (spec 2026-11-19-claxbot-browser-design §4.4).
+pub const GRANT_REVOKED: &str = "grant_revoked";
+
 /// The stop of a run that reached a cap: `limit` is the cap with its
 /// value, as the run's policy states it (`40 steps`, `200 credits`,
 /// `30 minutes`).
@@ -1361,6 +1411,20 @@ enum Answer {
 }
 
 impl Tick<'_> {
+    /// Why a run asked to stop stops: the reason the stop was asked with
+    /// ([`clax_store::Store::cancel_run_for`], kept in its row's `reason`
+    /// while it is `stopping`, read again now), else [`CANCELLED`].
+    pub(crate) fn stopped_end(&self) -> End {
+        let asked = self
+            .store
+            .run(&self.run.id)
+            .ok()
+            .flatten()
+            .filter(|r| r.status == RunStatus::Stopping)
+            .and_then(|r| r.reason);
+        End::stopped(asked.as_deref().unwrap_or(CANCELLED))
+    }
+
     pub(crate) fn emit(&self, attempt: i64, e: Event) {
         self.opts.events.emit(&self.run.id, self.n, attempt, e);
     }
@@ -1671,7 +1735,7 @@ impl Tick<'_> {
     /// Why the run must stop before a turn or a script, if it must.
     fn must_stop(&self) -> Result<Option<End>> {
         if self.run.status == RunStatus::Stopping || self.opts.cancel.is_cancelled() {
-            return Ok(Some(End::stopped(CANCELLED)));
+            return Ok(Some(self.stopped_end()));
         }
         if let Some(r) = refusal(
             self.store,
@@ -1757,7 +1821,7 @@ impl Tick<'_> {
         // (`Store::begin_step` refuses any other).
         if self.run.status == RunStatus::Stopping {
             self.resumed();
-            return self.stop_plain(End::stopped(CANCELLED)).await;
+            return self.stop_plain(self.stopped_end()).await;
         }
         // A run this build cannot read as it was made, or whose own
         // rows do not read, takes no step but its last: it ends
@@ -2183,7 +2247,7 @@ impl Tick<'_> {
             self.store,
             &self.run.id,
             &self.steps,
-            self.settings.model_takes_images,
+            self.settings.takes_images(&self.run.model),
             messages,
         )?;
         let mut req = MessagesRequest {
@@ -2358,7 +2422,7 @@ impl Tick<'_> {
                             charge: Some(s.attempt),
                             ..Observed::default()
                         },
-                        ..Ending::stopped(End::stopped(CANCELLED))
+                        ..Ending::stopped(self.stopped_end())
                     })
                     .await;
             };
@@ -2398,7 +2462,7 @@ impl Tick<'_> {
                             ));
                         }
                         if !waited {
-                            return self.stop_plain(End::stopped(CANCELLED)).await;
+                            return self.stop_plain(self.stopped_end()).await;
                         }
                         s = self.begin_on(StepKind::Turn, ks)?;
                     }
@@ -2607,6 +2671,24 @@ impl Tick<'_> {
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    /// A run's model is shown images only when it is one the instance
+    /// lists, whichever tier it is; the older switch says every model.
+    #[test]
+    fn each_model_answers_whether_it_takes_images() {
+        let s = RunSettings {
+            image_models: vec!["claude-sonnet-5-5".into(), "claude-opus-5-5".into()],
+            ..RunSettings::default()
+        };
+        assert!(s.takes_images("claude-sonnet-5-5") && s.takes_images("claude-opus-5-5"));
+        assert!(!s.takes_images("claude-haiku-5-5"));
+        assert!(!RunSettings::default().takes_images("claude-sonnet-5-5"));
+        let every = RunSettings {
+            model_takes_images: true,
+            ..RunSettings::default()
+        };
+        assert!(every.takes_images("claude-haiku-5-5"));
+    }
 
     #[test]
     fn compute_is_cpu_at_the_memory_limit_rounded_up() {

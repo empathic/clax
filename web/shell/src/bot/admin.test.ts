@@ -7,9 +7,10 @@ import AdminPeople from "./AdminPeople.svelte";
 import AdminPricing from "./AdminPricing.svelte";
 import AdminProvider from "./AdminProvider.svelte";
 import AdminUsage from "./AdminUsage.svelte";
+import AdminBrowser from "./AdminBrowser.svelte";
 import AdminWeb from "./AdminWeb.svelte";
 import type { ModelPricing } from "./api";
-import { adminPerson, defaultPriced, errorDetail, listing, meBot, modelPricing, pricing, provider, providerFailure, unitPricing, usage, webSettings, WEB_LINES } from "./fixtures";
+import { adminPerson, browserSettings, defaultPriced, errorDetail, listing, meBot, modelPricing, pricing, provider, providerFailure, unitPricing, usage, webSettings, WEB_LINES } from "./fixtures";
 import { forget } from "./me";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
@@ -521,6 +522,176 @@ describe("Admin › Web", () => {
     await settle();
     expect(m.root.querySelector("#aw-account")).toBeNull();
     expect(m.root.querySelector(".bkey")).toBeNull();
+  });
+});
+
+describe("Admin › Browser", () => {
+  const GRANT = { id: "g1", capability: "clax-browser:open-artifact" as const, grantee: "everyone" as const, person: null, issued_at: "2026-10-21T09:00:00Z" };
+  const SAMS = { id: "g2", capability: "clax-browser:open-artifact" as const, grantee: "person" as const, person: "p_sam", issued_at: "2026-10-21T09:05:00Z" };
+
+  it("the_browser_page_shows_and_saves_its_settings", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/browser": browserSettings({ configured: false, unavailable: "the Cloudflare account ID and API token are not both set (Web access)", cloudflare: { account: true, token: false }, sources: { max_concurrent: "file" } }),
+      "GET /api/admin/bot/grants": { grants: [] },
+      "GET /api/admin/people": [SAM],
+      "PUT /api/admin/browser": (b: unknown) => browserSettings({ artifact: { ...browserSettings().artifact, ...(b as { artifact: object }).artifact }, call_seconds: 90 }),
+    });
+    const m = mount(AdminBrowser, {});
+    await settle();
+    const text = m.root.textContent!;
+    expect(text).toContain("The browser is off: the Cloudflare account ID and API token are not both set (Web access)");
+    expect(text).toContain("Cloudflare account ID: set · API token: not set");
+    expect(m.root.querySelector<HTMLAnchorElement>('a[href="/settings/web#aw-cf"]')).not.toBeNull();
+    expect(text).toContain("The token needs the Browser Rendering – Edit permission, beside Workers AI Read and AI Gateway Read.");
+    expect(text).toContain("Browser time costs 0.15 credits a minute, by the millisecond.");
+    expect(m.root.querySelector<HTMLInputElement>("#ab-max_concurrent")!.readOnly).toBe(true);
+    // A time outside 10 to 120 seconds is refused before anything is sent.
+    const seconds = m.root.querySelector<HTMLInputElement>("#ab-call_seconds")!;
+    type(seconds, "121");
+    click(button(m.root, "Save"));
+    await settle();
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("Seconds per call is a whole number from 10 to 120.");
+    expect(calls.some(c => c.method === "PUT")).toBe(false);
+    type(seconds, "90");
+    click(m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Open the run\'s clax"]')!);
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")).toEqual({ url: "/api/admin/browser", method: "PUT", body: { artifact: { enabled: true }, call_seconds: 90 } });
+    expect(m.root.querySelector('.acts [role="status"]')!.textContent).toContain("Saved.");
+  });
+
+  it("a_shared_page_is_listed_and_revoked", async () => {
+    const SHARE = { id: "cap22charactersxxxxxxx", run: "r1", grant: null, granter: "run:r1", actions: ["read"], origins: null, expires_at: "2026-10-21T10:00:00.000Z", issued_at: "2026-10-21T09:00:00Z" };
+    const calls = stubFetch({
+      "GET /api/admin/browser": browserSettings(),
+      "GET /api/admin/bot/grants": { grants: [], shares: [SHARE] },
+      "GET /api/admin/people": [],
+      "DELETE /api/admin/bot/grants/cap22charactersxxxxxxx": { grants: [], shares: [] },
+    });
+    const m = mount(AdminBrowser, {});
+    await settle();
+    const card = m.root.querySelector<HTMLElement>("#ab-shares")!.closest("section")!;
+    expect(card.querySelector(".capgrants li span")!.textContent).toBe("Run r1: read · until 2026-10-21T10:00:00.000Z");
+    click(card.querySelector<HTMLElement>('button[aria-label="Revoke the shared page cap22charactersxxxxxxx"]')!);
+    await settle();
+    expect(calls.find(c => c.method === "DELETE")!.url).toBe("/api/admin/bot/grants/cap22charactersxxxxxxx");
+    expect(card.textContent).toContain("No page of a run is shared or exported now.");
+  });
+
+  it("each_capability_has_its_own_card", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/browser": browserSettings(),
+      "GET /api/admin/bot/grants": { grants: [] },
+      "GET /api/admin/people": [SAM],
+      "PUT /api/admin/browser": (b: unknown) => browserSettings({ content: { ...browserSettings().content, ...(b as { content: object }).content } }),
+    });
+    const m = mount(AdminBrowser, {});
+    await settle();
+    const titles = [...m.root.querySelectorAll("section.bcard > h3")].map(h => h.textContent);
+    expect(titles).toEqual(["Open a public URL", "Open the run's clax", "Open supplied content", "Shared pages", "Browser sessions"]);
+    // Each card has its switch, its cap and its grants; none is granted.
+    for (const label of ["Open public URLs", "Open the run's clax", "Open supplied content"]) {
+      expect(m.root.querySelector(`[role="switch"][aria-label="${label}"]`)).not.toBeNull();
+    }
+    expect(m.root.querySelectorAll(".capcard").length).toBe(3);
+    expect(m.root.textContent).toContain("Granted to no one: switched on, it reaches no run until you grant it.");
+    // A switch changes its own capability alone.
+    click(m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Open supplied content"]')!);
+    type(m.root.querySelector<HTMLInputElement>("#ab-max-content")!, "3");
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ content: { enabled: true, max_per_run: 3 } });
+  });
+
+  it("a_card_lists_and_revokes_its_grants", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/browser": browserSettings(),
+      "GET /api/admin/bot/grants": { grants: [SAMS, GRANT] },
+      "GET /api/admin/people": [SAM, MIA],
+      "DELETE /api/admin/bot/grants/g1": { grants: [SAMS] },
+      "POST /api/admin/bot/grants": { grants: [SAMS, { ...SAMS, id: "g3", capability: "clax-browser:open-content" }] },
+    });
+    const m = mount(AdminBrowser, {});
+    await settle();
+    const card = m.root.querySelector<HTMLElement>("#cap-clax-browser-open-artifact-h")!.closest("section")!;
+    // Everyone on this instance first, then each person by name.
+    expect([...card.querySelectorAll(".capgrants li span")].map(x => x.textContent)).toEqual(["Everyone on this instance", "Sam"]);
+    // The other cards show none of this card's grants.
+    const content = m.root.querySelector<HTMLElement>("#cap-clax-browser-open-content-h")!.closest("section")!;
+    expect(content.querySelectorAll(".capgrants li").length).toBe(0);
+    click(card.querySelector<HTMLElement>('button[aria-label="Revoke the run\'s clax from everyone on this instance"]')!);
+    await settle();
+    expect(calls.find(c => c.method === "DELETE")!.url).toBe("/api/admin/bot/grants/g1");
+    expect([...card.querySelectorAll(".capgrants li span")].map(x => x.textContent)).toEqual(["Sam"]);
+    // Granting to a person names them.
+    choose(content.querySelector<HTMLSelectElement>("#cap-clax-browser-open-content-to")!, "p_sam");
+    click([...content.querySelectorAll("button")].find(b => b.textContent === "Grant")!);
+    await settle();
+    expect(calls.find(c => c.method === "POST")!.body).toEqual({ capability: "clax-browser:open-content", grantee: { person: "p_sam" } });
+    expect([...content.querySelectorAll(".capgrants li span")].map(x => x.textContent)).toEqual(["Sam"]);
+  });
+
+  it("a grant config.toml made says so and is revoked like any other", async () => {
+    const FETCH = { id: "g9", capability: "clax-web:fetch" as const, grantee: "everyone" as const, person: null, granter: "config" as const, issued_at: "2026-10-21T09:00:00Z" };
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings(),
+      "GET /api/admin/bot/grants": { grants: [FETCH] },
+      "GET /api/admin/people": [],
+      "DELETE /api/admin/bot/grants/g9": { grants: [] },
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    const card = m.root.querySelector<HTMLElement>("#cap-clax-web-fetch-h")!.closest("section")!;
+    expect(card.querySelector(".capgrants li span")!.textContent).toBe("Everyone on this instance · from config.toml");
+    click(card.querySelector<HTMLElement>('button[aria-label="Revoke web fetch from everyone on this instance"]')!);
+    await settle();
+    expect(calls.find(c => c.method === "DELETE")!.url).toBe("/api/admin/bot/grants/g9");
+    expect(card.querySelectorAll(".capgrants li").length).toBe(0);
+  });
+
+  it("a grant whose granter is no longer an admin says it conveys nothing", async () => {
+    const SEARCH = { id: "g8", capability: "clax-web:search" as const, grantee: "everyone" as const, person: null, granter: "p_ana", conveys: false, issued_at: "2026-10-21T09:00:00Z" };
+    stubFetch({
+      "GET /api/admin/web": webSettings(),
+      "GET /api/admin/bot/grants": { grants: [SEARCH] },
+      "GET /api/admin/people": [{ ...SAM, person: "p_ana", name: "Ana" }],
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    const card = m.root.querySelector<HTMLElement>("#cap-clax-web-search-h")!.closest("section")!;
+    expect(card.querySelector(".capgrants li span")!.textContent).toBe("Everyone on this instance · conveys nothing: Ana is no longer an admin");
+  });
+
+  it("url_rule_any_public_warns", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/browser": browserSettings(),
+      "GET /api/admin/bot/grants": { grants: [] },
+      "GET /api/admin/people": [],
+      "PUT /api/admin/browser": (b: unknown) => browserSettings({ url: { ...browserSettings().url, ...(b as { url: object }).url } }),
+    });
+    const m = mount(AdminBrowser, {});
+    await settle();
+    expect(m.root.textContent).toContain("A page can steer ClaxBot, and ClaxBot writes what it types, the code it runs and the URLs it opens");
+    const rule = m.root.querySelector<HTMLSelectElement>("#ab-rule")!;
+    expect([...rule.options].map(o => o.value)).toEqual(["sender", "sourced", "allowlist", "any_public"]);
+    expect(m.root.querySelector("#ab-allow")).toBeNull();
+    expect(m.root.textContent).not.toContain("Any public URL ClaxBot writes may be opened");
+    choose(rule, "any_public");
+    expect(m.root.textContent).toContain("Any public URL ClaxBot writes may be opened, so a page can make it send data out.");
+    choose(rule, "allowlist");
+    expect(m.root.textContent).not.toContain("Any public URL ClaxBot writes may be opened");
+    type(m.root.querySelector<HTMLTextAreaElement>("#ab-allow") as unknown as HTMLInputElement, "docs.example.com\n*.rust-lang.org");
+    click(m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Open public URLs"]')!);
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ url: { enabled: true, url_rule: "allowlist", allowlist: ["docs.example.com", "*.rust-lang.org"] } });
+  });
+
+  it("is a tab of the admin screen, after Web access", async () => {
+    stubFetch({ "GET /api/me/bot": meBot({ role: "admin" }), "GET /api/admin/browser": browserSettings(), "GET /api/admin/bot/grants": { grants: [] }, "GET /api/admin/people": [] });
+    const m = mount(AdminPage, { tab: "browser" });
+    await vi.waitFor(() => expect(m.root.textContent).toContain("Open the run's clax"));
+    expect(m.root.querySelector("h2")!.textContent).toBe("Browser");
   });
 });
 

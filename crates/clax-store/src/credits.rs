@@ -16,8 +16,13 @@
 //!   milli-credit once, for the row ([`row_credits_milli`]); a line with
 //!   `fixed_credits_milli` charges `qty` × that ÷ the base instead (the
 //!   per-run harness fee). Its **cost** is `qty` × cost ÷ the base, rounded
-//!   up. The per-unit rate shown to admins ([`credits_per_unit_milli`]) is
-//!   rounded up for display only and never charged from.
+//!   up. A row of a series (a browser session's segments,
+//!   [`Metered::after`]) is rounded once over the series instead: it
+//!   charges what the series costs through it less what it cost before it
+//!   ([`series_credits_milli`]), so many short segments cost what their
+//!   total costs. The per-unit rate shown to admins
+//!   ([`credits_per_unit_milli`]) is rounded up for display only and never
+//!   charged from.
 //! - The exact inputs are snapshotted on the row (cost per unit, margin,
 //!   fixed credits, the credit price, the unit's base), so a later price
 //!   change never reprices history.
@@ -79,6 +84,9 @@ pub enum Unit {
     Run,
     /// A thousand requests (web search and web fetch).
     Kreq,
+    /// A second of a browser open (`browser.time`), counted in
+    /// milliseconds.
+    BrowserSecond,
 }
 
 impl Unit {
@@ -93,6 +101,7 @@ impl Unit {
         Unit::GbMonth,
         Unit::Run,
         Unit::Kreq,
+        Unit::BrowserSecond,
     ];
 
     /// The unit's stored name.
@@ -107,6 +116,7 @@ impl Unit {
             Unit::GbMonth => "gb_month",
             Unit::Run => "run",
             Unit::Kreq => "kreq",
+            Unit::BrowserSecond => "browser_s",
         }
     }
 
@@ -117,7 +127,7 @@ impl Unit {
 
     /// How many base quantities one line unit is: 10^6 tokens, 1024 MiB ×
     /// 1000 ms, 10^6 requests, 2^30 bytes × 30 days of seconds, one run,
-    /// 10^3 requests.
+    /// 10^3 requests, 1,000 ms of a browser open.
     pub fn base(self) -> i64 {
         match self {
             Unit::MtokInput
@@ -129,6 +139,7 @@ impl Unit {
             Unit::GbMonth => (1 << 30) * 30 * 86_400,
             Unit::Run => 1,
             Unit::Kreq => 1_000,
+            Unit::BrowserSecond => 1_000,
         }
     }
 
@@ -307,6 +318,30 @@ pub fn row_credits_milli(
     i64::try_from(v).map_err(|_| overflow())
 }
 
+/// The milli-credits `qty` more base quantities charge after `after` of
+/// them were charged in the same series of rows (a browser session's
+/// segments, [`Metered::after`]): what `after + qty` costs less what
+/// `after` costs, each as [`row_credits_milli`] rounds it. The series is
+/// rounded once, over its whole quantity, so its rows sum to what its
+/// total costs however it is cut.
+///
+/// # Errors
+/// `charge_overflow`.
+pub fn series_credits_milli(
+    after: i64,
+    qty: i64,
+    cost_micro_usd: i64,
+    margin_bp: i64,
+    fixed: Option<i64>,
+    price_micro_usd: i64,
+    base: i64,
+) -> Result<i64> {
+    let after = after.max(0);
+    let whole = after.checked_add(qty.max(0)).ok_or_else(overflow)?;
+    let row = |q| row_credits_milli(q, cost_micro_usd, margin_bp, fixed, price_micro_usd, base);
+    Ok(row(whole)? - row(after)?)
+}
+
 /// `qty` base quantities of `per_unit` (a line-unit rate) in a unit of
 /// `base`, rounded up, checked.
 ///
@@ -317,6 +352,14 @@ fn scaled(qty: i64, per_unit: i64, base: i64) -> Result<i64> {
         .checked_mul(i128::from(per_unit.max(0)))
         .ok_or_else(overflow)?;
     i64::try_from(div_ceil_checked(n, i128::from(base.max(1)))?).map_err(|_| overflow())
+}
+
+/// [`scaled`] for `qty` more after `after` in one series: rounded once
+/// over the series, as [`series_credits_milli`].
+fn series_cost(after: i64, qty: i64, per_unit: i64, base: i64) -> Result<i64> {
+    let after = after.max(0);
+    let whole = after.checked_add(qty.max(0)).ok_or_else(overflow)?;
+    Ok(scaled(whole, per_unit, base)? - scaled(after, per_unit, base)?)
 }
 
 /// The start of the week `t` falls in: the Monday 00:00 UTC on or before it.
@@ -354,6 +397,12 @@ pub struct Metered {
     /// The rates to charge at, snapshotted when the usage happened; `None`
     /// charges at the line's rates now.
     pub rate: Option<Rate>,
+    /// The quantity of the line already charged before this row in the
+    /// same series (a browser session's charged point): the row's credits
+    /// and cost are what `after + qty` costs less what `after` costs
+    /// ([`series_credits_milli`]), so the series is rounded once. 0 for a
+    /// row of its own.
+    pub after: i64,
 }
 
 /// A cost line's rates and the credit price, as a usage is charged at
@@ -434,6 +483,7 @@ impl Metered {
             absorbed: false,
             estimated: false,
             rate: None,
+            after: 0,
         }
     }
 
@@ -812,6 +862,13 @@ pub const LINE_TOOLPATH_STORAGE: &str = "toolpath.storage";
 pub const LINE_HARNESS_FEE: &str = "harness.run";
 /// The web fetch line's ID.
 pub const LINE_WEB_FETCH: &str = "web.fetch";
+/// The browser time line's ID: the time a browser is open, in
+/// milliseconds of a [`Unit::BrowserSecond`].
+pub const LINE_BROWSER_TIME: &str = "browser.time";
+
+/// The browser time line's list price in micro-USD per browser second
+/// (Cloudflare Browser Run, $0.09 a browser hour).
+const BROWSER_SECOND_COST_MICRO_USD: i64 = 25;
 
 /// The web search line of search provider `provider`.
 pub fn web_search_line(provider: &str) -> String {
@@ -996,6 +1053,29 @@ pub(crate) fn seed_web_lines(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Seeds the browser line (migration 69's Rust step): [`LINE_BROWSER_TIME`]
+/// at Browser Run's list price per browser hour, at the infrastructure
+/// margin, charged on every key (the instance's Cloudflare account pays
+/// whatever model key the person uses). A line that exists (an admin
+/// changed it) is left as it is.
+pub(crate) fn seed_browser_line(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO cost_lines (id, label, unit, cost_micro_usd, margin_bp,
+            fixed_credits_milli, applies, source, model, updated_by, updated_at)
+         VALUES (?1, 'Browser time', ?2, ?3, ?4, NULL, ?5, ?6, NULL, 'migration',
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        params![
+            LINE_BROWSER_TIME,
+            Unit::BrowserSecond.as_str(),
+            BROWSER_SECOND_COST_MICRO_USD,
+            INFRA_MARGIN_BP,
+            Applies::Always.as_str(),
+            "Cloudflare Browser Run list price, $0.09 per browser hour, 25 micro-USD a second (check)",
+        ],
+    )?;
+    Ok(())
+}
+
 /// A person's credits for one week.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct WeekUsage {
@@ -1079,6 +1159,33 @@ pub(crate) fn charge_in(
     items: &[Metered],
     at: DateTime<Utc>,
 ) -> Result<Vec<UsageRow>> {
+    charge_rows_in(
+        tx,
+        ov,
+        person,
+        run.map(|r| r.0),
+        run.map(|r| r.1),
+        items,
+        at,
+    )
+}
+
+/// [`charge_in`], for run `run` when given and its step `step` when given:
+/// a row of a run on none of its steps (a browser session's last segment,
+/// charged when the host ends it between steps) keeps the run and no step.
+///
+/// # Errors
+/// As [`charge_in`].
+pub(crate) fn charge_rows_in(
+    tx: &Transaction<'_>,
+    ov: &Overrides,
+    person: &str,
+    run: Option<&str>,
+    step: Option<i64>,
+    items: &[Metered],
+    at: DateTime<Utc>,
+) -> Result<Vec<UsageRow>> {
+    let step = run.and(step);
     let week = week_key(at);
     let stamp = clax_core::time::stamp(at);
     let usage = week_usage_in(tx, ov, person, at)?;
@@ -1105,11 +1212,12 @@ pub(crate) fn charge_in(
         let (cost, credits) = if waived {
             (0, 0)
         } else if m.absorbed {
-            (scaled(m.qty, r.cost_micro_usd, base)?, 0)
+            (series_cost(m.after, m.qty, r.cost_micro_usd, base)?, 0)
         } else {
             (
-                scaled(m.qty, r.cost_micro_usd, base)?,
-                row_credits_milli(
+                series_cost(m.after, m.qty, r.cost_micro_usd, base)?,
+                series_credits_milli(
+                    m.after,
                     m.qty,
                     r.cost_micro_usd,
                     r.margin_bp,
@@ -1130,8 +1238,8 @@ pub(crate) fn charge_in(
         )?
         .execute(params![
             person,
-            run.map(|r| r.0),
-            run.map(|r| r.1),
+            run,
+            step,
             m.line,
             r.unit.as_str(),
             m.qty,
@@ -1153,8 +1261,8 @@ pub(crate) fn charge_in(
         out.push(UsageRow {
             id: tx.last_insert_rowid(),
             person: person.to_string(),
-            run_id: run.map(|r| r.0.to_string()),
-            step_n: run.map(|r| r.1),
+            run_id: run.map(str::to_string),
+            step_n: step,
             line: m.line.clone(),
             unit: r.unit,
             qty: m.qty,
@@ -2550,7 +2658,7 @@ mod tests {
                 key_source: KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
+                caps: String::new(),
             },
         )
         .unwrap();
@@ -2584,7 +2692,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: String::new(),
+                    caps: String::new(),
                 },
             )
             .unwrap();
@@ -2881,7 +2989,7 @@ mod tests {
                 key_source: KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
-                web: String::new(),
+                caps: String::new(),
             },
         )
         .unwrap();
@@ -2934,8 +3042,8 @@ mod tests {
         }
         assert_eq!(
             lines.len(),
-            4 * 4 + 4 + 4,
-            "model lines, infrastructure, web"
+            4 * 4 + 4 + 4 + 1,
+            "model lines, infrastructure, web, browser"
         );
         assert_eq!(
             st.cost_line("claude-sonnet-5-5.cache_write")
@@ -3327,5 +3435,82 @@ mod tests {
     fn kreq_round_trips_and_has_base_1000() {
         assert_eq!(Unit::parse("kreq"), Some(Unit::Kreq));
         assert_eq!(Unit::Kreq.base(), 1_000);
+    }
+
+    #[test]
+    fn migration_69_seeds_the_browser_line() {
+        let (_d, st) = store();
+        let l = st.cost_line(LINE_BROWSER_TIME).unwrap().unwrap();
+        assert_eq!(
+            (l.unit, l.cost_micro_usd, l.applies, l.margin_bp),
+            (Unit::BrowserSecond, 25, Applies::Always, INFRA_MARGIN_BP)
+        );
+        assert_eq!(l.fixed_credits_milli, None);
+        assert_eq!(
+            l.source,
+            "Cloudflare Browser Run list price, $0.09 per browser hour, 25 micro-USD a second (check)"
+        );
+    }
+
+    #[test]
+    fn browser_s_round_trips_with_base_1000() {
+        assert_eq!(Unit::parse("browser_s"), Some(Unit::BrowserSecond));
+        assert_eq!(
+            Unit::parse("browser_h"),
+            None,
+            "the first version's unit is gone"
+        );
+        assert_eq!(Unit::BrowserSecond.as_str(), "browser_s");
+        assert_eq!(Unit::BrowserSecond.base(), 1_000);
+        assert!(Unit::ALL.contains(&Unit::BrowserSecond));
+        assert!(!Unit::BrowserSecond.is_tokens());
+    }
+
+    /// The rate per millisecond is the first version's: $0.09 an hour is
+    /// 25 micro-USD a second, so any number of milliseconds costs the
+    /// credits it cost per hour, at every margin and credit price.
+    #[test]
+    fn a_second_costs_what_a_thousandth_of_an_hour_cost() {
+        for (ms, margin, price) in [
+            (4_200, INFRA_MARGIN_BP, 10_000),
+            (4_200, 0, 10_000),
+            (1, INFRA_MARGIN_BP, 10_000),
+            (3_600_000, 2_500, 7_000),
+            (61_234, INFRA_MARGIN_BP, 1),
+        ] {
+            assert_eq!(
+                row_credits_milli(ms, 25, margin, None, price, Unit::BrowserSecond.base()).unwrap(),
+                row_credits_milli(ms, 90_000, margin, None, price, 3_600_000).unwrap(),
+                "{ms} ms at {margin} bp, {price} micro-USD a credit"
+            );
+        }
+    }
+
+    /// A series is rounded once: 100 segments of 30 ms cost what 3 s cost,
+    /// not a milli-credit each, and every cut of a quantity sums to it.
+    #[test]
+    fn a_series_of_short_segments_costs_its_total_time() {
+        let base = Unit::BrowserSecond.base();
+        let row = |q| row_credits_milli(q, 25, INFRA_MARGIN_BP, None, 10_000, base).unwrap();
+        let seg = |after, q| {
+            series_credits_milli(after, q, 25, INFRA_MARGIN_BP, None, 10_000, base).unwrap()
+        };
+        let total: i64 = (0..100).map(|i| seg(i * 30, 30)).sum();
+        assert_eq!(total, row(3_000));
+        assert!(
+            total < 100,
+            "rounded per row, 100 segments would cost 100 milli-credits: {total}"
+        );
+        assert_eq!(seg(0, 4_200), row(4_200), "a first segment is a row");
+        assert_eq!(seg(1_000, 0), 0, "an empty segment costs nothing");
+        for cuts in [vec![1, 1, 1], vec![999, 1, 61_234], vec![7; 50]] {
+            let mut after = 0;
+            let mut sum = 0;
+            for q in &cuts {
+                sum += seg(after, *q);
+                after += q;
+            }
+            assert_eq!(sum, row(after), "{cuts:?}");
+        }
     }
 }

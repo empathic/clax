@@ -20,7 +20,7 @@
 //! provider's own (`crate::clax`'s session, which names each operation
 //! it performs).
 
-use crate::web::{self, WebShape};
+use crate::capability::{CapSet, Capability};
 use clax_bot_sandbox::HostError;
 use clax_surface::{Author, Definition, Limits, Operation};
 use serde_json::Value;
@@ -29,10 +29,11 @@ use std::sync::LazyLock;
 /// Whether an operation changes anything, or costs money each time it
 /// runs: its access tag in `src/clax.d.ts`.
 ///
-/// `Spend` (`web.*`, spec 2026-11-02-claxbot-web-tools §4.2) changes
-/// nothing in Clax but is charged to the person each time it runs: when
-/// a call returns, its journal entry, its usage row and (for a fetch) its
-/// page commit in one transaction
+/// `Spend` (`web.*`, spec 2026-11-02-claxbot-web-tools §4.2, and
+/// `browser.*`, spec 2026-11-19-claxbot-browser §8) changes nothing in
+/// Clax but is charged to the person each time it runs: when a call
+/// returns, its journal entry, its usage row and (for a fetch) its page
+/// commit in one transaction
 /// ([`clax_store::Store::spend_journaled`]), before the script sees the
 /// answer, so a step executed again answers from the journal and nothing
 /// goes out twice. No operation of Clax's own surface is `Effect`.
@@ -102,7 +103,7 @@ pub fn op(name: &str) -> Option<OpSpec> {
 }
 
 /// Every operation's name, for the sandbox, which is built once for every
-/// run: `web.*` too, whatever a run's shape declares.
+/// run: `web.*` and `browser.*` too, whatever a run's capabilities declare.
 #[must_use]
 pub fn op_names() -> Vec<String> {
     definition()
@@ -162,23 +163,73 @@ pub fn target(name: &str, args: &[Value], artifact: &str) -> Option<String> {
     }
 }
 
-/// Whether a run of `shape` declares the operation named `name`: every
-/// operation but `web.*`, and those its shape has.
-pub(crate) fn declared(name: &str, shape: WebShape) -> bool {
-    match name {
-        web::OP_SEARCH => shape.search,
-        web::OP_FETCH => shape.fetch,
-        _ => true,
-    }
+/// The browser's source capabilities: any one allows the session
+/// operations.
+const OPEN: &[Capability] = &[
+    Capability::OpenUrl,
+    Capability::OpenArtifact,
+    Capability::OpenContent,
+];
+
+/// The operations of Clax's own surface the capabilities allow, each with
+/// the capabilities any one of which allows it (spec
+/// 2026-11-19-claxbot-browser §4.2, §6.9), in the order a binding lists
+/// them: what [`clax_store::bot_runs::CLAX_GRANTED`] grants, as
+/// [`Capability`]s.
+pub(crate) const GRANTED: [(&str, &[Capability]); 8] = [
+    ("web.search", &[Capability::WebSearch]),
+    ("web.fetch", &[Capability::WebFetch]),
+    ("browser.open", OPEN),
+    ("browser.page", OPEN),
+    ("browser.act", OPEN),
+    ("browser.expect", OPEN),
+    ("browser.close", OPEN),
+    ("browser.test", &[Capability::OpenArtifact]),
+];
+
+/// The capabilities any one of which the operation `name` needs, when it
+/// needs one: the operations of [`GRANTED`]. Every other operation a run
+/// of Clax's own kind has whatever its capabilities.
+#[must_use]
+pub(crate) fn needs(name: &str) -> Option<&'static [Capability]> {
+    GRANTED.iter().find(|(op, _)| *op == name).map(|(_, c)| *c)
 }
 
-/// What the comment at the head of the declaration says of `web.*`
-/// calls, in runs that have a web operation: ClaxBot's own words about
-/// how its calls are counted, as the rest of that comment is, each line
-/// a `//` comment. (The `web` namespace's rules, its doc comment in
+/// Whether a run holding `caps` (its capabilities when it was made,
+/// [`clax_store::bot_runs::Run::caps`]) declares the operation named
+/// `name`: every operation but `web.*` and `browser.*`, and each of those
+/// one of whose capabilities `caps` holds ([`needs`]).
+pub(crate) fn declared(name: &str, caps: &CapSet) -> bool {
+    needs(name).is_none_or(|cs| cs.iter().any(|c| caps.has(*c)))
+}
+
+/// The capabilities a binding whose operations `has` names shows by
+/// them: each of [`GRANTED`] that is an operation's only one. The
+/// browser's source kinds share the session operations, so a binding
+/// names them in its scope instead (`clax_store::bot_runs::Bindings::clax`,
+/// [`crate::prompt`]'s reading of it); here they show only as
+/// `browser.test`'s `clax-browser:open-artifact`.
+#[must_use]
+pub(crate) fn caps_of(has: &dyn Fn(&str) -> bool) -> CapSet {
+    GRANTED
+        .iter()
+        .filter(|(op, cs)| cs.len() == 1 && has(op))
+        .map(|(_, cs)| cs[0])
+        .collect()
+}
+
+/// What the comment at the head of the declaration says of charged
+/// calls, in runs that have one: ClaxBot's own words about how its
+/// calls are counted, as the rest of that comment is, each line a `//`
+/// comment, naming `charged` (`web.*`, `browser.*`, or both joined by
+/// "and"). (The namespaces' rules, their doc comments in
 /// `src/clax.d.ts`, are the system prompt's.)
-const WEB_HEAD_NOTE: &str = "// web.* calls are charged to the person you act for and limited\n\
-                             // per run; `left` on every answer says what the run has left.\n";
+fn charged_note(charged: &str) -> String {
+    format!(
+        "// {charged} calls are charged to the person you act for and limited\n\
+         // per run; `left` on every answer says what the run has left.\n"
+    )
+}
 
 /// What the head of the declaration says of Clax's own calls, after
 /// the core's words on how a call fails
@@ -187,43 +238,45 @@ const CLAX_HEAD_NOTE: &str = " files.* and draft.* change only the run's draft,\
                               // which the artifact gets on draft.publish; db.* and threads.* \
                               writes\n// take effect at once.";
 
-/// The TypeScript declaration of the API a run of `shape` has, as its
-/// system prompt carries it: every operation, but `web.search` only when
-/// the shape has search, `web.fetch` only when it has fetch, and no `web`
-/// namespace without either. (The sandbox knows every operation whatever
-/// the shape, [`op_names`]; one not declared is refused when called.)
+/// The TypeScript declaration of the API a run holding `caps` has, as its
+/// system prompt carries it: every operation, but each of `web.*` and
+/// `browser.*` only when `caps` holds its capability ([`declared`]), and
+/// no `web` or `browser` namespace without one of its operations. (The
+/// sandbox knows every operation whatever the capabilities,
+/// [`op_names`]; one not declared is refused when called.)
 ///
 /// The operations and their types are [`definition`]'s, as
 /// [`clax_surface::declaration`] writes them for a model. Around them
 /// are the core's words, a comment at the head about calls, errors
 /// and the script's clock with Clax's own on what its calls change
-/// ([`CLAX_HEAD_NOTE`]), then, in a run with a web operation, what it
-/// says of those ([`WEB_HEAD_NOTE`]), and after them the `console` a
-/// script has.
+/// ([`CLAX_HEAD_NOTE`]), then, in a run with a charged operation, what
+/// it says of those ([`charged_note`]), and after them the `console` a
+/// script has. A set of web capabilities alone declares what a web shape
+/// declared before the browser, byte for byte.
 #[must_use]
-pub fn dts(shape: WebShape) -> String {
-    dts_with(shape, &[], &|_| false).expect("one surface puts each of its names on `clax` once")
+pub fn dts(caps: &CapSet) -> String {
+    dts_with(caps, &[], &|_| false).expect("one surface puts each of its names on `clax` once")
 }
 
 /// [`dts`] of a run of Clax's own kind that a join bound other surfaces
-/// into (`crate::joins`): the operations of `shape`, then those of
+/// into (`crate::joins`): the operations of `caps`, then those of
 /// `others` that `has_other` names, each surface's under its name on
 /// `clax` ([`clax_surface::declaration`]), and, when the run has one of
 /// theirs, the core's words on how a call to a host's surface fails
 /// ([`crate::prompt::standard::HOST_NOTE`]) after Clax's own. With no
-/// operation of `others` it is [`dts`] of `shape`, byte for byte.
+/// operation of `others` it is [`dts`] of `caps`, byte for byte.
 ///
 /// # Errors
 /// Two of the surfaces put one name on `clax`.
 pub(crate) fn dts_with(
-    shape: WebShape,
+    caps: &CapSet,
     others: &[&Definition],
     has_other: &dyn Fn(&str) -> bool,
 ) -> Result<String, String> {
     let clax = definition();
     let has = |name: &str| {
         if clax.operation(name).is_some() {
-            declared(name, shape)
+            declared(name, caps) && !HIDDEN.contains(&name)
         } else {
             has_other(name)
         }
@@ -244,20 +297,139 @@ pub(crate) fn dts_with(
         CLAX_HEAD_NOTE.to_string()
     };
     let mut out = crate::prompt::standard::declaration_head(&note, waits);
-    if shape.any() {
-        out.push_str(WEB_HEAD_NOTE);
+    let charged: Vec<&str> = [("web.", "web.*"), ("browser.", "browser.*")]
+        .into_iter()
+        .filter(|(prefix, _)| {
+            clax.operations()
+                .any(|o| o.name.starts_with(prefix) && declared(o.name, caps))
+        })
+        .map(|(_, name)| name)
+        .collect();
+    if !charged.is_empty() {
+        out.push_str(&charged_note(&charged.join(" and ")));
     }
     out.push('\n');
-    out.push_str(&clax_surface::declaration(&surfaces, &has)?);
+    let decl = clax_surface::declaration(&surfaces, &has)?;
+    if declared(crate::browser::OP_OPEN, caps) {
+        out.push_str(&with_page(&decl, caps));
+        out.push_str(EXPECT_DECLARATION);
+    } else {
+        out.push_str(&decl);
+    }
     out.push_str(crate::prompt::standard::CONSOLE);
     Ok(out)
+}
+
+/// The flat session operations a `Page` calls, which no model is
+/// declared (spec 2026-11-19-claxbot-browser §6.9, §6.11): the prelude
+/// keeps them off `clax`.
+const HIDDEN: [&str; 4] = [
+    crate::browser::OP_PAGE,
+    crate::browser::OP_ACT,
+    crate::browser::OP_EXPECT,
+    crate::browser::OP_CLOSE,
+];
+
+/// The global `expect` of a run with a browser session (spec §6.10).
+const EXPECT_DECLARATION: &str = "\
+declare function expect(actual: Locator): LocatorAssertions;
+declare function expect(actual: Page): PageAssertions;
+declare function expect<T>(actual: T): ValueAssertions;
+";
+
+/// What `clax.browser.open` and `session` are declared as, in place of
+/// the surface's `open` (spec §6.1).
+const OPEN_DECLARATION: &str = "    open(source: BrowserSource, opts?: BrowserOpenOpts): Promise<Page>;
+    /** The `Page` of session `id`, opened by an earlier script (a returned page shows its `session`); it makes no call. */
+    session(id: string): Page;
+";
+
+/// What the doc comment before each class says, when it says anything.
+fn class_doc(class: &str) -> Option<&'static str> {
+    match class {
+        "Page" => Some(
+            "Playwright's `Page`, as far as declared here. Every method that reaches the browser is one charged call; a failure on the page throws (a `TimeoutError` when its time ran out), a session that ended throws a `HostError`.",
+        ),
+        "Locator" => Some(
+            "Playwright's `Locator`: data, resolved in the page at each call; actions wait until exactly one element matches and is actionable.",
+        ),
+        "ValueAssertions" => Some("`expect` of any other value: checked in the script, no call."),
+        _ => None,
+    }
+}
+
+/// `decl`, the surfaces' declaration of a run holding `caps` with
+/// `browser.open`, with the layer's `Page`, `Locator`, `Keyboard`,
+/// `Mouse`, `Response`, `ConsoleMessage` and assertion interfaces
+/// ([`crate::browser::layer::DECLS`]: only the members `caps` allows) and
+/// the run's `BrowserSource` before `clax`, and `open` and `session`
+/// returning a `Page` in place of the surface's `open`.
+fn with_page(decl: &str, caps: &CapSet) -> String {
+    use crate::browser::layer::{CLASSES, DECLS};
+    let mut out = decl.to_string();
+    if let Some(at) = out.find("interface BrowserOpened {")
+        && let Some(len) = out[at..].find("\n}\n")
+    {
+        out.replace_range(at..at + len + 3, "");
+    }
+    if let Some(at) = out.find("    open(source: ")
+        && let Some(len) = out[at..].find('\n')
+    {
+        out.replace_range(at..=at + len, OPEN_DECLARATION);
+    }
+    let mut types = String::new();
+    let mut kinds = Vec::new();
+    if caps.has(Capability::OpenUrl) {
+        kinds.push("{ url: string }");
+    }
+    if caps.has(Capability::OpenArtifact) {
+        kinds.push("{ artifact: \"draft\" | number; path?: string }");
+    }
+    if caps.has(Capability::OpenContent) {
+        kinds.push("{ html: string; files?: Record<string, string | { base64: string } | Image> }");
+    }
+    types.push_str(
+        "/** A recording (`page.record`): at most 4 of its frames, evenly spaced, and the clip, an item of the run's content the run panel plays. */\ninterface BrowserClip { frames: Image[]; clip: string; ms: number; count: number }\n",
+    );
+    types.push_str("type BrowserSource =\n");
+    for k in &kinds {
+        types.push_str(&format!("  | {k}\n"));
+    }
+    types.pop();
+    types.push_str(";\n");
+    for class in CLASSES {
+        if let Some(doc) = class_doc(class) {
+            types.push_str(&format!("/** {doc} */\n"));
+        }
+        types.push_str(&format!("interface {class} {{\n"));
+        for d in DECLS.iter().filter(|d| d.class == class) {
+            if d.needs.is_some_and(|c| !caps.has(c)) {
+                continue;
+            }
+            if !d.doc.is_empty() {
+                types.push_str(&format!("  /** {} */\n", d.doc));
+            }
+            types.push_str(&format!("  {}\n", d.sig));
+        }
+        types.push_str("}\n");
+    }
+    if !out.contains("type Image = Content;") {
+        types.push_str(clax_surface::CONTENT_DECLARATION);
+    }
+    match out.find("declare const clax: {") {
+        Some(at) => out.insert_str(at, &format!("{types}\n")),
+        None => out.push_str(&types),
+    }
+    out
 }
 
 #[cfg(test)]
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use crate::capability::Capability as C;
     use crate::golden::golden;
+    use crate::{browser, web};
     use serde_json::json;
 
     /// The sandbox refuses exactly the names `clax-surface` keeps from
@@ -283,17 +455,17 @@ mod tests {
 
     /// Every operation of the file is one [`op`] answers, by its name,
     /// and nothing else is; the operations that are charged are the
-    /// web's.
+    /// web's and the browser's.
     #[test]
     fn every_operation_of_the_file_is_an_op() {
         let names: Vec<&str> = definition().operations().map(|o| o.name).collect();
-        assert_eq!(names.len(), 24);
+        assert_eq!(names.len(), 30);
         for name in names {
             let spec = op(name).unwrap();
             assert_eq!(spec.name(), name);
             assert_eq!(
                 spec.access() == Access::Spend,
-                name.starts_with("web."),
+                name.starts_with("web.") || name.starts_with("browser."),
                 "{name}"
             );
             // Clax's provider performs reads, writes and charged calls.
@@ -335,6 +507,273 @@ mod tests {
         );
     }
 
+    /// The codes `browser.*` may fail with are the browser's
+    /// ([`crate::browser`], spec 2026-11-19-claxbot-browser §5.4), in the
+    /// order the declaration lists them.
+    #[test]
+    fn the_browser_operations_fail_with_the_browser_codes() {
+        use crate::browser as b;
+        assert_eq!(
+            op(b::OP_TEST).unwrap().errors(),
+            [
+                b::CODE_BROWSER_DISABLED,
+                b::CODE_BROWSER_CAP,
+                b::CODE_CREDITS_EXHAUSTED,
+                b::CODE_BROWSER_TARGET_NOT_FOUND,
+                b::CODE_BROWSER_BUSY,
+                b::CODE_BROWSER_UNAVAILABLE,
+                b::CODE_BROWSER_TIMEOUT,
+            ]
+        );
+        assert_eq!(
+            op(b::OP_OPEN).unwrap().errors(),
+            [
+                b::CODE_BROWSER_DISABLED,
+                b::CODE_BROWSER_CAP,
+                b::CODE_CREDITS_EXHAUSTED,
+                b::CODE_URL_NOT_ALLOWED,
+                b::CODE_URL_NOT_IN_PRIOR_CONTEXT,
+                b::CODE_BROWSER_TARGET_NOT_FOUND,
+                b::CODE_BROWSER_BUSY,
+                b::CODE_BROWSER_UNAVAILABLE,
+                b::CODE_BROWSER_TIMEOUT,
+            ]
+        );
+        for flat in [b::OP_PAGE, b::OP_ACT, b::OP_EXPECT, b::OP_CLOSE] {
+            let codes = op(flat).unwrap().errors();
+            assert!(
+                codes.iter().any(|c| c == b::CODE_BROWSER_SESSION_LOST),
+                "{flat}"
+            );
+            assert!(
+                codes.iter().any(|c| c == b::CODE_BROWSER_SESSION_CLOSED),
+                "{flat}"
+            );
+        }
+    }
+
+    /// The `browser` namespace is declared only in a run holding a
+    /// capability that allows one of its operations: any source kind
+    /// declares the session operations, `clax-browser:open-artifact` also
+    /// `test`; what the head says of charged calls names it.
+    #[test]
+    fn browser_namespace_needs_an_open_capability() {
+        let with = |caps: &[C]| dts(&caps.iter().copied().collect());
+        let none = with(&[]);
+        assert!(!none.contains("browser"), "{none}");
+        assert!(!none.contains("BrowserResult"), "{none}");
+        for kind in [C::OpenUrl, C::OpenContent] {
+            let one = with(&[kind]);
+            assert!(one.contains("  browser: {\n"), "{one}");
+            assert!(one.contains("open(source:"), "{one}");
+            assert!(!one.contains("test(source"), "{one}");
+            assert!(one.contains("// browser.* calls are charged"), "{one}");
+            assert!(!one.contains("web.*"), "{one}");
+        }
+        let all = with(&C::ALL);
+        assert!(
+            all.contains("// web.* and browser.* calls are charged"),
+            "{all}"
+        );
+        assert!(
+            all.contains("test(source") && all.contains("open(source"),
+            "{all}"
+        );
+        assert!(
+            all.contains("fetch(url") && all.contains("search(query"),
+            "{all}"
+        );
+        // The capabilities each charged operation needs are those the
+        // store's binding grants it for, operation for operation.
+        let ids = |cs: &[C]| cs.iter().map(|c| c.id()).collect::<Vec<_>>();
+        let store: Vec<(&str, Vec<&str>)> = clax_store::bot_runs::CLAX_GRANTED
+            .iter()
+            .map(|(op, cs)| (*op, cs.to_vec()))
+            .collect();
+        let mine: Vec<(&str, Vec<&str>)> = GRANTED.iter().map(|(op, cs)| (*op, ids(cs))).collect();
+        assert_eq!(mine, store);
+        let charged: Vec<&str> = definition()
+            .operations()
+            .filter(|o| o.op.access == Access::Spend)
+            .map(|o| o.name)
+            .collect();
+        let granted: Vec<&str> = GRANTED.iter().map(|(op, _)| *op).collect();
+        assert_eq!(charged, granted);
+        assert_eq!(
+            granted[2..],
+            [
+                browser::OP_OPEN,
+                browser::OP_PAGE,
+                browser::OP_ACT,
+                browser::OP_EXPECT,
+                browser::OP_CLOSE,
+                browser::OP_TEST
+            ]
+        );
+        assert_eq!(granted[..2], [web::OP_SEARCH, web::OP_FETCH]);
+    }
+
+    /// `browser.test` is declared only with `clax-browser:open-artifact`, and
+    /// `declared` says what the declaration does, operation by operation.
+    #[test]
+    fn test_needs_the_artifact_capability() {
+        let artifact: CapSet = [C::OpenArtifact].into_iter().collect();
+        let test = dts(&artifact);
+        assert!(test.contains("  browser: {\n"), "{test}");
+        assert!(test.contains("test(source?:"), "{test}");
+        assert!(test.contains("interface BrowserResult"), "{test}");
+        for others in [
+            vec![C::OpenUrl],
+            vec![C::OpenContent],
+            vec![C::WebSearch, C::WebFetch, C::OpenUrl, C::OpenContent],
+        ] {
+            let caps: CapSet = others.iter().copied().collect();
+            assert!(!declared("browser.test", &caps), "{others:?}");
+            assert!(declared("browser.open", &caps), "{others:?}");
+            assert!(!dts(&caps).contains("test(source"), "{others:?}");
+        }
+        assert!(declared("browser.test", &artifact));
+        assert!(declared("browser.page", &artifact));
+        assert!(!declared("web.fetch", &artifact));
+        assert!(declared("files.read", &artifact));
+        assert!(declared("files.read", &CapSet::default()));
+        assert!(!declared("browser.test", &CapSet::default()));
+        assert!(!declared("browser.open", &CapSet::default()));
+        // A binding's operations give back the capabilities that are
+        // their operation's only one; the source kinds share theirs.
+        let all: CapSet = C::ALL.into_iter().collect();
+        let back = caps_of(&|op| declared(op, &all));
+        assert_eq!(
+            back,
+            [C::WebSearch, C::WebFetch, C::OpenArtifact]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    /// A browser call's arguments are checked against the declaration
+    /// before anything performs it: an action of no known name is refused
+    /// there, naming the parameter; what the declaration cannot say (a
+    /// source's caps, an action's `args`) is the browser's own check
+    /// ([`crate::browser::opts`], [`crate::browser::layer`]).
+    #[test]
+    fn browser_arguments_are_checked_against_the_declaration() {
+        let ok = json!([{"artifact": 2}, {"viewport": "phone", "tests": ["tests/a.test.js"], "timeout": 30000}]);
+        assert_eq!(check_args("browser.test", &ok).unwrap().len(), 2);
+        assert!(check_args("browser.test", &json!([])).is_ok());
+        let e = check_args("browser.test", &json!([null, {"viewport": "watch"}])).unwrap_err();
+        assert_eq!(e.code, CODE_BAD_ARGS);
+        assert!(e.message.contains("(opts).viewport"), "{e}");
+        // 9,000 wide is the browser's to refuse, not the declaration's.
+        let wide =
+            json!([{"url": "https://a.example/"}, {"viewport": {"width": 9000, "height": 800}}]);
+        assert!(check_args("browser.open", &wide).is_ok());
+        assert!(check_args("browser.page", &json!(["s1", "title"])).is_ok());
+        let e = check_args("browser.page", &json!(["s1", "waitForTimeout", {}])).unwrap_err();
+        assert!(e.message.contains("(action)"), "{e}");
+        let e = check_args("browser.act", &json!(["s1", [{"css": "a"}], "hoverAll"])).unwrap_err();
+        assert!(e.message.contains("(action)"), "{e}");
+        assert!(
+            check_args(
+                "browser.expect",
+                &json!(["s1", [], "toHaveURL", {"url": "x"}])
+            )
+            .is_ok()
+        );
+        assert!(check_args("browser.close", &json!([])).is_err());
+    }
+
+    /// The browser's declaration of each shape, generated from the
+    /// layer's table (spec 2026-11-19-claxbot-browser §6.11): the goldens
+    /// a TypeScript test compiles with `src/browser.examples.ts`
+    /// (`web/scripts/claxbot-browser-dts.test.ts`).
+    #[test]
+    fn the_browser_declarations_are_pinned() {
+        for (file, caps) in [
+            ("artifact", vec![C::OpenArtifact]),
+            ("content", vec![C::OpenContent]),
+            (
+                "url-artifact-content",
+                vec![C::OpenUrl, C::OpenArtifact, C::OpenContent],
+            ),
+        ] {
+            golden(
+                &format!("the clax API declaration with the browser ({file})"),
+                &format!("src/api.browser-{file}.d.ts.golden"),
+                &dts(&caps.into_iter().collect()),
+            );
+        }
+    }
+
+    /// A run is declared only the members and source kinds it holds:
+    /// content alone has no `runTests` and `BrowserSource` is `{html,
+    /// files?}` alone.
+    #[test]
+    fn the_declaration_holds_only_the_runs_methods_and_kinds() {
+        let content = dts(&[C::OpenContent].into_iter().collect());
+        assert!(content.contains("interface Page {"), "{content}");
+        assert!(!content.contains("runTests("), "{content}");
+        assert!(
+            content.contains("type BrowserSource =\n  | { html: string;"),
+            "{content}"
+        );
+        assert!(!content.contains("{ url: string }"), "{content}");
+        assert!(!content.contains("  | { artifact: \"draft\""), "{content}");
+        assert!(!content.contains("test(source"), "{content}");
+        assert!(content.contains("type Image = Content;"), "{content}");
+        let artifact = dts(&[C::OpenArtifact].into_iter().collect());
+        assert!(artifact.contains("runTests("), "{artifact}");
+        assert!(artifact.contains("test(source"), "{artifact}");
+        assert!(
+            artifact
+                .contains("open(source: BrowserSource, opts?: BrowserOpenOpts): Promise<Page>;"),
+            "{artifact}"
+        );
+        assert!(
+            artifact.contains("session(id: string): Page;"),
+            "{artifact}"
+        );
+        assert!(
+            artifact.contains("declare function expect(actual: Locator): LocatorAssertions;"),
+            "{artifact}"
+        );
+        let none = dts(&CapSet::default());
+        assert!(!none.contains("expect("), "{none}");
+    }
+
+    /// The flat session operations are the `Page`'s, never declared to a
+    /// model; nor is the surface's `BrowserOpened`.
+    #[test]
+    fn no_flat_browser_operation_is_declared_to_the_model() {
+        let all = dts(&C::ALL.into_iter().collect());
+        for flat in [
+            "    page(session",
+            "    act(session",
+            "    expect(session",
+            "    close(session",
+            "BrowserAnswer",
+            "BrowserOpened",
+        ] {
+            assert!(!all.contains(flat), "{flat}: {all}");
+        }
+    }
+
+    /// A set of web capabilities alone declares what the web shape it
+    /// replaced declared, byte for byte (the goldens are main's).
+    #[test]
+    fn a_web_capability_set_declares_what_it_did() {
+        golden(
+            "the clax API declaration without web",
+            "src/api.d.ts.golden",
+            &dts(&CapSet::default()),
+        );
+        golden(
+            "the clax API declaration with web",
+            "src/api.web.d.ts.golden",
+            &dts(&[C::WebSearch, C::WebFetch].into_iter().collect()),
+        );
+    }
+
     /// What the declaration a model reads cannot show of the file: which
     /// numbers are whole, what each operation's access is, and that none
     /// is tagged with what the run loop does not act on.
@@ -344,8 +783,8 @@ mod tests {
         let clax = definition();
         assert_eq!(clax.name(), "clax");
         assert_eq!(clax.rules(), None);
-        assert_eq!(clax.operations().len(), 24);
-        assert_eq!(clax.interfaces().len(), 24);
+        assert_eq!(clax.operations().len(), 30);
+        assert_eq!(clax.interfaces().len(), 31);
         let tagged = |tag: Tag| -> Vec<&str> {
             clax.operations()
                 .filter(|o| o.op.access == tag)
@@ -384,7 +823,19 @@ mod tests {
                 "threads.resolve",
             ]
         );
-        assert_eq!(tagged(Tag::Spend), ["web.search", "web.fetch"]);
+        assert_eq!(
+            tagged(Tag::Spend),
+            [
+                "web.search",
+                "web.fetch",
+                "browser.open",
+                "browser.page",
+                "browser.act",
+                "browser.expect",
+                "browser.close",
+                "browser.test"
+            ]
+        );
         assert_eq!(tagged(Tag::Effect), [""; 0]);
         assert!(clax.operations().all(|o| !o.op.waits && !o.op.once));
 
@@ -436,6 +887,9 @@ mod tests {
                 "db.list(opts).limit",
                 "web.search(limit)",
                 "web.fetch(opts).offset",
+                "browser.open(source).artifact",
+                "browser.close().ms",
+                "browser.test(source).artifact",
                 "ArtifactInfo.version",
                 "FileInfo.bytes",
                 "Problem.line",
@@ -452,10 +906,35 @@ mod tests {
                 "WebPage.offset",
                 "WebPage.nextOffset",
                 "WebPage.totalChars",
+                "BrowserViewport.width",
+                "BrowserViewport.height",
+                "BrowserTestOpts.timeout",
+                "BrowserLeft.url",
+                "BrowserLeft.artifact",
+                "BrowserLeft.content",
+                "BrowserResult.status",
+                "BrowserResult.tests.passed",
+                "BrowserResult.tests.skipped",
+                "BrowserResult.console.at_ms",
+                "BrowserResult.requests.failed.status",
+                "BrowserResult.ms",
+                "BrowserOpened.status",
+                "BrowserAnswer.ms",
                 "RequestArtifact.version",
             ]
         );
-        assert_eq!(other, ["WebLeft.credits"]);
+        assert_eq!(
+            other,
+            [
+                "browser.close().cost",
+                "WebLeft.credits",
+                "BrowserViewport.scale",
+                "BrowserLeft.credits",
+                "BrowserResult.cost",
+                "BrowserOpened.cost",
+                "BrowserAnswer.cost"
+            ]
+        );
 
         // The web namespace's rules, which the system prompt carries in
         // runs with a web operation.
@@ -509,6 +988,7 @@ mod tests {
             [
                 "artifact",
                 "artifacts",
+                "browser",
                 "clax",
                 "content",
                 "db",
@@ -615,45 +1095,18 @@ mod tests {
     }
 
     #[test]
-    fn dts_without_web_is_unchanged() {
-        golden(
-            "the clax API declaration without web",
-            "src/api.d.ts.golden",
-            &dts(WebShape::default()),
-        );
-    }
-
-    #[test]
-    fn dts_with_web_matches_its_golden() {
-        golden(
-            "the clax API declaration with web",
-            "src/api.web.d.ts.golden",
-            &dts(WebShape {
-                search: true,
-                fetch: true,
-            }),
-        );
-    }
-
-    #[test]
     fn fetch_alone_declares_no_search() {
-        let d = dts(WebShape {
-            search: false,
-            fetch: true,
-        });
+        let d = dts(&[C::WebFetch].into_iter().collect());
         assert!(d.contains("  web: {\n"), "{d}");
         assert!(d.contains("fetch(url: string"), "{d}");
         assert!(d.contains("interface WebPage"), "{d}");
         assert!(!d.contains("search("), "{d}");
         assert!(!d.contains("SearchResult"), "{d}");
-        let d = dts(WebShape {
-            search: true,
-            fetch: false,
-        });
+        let d = dts(&[C::WebSearch].into_iter().collect());
         assert!(d.contains("search(query: string"), "{d}");
         assert!(!d.contains("fetch("), "{d}");
         assert!(!d.contains("WebPage"), "{d}");
-        assert!(!dts(WebShape::default()).contains("web"));
+        assert!(!dts(&CapSet::default()).contains("web"));
     }
 
     #[test]
@@ -679,11 +1132,12 @@ mod tests {
         );
         assert!(check_args("web.search", &json!(["q", "5"])).is_err());
         assert!(check_args("web.fetch", &json!(["u", {"offs": 1}])).is_err());
-        let m = check_args("web.fetch", &json!(["u", {"format": "html"}])).unwrap_err();
+        assert!(check_args("web.fetch", &json!(["u", {"format": "html"}])).is_ok());
+        let m = check_args("web.fetch", &json!(["u", {"format": "pdf"}])).unwrap_err();
         assert_eq!(m.code, CODE_BAD_ARGS);
         assert!(
             m.message
-                .contains("argument 2 (opts).format must be one of auto, raw"),
+                .contains("argument 2 (opts).format must be one of markdown, html, raw, auto"),
             "{m}"
         );
         assert!(check_args("web.fetch", &json!(["u", {"format": 1}])).is_err());

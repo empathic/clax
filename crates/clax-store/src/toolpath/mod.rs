@@ -746,6 +746,7 @@ impl Event<'_> {
             Some(K::InviteCreate | K::InviteRevoke) => self.str("invite_id").map(Obj::Invite),
             Some(
                 K::GrantRequest
+                | K::GrantIssue
                 | K::GrantApprove
                 | K::GrantDeny
                 | K::GrantRevoke
@@ -768,6 +769,7 @@ impl Event<'_> {
                 | K::BotScript
                 | K::BotCall
                 | K::BotWeb
+                | K::BotSpend
                 | K::BotRunEnd
                 | K::BotCancel
                 | K::ViewRun,
@@ -1283,11 +1285,27 @@ impl Event<'_> {
                 self.show("grant_id"),
                 self.show("reason")
             ),
-            Some(K::GrantRevoke) => format!(
-                "Ended grant {} (by {})",
+            Some(K::GrantIssue) => format!(
+                "Issued grant {} to {} ({}{})",
                 self.show("grant_id"),
-                self.show("by")
+                self.show("grantee"),
+                self.show("event"),
+                self.str("parent")
+                    .map(|p| format!(", under grant {p}"))
+                    .unwrap_or_default()
             ),
+            Some(K::GrantRevoke) => match self.str("reason") {
+                Some(r) => format!(
+                    "Ended grant {} (by {}, {r})",
+                    self.show("grant_id"),
+                    self.show("by")
+                ),
+                None => format!(
+                    "Ended grant {} (by {})",
+                    self.show("grant_id"),
+                    self.show("by")
+                ),
+            },
             Some(K::GrantToken) => format!(
                 "{} the tokens of grant {}",
                 if self.str("op") == Some("issue") {
@@ -1460,6 +1478,26 @@ impl Event<'_> {
                     (Some("web.fetch"), _, Some(u)) => format!("fetched {u}"),
                     _ => format!("called {}", self.show("op")),
                 },
+                self.show("step"),
+                credits(self.body.get("credits_milli"))
+            ),
+            Some(K::BotSpend) => format!(
+                "ClaxBot run {} {} ({}, step {}, {} credits)",
+                self.show("run"),
+                match (self.str("op"), self.str("query"), self.str("url")) {
+                    _ if self.body.get("ok") == Some(&Value::Bool(false)) => {
+                        format!("was refused {} ({})", self.show("op"), self.show("code"))
+                    }
+                    (Some("web.search"), Some(q), _) => format!("searched the web for {q}"),
+                    (Some("web.fetch"), _, Some(u)) => format!("fetched {u}"),
+                    (Some("browser.session.end"), _, _) => format!(
+                        "ended browser session {} ({})",
+                        self.show("session"),
+                        self.show("reason")
+                    ),
+                    _ => format!("called {}", self.show("op")),
+                },
+                self.show("capability"),
                 self.show("step"),
                 credits(self.body.get("credits_milli"))
             ),

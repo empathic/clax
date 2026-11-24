@@ -1,17 +1,32 @@
 import "./e2e/bazel-env";
-import { cpus } from "node:os";
+import { cpus, loadavg } from "node:os";
 import { join } from "node:path";
 import { defineConfig } from "@playwright/test";
 
 // Every test runs in parallel with the others: each worker has its own daemon
 // (e2e/fixtures.ts), shared by its tests, which publish their own artifacts.
-// CLAX_E2E_WORKERS overrides the worker count: by default four more than the
-// cores, as a test spends much of its time waiting on the browser, the
-// daemon, or Chromium's user activation to lapse.
+// CLAX_E2E_WORKERS sets the worker count (CI's `test:ci` gives 8, .bazelrc).
+// Without it, a Bazel lane (CLAX_E2E_MAX_WORKERS, the cores it reserves,
+// web/BUILD.bazel) runs as many workers as the host has cores free when it
+// starts: its cores less its one-minute load average, from 2 to that
+// reservation. A host busy with Bazel's other tests, or anything else, runs
+// fewer, as most tests open two or three browser contexts against their
+// worker's daemon. Outside Bazel the default is four more than the cores,
+// as a test spends much of its time waiting on the browser, the daemon, or
+// Chromium's user activation to lapse. The count only spreads the work: no
+// test's outcome depends on it.
 // No test sleeps to wait for something: the shell's timing rules run on a
 // clock the tests advance (shell/src/clock.ts), and the rest is waited on as
 // events (the typing tests' key schedules are input, not waits).
-const workers = Number(process.env.CLAX_E2E_WORKERS) || cpus().length + 4;
+function workerCount(): number {
+  const set = Number(process.env.CLAX_E2E_WORKERS);
+  if (set > 0) return set;
+  const most = Number(process.env.CLAX_E2E_MAX_WORKERS);
+  if (!(most > 0)) return cpus().length + 4;
+  const free = Math.floor(cpus().length - loadavg()[0]);
+  return Math.max(Math.min(2, most), Math.min(most, free));
+}
+const workers = workerCount();
 // Under Bazel a failed test's page (its error context and a screenshot) is
 // kept with the test's outputs, which CI uploads with the logs of a failed run.
 const outputs = process.env.TEST_UNDECLARED_OUTPUTS_DIR;

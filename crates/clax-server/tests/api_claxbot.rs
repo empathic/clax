@@ -50,6 +50,33 @@ fn code(v: &Value) -> &str {
 }
 
 /// The events of `kind` recorded so far, as (actor, body).
+/// The instance-wide grant of every capability: none reaches a person
+/// without one (migration 69).
+fn grant_everyone(ts: &TestServer) {
+    use clax_store::bot_grants::{CAPABILITIES, EVERYONE};
+    for cap in CAPABILITIES {
+        ts.store
+            .issue_cap_grant(&AuditCtx::DAEMON, cap, clax_store::roles::OWNER, EVERYONE)
+            .unwrap();
+    }
+}
+
+/// `issue` or `revoke` for each `grant.issue` and `grant.revoke` record
+/// of a grant of `capability`, in order.
+fn grant_ops(ts: &TestServer, capability: &str) -> Vec<String> {
+    ts.store
+        .events_after(0, 10_000)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| {
+            let op = e.kind.strip_prefix("grant.")?.to_string();
+            let b: Value = serde_json::from_str(&e.body).unwrap();
+            let g = ts.store.cap_grant(b["grant_id"].as_str()?).unwrap()?;
+            (g.capability() == Some(capability)).then_some(op)
+        })
+        .collect()
+}
+
 fn events(ts: &TestServer, kind: &str) -> Vec<(Value, Value)> {
     ts.store
         .events_after(0, 10_000)
@@ -2864,6 +2891,7 @@ async fn web_is_configured_once_the_account_and_token_are_set() {
     let ts = &p.ts;
     let owner = Who::OwnerBrowser;
     let sam = Who::Person(p.sam.0.clone());
+    grant_everyone(ts);
     let (s, v) = call(
         ts,
         &owner,
@@ -3014,6 +3042,9 @@ async fn me_turns_web_off() {
     let sam = Who::Person(p.sam.0.clone());
     let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(s, 200, "{v}");
+    assert_eq!(v["web"]["on"], false, "no grant, nothing implied");
+    grant_everyone(ts);
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(v["web"]["on"], true);
     assert_eq!(v["web"]["offered"], false);
     assert_eq!(v["web"]["why_off"], "admin_off");
@@ -3035,7 +3066,13 @@ async fn me_turns_web_off() {
     assert_eq!(v["web"]["on"], false);
     let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(v["web"]["on"], false);
-    assert_eq!(events(ts, "me.web").len(), 1);
+    for cap in ["clax-web:search", "clax-web:fetch"] {
+        assert_eq!(
+            grant_ops(ts, cap).iter().filter(|o| *o == "revoke").count(),
+            1,
+            "{cap}: Sam's runs grant revoked, once"
+        );
+    }
     // The choice is the person's own.
     let (_, v) = call(
         ts,
@@ -3056,6 +3093,7 @@ async fn me_put_needs_a_field() {
     let p = people().await;
     let ts = &p.ts;
     let sam = Who::Person(p.sam.0.clone());
+    grant_everyone(ts);
     let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({})).await;
     assert_eq!((s, code(&v)), (400, "empty_request"), "{v}");
     // Both fields in one request: use_own still needs a key.
@@ -3178,4 +3216,787 @@ async fn the_admin_web_view_says_why_web_is_unavailable() {
         "{v}"
     );
     assert!(v["unavailable"].is_null(), "{v}");
+}
+
+#[tokio::test]
+async fn admin_browser_round_trips_each_capability() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let (s, v) = call(
+        ts,
+        &Who::Person(p.ana.0.clone()),
+        Method::GET,
+        "/api/admin/browser",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "an admin reads it: {v}");
+    let settings = |g: &Value, keys: &[&str]| -> Value {
+        keys.iter()
+            .map(|k| ((*k).to_string(), g[*k].clone()))
+            .collect()
+    };
+    assert_eq!(
+        (
+            settings(
+                &v["url"],
+                &["enabled", "url_rule", "allowlist", "max_per_run"]
+            ),
+            settings(&v["artifact"], &["enabled", "max_per_run"]),
+            settings(&v["content"], &["enabled", "max_per_run"]),
+        ),
+        (
+            json!({"enabled": false, "url_rule": "sender", "allowlist": [], "max_per_run": 5}),
+            json!({"enabled": false, "max_per_run": 10}),
+            json!({"enabled": false, "max_per_run": 10}),
+        ),
+        "{v}"
+    );
+    assert_eq!(
+        settings(
+            &v,
+            &[
+                "call_seconds",
+                "idle_seconds",
+                "max_seconds",
+                "max_open_per_run",
+                "max_concurrent"
+            ]
+        ),
+        json!({"call_seconds": 60, "idle_seconds": 300, "max_seconds": 1800,
+               "max_open_per_run": 1, "max_concurrent": 2}),
+        "{v}"
+    );
+    // Each capability's card says what it costs and whether it can run.
+    for kind in ["url", "artifact", "content"] {
+        assert!(v[kind]["price_milli_per_minute"].as_i64().is_some(), "{v}");
+        assert_eq!(v[kind]["configured"], false, "{v}");
+        assert!(v[kind]["unavailable"].is_string(), "{v}");
+    }
+    assert_eq!(v["configured"], false);
+    assert_eq!(v["cloudflare"], json!({"account": false, "token": false}));
+    assert!(
+        v["unavailable"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Cloudflare"),
+        "{v}"
+    );
+    assert_eq!(v["sources"]["call_seconds"], "default");
+    assert_eq!(v["sources"]["content.enabled"], "default");
+    let owner = Who::OwnerBrowser;
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/browser",
+        json!({"artifact": {"enabled": true}, "call_seconds": 90, "max_concurrent": 3,
+               "content": {"max_per_run": 3}, "idle_seconds": 600,
+               "url": {"url_rule": "allowlist", "allowlist": ["*.example.com"]}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifact"]["enabled"], true);
+    assert_eq!(v["url"]["enabled"], false, "each switch on its own");
+    assert_eq!(v["content"]["enabled"], false, "each switch on its own");
+    assert_eq!(v["content"]["max_per_run"], 3);
+    assert_eq!(v["call_seconds"], 90);
+    assert_eq!(v["idle_seconds"], 600);
+    assert_eq!(v["max_concurrent"], 3);
+    assert_eq!(v["url"]["url_rule"], "allowlist");
+    assert_eq!(v["url"]["allowlist"], json!(["*.example.com"]));
+    assert_eq!(v["sources"]["max_concurrent"], "db");
+    // null puts a field back to its default.
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/browser",
+        json!({"call_seconds": null}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["call_seconds"], 60);
+    // A value the setting refuses, an unknown field, a group that is not
+    // an object.
+    for body in [
+        json!({"call_seconds": 121}),
+        json!({"idle_seconds": 59}),
+        json!({"url": {"url_rule": "open"}}),
+        json!({"artifact": {"url_rule": "sender"}}),
+        json!({"artifact": {"nope": true}}),
+        json!({"test": {"enabled": true}}),
+        json!({"nope": 1}),
+        json!({"content": true}),
+    ] {
+        let (s, v) = call(ts, &owner, Method::PUT, "/api/admin/browser", body.clone()).await;
+        assert_eq!(s, 400, "{body}: {v}");
+    }
+    // A field the daemon's configuration sets is refused, and shows it.
+    let mut ov = Overrides::default();
+    ov.set(Setting::BrowserOpenArtifactMaxPerRun, &json!(4), "file")
+        .unwrap();
+    ts.store.set_bot_overrides(ov);
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/browser",
+        json!({"artifact": {"max_per_run": 2}}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (409, "setting_overridden"), "{v}");
+    let (_, v) = call(ts, &owner, Method::GET, "/api/admin/browser", Value::Null).await;
+    assert_eq!(
+        (
+            &v["artifact"]["max_per_run"],
+            &v["sources"]["artifact.max_per_run"]
+        ),
+        (&json!(4), &json!("file"))
+    );
+    // Configured once the Cloudflare account ID and token are set.
+    for (path, body) in [
+        (
+            "/api/admin/web",
+            json!({"cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"}}),
+        ),
+        ("/api/admin/web/token", json!({"token": CF_TOKEN})),
+    ] {
+        let (s, v) = call(ts, &owner, Method::PUT, path, body).await;
+        assert_eq!(s, 200, "{path}: {v}");
+    }
+    let (_, v) = call(ts, &owner, Method::GET, "/api/admin/browser", Value::Null).await;
+    assert_eq!(
+        (&v["configured"], &v["unavailable"], &v["cloudflare"]),
+        (
+            &json!(true),
+            &Value::Null,
+            &json!({"account": true, "token": true})
+        ),
+        "{v}"
+    );
+    assert!(!events(ts, "view.admin").is_empty());
+    // Members, viewers and agents do not reach it.
+    for who in [Who::Person(p.sam.0.clone()), Who::Viewer(p.lan.clone())] {
+        for (m, body) in [(Method::GET, Value::Null), (Method::PUT, json!({}))] {
+            let (s, v) = call(ts, &who, m.clone(), "/api/admin/browser", body).await;
+            assert_eq!((s, code(&v)), (403, "forbidden"), "{who:?} {m}: {v}");
+        }
+    }
+    let (s, v) = call(
+        ts,
+        &Who::Agent,
+        Method::GET,
+        "/api/admin/browser",
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
+}
+
+/// The first version's browser switch is gone from the Me route: a
+/// person's browser use is each `browser.open` capability's own switch
+/// (`capabilities`), and a `browser` field is refused as any unknown one.
+#[tokio::test]
+async fn me_bot_has_no_browser_switch_of_its_own() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let sam = Who::Person(p.sam.0.clone());
+    grant_everyone(ts);
+    let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v.get("browser").is_none(), "{v}");
+    let ids: Vec<&str> = v["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"clax-browser:open-artifact"), "{v}");
+    let (s, v) = call(
+        ts,
+        &sam,
+        Method::PUT,
+        "/api/me/bot",
+        json!({"browser": false}),
+    )
+    .await;
+    assert_eq!(s, 400, "{v}");
+    for cap in clax_store::bot_grants::BROWSER_CAPABILITIES {
+        assert!(
+            !grant_ops(ts, cap).iter().any(|o| o == "revoke"),
+            "{cap}: nothing revoked"
+        );
+    }
+}
+
+/// A 2x1 PNG: the signature and a whole IHDR chunk with its CRC.
+fn png() -> Vec<u8> {
+    let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    b.extend_from_slice(&[0, 0, 0, 2, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    let mut c = 0xffff_ffffu32;
+    for &x in &b[12..29] {
+        c ^= u32::from(x);
+        for _ in 0..8 {
+            c = if c & 1 == 1 {
+                0xedb8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+    }
+    b.extend_from_slice(&(!c).to_be_bytes());
+    b
+}
+
+/// Keeps `bytes` as item `id` of run `rid`'s content, of `media_type`.
+fn keep(ts: &TestServer, rid: &str, id: &str, media_type: &str, bytes: &[u8]) {
+    ts.store
+        .put_bot_content(
+            &clax_store::bot_content::NewContent {
+                id,
+                run_id: rid,
+                surface: "clax",
+                registration_id: None,
+                name: None,
+                media_type,
+                width: None,
+                height: None,
+                bytes,
+            },
+            clax_store::bot_content::ContentLimits::default(),
+        )
+        .unwrap();
+}
+
+/// GET `path` as `who`: (status, headers, body).
+async fn fetch(
+    ts: &TestServer,
+    who: &Who,
+    path: &str,
+) -> (u16, reqwest::header::HeaderMap, Vec<u8>) {
+    let r = ts.client.get(format!("{}{path}", ts.base));
+    let r = match who {
+        Who::OwnerBrowser => r.header("cookie", ts.owner_cookie()),
+        Who::Person(c) | Who::Viewer(c) => r.header("cookie", format!("clax_viewer={c}")),
+        Who::Owner => ts.authed(r),
+        Who::Agent => ts.authed(r).header("x-clax-channel", "agent"),
+        Who::Anonymous => r,
+    };
+    let res = r.send().await.unwrap();
+    let (s, h) = (res.status().as_u16(), res.headers().clone());
+    (s, h, res.bytes().await.unwrap().to_vec())
+}
+
+/// Starts a queued run of the owner's on a new artifact: its ID.
+async fn queued_run(ts: &TestServer) -> String {
+    let (aid, tid) = artifact_with_thread(ts).await;
+    let (s, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::POST,
+        "/api/bot/runs",
+        json!({"thread_ids": [tid], "artifact_id": aid}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    v["run"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn run_content_is_served_to_the_runs_viewers_only() {
+    let p = people().await;
+    let ts = &p.ts;
+    configured(ts).await;
+    let rid = queued_run(ts).await;
+    let other = queued_run(ts).await;
+    keep(ts, &rid, "shot1", "image/png", &png());
+    keep(ts, &other, "shot2", "image/png", &png());
+    let path = format!("/api/bot/runs/{rid}/content/shot1");
+    // The person it acts for and an admin see the run's screenshot,
+    // under a policy that runs nothing.
+    for who in [Who::OwnerBrowser, Who::Person(p.ana.0.clone())] {
+        let (s, h, body) = fetch(ts, &who, &path).await;
+        assert_eq!(s, 200, "{who:?}");
+        assert_eq!(body, png(), "{who:?}");
+        assert_eq!(h["content-type"], "image/png");
+        assert_eq!(h["content-security-policy"], "sandbox; default-src 'none'");
+        assert_eq!(h["x-content-type-options"], "nosniff");
+    }
+    // A reader of the artifact, who does not read the run's draft, gets
+    // nothing, as for an item that is not there.
+    for who in [Who::Person(p.sam.0.clone()), Who::Viewer(p.lan.clone())] {
+        let (s, _, _) = fetch(ts, &who, &path).await;
+        assert_eq!(s, 404, "{who:?}");
+    }
+    let (s, _, _) = fetch(ts, &Who::Anonymous, &path).await;
+    assert_eq!(s, 401);
+    let (s, _, _) = fetch(ts, &Who::Agent, &path).await;
+    assert_eq!(s, 403);
+    // Another run's item, and one no run holds, are not there.
+    for id in ["shot2", "nope"] {
+        let (s, _, _) = fetch(
+            ts,
+            &Who::OwnerBrowser,
+            &format!("/api/bot/runs/{rid}/content/{id}"),
+        )
+        .await;
+        assert_eq!(s, 404, "{id}");
+    }
+    let (s, _, _) = fetch(ts, &Who::OwnerBrowser, "/api/bot/runs/r_nope/content/shot1").await;
+    assert_eq!(s, 404);
+}
+
+/// A recording's frame manifest is served as JSON, under the same policy
+/// and to the same people as the run's images.
+#[tokio::test]
+async fn a_frame_manifest_is_served_as_json_to_the_runs_viewers() {
+    let p = people().await;
+    let ts = &p.ts;
+    configured(ts).await;
+    let rid = queued_run(ts).await;
+    let manifest = br#"{"width":390,"height":844,"frames":[{"item":"f1","at_ms":0}]}"#;
+    keep(
+        ts,
+        &rid,
+        "clip1",
+        "application/vnd.clax.frames+json",
+        manifest,
+    );
+    let path = format!("/api/bot/runs/{rid}/content/clip1");
+    for who in [Who::OwnerBrowser, Who::Person(p.ana.0.clone())] {
+        let (s, h, body) = fetch(ts, &who, &path).await;
+        assert_eq!(s, 200, "{who:?}");
+        assert_eq!(body, manifest, "{who:?}");
+        assert_eq!(h["content-type"], "application/json");
+        assert_eq!(h["content-security-policy"], "sandbox; default-src 'none'");
+        assert_eq!(h["x-content-type-options"], "nosniff");
+    }
+    for who in [Who::Person(p.sam.0.clone()), Who::Viewer(p.lan.clone())] {
+        let (s, _, _) = fetch(ts, &who, &path).await;
+        assert_eq!(s, 404, "{who:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_non_image_item_is_not_served() {
+    let p = people().await;
+    let ts = &p.ts;
+    configured(ts).await;
+    let rid = queued_run(ts).await;
+    keep(ts, &rid, "page1", "text/html", b"<script>alert(1)</script>");
+    let (s, _, _) = fetch(
+        ts,
+        &Who::OwnerBrowser,
+        &format!("/api/bot/runs/{rid}/content/page1"),
+    )
+    .await;
+    assert_eq!(s, 404);
+}
+
+/// A reader of a run's artifact sees a browser call's line in the run
+/// without its summary: the screenshots and counts are of the run's
+/// draft, which is the acting person's and admins' alone.
+#[test]
+fn a_reader_sees_no_browser_summary() {
+    let mut step = json!({"calls": [{"op": "browser.test", "ok": true, "cost_milli": 3,
+                                      "browser": {"passed": true, "screenshots": ["c1"]}}]});
+    clax_server::routes::bot::for_reader(&mut step);
+    assert_eq!(
+        step,
+        json!({"calls": [{"op": "browser.test", "ok": true, "cost_milli": 3}]})
+    );
+}
+
+/// `GET /api/admin/web` keeps every field it had and adds, to each of
+/// `search` and `fetch`, its capability's price, whether the host can
+/// perform it and why not; `PUT` refuses those read-only fields.
+#[tokio::test]
+async fn admin_web_keeps_its_fields_and_adds_the_cards() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let owner = Who::OwnerBrowser;
+    let (s, v) = call(ts, &owner, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    for (group, keys) in [
+        (
+            "search",
+            &[
+                "enabled",
+                "provider",
+                "gateway",
+                "byok_alias",
+                "limit",
+                "max_per_run",
+            ][..],
+        ),
+        (
+            "fetch",
+            &["enabled", "url_rule", "allowlist", "max_per_run"][..],
+        ),
+    ] {
+        for k in keys {
+            assert!(!v[group][k].is_null(), "{group}.{k}: {v}");
+        }
+        assert!(v[group]["price_milli"].as_i64().is_some(), "{group}: {v}");
+        assert!(v[group]["unavailable"].is_null(), "{group}: {v}");
+    }
+    assert_eq!(
+        v["search"]["configured"], false,
+        "no Cloudflare account: {v}"
+    );
+    assert_eq!(v["fetch"]["configured"], true, "{v}");
+    assert_eq!(v["configured"], json!({"search": false, "fetch": true}));
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"fetch": {"price_milli": 1}}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "unknown_setting"), "{v}");
+}
+
+/// The admin grants a capability to everyone and to one person, lists the
+/// grants (everyone's first) and revokes them, each a `grant.issue` or
+/// `grant.revoke`; a revoked grant to everyone takes its children with it.
+#[tokio::test]
+async fn admin_grants_to_everyone_and_revokes() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let owner = Who::OwnerBrowser;
+    let sam = p.sam.1.clone();
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::GET,
+        "/api/admin/bot/grants",
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, &v["grants"]), (200, &json!([])), "{v}");
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::POST,
+        "/api/admin/bot/grants",
+        json!({"capability": "clax-browser:open-content", "grantee": {"person": sam}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::POST,
+        "/api/admin/bot/grants",
+        json!({"capability": "clax-browser:open-content", "grantee": "everyone"}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let grants = v["grants"].as_array().unwrap().clone();
+    assert_eq!(
+        grants
+            .iter()
+            .map(|g| (
+                g["capability"].clone(),
+                g["grantee"].clone(),
+                g["person"].clone()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (
+                json!("clax-browser:open-content"),
+                json!("everyone"),
+                Value::Null
+            ),
+            (
+                json!("clax-browser:open-content"),
+                json!("person"),
+                json!(sam)
+            ),
+        ]
+    );
+    assert!(
+        grants
+            .iter()
+            .all(|g| g["granter"] == clax_store::roles::OWNER && g["conveys"] == true),
+        "the admin who issued each: {grants:?}"
+    );
+    // Refusals: a second grant to the same grantee, an unknown capability,
+    // a person the instance does not have, not everyone.
+    for (body, want) in [
+        (
+            json!({"capability": "clax-browser:open-content", "grantee": "everyone"}),
+            "grant_exists",
+        ),
+        (
+            json!({"capability": "clax-browser:open-everything", "grantee": "everyone"}),
+            "unknown_capability",
+        ),
+        (
+            json!({"capability": "clax-web:fetch", "grantee": {"person": "u_nobody"}}),
+            "invalid_grantee",
+        ),
+        (
+            json!({"capability": "clax-web:fetch", "grantee": "anyone"}),
+            "invalid_grantee",
+        ),
+    ] {
+        let (s, v) = call(
+            ts,
+            &owner,
+            Method::POST,
+            "/api/admin/bot/grants",
+            body.clone(),
+        )
+        .await;
+        assert_eq!((s, code(&v)), (400, want), "{body}: {v}");
+    }
+    // Revoking everyone's grant ends what it issued, and leaves Sam's.
+    let everyone = grants[0]["id"].as_str().unwrap().to_string();
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::DELETE,
+        &format!("/api/admin/bot/grants/{everyone}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["grants"].as_array().unwrap().len(), 1, "{v}");
+    assert!(
+        ts.store.person_caps(&sam).unwrap()["clax-browser:open-content"].reaches_runs(),
+        "Sam's own grant still reaches their runs"
+    );
+    assert!(
+        !ts.store.person_caps(clax_store::roles::OWNER).unwrap()["clax-browser:open-content"]
+            .reaches_runs(),
+        "the owner's came from everyone's, and ended with it"
+    );
+    let ops = grant_ops(ts, "clax-browser:open-content");
+    assert!(ops.iter().filter(|o| *o == "issue").count() >= 3, "{ops:?}");
+    assert!(ops.iter().any(|o| o == "revoke"), "{ops:?}");
+    // A person's own grant to their runs is not the admin's to revoke here.
+    let runs = ts.store.person_caps(&sam).unwrap()["clax-browser:open-content"]
+        .runs_grant
+        .clone()
+        .unwrap();
+    let (s, _) = call(
+        ts,
+        &owner,
+        Method::DELETE,
+        &format!("/api/admin/bot/grants/{runs}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 404);
+    // Members and agents do not reach it.
+    let (s, v) = call(
+        ts,
+        &Who::Person(p.sam.0.clone()),
+        Method::GET,
+        "/api/admin/bot/grants",
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+    let (s, v) = call(
+        ts,
+        &Who::Agent,
+        Method::GET,
+        "/api/admin/bot/grants",
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
+}
+
+/// The admin's switch for a `browser.open` kind offers it and grants it
+/// to no one: a person's runs get it once the admin grants it.
+#[tokio::test]
+async fn a_browser_kind_is_granted_to_no_one_until_the_admin_grants_it() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let owner = Who::OwnerBrowser;
+    let sam = Who::Person(p.sam.0.clone());
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/browser",
+        json!({"content": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let content = |v: &Value| {
+        v["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "clax-browser:open-content")
+            .unwrap()
+            .clone()
+    };
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(content(&v)["granted"], false, "{v}");
+    assert_eq!(content(&v)["on"], false, "{v}");
+    assert_ne!(content(&v)["why_off"], Value::Null, "{v}");
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::POST,
+        "/api/admin/bot/grants",
+        json!({"capability": "clax-browser:open-content", "grantee": "everyone"}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(content(&v)["granted"], true, "{v}");
+    assert!(
+        ts.store.person_caps(&p.sam.1).unwrap()["clax-browser:open-content"].reaches_runs(),
+        "{v}"
+    );
+}
+
+/// `GET /api/me/bot` lists each of the five capabilities in order, with
+/// whether the admin offers it, grants it to the person, and it reaches
+/// their runs, and what it costs; `PUT capabilities` turns one alone off
+/// and on again, and refuses a name that is no capability.
+#[tokio::test]
+async fn me_bot_lists_each_capability_and_whether_it_is_granted() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let owner = Who::OwnerBrowser;
+    let sam = Who::Person(p.sam.0.clone());
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"fetch": {"enabled": true}, "search": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    grant_everyone(ts);
+    let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    let caps = v["capabilities"].as_array().unwrap();
+    assert_eq!(
+        caps.iter().map(|c| c["id"].clone()).collect::<Vec<_>>(),
+        [
+            "clax-web:search",
+            "clax-web:fetch",
+            "clax-browser:open-url",
+            "clax-browser:open-artifact",
+            "clax-browser:open-content"
+        ]
+        .map(|c| json!(c))
+    );
+    let fetch = &caps[1];
+    assert_eq!(
+        (
+            &fetch["offered"],
+            &fetch["granted"],
+            &fetch["on"],
+            &fetch["why_off"],
+            &fetch["per"]
+        ),
+        (
+            &json!(true),
+            &json!(true),
+            &json!(true),
+            &Value::Null,
+            &json!("request")
+        ),
+        "{fetch}"
+    );
+    assert!(fetch["price_milli"].as_i64().is_some(), "{fetch}");
+    // Search needs the Cloudflare account the daemon does not have.
+    assert_eq!(caps[0]["why_off"], "not_configured", "{v}");
+    // Browser kinds: granted, not offered.
+    assert_eq!(
+        (
+            &caps[4]["granted"],
+            &caps[4]["offered"],
+            &caps[4]["why_off"],
+            &caps[4]["per"]
+        ),
+        (
+            &json!(true),
+            &json!(false),
+            &json!("not_offered"),
+            &json!("minute")
+        ),
+        "{v}"
+    );
+    let (s, v) = call(
+        ts,
+        &sam,
+        Method::PUT,
+        "/api/me/bot",
+        json!({"capabilities": {"clax-web:fetch": false}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let caps = v["capabilities"].as_array().unwrap();
+    assert_eq!(
+        (&caps[1]["on"], &caps[1]["why_off"]),
+        (&json!(false), &json!("person_off"))
+    );
+    assert!(
+        ts.store.person_caps(&p.sam.1).unwrap()["clax-web:search"]
+            .runs_grant
+            .is_some(),
+        "search left as it was"
+    );
+    let (_, v) = call(
+        ts,
+        &sam,
+        Method::PUT,
+        "/api/me/bot",
+        json!({"capabilities": {"clax-web:fetch": true}}),
+    )
+    .await;
+    assert_eq!(v["capabilities"][1]["on"], true, "{v}");
+    let (s, v) = call(
+        ts,
+        &sam,
+        Method::PUT,
+        "/api/me/bot",
+        json!({"capabilities": {"clax-web:fetch": false, "web.crawl": true}}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "unknown_capability"), "{v}");
+    assert!(
+        ts.store.person_caps(&p.sam.1).unwrap()["clax-web:fetch"]
+            .runs_grant
+            .is_some(),
+        "a refused request changes nothing"
+    );
+}
+
+/// Main's `web: bool` sets both web capabilities, and `web` still answers
+/// on when both reach the person's runs.
+#[tokio::test]
+async fn me_put_web_sets_both_web_capabilities() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let sam = Who::Person(p.sam.0.clone());
+    grant_everyone(ts);
+    let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"web": false})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["web"]["on"], false, "{v}");
+    let held = ts.store.person_caps(&p.sam.1).unwrap();
+    assert!(
+        held["clax-web:search"].runs_grant.is_none() && held["clax-web:fetch"].runs_grant.is_none()
+    );
+    assert!(
+        held["clax-browser:open-url"].runs_grant.is_some(),
+        "the browser left as it was"
+    );
+    let (_, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"web": true})).await;
+    assert_eq!(v["web"]["on"], true, "{v}");
+    let held = ts.store.person_caps(&p.sam.1).unwrap();
+    assert!(held["clax-web:search"].reaches_runs() && held["clax-web:fetch"].reaches_runs());
 }

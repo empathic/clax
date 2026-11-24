@@ -275,6 +275,24 @@ perf-native:
 smoke-bot-surfaces:
     ./scripts/smoke-bot-surfaces.sh
 
+# Run one ClaxBot browser test against real Cloudflare Browser Run on demand (no check runs it; crates/clax-server/tests/live_browser_run.rs), with CLAX_LIVE_BROWSER_RUN_ACCOUNT (an account ID) and CLAX_LIVE_BROWSER_RUN_TOKEN (a token with Browser Rendering – Edit) from the environment; it bills that account a few seconds of browser time
+browser-live:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${CLAX_LIVE_BROWSER_RUN_ACCOUNT:?set CLAX_LIVE_BROWSER_RUN_ACCOUNT to a Cloudflare account ID}"
+    : "${CLAX_LIVE_BROWSER_RUN_TOKEN:?set CLAX_LIVE_BROWSER_RUN_TOKEN to an API token with Browser Rendering - Edit}"
+    # The test is a module of the integration target, which Bazel splits
+    # into six (bazel/cargo.bzl); the filter leaves it alone in each. Its
+    # result depends on Cloudflare, not on its inputs, so each run passes
+    # the time as an input of its own and is never answered from the cache.
+    "${BAZEL:-bazelisk}" test //crates/clax-server:integration__{1,2,3,4,5,6} \
+        --test_arg=live_browser_run \
+        --test_arg=--nocapture \
+        --test_env=CLAX_LIVE_BROWSER_RUN_ACCOUNT \
+        --test_env=CLAX_LIVE_BROWSER_RUN_TOKEN \
+        --test_env=CLAX_LIVE_BROWSER_RUN_AT="$(date +%s)" \
+        --test_output=streamed
+
 # Regenerate what Bazel derives from Cargo (after any Cargo.toml or Cargo.lock change); commit the result
 bazel-sync:
     ./scripts/bazel-sync.sh

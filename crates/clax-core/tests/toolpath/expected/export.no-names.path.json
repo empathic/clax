@@ -3526,13 +3526,64 @@
             ],
             "timestamp": "2026-10-06T14:09:35.126Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/run/01JBCB0T000000000000000R01": {
+              "structural": {
+                "capability": "clax-browser:open-content",
+                "credits_milli": 13,
+                "kind": "content",
+                "ms": 300000,
+                "op": "browser.session.end",
+                "reason": "idle",
+                "run": "01JBCB0T000000000000000R01",
+                "session": "bs-7a2c91",
+                "step": 4,
+                "type": "clax.bot.spend"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "bot.spend",
+              "seq": 129,
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "ClaxBot run 01JBCB0T000000000000000R01 ended browser session bs-7a2c91 (idle) (clax-browser:open-content, step 4, 0.013 credits)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claxbot/u_77c0zz",
+            "id": "e000000000129",
+            "parents": [
+              "e000000000126"
+            ],
+            "timestamp": "2026-10-06T14:09:38.129Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab"
         },
-        "head": "e000000000126",
+        "head": "e000000000129",
         "id": "clax-artifact-k3m9q2w8x1ab"
       },
       "meta": {
@@ -6780,13 +6831,61 @@
             ],
             "timestamp": "2026-10-06T14:09:36.127Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/grant/01JBCB0T000000000000000G02": {
+              "structural": {
+                "access": [
+                  {
+                    "actions": [
+                      "open-content",
+                      "read",
+                      "act",
+                      "navigate",
+                      "record",
+                      "close"
+                    ],
+                    "type": "clax-browser"
+                  }
+                ],
+                "event": "admin",
+                "grant_id": "01JBCB0T000000000000000G02",
+                "grantee": "person:u_77c0zz",
+                "granter": "*owner",
+                "parent": "01JBCB0T000000000000000G01",
+                "type": "clax.grant.issue"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "grant.issue",
+              "seq": 128,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Issued grant 01JBCB0T000000000000000G02 to person:u_77c0zz (admin, under grant 01JBCB0T000000000000000G01)"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000128",
+            "parents": [
+              "e000000000127"
+            ],
+            "timestamp": "2026-10-06T14:09:37.128Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000127",
+        "head": "e000000000128",
         "id": "clax-install-6a1f0c3e"
       },
       "meta": {
@@ -6971,7 +7070,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 127,
+      "last_seq": 129,
       "redaction": [
         "no-names"
       ],

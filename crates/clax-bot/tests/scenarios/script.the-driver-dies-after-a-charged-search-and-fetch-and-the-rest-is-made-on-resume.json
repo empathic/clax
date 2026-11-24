@@ -70,6 +70,7 @@
       },
       "at": "2026-10-21T10:00:00.000Z",
       "body": {
+        "capability": "clax-web:search",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "credits_milli": 48,
@@ -95,7 +96,7 @@
         "session": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {
@@ -104,6 +105,7 @@
       },
       "at": "2026-10-21T10:00:00.000Z",
       "body": {
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "credits_milli": 95,
@@ -126,7 +128,7 @@
         "session": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {
@@ -135,6 +137,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "credits_milli": 0,
@@ -157,7 +160,7 @@
         "session": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {
@@ -166,6 +169,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "url_not_in_prior_context",
@@ -187,7 +191,7 @@
         "session": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {
@@ -196,6 +200,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "invalid_args",
@@ -203,7 +208,6 @@
         "ok": false,
         "op": "web.fetch",
         "run": "<run>",
-        "source": "comment",
         "step": 2,
         "url": "https://example.com/a",
         "v": 1,
@@ -218,7 +222,7 @@
         "session": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {
@@ -227,6 +231,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
+        "capability": "clax-web:search",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "invalid_args",
@@ -248,7 +253,7 @@
         "session": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {
@@ -257,6 +262,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "invalid_args",
@@ -278,7 +284,7 @@
         "session": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {
@@ -287,6 +293,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "web_unavailable",
@@ -310,7 +317,7 @@
         "session": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {
@@ -319,6 +326,7 @@
       },
       "at": "2026-10-21T10:01:01.000Z",
       "body": {
+        "capability": "clax-web:search",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "code": "web_unavailable",
@@ -342,7 +350,7 @@
         "session": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {
@@ -729,7 +737,7 @@
         "attempt": 1,
         "index": 1,
         "step": 1,
-        "text": "{\"code\":\"const found = await clax.web.search(\\\"clax\\\");\\nconst page = await clax.web.fetch(\\\"https://example.com/a\\\");\\nconst again = await clax.web.fetch(\\\"https://example.com/a\\\", {offset: 3});\\nconst out = [found, page, again];\\nconst tries = [\\n  () => clax.web.fetch(\\\"https://example.com/unnamed\\\"),\\n  () => clax.web.fetch(\\\"https://example.com/a\\\", {format: \\\"raw\\\"}),\\n  () => clax.web.search(\\\"\\\"),\\n  () => clax.web.fetch(\\\"not a url\\\"),\\n  () => clax.web.fetch(\\\"https://example.com/linked\\\"),\\n  () => clax.web.search(\\\"nothing scripted\\\"),\\n];\\nfor (const f of tries) {\\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\\n}\\nreturn out;\",\"title\":\"Script\"}",
+        "text": "{\"code\":\"const found = await clax.web.search(\\\"clax\\\");\\nconst page = await clax.web.fetch(\\\"https://example.com/a\\\");\\nconst again = await clax.web.fetch(\\\"https://example.com/a\\\", {offset: 3});\\nconst out = [found, page, again];\\nconst tries = [\\n  () => clax.web.fetch(\\\"https://example.com/unnamed\\\"),\\n  () => clax.web.fetch(\\\"https://example.com/a\\\", {offset: -1}),\\n  () => clax.web.search(\\\"\\\"),\\n  () => clax.web.fetch(\\\"not a url\\\"),\\n  () => clax.web.fetch(\\\"https://example.com/linked\\\"),\\n  () => clax.web.search(\\\"nothing scripted\\\"),\\n];\\nfor (const f of tries) {\\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\\n}\\nreturn out;\",\"title\":\"Script\"}",
         "type": "tool_input"
       },
       "event": "turn_delta",
@@ -747,7 +755,7 @@
           "text": "Let me look.",
           "tool": {
             "input": {
-              "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {format: \"raw\"}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
+              "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {offset: -1}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
               "title": "Script"
             },
             "name": "run_script"
@@ -769,7 +777,7 @@
     {
       "data": {
         "attempt": 1,
-        "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {format: \"raw\"}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
+        "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {offset: -1}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
         "step": 2,
         "title": "Script"
       },
@@ -823,7 +831,7 @@
     {
       "data": {
         "attempt": 2,
-        "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {format: \"raw\"}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
+        "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {offset: -1}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
         "step": 2,
         "title": "Script"
       },
@@ -911,7 +919,6 @@
         "step": 2,
         "target": null,
         "web": {
-          "source": "comment",
           "url": "https://example.com/a"
         }
       },
@@ -998,7 +1005,7 @@
           "changed": [],
           "is_error": false,
           "published": null,
-          "result": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"web.search\"},{\"code\":null,\"ok\":true,\"op\":\"web.fetch\"},{\"code\":null,\"ok\":true,\"op\":\"web.fetch\"},{\"code\":\"url_not_in_prior_context\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.search\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"web_unavailable\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"web_unavailable\",\"ok\":false,\"op\":\"web.search\"}],\"logs\":[],\"value\":[{\"left\":{\"credits\":1998.021,\"fetches\":20,\"searches\":9},\"results\":[{\"snippet\":\"About it\",\"title\":\"Found\",\"url\":\"https://example.com/found\"}]},{\"contentType\":\"text/markdown\",\"finalUrl\":\"https://example.com/a\",\"left\":{\"credits\":1997.926,\"fetches\":19,\"searches\":9},\"nextOffset\":null,\"offset\":0,\"status\":200,\"text\":\"# Doc title\\nbody\",\"totalChars\":16,\"url\":\"https://example.com/a\"},{\"contentType\":\"text/markdown\",\"finalUrl\":\"https://example.com/a\",\"left\":{\"credits\":1997.926,\"fetches\":19,\"searches\":9},\"nextOffset\":null,\"offset\":3,\"status\":200,\"text\":\"oc title\\nbody\",\"totalChars\":16,\"url\":\"https://example.com/a\"},[\"url_not_in_prior_context\",\"https://example.com/unnamed is not in the sender's words, a search result or a page you fetched; fetch only URLs from those\",false],[\"invalid_args\",\"this run already read https://example.com/a as auto; fetch it with that format\",false],[\"invalid_args\",\"clax.web.search: query must be 1 to 1024 characters, got 0\",false],[\"invalid_args\",\"not an absolute URL (relative URL without a base)\",false],[\"web_unavailable\",\"the fake web source has no answer for a fetch of https://example.com/linked\",false],[\"web_unavailable\",\"the fake web source has no answer for the search \\\"nothing scripted\\\"\",false]]}",
+          "result": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"web.search\"},{\"code\":null,\"ok\":true,\"op\":\"web.fetch\"},{\"code\":null,\"ok\":true,\"op\":\"web.fetch\"},{\"code\":\"url_not_in_prior_context\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.search\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"web_unavailable\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"web_unavailable\",\"ok\":false,\"op\":\"web.search\"}],\"logs\":[],\"value\":[{\"left\":{\"credits\":1998.021,\"fetches\":20,\"searches\":9},\"results\":[{\"snippet\":\"About it\",\"title\":\"Found\",\"url\":\"https://example.com/found\"}]},{\"contentType\":\"text/markdown\",\"finalUrl\":\"https://example.com/a\",\"left\":{\"credits\":1997.926,\"fetches\":19,\"searches\":9},\"nextOffset\":null,\"offset\":0,\"status\":200,\"text\":\"# Doc title\\nbody\",\"totalChars\":16,\"url\":\"https://example.com/a\"},{\"contentType\":\"text/markdown\",\"finalUrl\":\"https://example.com/a\",\"left\":{\"credits\":1997.926,\"fetches\":19,\"searches\":9},\"nextOffset\":null,\"offset\":3,\"status\":200,\"text\":\"oc title\\nbody\",\"totalChars\":16,\"url\":\"https://example.com/a\"},[\"url_not_in_prior_context\",\"https://example.com/unnamed is not in the sender's words, a search result or a page you fetched; fetch only URLs from those\",false],[\"invalid_args\",\"clax.web.fetch: offset must be at least 0, got -1\",false],[\"invalid_args\",\"clax.web.search: query must be 1 to 1024 characters, got 0\",false],[\"invalid_args\",\"not an absolute URL (relative URL without a base)\",false],[\"web_unavailable\",\"the fake web source has no answer for a fetch of https://example.com/linked\",false],[\"web_unavailable\",\"the fake web source has no answer for the search \\\"nothing scripted\\\"\",false]]}",
           "title": "Script"
         }
       },
@@ -1118,7 +1125,7 @@
       "result": {
         "cost_milli": 95,
         "counted": true,
-        "format": "auto",
+        "format": "markdown",
         "source": {
           "comment_id": "<comment>",
           "kind": "comment",
@@ -1154,7 +1161,7 @@
       "op": "web.fetch",
       "result": {
         "cost_milli": 0,
-        "format": "auto",
+        "format": "markdown",
         "source": {
           "comment_id": "<comment>",
           "kind": "comment",
@@ -1189,6 +1196,7 @@
       "ok": false,
       "op": "web.fetch",
       "result": {
+        "capability": "clax-web:fetch",
         "code": "url_not_in_prior_context",
         "cost_milli": 0,
         "message": "https://example.com/unnamed is not in the sender's words, a search result or a page you fetched; fetch only URLs from those",
@@ -1205,17 +1213,11 @@
       "ok": false,
       "op": "web.fetch",
       "result": {
+        "capability": "clax-web:fetch",
         "code": "invalid_args",
         "cost_milli": 0,
-        "format": "raw",
-        "message": "this run already read https://example.com/a as auto; fetch it with that format",
-        "source": {
-          "comment_id": "<comment>",
-          "kind": "comment",
-          "label": "comment"
-        },
+        "message": "clax.web.fetch: offset must be at least 0, got -1",
         "web": {
-          "source": "comment",
           "url": "https://example.com/a"
         }
       },
@@ -1228,6 +1230,7 @@
       "ok": false,
       "op": "web.search",
       "result": {
+        "capability": "clax-web:search",
         "code": "invalid_args",
         "cost_milli": 0,
         "message": "clax.web.search: query must be 1 to 1024 characters, got 0",
@@ -1244,6 +1247,7 @@
       "ok": false,
       "op": "web.fetch",
       "result": {
+        "capability": "clax-web:fetch",
         "code": "invalid_args",
         "cost_milli": 0,
         "message": "not an absolute URL (relative URL without a base)",
@@ -1260,10 +1264,11 @@
       "ok": false,
       "op": "web.fetch",
       "result": {
+        "capability": "clax-web:fetch",
         "code": "web_unavailable",
         "cost_milli": 0,
         "counted": true,
-        "format": "auto",
+        "format": "markdown",
         "message": "the fake web source has no answer for a fetch of https://example.com/linked",
         "source": {
           "kind": "page",
@@ -1286,6 +1291,7 @@
       "ok": false,
       "op": "web.search",
       "result": {
+        "capability": "clax-web:search",
         "code": "web_unavailable",
         "cost_milli": 0,
         "counted": true,
@@ -1373,7 +1379,7 @@
           {
             "id": "tu_1",
             "input": {
-              "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {format: \"raw\"}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
+              "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {offset: -1}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
               "title": "Script"
             },
             "name": "run_script",
@@ -1384,13 +1390,13 @@
         "max_tokens": 32000,
         "model": "claude-sonnet-5-5",
         "next": {
-          "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {format: \"raw\"}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
+          "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {offset: -1}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
           "kind": "script",
           "title": "Script",
           "tool_use_id": "tu_1"
         },
         "stop_reason": "tool_use",
-        "system": "<14912 bytes, sha256 665f29f1a343ed23c8a5fb6fa92d8405aa718777e46be1f59d4c93dd44d7cd8c, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
+        "system": "<15395 bytes, sha256 08598b5aa2a8eb8cd2d1e2ead8b2fab0245f7a53a3413606982ed5b9103b9274, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
         "usage": {
           "cache_creation_input_tokens": 500,
           "cache_read_input_tokens": 2000,
@@ -1469,7 +1475,6 @@
             "op": "web.fetch",
             "target": null,
             "web": {
-              "source": "comment",
               "url": "https://example.com/a"
             }
           },
@@ -1520,7 +1525,7 @@
           }
         ],
         "changed": [],
-        "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {format: \"raw\"}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
+        "code": "const found = await clax.web.search(\"clax\");\nconst page = await clax.web.fetch(\"https://example.com/a\");\nconst again = await clax.web.fetch(\"https://example.com/a\", {offset: 3});\nconst out = [found, page, again];\nconst tries = [\n  () => clax.web.fetch(\"https://example.com/unnamed\"),\n  () => clax.web.fetch(\"https://example.com/a\", {offset: -1}),\n  () => clax.web.search(\"\"),\n  () => clax.web.fetch(\"not a url\"),\n  () => clax.web.fetch(\"https://example.com/linked\"),\n  () => clax.web.search(\"nothing scripted\"),\n];\nfor (const f of tries) {\n  try { out.push(await f()); } catch (e) { out.push([e.code, e.message, e.retryable]); }\n}\nreturn out;",
         "created": false,
         "outcome": {
           "busy_us": "<measured>",
@@ -1554,7 +1559,7 @@
               "us": "<measured>"
             },
             {
-              "args_bytes": 42,
+              "args_bytes": 39,
               "code": "invalid_args",
               "ok": false,
               "op": "web.fetch",
@@ -1645,7 +1650,7 @@
             ],
             [
               "invalid_args",
-              "this run already read https://example.com/a as auto; fetch it with that format",
+              "clax.web.fetch: offset must be at least 0, got -1",
               false
             ],
             [
@@ -1674,7 +1679,7 @@
         "published": null,
         "replied": [],
         "result": {
-          "content": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"web.search\"},{\"code\":null,\"ok\":true,\"op\":\"web.fetch\"},{\"code\":null,\"ok\":true,\"op\":\"web.fetch\"},{\"code\":\"url_not_in_prior_context\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.search\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"web_unavailable\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"web_unavailable\",\"ok\":false,\"op\":\"web.search\"}],\"logs\":[],\"value\":[{\"left\":{\"credits\":1998.021,\"fetches\":20,\"searches\":9},\"results\":[{\"snippet\":\"About it\",\"title\":\"Found\",\"url\":\"https://example.com/found\"}]},{\"contentType\":\"text/markdown\",\"finalUrl\":\"https://example.com/a\",\"left\":{\"credits\":1997.926,\"fetches\":19,\"searches\":9},\"nextOffset\":null,\"offset\":0,\"status\":200,\"text\":\"# Doc title\\nbody\",\"totalChars\":16,\"url\":\"https://example.com/a\"},{\"contentType\":\"text/markdown\",\"finalUrl\":\"https://example.com/a\",\"left\":{\"credits\":1997.926,\"fetches\":19,\"searches\":9},\"nextOffset\":null,\"offset\":3,\"status\":200,\"text\":\"oc title\\nbody\",\"totalChars\":16,\"url\":\"https://example.com/a\"},[\"url_not_in_prior_context\",\"https://example.com/unnamed is not in the sender's words, a search result or a page you fetched; fetch only URLs from those\",false],[\"invalid_args\",\"this run already read https://example.com/a as auto; fetch it with that format\",false],[\"invalid_args\",\"clax.web.search: query must be 1 to 1024 characters, got 0\",false],[\"invalid_args\",\"not an absolute URL (relative URL without a base)\",false],[\"web_unavailable\",\"the fake web source has no answer for a fetch of https://example.com/linked\",false],[\"web_unavailable\",\"the fake web source has no answer for the search \\\"nothing scripted\\\"\",false]]}",
+          "content": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"web.search\"},{\"code\":null,\"ok\":true,\"op\":\"web.fetch\"},{\"code\":null,\"ok\":true,\"op\":\"web.fetch\"},{\"code\":\"url_not_in_prior_context\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.search\"},{\"code\":\"invalid_args\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"web_unavailable\",\"ok\":false,\"op\":\"web.fetch\"},{\"code\":\"web_unavailable\",\"ok\":false,\"op\":\"web.search\"}],\"logs\":[],\"value\":[{\"left\":{\"credits\":1998.021,\"fetches\":20,\"searches\":9},\"results\":[{\"snippet\":\"About it\",\"title\":\"Found\",\"url\":\"https://example.com/found\"}]},{\"contentType\":\"text/markdown\",\"finalUrl\":\"https://example.com/a\",\"left\":{\"credits\":1997.926,\"fetches\":19,\"searches\":9},\"nextOffset\":null,\"offset\":0,\"status\":200,\"text\":\"# Doc title\\nbody\",\"totalChars\":16,\"url\":\"https://example.com/a\"},{\"contentType\":\"text/markdown\",\"finalUrl\":\"https://example.com/a\",\"left\":{\"credits\":1997.926,\"fetches\":19,\"searches\":9},\"nextOffset\":null,\"offset\":3,\"status\":200,\"text\":\"oc title\\nbody\",\"totalChars\":16,\"url\":\"https://example.com/a\"},[\"url_not_in_prior_context\",\"https://example.com/unnamed is not in the sender's words, a search result or a page you fetched; fetch only URLs from those\",false],[\"invalid_args\",\"clax.web.fetch: offset must be at least 0, got -1\",false],[\"invalid_args\",\"clax.web.search: query must be 1 to 1024 characters, got 0\",false],[\"invalid_args\",\"not an absolute URL (relative URL without a base)\",false],[\"web_unavailable\",\"the fake web source has no answer for a fetch of https://example.com/linked\",false],[\"web_unavailable\",\"the fake web source has no answer for the search \\\"nothing scripted\\\"\",false]]}",
           "tool_use_id": "tu_1",
           "type": "tool_result"
         },

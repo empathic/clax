@@ -595,6 +595,20 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/bot/runs/{id}/cancel", post(bot::cancel))
         .route("/api/bot/runs/{id}/draft/", get(bot::draft_index))
         .route("/api/bot/runs/{id}/draft/{*path}", get(bot::draft_file))
+        .route("/api/bot/runs/{id}/content/{item}", get(bot::run_content))
+        .route(
+            "/api/bot/runs/{id}/exports",
+            get(bot::exports).post(bot::export),
+        )
+        .route(
+            "/api/bot/runs/{id}/exports/{eid}",
+            axum::routing::delete(bot::unexport),
+        )
+        .route(
+            "/api/bot/runs/{id}/exports/{eid}/capability",
+            get(bot::export_capability),
+        )
+        .route("/api/bot/pages", post(bot::page_call))
         .route("/api/admin/people", get(admin::people))
         .route("/api/admin/people/{person}/flags", put(admin::set_flags))
         .route("/api/admin/people/{person}/role", put(admin::set_role))
@@ -618,6 +632,15 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/admin/web/token",
             put(admin::set_web_token).delete(admin::clear_web_token),
         )
+        .route(
+            "/api/admin/browser",
+            get(admin::browser).put(admin::set_browser),
+        )
+        .route(
+            "/api/admin/bot/grants",
+            get(admin::grants).post(admin::grant),
+        )
+        .route("/api/admin/bot/grants/{id}", delete(admin::revoke_grant))
         .route(
             "/api/admin/pricing",
             get(admin::pricing).put(admin::set_pricing),

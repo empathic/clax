@@ -74,6 +74,9 @@ pub struct Expect {
     pub logs: Option<Vec<String>>,
     /// The error's kind and a text its message contains.
     pub error: Option<(ErrorKind, &'static str)>,
+    /// The `state` the script leaves, as the JSON of
+    /// [`ScriptOutcome::state`] (`null` for none), when it is checked.
+    pub state: Option<Value>,
 }
 
 /// One script, the calls it must make, and what it must end with.
@@ -92,6 +95,10 @@ pub struct Case {
     /// The script's own operations ([`Script::ops`]); `None` for the
     /// sandbox's, [`OPS`].
     pub ops: Option<Vec<String>>,
+    /// Whether the script asks for the browser layer ([`Script::browser`]).
+    pub browser: bool,
+    /// The `state` the script starts from ([`Script::state`]).
+    pub state: Option<Value>,
     pub calls: Vec<Exchange>,
     pub records: Records,
     pub expect: Expect,
@@ -106,6 +113,8 @@ impl Case {
             code: self.code.into(),
             determinism: self.determinism,
             ops: self.ops.clone(),
+            browser: self.browser,
+            state: self.state.clone(),
         }
     }
 }
@@ -123,6 +132,7 @@ fn ok(value: Value) -> Expect {
         value: Some(value),
         logs: None,
         error: None,
+        state: None,
     }
 }
 
@@ -131,6 +141,7 @@ fn none() -> Expect {
         value: None,
         logs: None,
         error: None,
+        state: None,
     }
 }
 
@@ -139,6 +150,7 @@ fn fails(kind: ErrorKind, contains: &'static str) -> Expect {
         value: None,
         logs: None,
         error: Some((kind, contains)),
+        state: None,
     }
 }
 
@@ -151,6 +163,8 @@ fn case(name: &'static str, code: &'static str, expect: Expect) -> Case {
         cancel_in_call: false,
         determinism: None,
         ops: None,
+        browser: false,
+        state: None,
         calls: Vec::new(),
         records: Records::FromCalls,
         expect,
@@ -259,6 +273,8 @@ pub fn cases() -> Vec<Case> {
     all.extend(script_ops());
     all.extend(refused_ops());
     all.extend(parking());
+    all.extend(state());
+    all.extend(browser_layer());
     all
 }
 
@@ -958,18 +974,23 @@ return out"#,
                 ),
             )
         },
+        // A call's arguments are sent from an array of no prototype, so
+        // a script's Array.prototype.toJSON neither sees nor changes them.
         Case {
-            records: Records::Exactly(vec![refused("echo"), refused("echo")]),
+            calls: vec![
+                call("echo", json!([1]), json!(1)),
+                call("echo", json!([2]), json!(2)),
+            ],
             ..case(
-                "arguments_whose_json_is_not_an_array_are_refused",
+                "array_to_json_changes_no_arguments",
                 r#"Array.prototype.toJSON = function () { return "not an array" };
 const out = [];
-try { await clax.echo(1) } catch (e) { out.push(e.name) }
+out.push(await clax.echo(1));
 Array.prototype.toJSON = function () { return undefined };
-try { await clax.echo(1) } catch (e) { out.push(e.name) }
+out.push(await clax.echo(2));
 delete Array.prototype.toJSON;
 return out"#,
-                ok(json!(["TypeError", "TypeError"])),
+                ok(json!([1, 2])),
             )
         },
         Case {
@@ -1346,6 +1367,1058 @@ return [out, (() => {}) instanceof Function]"#,
     ]
 }
 
+/// What a script leaves in `state`, `{value, handles, dropped, more}`.
+fn left(value: Value, handles: Value, dropped: Value, more: u64) -> Value {
+    json!({"value": value, "handles": handles, "dropped": dropped, "more": more})
+}
+
+/// A dropped value of `state`: its path and why.
+fn dropped(path: &str, why: &str) -> Value {
+    json!({"path": path, "why": why})
+}
+
+/// `state`, the one global that outlives a script (spec
+/// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §17.1).
+fn state() -> Vec<Case> {
+    let kept = |c: Case, state: Value| Case {
+        expect: Expect {
+            state: Some(state),
+            ..c.expect.clone()
+        },
+        ..c
+    };
+    // A value nested 70 levels under `state.deep`: kept to 63 levels.
+    let mut deep = json!({});
+    for _ in 0..62 {
+        deep = json!({"x": deep});
+    }
+    let deep_path = format!("state.deep{}", ".x".repeat(63));
+    vec![
+        kept(
+            case(
+                "state_starts_empty_and_comes_back_as_left",
+                "const before = JSON.stringify(state);
+state.n = 1; state.list = [1, 'a', null]; state.o = { x: true }; state.u = undefined;
+return before;",
+                ok(json!("{}")),
+            ),
+            left(json!({"n": 1, "list": [1, "a", null], "o": {"x": true}}), json!([]), json!([]), 0),
+        ),
+        kept(
+            Case {
+                state: Some(json!({"value": {"n": 1, "keep": [true]}, "handles": []})),
+                ..case(
+                    "state_is_restored_before_the_script",
+                    "state.n += 1; return [state.n, state.keep];",
+                    ok(json!([2, [true]])),
+                )
+            },
+            left(json!({"n": 2, "keep": [true]}), json!([]), json!([]), 0),
+        ),
+        kept(
+            case(
+                "state_is_kept_after_a_throw",
+                "state.a = 1; throw new Error('x');",
+                fails(ErrorKind::Thrown, "x"),
+            ),
+            left(json!({"a": 1}), json!([]), json!([]), 0),
+        ),
+        kept(
+            case(
+                "state_is_replaced_by_an_object_and_refuses_anything_else",
+                "state.old = 1; state = { fresh: true };
+const out = [];
+for (const v of [5, null, [1], new Date(0), 'x']) { try { state = v; out.push('took'); } catch (e) { out.push(e.name); } }
+return out;",
+                ok(json!(["TypeError", "TypeError", "TypeError", "TypeError", "TypeError"])),
+            ),
+            left(json!({"fresh": true}), json!([]), json!([]), 0),
+        ),
+        kept(
+            case(
+                "what_state_cannot_keep_is_listed_with_its_path",
+                "const cyc = { k: 1 }; cyc.self = cyc;
+state.f = () => 1; state.s = Symbol('x'); state.b = 10n; state.nan = NaN; state.c = cyc;
+state.d = new Date(0); state.m = new Map(); state.arr = [1, () => 2]; state['a b'] = function () {};
+let deep = {}; state.deep = deep; for (let i = 0; i < 70; i++) { deep.x = {}; deep = deep.x; }
+state.g = { get boom() { throw new Error('no'); } };
+return 1;",
+                ok(json!(1)),
+            ),
+            left(
+                json!({"c": {"k": 1}, "arr": [1, null], "deep": deep, "g": {}}),
+                json!([]),
+                json!([
+                    dropped("state.f", "a function"),
+                    dropped("state.s", "a symbol"),
+                    dropped("state.b", "a bigint"),
+                    dropped("state.nan", "a number JSON cannot hold"),
+                    dropped("state.c.self", "a cycle"),
+                    dropped("state.d", "not plain data: [object Date]"),
+                    dropped("state.m", "not plain data: [object Map]"),
+                    dropped("state.arr[1]", "a function"),
+                    dropped("state[\"a b\"]", "a function"),
+                    dropped(&deep_path, "nested deeper than 64 levels"),
+                    dropped("state.g.boom", "reading it threw"),
+                ]),
+                0,
+            ),
+        ),
+        kept(
+            case(
+                "a_getter_that_throws_leaves_out_only_its_member",
+                "state.a = 1; Object.defineProperty(state, 'g', { get() { throw 1; }, enumerable: true });
+state.b = { x: 1, get y() { throw 2; }, z: [1, 2, 3] };
+Object.defineProperty(state.b.z, 1, { get() { throw 3; }, enumerable: true });
+return 1;",
+                ok(json!(1)),
+            ),
+            left(
+                json!({"a": 1, "b": {"x": 1, "z": [1, null, 3]}}),
+                json!([]),
+                json!([
+                    dropped("state.g", "reading it threw"),
+                    dropped("state.b.y", "reading it threw"),
+                    dropped("state.b.z[1]", "reading it threw"),
+                ]),
+                0,
+            ),
+        ),
+        kept(
+            case(
+                "a_lone_surrogate_in_state_is_kept_well_formed",
+                "state.note = '\\u{1F600}x'.slice(0, 1); state['\\uD800'] = [1, 'a\\uDC00'];
+state['\\uDBFF'] = 2; state.pair = '\\u{1F600}'; return 1;",
+                ok(json!(1)),
+            ),
+            left(
+                json!({"note": "\u{FFFD}", "\u{FFFD}": [1, "a\u{FFFD}"], "pair": "\u{1F600}"}),
+                json!([]),
+                json!([dropped(
+                    "state[\"\u{FFFD}\"]",
+                    "a name that is the same as another's once made well-formed text"
+                )]),
+                0,
+            ),
+        ),
+        kept(
+            case(
+                "a_clax_member_is_not_kept",
+                "state.$clax = 0; state.o = { $clax: 0, k: 3 }; return 0;",
+                ok(json!(0)),
+            ),
+            left(
+                json!({"o": {"k": 3}}),
+                json!([]),
+                json!([
+                    dropped("state.$clax", "a member named $clax, which state keeps for handles"),
+                    dropped("state.o.$clax", "a member named $clax, which state keeps for handles"),
+                ]),
+                0,
+            ),
+        ),
+        kept(
+            case(
+                "twenty_drops_are_listed_and_the_rest_counted",
+                "for (let i = 0; i < 25; i++) state['f' + i] = () => i; return 0;",
+                ok(json!(0)),
+            ),
+            left(
+                json!({}),
+                json!([]),
+                Value::Array((0..20).map(|i| dropped(&format!("state.f{i}"), "a function")).collect()),
+                5,
+            ),
+        ),
+        kept(
+            Case {
+                cancel_in_call: true,
+                calls: vec![call("echo", json!([1]), json!(1))],
+                records: Records::Exactly(vec![("echo", false, Some(CODE_CANCELLED))]),
+                ..case(
+                    "a_stopped_script_writes_no_state",
+                    "state.a = 1; await clax.echo(1); return 1",
+                    fails(ErrorKind::Cancelled, ""),
+                )
+            },
+            Value::Null,
+        ),
+    ]
+}
+
+/// The operations of the browser layer's cases: the five that install it
+/// ([`crate::BROWSER_SESSION_OPS`]) and `browser.test`.
+fn browser_ops() -> Option<Vec<String>> {
+    let mut all: Vec<&str> = crate::BROWSER_SESSION_OPS.to_vec();
+    all.push("browser.test");
+    ops(&all)
+}
+
+/// The URL every browser answer of the layer's cases names.
+const PAGE_URL: &str = "https://x.test/now";
+
+/// A `browser.page`, `browser.act` or `browser.expect` answer of `value`.
+fn answered(value: Value) -> Value {
+    json!({"ok": true, "value": value, "url": PAGE_URL, "ms": 1, "cost": 0})
+}
+
+/// The `browser.open` call of `source` (and `opts`), answered as the
+/// page whose capability is `s1`, at `url`.
+fn opens(args: Value, url: &str) -> Exchange {
+    call(
+        "browser.open",
+        args,
+        json!({"page": "s1", "kind": "url", "url": url, "title": "", "status": 200,
+               "viewport": {"width": 1280, "height": 800}}),
+    )
+}
+
+/// One method of the prelude's browser layer table: its class and name,
+/// the statement a script calls it with (`page` an open page, `l` the
+/// locator `getByRole("button", { name: "Save" })`), and the flat call it
+/// makes: its operation and arguments.
+pub struct LayerCall {
+    pub class: &'static str,
+    pub method: &'static str,
+    pub statement: &'static str,
+    pub op: &'static str,
+    pub args: Value,
+}
+
+/// Every row of the browser layer table, called once (`Page.close` last).
+#[must_use]
+pub fn layer_calls() -> Vec<LayerCall> {
+    let l = json!([{"role": "button", "name": "Save"}]);
+    let row = |class, method, statement, op, args| LayerCall {
+        class,
+        method,
+        statement,
+        op,
+        args,
+    };
+    let page = |method, statement, action: &str, args: Value| {
+        row(
+            "Page",
+            method,
+            statement,
+            "browser.page",
+            json!(["s1", action, args]),
+        )
+    };
+    let key = |class, method, statement, action: &str, args: Value| {
+        row(
+            class,
+            method,
+            statement,
+            "browser.page",
+            json!(["s1", action, args]),
+        )
+    };
+    let act = |method: &'static str, statement, args: Value| {
+        row(
+            "Locator",
+            method,
+            statement,
+            "browser.act",
+            json!(["s1", l, method, args]),
+        )
+    };
+    let exp = |method: &'static str, statement, args: Value| {
+        row(
+            "LocatorAssertions",
+            method,
+            statement,
+            "browser.expect",
+            json!(["s1", l, method, args]),
+        )
+    };
+    let pexp = |method: &'static str, statement, args: Value| {
+        row(
+            "PageAssertions",
+            method,
+            statement,
+            "browser.expect",
+            json!(["s1", [], method, args]),
+        )
+    };
+    vec![
+        page(
+            "goto",
+            "page.goto('/a', { waitUntil: 'load' })",
+            "goto",
+            json!({"url": "/a", "waitUntil": "load"}),
+        ),
+        page("reload", "page.reload()", "reload", json!({})),
+        page(
+            "goBack",
+            "page.goBack({ timeout: 100 })",
+            "goBack",
+            json!({"timeout": 100}),
+        ),
+        page("goForward", "page.goForward()", "goForward", json!({})),
+        page("title", "page.title()", "title", json!({})),
+        page("content", "page.content()", "content", json!({})),
+        page(
+            "setViewportSize",
+            "page.setViewportSize({ width: 400, height: 800 })",
+            "setViewportSize",
+            json!({"size": {"width": 400, "height": 800}}),
+        ),
+        page(
+            "waitForLoadState",
+            "page.waitForLoadState('networkidle')",
+            "waitForLoadState",
+            json!({"state": "networkidle"}),
+        ),
+        page(
+            "waitForURL",
+            "page.waitForURL(/done/)",
+            "waitForURL",
+            json!({"url": {"regex": "done", "flags": ""}}),
+        ),
+        page(
+            "evaluate",
+            "page.evaluate((n) => n + 1, 41)",
+            "evaluate",
+            json!({"source": "(n) => n + 1", "arg": 41}),
+        ),
+        page(
+            "screenshot",
+            "page.screenshot({ fullPage: true })",
+            "screenshot",
+            json!({"fullPage": true}),
+        ),
+        page(
+            "consoleMessages",
+            "page.consoleMessages()",
+            "consoleMessages",
+            json!({}),
+        ),
+        page("pageErrors", "page.pageErrors()", "pageErrors", json!({})),
+        page(
+            "record",
+            "page.record({ seconds: 2 })",
+            "record",
+            json!({"seconds": 2}),
+        ),
+        page(
+            "failedRequests",
+            "page.failedRequests()",
+            "failedRequests",
+            json!({}),
+        ),
+        page(
+            "runTests",
+            "page.runTests(['tests/a.test.js'])",
+            "runTests",
+            json!({"paths": ["tests/a.test.js"]}),
+        ),
+        page(
+            "share",
+            "page.share({ actions: ['read'], expires: 60 })",
+            "share",
+            json!({"actions": ["read"], "expires": 60}),
+        ),
+        page("revoke", "page.revoke()", "revoke", json!({})),
+        key(
+            "Keyboard",
+            "down",
+            "page.keyboard.down('Shift')",
+            "keyboard.down",
+            json!({"key": "Shift"}),
+        ),
+        key(
+            "Keyboard",
+            "up",
+            "page.keyboard.up('Shift')",
+            "keyboard.up",
+            json!({"key": "Shift"}),
+        ),
+        key(
+            "Keyboard",
+            "press",
+            "page.keyboard.press('Enter')",
+            "keyboard.press",
+            json!({"key": "Enter"}),
+        ),
+        key(
+            "Keyboard",
+            "type",
+            "page.keyboard.type('hi')",
+            "keyboard.type",
+            json!({"text": "hi"}),
+        ),
+        key(
+            "Keyboard",
+            "insertText",
+            "page.keyboard.insertText('\u{e9}')",
+            "keyboard.insertText",
+            json!({"text": "\u{e9}"}),
+        ),
+        key(
+            "Mouse",
+            "move",
+            "page.mouse.move(1, 2, { steps: 3 })",
+            "mouse.move",
+            json!({"x": 1, "y": 2, "steps": 3}),
+        ),
+        key(
+            "Mouse",
+            "down",
+            "page.mouse.down({ button: 'right' })",
+            "mouse.down",
+            json!({"button": "right"}),
+        ),
+        key("Mouse", "up", "page.mouse.up()", "mouse.up", json!({})),
+        key(
+            "Mouse",
+            "click",
+            "page.mouse.click(5, 6, { clickCount: 2 })",
+            "mouse.click",
+            json!({"x": 5, "y": 6, "clickCount": 2}),
+        ),
+        key(
+            "Mouse",
+            "dblclick",
+            "page.mouse.dblclick(7, 8)",
+            "mouse.dblclick",
+            json!({"x": 7, "y": 8}),
+        ),
+        key(
+            "Mouse",
+            "wheel",
+            "page.mouse.wheel(0, 300)",
+            "mouse.wheel",
+            json!({"deltaX": 0, "deltaY": 300}),
+        ),
+        act(
+            "click",
+            "l.click({ button: 'right' })",
+            json!({"button": "right"}),
+        ),
+        act("dblclick", "l.dblclick()", json!({})),
+        act(
+            "fill",
+            "l.fill('ada', { timeout: 50 })",
+            json!({"value": "ada", "timeout": 50}),
+        ),
+        act("press", "l.press('Tab')", json!({"key": "Tab"})),
+        act(
+            "pressSequentially",
+            "l.pressSequentially('abc')",
+            json!({"text": "abc"}),
+        ),
+        act(
+            "hover",
+            "l.hover({ position: { x: 1, y: 2 } })",
+            json!({"position": {"x": 1, "y": 2}}),
+        ),
+        act("focus", "l.focus()", json!({})),
+        act("check", "l.check()", json!({})),
+        act("uncheck", "l.uncheck()", json!({})),
+        act(
+            "selectOption",
+            "l.selectOption(['a', { label: 'B' }])",
+            json!({"values": ["a", {"label": "B"}]}),
+        ),
+        act("textContent", "l.textContent()", json!({})),
+        act("innerText", "l.innerText()", json!({})),
+        act("inputValue", "l.inputValue()", json!({})),
+        act(
+            "getAttribute",
+            "l.getAttribute('href')",
+            json!({"name": "href"}),
+        ),
+        act("allTextContents", "l.allTextContents()", json!({})),
+        act("isVisible", "l.isVisible()", json!({})),
+        act("isHidden", "l.isHidden()", json!({})),
+        act("isEnabled", "l.isEnabled()", json!({})),
+        act("isChecked", "l.isChecked()", json!({})),
+        act("count", "l.count()", json!({})),
+        act(
+            "waitFor",
+            "l.waitFor({ state: 'hidden' })",
+            json!({"state": "hidden"}),
+        ),
+        act(
+            "scrollIntoViewIfNeeded",
+            "l.scrollIntoViewIfNeeded()",
+            json!({}),
+        ),
+        act("screenshot", "l.screenshot()", json!({})),
+        exp("toBeVisible", "expect(l).toBeVisible()", json!({})),
+        exp(
+            "toBeHidden",
+            "expect(l).not.toBeHidden({ timeout: 10 })",
+            json!({"timeout": 10, "not": true}),
+        ),
+        exp("toBeEnabled", "expect(l).toBeEnabled()", json!({})),
+        exp("toBeDisabled", "expect(l).toBeDisabled()", json!({})),
+        exp(
+            "toBeChecked",
+            "expect(l).toBeChecked({ checked: false })",
+            json!({"checked": false}),
+        ),
+        exp("toBeFocused", "expect(l).toBeFocused()", json!({})),
+        exp(
+            "toHaveText",
+            "expect(l).toHaveText(['a', /b/i])",
+            json!({"expected": ["a", {"regex": "b", "flags": "i"}]}),
+        ),
+        exp(
+            "toContainText",
+            "expect(l).toContainText('x')",
+            json!({"expected": "x"}),
+        ),
+        exp(
+            "toHaveValue",
+            "expect(l).toHaveValue('v')",
+            json!({"value": "v"}),
+        ),
+        exp(
+            "toHaveAttribute",
+            "expect(l).toHaveAttribute('href', /x/)",
+            json!({"name": "href", "value": {"regex": "x", "flags": ""}}),
+        ),
+        exp(
+            "toHaveCount",
+            "expect(l).toHaveCount(2)",
+            json!({"count": 2}),
+        ),
+        pexp(
+            "toHaveURL",
+            "expect(page).toHaveURL(/x/)",
+            json!({"url": {"regex": "x", "flags": ""}}),
+        ),
+        pexp(
+            "toHaveTitle",
+            "expect(page).not.toHaveTitle('T')",
+            json!({"title": "T", "not": true}),
+        ),
+        row(
+            "Page",
+            "close",
+            "page.close()",
+            "browser.close",
+            json!(["s1"]),
+        ),
+    ]
+}
+
+/// The script of `each_method_makes_its_one_flat_call`: every statement
+/// of [`layer_calls`], awaited in order.
+fn each_method_code() -> &'static str {
+    static CODE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CODE.get_or_init(|| {
+        let mut code = String::from(
+            "const page = await clax.browser.open({ url: 'https://x.test/' });\nconst l = page.getByRole('button', { name: 'Save' });\n",
+        );
+        for c in layer_calls() {
+            code.push_str(&format!("await {};\n", c.statement));
+        }
+        code.push_str("return page.url();");
+        code
+    })
+}
+
+/// The browser layer of the prelude (spec
+/// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §6.9,
+/// §6.10): the flat calls a script's `Page` makes, against a recording
+/// host.
+fn browser_layer() -> Vec<Case> {
+    let open = || opens(json!([{"url": "https://x.test/"}]), "https://x.test/");
+    let mut each = vec![open()];
+    for c in layer_calls() {
+        let reply = if c.op == "browser.close" {
+            json!({"ms": 10, "cost": 0.1})
+        } else if c.method == "share" {
+            answered(json!({"page": "s2", "shown": "<browser page: read>"}))
+        } else {
+            answered(Value::Null)
+        };
+        each.push(call(c.op, c.args, reply));
+    }
+    let layered = |c: Case| Case {
+        ops: browser_ops(),
+        browser: true,
+        ..c
+    };
+    let mut cases = vec![
+        layered(Case {
+            calls: each,
+            ..case("each_method_makes_its_one_flat_call", each_method_code(), ok(json!(PAGE_URL)))
+        }),
+        layered(Case {
+            calls: vec![
+                opens(json!([{"artifact": "draft"}, {"viewport": "phone"}]), "https://a.clax-test.invalid/"),
+                call(
+                    "browser.act",
+                    json!(["s1", [
+                        {"css": "form"},
+                        {"label": {"regex": "e-?mail", "flags": "i"}, "exact": true},
+                        {"placeholder": "you@"},
+                        {"testId": "t"},
+                        {"text": "Hi"},
+                        {"hasText": "a"},
+                        {"hasNotText": {"regex": "b", "flags": ""}},
+                        {"nth": 2},
+                        {"nth": 0},
+                        {"nth": -1}
+                    ], "fill", {"value": "x", "timeout": 5000}]),
+                    answered(Value::Null),
+                ),
+            ],
+            ..case(
+                "locator_builders_and_url_make_no_call",
+                "const page = await clax.browser.open({ artifact: 'draft' }, { viewport: 'phone' });
+const l = page.locator('form').getByLabel(/e-?mail/i, { exact: true }).getByPlaceholder('you@')
+  .getByTestId('t').getByText('Hi').filter({ hasText: 'a', hasNotText: /b/ }).nth(2).first().last();
+const u = page.url();
+page.setDefaultTimeout(5000);
+await l.fill('x');
+return [u, page.url()];",
+                ok(json!(["https://a.clax-test.invalid/", PAGE_URL])),
+            )
+        }),
+        layered(Case {
+            calls: vec![
+                open(),
+                call(
+                    "browser.act",
+                    json!(["s1", [{"text": "Save"}], "click", {}]),
+                    json!({"ok": false, "error": "locator.click: Timeout 10000ms exceeded.", "timeout": true,
+                           "url": "https://x.test/b", "ms": 10000, "cost": 0}),
+                ),
+                call(
+                    "browser.act",
+                    json!(["s1", [{"text": "Save"}], "click", {}]),
+                    json!({"ok": false, "error": "strict mode violation: getByText('Save') resolved to 2 elements",
+                           "url": "", "ms": 1, "cost": 0}),
+                ),
+            ],
+            ..case(
+                "an_ok_false_answer_throws_timeout_error_or_error",
+                "const page = await clax.browser.open({ url: 'https://x.test/' });
+const out = [];
+for (const t of [1, 2]) {
+  try { await page.getByText('Save').click(); } catch (e) { out.push([e.name, e.message, e instanceof Error]); }
+}
+out.push(page.url());
+return out;",
+                ok(json!([
+                    ["TimeoutError", "locator.click: Timeout 10000ms exceeded.", true],
+                    ["Error", "strict mode violation: getByText('Save') resolved to 2 elements", true],
+                    "https://x.test/b"
+                ])),
+            )
+        }),
+        layered(Case {
+            calls: vec![
+                open(),
+                call(
+                    "browser.expect",
+                    json!(["s1", [{"text": "x"}], "toBeVisible", {}]),
+                    json!({"ok": false, "error": "expect(locator).toBeVisible() failed after 5000ms", "timeout": true,
+                           "url": PAGE_URL, "ms": 5000, "cost": 0}),
+                ),
+                call_err(
+                    "browser.expect",
+                    json!(["s1", [], "toHaveTitle", {"title": "T"}]),
+                    "browser_session_closed",
+                    "the session closed: idle",
+                ),
+            ],
+            ..case(
+                "a_failed_matcher_throws_expected",
+                "const page = await clax.browser.open({ url: 'https://x.test/' });
+const out = [];
+try { await expect(page.getByText('x')).toBeVisible(); } catch (e) { out.push([e.name, e.message]); }
+try { await expect(page).toHaveTitle('T'); } catch (e) { out.push([e.name, e.code]); }
+return out;",
+                ok(json!([
+                    ["Expected", "expect(locator).toBeVisible() failed after 5000ms"],
+                    ["HostError", "browser_session_closed"]
+                ])),
+            )
+        }),
+        layered(case(
+            "value_matchers_agree_with_the_harness",
+            // The cases of web/bridge/test/harness.test.ts's "expect" table.
+            "const fails = (f) => { try { f(); return 'passed'; } catch (e) { return e.name + ': ' + e.message; } };
+expect(2).toBe(2);
+expect({ a: [1, { b: 2 }], c: undefined }).toEqual({ a: [1, { b: 2 }] });
+expect('x').toBeTruthy();
+expect('hello world').toContain('world');
+expect([{ id: 1 }, { id: 2 }]).toContain({ id: 2 });
+expect(new Set(['a'])).toContain('a');
+expect(3).toBeGreaterThan(2);
+expect(new Date(5)).toEqual(new Date(5));
+expect(NaN).toEqual(NaN);
+expect(1).not.toBe(2);
+return [
+  fails(() => expect(1).toBe(2)),
+  fails(() => expect({ a: 1 }).toBe({ a: 1 })),
+  fails(() => expect([1]).toEqual([1, 2])),
+  fails(() => expect(0).toBeTruthy()),
+  fails(() => expect('abc').toContain('d')),
+  fails(() => expect(5).toContain(5)),
+  fails(() => expect('3').toBeGreaterThan(2)),
+  fails(() => expect(new Date(5)).toEqual(new Date(6))),
+  fails(() => expect([]).toEqual({})),
+  fails(() => expect({ a: 1 }).toEqual({ a: 1, b: 2 })),
+  fails(() => expect(2).not.toBe(2)),
+];",
+            ok(json!([
+                "Expected: 1 to be 2",
+                "Expected: {\"a\":1} to be {\"a\":1}",
+                "Expected: [1] to equal [1,2]",
+                "Expected: 0 to be truthy",
+                "Expected: \"abc\" to contain \"d\"",
+                "Expected: 5 to contain 5",
+                "Expected: \"3\" to be greater than 2",
+                "Expected: \"1970-01-01T00:00:00.005Z\" to equal \"1970-01-01T00:00:00.006Z\"",
+                "Expected: [] to equal {}",
+                "Expected: {\"a\":1} to equal {\"a\":1,\"b\":2}",
+                "Expected: 2 not to be 2"
+            ])),
+        )),
+        layered(Case {
+            calls: vec![
+                opens(json!([{"html": "<p>hi</p>"}]), "https://s1.clax-content.invalid/"),
+                call(
+                    "browser.page",
+                    json!(["s1", "evaluate", {"source": "function add(x) { return x.n + 1; }", "arg": {"n": 1}}]),
+                    answered(json!(2)),
+                ),
+                call(
+                    "browser.page",
+                    json!(["s1", "evaluate", {"expression": "document.title"}]),
+                    answered(json!("T")),
+                ),
+            ],
+            ..case(
+                "evaluate_sends_a_functions_source",
+                "const page = await clax.browser.open({ html: '<p>hi</p>' });
+const a = await page.evaluate(function add(x) { return x.n + 1; }, { n: 1 });
+const b = await page.evaluate('document.title');
+return [a, b];",
+                ok(json!([2, "T"])),
+            )
+        }),
+        layered(Case {
+            calls: vec![opens(json!([{"html": ""}]), "https://s1.clax-content.invalid/")],
+            ..case(
+                "evaluate_refuses_a_native_function",
+                "const page = await clax.browser.open({ html: '' });
+const out = [];
+for (const f of [Math.max, (function () {}).bind(null), 5]) {
+  try { await page.evaluate(f); } catch (e) { out.push(e.name + ': ' + e.message); }
+}
+return out;",
+                ok(json!([
+                    "TypeError: page.evaluate: a native or bound function has no source to send",
+                    "TypeError: page.evaluate: a native or bound function has no source to send",
+                    "TypeError: page.evaluate: expects a function or a string"
+                ])),
+            )
+        }),
+        layered(Case {
+            calls: vec![
+                open(),
+                call(
+                    "browser.act",
+                    json!(["s1", [{"role": "button", "name": {"regex": "save", "flags": "i"}}, {"hasText": "x"}],
+                           "click", {"timeout": 100}]),
+                    answered(Value::Null),
+                ),
+                call(
+                    "browser.page",
+                    json!(["s1", "evaluate", {"source": "(x) => x", "arg": [1]}]),
+                    answered(json!([1])),
+                ),
+            ],
+            ..case(
+                "a_page_ignores_replaced_builtins",
+                "const page = await clax.browser.open({ url: 'https://x.test/' });
+Array.prototype.push = function () { throw new Error('push'); };
+Array.isArray = () => false;
+JSON.stringify = () => '{}';
+Object.keys = () => [];
+Object.getPrototypeOf = () => 1;
+Function.prototype.toString = () => 'evil';
+String.prototype.indexOf = () => -1;
+RegExp.prototype.toString = () => 'evil';
+Object.defineProperty(RegExp.prototype, 'source', { get() { return 'evil'; } });
+await page.getByRole('button', { name: /save/i }).filter({ hasText: 'x' }).click({ timeout: 100 });
+await page.evaluate((x) => x, [1]);
+return 'done';",
+                ok(json!("done")),
+            )
+        }),
+        Case {
+            ops: ops(&["browser.open", "browser.test"]),
+            browser: true,
+            ..case(
+                "the_layer_is_absent_without_the_session_ops",
+                "return [typeof expect, Object.keys(clax.browser).sort(), typeof globalThis.expect];",
+                ok(json!(["undefined", ["open", "test"], "undefined"])),
+            )
+        },
+        layered(case(
+            "the_flat_ops_are_not_on_clax",
+            "return [typeof expect, Object.keys(clax.browser).sort(), typeof clax.browser.page, typeof clax.browser.act];",
+            ok(json!([
+                "function",
+                ["open", "test"],
+                "undefined",
+                "undefined"
+            ])),
+        )),
+        layered(Case {
+            calls: vec![
+                open(),
+                call(
+                    "browser.page",
+                    json!(["s1", "record", {"seconds": 3}]),
+                    answered(json!({"frames": [], "clip": "c1", "ms": 3000, "count": 0})),
+                ),
+            ],
+            ..case(
+                "page_record_makes_one_call",
+                "const page = await clax.browser.open({ url: 'https://x.test/' });
+return (await page.record({ seconds: 3 })).clip;",
+                ok(json!("c1")),
+            )
+        }),
+        layered(Case {
+            calls: vec![open()],
+            ..case(
+                "a_returned_page_shows_no_capability",
+                "const page = await clax.browser.open({ url: 'https://x.test/' });
+const l = page.getByText('x');
+console.log(page, l);
+return [page, l, JSON.stringify({ page }), String(JSON.stringify(page.keyboard))];",
+                Expect {
+                    logs: Some(vec!["\"<browser page>\" \"<browser locator>\"".into()]),
+                    ..ok(json!([
+                        "<browser page>",
+                        "<browser locator>",
+                        "{\"page\":\"<browser page>\"}",
+                        "{}"
+                    ]))
+                },
+            )
+        }),
+        // A shared page (spec §18.4) is a Page of its own capability,
+        // shown by what it allows, and its handle entry keeps that.
+        layered(Case {
+            calls: vec![
+                open(),
+                call(
+                    "browser.page",
+                    json!(["s1", "share", {"actions": ["read"]}]),
+                    answered(json!({"page": "s2", "shown": "<browser page: read>"})),
+                ),
+                call("browser.page", json!(["s2", "title", {}]), answered(json!("T"))),
+                call("browser.page", json!(["s2", "revoke", {}]), answered(Value::Null)),
+            ],
+            expect: Expect {
+                state: Some(left(
+                    json!({"ro": {"$clax": 0}}),
+                    json!([{"page": "s2", "url": PAGE_URL, "of": "Page", "shown": "<browser page: read>"}]),
+                    json!([]),
+                    0,
+                )),
+                ..ok(json!(["<browser page: read>", "{\"ro\":\"<browser page: read>\"}", "T", null, "<browser page>"]))
+            },
+            ..case(
+                "a_shared_page_shows_its_classes",
+                "const page = await clax.browser.open({ url: 'https://x.test/' });
+const ro = await page.share({ actions: ['read'] });
+state.ro = ro;
+return [ro, JSON.stringify({ ro }), await ro.title(), await ro.revoke(), page];",
+                none(),
+            )
+        }),
+        layered(case(
+            "there_is_no_session_from_a_string",
+            "return [typeof clax.browser.session, Object.keys(clax.browser).sort()];",
+            ok(json!(["undefined", ["open", "test"]])),
+        )),
+        // The flat operations listed, the layer not asked for: a run
+        // without a browser capability. `clax.browser.open` is the plain
+        // operation, and nothing else of the layer exists.
+        Case {
+            ops: browser_ops(),
+            calls: vec![call(
+                "browser.open",
+                json!([{"url": "https://x.test/"}]),
+                json!({"session": "s1"}),
+            )],
+            ..case(
+                "the_layer_is_absent_without_browser",
+                "const r = await clax.browser.open({ url: 'https://x.test/' });
+return [typeof expect, Object.keys(clax.browser).sort(), r];",
+                ok(json!([
+                    "undefined",
+                    ["act", "close", "expect", "open", "page", "test"],
+                    {"session": "s1"}
+                ])),
+            )
+        },
+        layered(Case {
+            state: Some(json!({
+                "value": {"page": {"$clax": 0}, "btn": {"$clax": 1}, "same": {"$clax": 0}},
+                "handles": [
+                    {"page": "s1", "url": "https://x.test/a", "of": "Page", "timeout": 500},
+                    {"page": "s1", "url": "https://x.test/a", "of": "Locator",
+                     "steps": [{"role": "button", "name": "Save"}], "timeout": 500}
+                ]
+            })),
+            calls: vec![call(
+                "browser.act",
+                json!(["s1", [{"role": "button", "name": "Save"}], "click", {"timeout": 500}]),
+                answered(Value::Null),
+            )],
+            expect: Expect {
+                state: Some(left(
+                    // Members in the order the restored object holds them,
+                    // which is the saved JSON's (sorted, as serde_json's
+                    // map writes it).
+                    json!({"btn": {"$clax": 0}, "page": {"$clax": 1}, "same": {"$clax": 1},
+                           "l2": {"$clax": 2}, "kb": {"$clax": 3}, "not": {"$clax": 4}}),
+                    json!([
+                        {"page": "s1", "url": PAGE_URL, "of": "Locator",
+                         "steps": [{"role": "button", "name": "Save"}], "timeout": 500},
+                        {"page": "s1", "url": PAGE_URL, "of": "Page", "timeout": 500},
+                        {"page": "s1", "url": PAGE_URL, "of": "Locator", "steps": [{"text": "x"}], "timeout": 500},
+                        {"page": "s1", "url": PAGE_URL, "of": "Keyboard", "timeout": 500},
+                        {"page": "s1", "url": PAGE_URL, "of": "LocatorAssertions",
+                         "steps": [{"text": "x"}], "not": true, "timeout": 500}
+                    ]),
+                    json!([]),
+                    0,
+                )),
+                ..ok(json!([true, true, "https://x.test/a", PAGE_URL, "\"<browser page>\""]))
+            },
+            ..case(
+                "a_page_and_its_locator_in_state_restore_live_as_one_page",
+                "const same = state.page === state.same;
+const kb = state.page.keyboard === state.page.keyboard;
+const u = state.page.url();
+await state.btn.click();
+state.l2 = state.page.getByText('x');
+state.kb = state.page.keyboard;
+state.not = expect(state.l2).not;
+return [same, kb, u, state.page.url(), JSON.stringify(state.page)];",
+                none(),
+            )
+        }),
+        layered(Case {
+            calls: vec![
+                open(),
+                call(
+                    "browser.page",
+                    json!(["s1", "consoleMessages", {}]),
+                    answered(json!([{"type": "log", "text": "hi", "location": {"url": "", "lineNumber": 0, "columnNumber": 0}}])),
+                ),
+                call(
+                    "browser.page",
+                    json!(["s1", "pageErrors", {}]),
+                    answered(json!([{"message": "boom", "stack": "Error: boom\n    at x"}])),
+                ),
+                call(
+                    "browser.page",
+                    json!(["s1", "goto", {"url": "/x"}]),
+                    answered(json!({"url": "https://x.test/x", "status": 200, "ok": true})),
+                ),
+            ],
+            ..case(
+                "returned_console_messages_show_their_data",
+                "const page = await clax.browser.open({ url: 'https://x.test/' });
+const msgs = await page.consoleMessages();
+const errs = await page.pageErrors();
+const r = await page.goto('/x');
+return { msgs, first: [msgs[0].type(), msgs[0].text(), msgs[0].location().url],
+  errs, err: [errs[0] instanceof Error, errs[0].message], r, status: r.status(), ok: r.ok() };",
+                ok(json!({
+                    "msgs": [{"type": "log", "text": "hi", "location": {"url": "", "lineNumber": 0, "columnNumber": 0}}],
+                    "first": ["log", "hi", ""],
+                    "errs": [{"message": "boom", "stack": "Error: boom\n    at x"}],
+                    "err": [true, "boom"],
+                    "r": {"url": "https://x.test/x", "status": 200, "ok": true},
+                    "status": 200,
+                    "ok": true
+                })),
+            )
+        }),
+    ];
+    // A hook a script installs on a built-in prototype sees neither a
+    // Page's capability nor its answers: the page in state is the
+    // answered one, and the script returns `null`.
+    let hooked = |name: &'static str, code: &'static str| {
+        layered(Case {
+            calls: vec![
+                open(),
+                call(
+                    "browser.page",
+                    json!(["s1", "goto", {"url": "/b"}]),
+                    answered(Value::Null),
+                ),
+            ],
+            expect: Expect {
+                state: Some(left(
+                    json!({"page": {"$clax": 0}}),
+                    json!([{"page": "s1", "url": PAGE_URL, "of": "Page"}]),
+                    json!([]),
+                    0,
+                )),
+                ..ok(Value::Null)
+            },
+            ..case(name, code, none())
+        })
+    };
+    cases.extend([
+        hooked(
+            "array_to_json_sees_no_capability",
+            "let leak = null;
+Array.prototype.toJSON = function () { if (typeof this[0] === 'string') leak = this[0]; return this; };
+const page = await clax.browser.open({ url: 'https://x.test/' });
+await page.goto('/b');
+delete Array.prototype.toJSON;
+state.page = page;
+return leak;",
+        ),
+        hooked(
+            "object_then_sees_no_answer_and_forges_no_page",
+            "let leak = null;
+Object.prototype.then = function (r) { delete Object.prototype.then; leak = this.page; r({ page: 'FORGED', url: 'u' }); };
+const page = await clax.browser.open({ url: 'https://x.test/' });
+delete Object.prototype.then;
+await page.goto('/b');
+state.page = page;
+return leak === undefined ? null : leak;",
+        ),
+        hooked(
+            "promise_then_and_constructor_see_no_answer",
+            "let leak = null;
+const then = Promise.prototype.then;
+const ctor = Promise.prototype.constructor;
+Promise.prototype.then = function (f, g) {
+  return then.call(this, (v) => { if (v && typeof v.page === 'string') leak = v.page; return f ? f(v) : v; }, g);
+};
+Object.defineProperty(Promise.prototype, 'constructor', { value: function () {}, writable: true, configurable: true });
+const page = await clax.browser.open({ url: 'https://x.test/' });
+await page.goto('/b');
+Promise.prototype.then = then;
+Object.defineProperty(Promise.prototype, 'constructor', { value: ctor, writable: true, configurable: true });
+state.page = page;
+return leak;",
+        ),
+    ]);
+    cases
+}
+
 /// A [`Host`] that answers a case's calls in order and notes any call it
 /// did not expect.
 pub struct ScriptedHost {
@@ -1480,6 +2553,12 @@ pub async fn check(sandbox: &dyn Sandbox, case: &Case) -> Result<ScriptOutcome, 
     {
         problems.push(format!("logs {:?}, expected {logs:?}", outcome.logs));
     }
+    if let Some(want) = &case.expect.state {
+        let got = serde_json::to_value(&outcome.state).unwrap_or_default();
+        if &got != want {
+            problems.push(format!("state {got}, expected {want}"));
+        }
+    }
     let made: Vec<(&str, bool, Option<&str>)> = outcome
         .calls
         .iter()
@@ -1597,6 +2676,49 @@ mod tests {
         assert_eq!(heaviest[63], format!("b063.{}", "x".repeat(4091)));
         assert_eq!(crate::validate_ops(&most), Ok(()));
         assert_eq!(crate::validate_ops(&heaviest), Ok(()));
+    }
+
+    #[test]
+    fn each_method_case_calls_every_table_row_once() {
+        let table = crate::browser_layer_table();
+        let rows: Vec<(String, String)> = table
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|r| {
+                (
+                    r[0].as_str().unwrap_or_default().to_string(),
+                    r[1].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        let called: Vec<(String, String)> = layer_calls()
+            .iter()
+            .map(|c| (c.class.to_string(), c.method.to_string()))
+            .collect();
+        assert_eq!(called.len(), rows.len());
+        for row in &rows {
+            assert!(called.contains(row), "{row:?} has no call");
+        }
+        for c in layer_calls() {
+            let row = table
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|r| r[0] == c.class && r[1] == c.method);
+            let row = row.unwrap_or_else(|| panic!("{}.{} is not a row", c.class, c.method));
+            assert_eq!(
+                format!("browser.{}", row[2].as_str().unwrap_or_default()),
+                c.op,
+                "{}.{}",
+                c.class,
+                c.method
+            );
+            if let Some(action) = row[3].as_str() {
+                let at = if c.op == "browser.page" { 1 } else { 2 };
+                assert_eq!(c.args[at], action, "{}.{}", c.class, c.method);
+            }
+        }
     }
 
     #[test]

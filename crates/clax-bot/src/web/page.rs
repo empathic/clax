@@ -1160,15 +1160,22 @@ pub enum Handling {
     /// HTML as it came, in `Raw`; its links are read from the HTML
     /// ([`links_of_html`]).
     RawHtml,
+    /// HTML cleaned of code ([`clean_html`]), in `Html`; its links are read
+    /// from the HTML.
+    CleanHtml,
+    /// Not read in `Html` (`web_unsupported_content_type`, naming
+    /// `markdown` and `raw`): a type that is not HTML but another format
+    /// reads.
+    NotHtml,
     /// JSON, pretty-printed ([`pretty_json`]; as it came when it does not
-    /// parse), in `Auto`.
+    /// parse), in `Markdown`.
     Json,
-    /// HTML converted to Markdown, in `Auto`; its links are read from the
-    /// HTML before conversion.
+    /// HTML converted to Markdown, in `Markdown`; its links are read from
+    /// the HTML before conversion.
     Html,
     /// A PDF, Office or OpenDocument file converted to Markdown under a
-    /// name with this extension (`document.<ext>`), in `Auto`; its links
-    /// are read from the Markdown.
+    /// name with this extension (`document.<ext>`), in `Markdown`; its
+    /// links are read from the Markdown.
     Document(&'static str),
     /// Not read (`web_unsupported_content_type`): images, audio, video,
     /// fonts and other binary types, and documents in `Raw`.
@@ -1182,7 +1189,11 @@ impl Handling {
     pub fn is_textual(self) -> bool {
         matches!(
             self,
-            Handling::Text | Handling::RawHtml | Handling::Json | Handling::Html
+            Handling::Text
+                | Handling::RawHtml
+                | Handling::CleanHtml
+                | Handling::Json
+                | Handling::Html
         )
     }
 }
@@ -1313,16 +1324,16 @@ pub fn sniff(body: &[u8]) -> &'static str {
 /// `application/octet-stream` type is sniffed there, and would be
 /// `Unsupported` here. (Parameters such as `charset` are ignored.)
 ///
-/// | Type | `Auto` | `Raw` |
-/// |---|---|---|
-/// | `text/markdown`, other `text/*`, textual `application/*`, `+xml` | `Text` | `Text` |
-/// | `text/html`, `application/xhtml+xml` | `Html` | `RawHtml` |
-/// | `application/json`, `text/json`, `+json` | `Json` | `Text` |
-/// | PDF, Office, OpenDocument | `Document(ext)` | `Unsupported` |
-/// | `image/*`, `audio/*`, `video/*`, `font/*`, anything else | `Unsupported` | `Unsupported` |
+/// | Type | `Markdown` | `Html` | `Raw` |
+/// |---|---|---|---|
+/// | `text/markdown`, other `text/*`, textual `application/*`, `+xml` | `Text` | `NotHtml` | `Text` |
+/// | `text/html`, `application/xhtml+xml` | `Html` | `CleanHtml` | `RawHtml` |
+/// | `application/json`, `text/json`, `+json` | `Json` | `NotHtml` | `Text` |
+/// | PDF, Office, OpenDocument | `Document(ext)` | `NotHtml` | `Unsupported` |
+/// | `image/*`, `audio/*`, `video/*`, `font/*`, anything else | `Unsupported` | `Unsupported` | `Unsupported` |
 #[must_use]
 pub fn handling(content_type: &str, format: super::Format) -> Handling {
-    use super::Format::{Auto, Raw};
+    use super::Format::{Html, Markdown as Auto, Raw};
     let media = media_type(content_type);
     let media = media.as_str();
     let top = media.split('/').next().unwrap_or("");
@@ -1332,6 +1343,7 @@ pub fn handling(content_type: &str, format: super::Format) -> Handling {
     if matches!(media, "text/html" | "application/xhtml+xml") {
         return match format {
             Auto => Handling::Html,
+            Html => Handling::CleanHtml,
             Raw => Handling::RawHtml,
         };
     }
@@ -1340,19 +1352,289 @@ pub fn handling(content_type: &str, format: super::Format) -> Handling {
     {
         return match format {
             Auto => Handling::Json,
+            Html => Handling::NotHtml,
             Raw => Handling::Text,
         };
     }
     if let Some((_, ext)) = DOCUMENTS.iter().find(|(m, _)| *m == media) {
         return match format {
             Auto => Handling::Document(ext),
+            Html => Handling::NotHtml,
             Raw => Handling::Unsupported,
         };
     }
     if top == "text" || TEXT_APPLICATIONS.contains(&media) || media.ends_with("+xml") {
-        return Handling::Text;
+        return match format {
+            Html => Handling::NotHtml,
+            Auto | Raw => Handling::Text,
+        };
     }
     Handling::Unsupported
+}
+
+/// The elements whose content [`clean_html`] leaves out with them: code,
+/// styles, what shows only without scripts, and templates.
+const DROPPED: &[&str] = &["script", "style", "noscript", "template"];
+
+/// The attributes that hold a URL, which [`clean_html`] makes absolute.
+const URL_ATTRS: &[&str] = &[
+    "href",
+    "src",
+    "action",
+    "formaction",
+    "poster",
+    "cite",
+    "background",
+    "longdesc",
+    "data",
+];
+
+/// `html`, a page fetched from `base`, as `web.fetch` answers it in the
+/// `html` format (spec 2026-11-19-claxbot-browser §5.2): its markup with
+/// `<script>`, `<style>`, `<noscript>` and `<template>` left out with
+/// their content, comments and every inline event handler (an `on…`
+/// attribute), `srcdoc`, refreshing `<meta>` and `javascript:` URL (as
+/// the URL parser reads the scheme) removed, and each URL attribute
+/// (`href`, `src`, `action`, …) made absolute against the document's base
+/// (its first `<base href>`, else `base`) when the absolute URL is at
+/// most [`MAX_URL_CHARS`](super::url::MAX_URL_CHARS) characters, else
+/// left as it came. `srcset` is left as it came. The answer is at most
+/// [`STORE_BYTES`], cut on a character boundary, so it may end inside a
+/// tag.
+///
+/// A tokenizer pass, linear in `html`'s length, written back token by
+/// token: what it keeps reads as the page wrote it, attribute values and
+/// text escaped again. It does not build a tree, so markup the page left
+/// unbalanced stays unbalanced.
+#[must_use]
+pub fn clean_html(html: &str, base: &PublicUrl) -> String {
+    use html5ever::tokenizer::{Tag, TagKind, Token};
+    use std::fmt::Write as _;
+
+    struct Cleaner {
+        base: url::Url,
+        /// The first `<base href>` read, resolved; the document's base
+        /// from then on.
+        doc_base: RefCell<Option<url::Url>>,
+        /// The dropped element being skipped, while one is open.
+        skipping: RefCell<Option<String>>,
+        out: RefCell<String>,
+    }
+    fn escape_text(s: &str, out: &mut String) {
+        for c in s.chars() {
+            if out.len() >= STORE_BYTES {
+                return;
+            }
+            match c {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                c => out.push(c),
+            }
+        }
+    }
+    fn escape_attr(s: &str, out: &mut String) {
+        for c in s.chars() {
+            if out.len() >= STORE_BYTES {
+                return;
+            }
+            match c {
+                '&' => out.push_str("&amp;"),
+                '"' => out.push_str("&quot;"),
+                c => out.push(c),
+            }
+        }
+    }
+    /// Whether `value` reads as a `javascript:` URL to the URL parser,
+    /// which skips leading C0 controls and spaces and every ASCII tab and
+    /// newline.
+    fn is_javascript(value: &str) -> bool {
+        let mut scheme = value
+            .trim_start_matches(|c: char| c <= ' ')
+            .chars()
+            .filter(|c| !matches!(c, '\t' | '\n' | '\r'));
+        "javascript:"
+            .chars()
+            .all(|want| scheme.next().is_some_and(|c| c.eq_ignore_ascii_case(&want)))
+    }
+    impl Cleaner {
+        fn base(&self) -> url::Url {
+            self.doc_base
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| self.base.clone())
+        }
+        fn tag(&self, tag: &Tag) {
+            let name = &*tag.name;
+            let mut out = self.out.borrow_mut();
+            if tag.kind == TagKind::EndTag {
+                let _ = write!(out, "</{name}>");
+                return;
+            }
+            if name == "base"
+                && self.doc_base.borrow().is_none()
+                && let Some(h) = tag.attrs.iter().find(|a| &*a.name.local == "href")
+                && h.value.len() <= MAX_TARGET_BYTES
+            {
+                *self.doc_base.borrow_mut() = self.base.join(h.value.trim()).ok();
+            }
+            if name == "meta"
+                && tag.attrs.iter().any(|a| {
+                    &*a.name.local == "http-equiv" && a.value.trim().eq_ignore_ascii_case("refresh")
+                })
+            {
+                return;
+            }
+            let base = self.base();
+            out.push('<');
+            out.push_str(name);
+            for a in &tag.attrs {
+                let key = &*a.name.local;
+                if key.len() > 2 && key[..2].eq_ignore_ascii_case("on") {
+                    continue;
+                }
+                if key == "srcdoc" {
+                    continue;
+                }
+                let mut value = a.value.to_string();
+                if URL_ATTRS.contains(&key) {
+                    if is_javascript(&value) {
+                        continue;
+                    }
+                    if value.len() <= MAX_TARGET_BYTES
+                        && !value.trim().starts_with('#')
+                        && let Ok(u) = base.join(value.trim())
+                    {
+                        if u.scheme() == "javascript" {
+                            continue;
+                        }
+                        if u.as_str().chars().count() <= super::url::MAX_URL_CHARS {
+                            value = u.to_string();
+                        }
+                    }
+                }
+                out.push(' ');
+                if let Some(prefix) = &a.name.prefix {
+                    out.push_str(prefix);
+                    out.push(':');
+                }
+                out.push_str(key);
+                out.push_str("=\"");
+                escape_attr(&value, &mut out);
+                out.push('"');
+            }
+            if tag.self_closing {
+                out.push_str(" /");
+            }
+            out.push('>');
+        }
+    }
+    impl TokenSink for Cleaner {
+        type Handle = ();
+        fn process_token(&self, token: Token, _line: u64) -> TokenSinkResult<()> {
+            if self.out.borrow().len() >= STORE_BYTES {
+                return TokenSinkResult::Continue;
+            }
+            let skipping = self.skipping.borrow().clone();
+            if let Some(open) = skipping {
+                if let Token::TagToken(tag) = &token
+                    && tag.kind == TagKind::EndTag
+                    && *tag.name == *open
+                {
+                    *self.skipping.borrow_mut() = None;
+                }
+                return TokenSinkResult::Continue;
+            }
+            match token {
+                Token::TagToken(tag) => {
+                    let name = tag.name.to_string();
+                    if tag.kind == TagKind::StartTag && DROPPED.contains(&name.as_str()) {
+                        // HTML ignores `/>` on these: `<script/>` still
+                        // opens a script.
+                        *self.skipping.borrow_mut() = Some(name.clone());
+                        return match name.as_str() {
+                            "script" => TokenSinkResult::RawData(RawKind::ScriptData),
+                            "style" | "noscript" => TokenSinkResult::RawData(RawKind::Rawtext),
+                            _ => TokenSinkResult::Continue,
+                        };
+                    }
+                    self.tag(&tag);
+                    if tag.kind == TagKind::StartTag {
+                        return match name.as_str() {
+                            "xmp" | "iframe" | "noembed" | "noframes" => {
+                                TokenSinkResult::RawData(RawKind::Rawtext)
+                            }
+                            "title" | "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
+                            _ => TokenSinkResult::Continue,
+                        };
+                    }
+                }
+                Token::CharacterTokens(s) => escape_text(&s, &mut self.out.borrow_mut()),
+                Token::DoctypeToken(d) => {
+                    let name = d.name.as_deref().unwrap_or("html");
+                    let _ = write!(self.out.borrow_mut(), "<!DOCTYPE {name}>");
+                }
+                Token::CommentToken(_)
+                | Token::NullCharacterToken
+                | Token::EOFToken
+                | Token::ParseError(_) => {}
+            }
+            TokenSinkResult::Continue
+        }
+    }
+    let input = BufferQueue::default();
+    input.push_back(html.into());
+    let tok = Tokenizer::new(
+        Cleaner {
+            base: base.as_url().clone(),
+            doc_base: RefCell::new(None),
+            skipping: RefCell::new(None),
+            out: RefCell::new(String::with_capacity(html.len())),
+        },
+        TokenizerOpts::default(),
+    );
+    let _ = tok.feed(&input);
+    tok.end();
+    let mut out = tok.sink.out.into_inner();
+    let mut end = out.len().min(STORE_BYTES);
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.truncate(end);
+    out
+}
+
+/// The `web_unsupported_content_type` refusal of a body at `url` of type
+/// `media` that `format` does not read ([`handling`] answered
+/// [`Handling::Unsupported`] or [`Handling::NotHtml`]), in the words every
+/// source gives it: what the page is, and the format that would read it.
+#[must_use]
+pub fn unsupported(url: &PublicUrl, media: &str, format: super::Format) -> super::WebError {
+    let what = if media.is_empty() {
+        "of no known type"
+    } else {
+        media
+    };
+    let message = if handling(media, format) == Handling::NotHtml {
+        format!(
+            "{} is {what}, not HTML, so it has no markup to answer; fetch it with format \
+             \"markdown\" or \"raw\".",
+            url.normalized()
+        )
+    } else {
+        let raw = if format == super::Format::Raw
+            && handling(media, super::Format::Markdown) != Handling::Unsupported
+        {
+            " with format \"raw\"; fetch it without"
+        } else {
+            ""
+        };
+        format!(
+            "{} is {what}, which cannot be read as text{raw}. Use another source.",
+            url.normalized()
+        )
+    };
+    super::WebError::new(super::CODE_WEB_UNSUPPORTED_CONTENT_TYPE, message, false)
 }
 
 #[cfg(test)]
@@ -1413,7 +1695,7 @@ mod tests {
 
     #[test]
     fn handling_follows_the_type_and_the_format() {
-        use crate::web::Format::{Auto, Raw};
+        use crate::web::Format::{Markdown as Auto, Raw};
         for (ct, auto, raw) in [
             (
                 "text/markdown; charset=utf-8",
@@ -1458,6 +1740,162 @@ mod tests {
         }
         assert!(Handling::Html.is_textual() && Handling::Json.is_textual());
         assert!(!Handling::Document("pdf").is_textual() && !Handling::Unsupported.is_textual());
+    }
+
+    /// The `html` format reads HTML alone: every other type a format
+    /// reads is refused, naming `markdown` and `raw`; binary types as in
+    /// every format.
+    #[test]
+    fn html_of_a_non_html_type_is_unsupported() {
+        use crate::web::Format::Html;
+        assert_eq!(handling("text/html", Html), Handling::CleanHtml);
+        assert_eq!(handling("application/xhtml+xml", Html), Handling::CleanHtml);
+        assert!(Handling::CleanHtml.is_textual());
+        for ct in [
+            "text/markdown",
+            "application/json",
+            "text/csv",
+            "application/pdf",
+        ] {
+            assert_eq!(handling(ct, Html), Handling::NotHtml, "{ct}");
+            let e = unsupported(&base("https://a.example/x"), ct, Html);
+            assert_eq!(e.code, crate::web::CODE_WEB_UNSUPPORTED_CONTENT_TYPE);
+            assert_eq!(
+                e.message,
+                format!(
+                    "https://a.example/x is {ct}, not HTML, so it has no markup to answer; fetch \
+                     it with format \"markdown\" or \"raw\"."
+                )
+            );
+        }
+        assert!(!Handling::NotHtml.is_textual());
+        assert_eq!(handling("image/png", Html), Handling::Unsupported);
+        // The other formats' words are as they were.
+        let e = unsupported(
+            &base("https://a.example/x"),
+            "application/pdf",
+            crate::web::Format::Raw,
+        );
+        assert!(
+            e.message.ends_with(
+                "cannot be read as text with format \"raw\"; fetch it without. Use another source."
+            ),
+            "{e}"
+        );
+        assert_eq!(
+            crate::web::Format::parse(Some("auto")),
+            Some(crate::web::Format::Markdown),
+            "main's auto"
+        );
+        assert_eq!(
+            crate::web::Format::parse(None),
+            Some(crate::web::Format::Markdown)
+        );
+        assert_eq!(crate::web::Format::parse(Some("pdf")), None);
+    }
+
+    /// `clean_html` leaves out scripts, styles, `noscript` and templates
+    /// with their content, comments, event handlers and `javascript:` URLs,
+    /// and keeps the rest of the markup as the page wrote it.
+    #[test]
+    fn clean_html_removes_code_and_keeps_structure() {
+        let page = "<!DOCTYPE html><html><head><title>A &amp; B</title>\
+            <style>p { color: red }</style><script>steal()</script>\
+            <script src=\"x.js\"/>still script</script></head>\
+            <body onload=\"go()\"><!-- a note --><h1 class=\"t\" ONCLICK=\"x()\">Hi</h1>\
+            <noscript><img src=\"pixel\"></noscript><template><p>later</p></template>\
+            <p>1 &lt; 2 &amp; \"q\"</p><a href=\"javascript:alert(1)\">bad</a>\
+            <input value=\"a&quot;b\" disabled><br/></body></html>";
+        assert_eq!(
+            clean_html(page, &base("https://a.example/")),
+            "<!DOCTYPE html><html><head><title>A &amp; B</title></head>\
+             <body><h1 class=\"t\">Hi</h1><p>1 &lt; 2 &amp; \"q\"</p><a>bad</a>\
+             <input value=\"a&quot;b\" disabled=\"\"><br /></body></html>"
+        );
+    }
+
+    /// Each URL attribute is made absolute against the page's URL, or its
+    /// first `<base href>`; a fragment stays as it came.
+    #[test]
+    fn relative_links_become_absolute() {
+        let at = base("https://a.example/docs/page");
+        assert_eq!(
+            clean_html(
+                "<a href=\"next\">n</a><img src=\"/i.png\" srcset=\"a.png 2x\"><a href=\"#top\">t</a>\
+                 <form action=\"../send\"></form>",
+                &at
+            ),
+            "<a href=\"https://a.example/docs/next\">n</a>\
+             <img src=\"https://a.example/i.png\" srcset=\"a.png 2x\"><a href=\"#top\">t</a>\
+             <form action=\"https://a.example/send\"></form>"
+        );
+        assert_eq!(
+            clean_html(
+                "<base href=\"https://cdn.example/v2/\"><a href=\"x\">x</a>",
+                &at
+            ),
+            "<base href=\"https://cdn.example/v2/\"><a href=\"https://cdn.example/v2/x\">x</a>"
+        );
+    }
+
+    /// `clean_html` answers at most [`STORE_BYTES`], cut on a character
+    /// boundary, and a URL attribute whose joined URL would be longer
+    /// than [`MAX_URL_CHARS`](super::super::url::MAX_URL_CHARS) stays as
+    /// it came: empty `src`s under a long `<base href>` do not each grow
+    /// to the base's length.
+    #[test]
+    fn clean_html_output_is_bounded() {
+        let at = base("https://a.example/");
+        let many = "<b src>".repeat(200_000);
+        let out = clean_html(&many, &at);
+        assert!(out.len() <= STORE_BYTES, "{} bytes", out.len());
+        assert!(out.starts_with("<b src=\"https://a.example/\">"));
+
+        let wide = format!("<p>{}</p>", "\u{e9}".repeat(STORE_BYTES));
+        let out = clean_html(&wide, &at);
+        assert!(out.len() <= STORE_BYTES && out.len() > STORE_BYTES - 4);
+
+        let long = format!(
+            "<base href=\"https://x.example/{}\">{}",
+            "a".repeat(7_900),
+            "<b src>".repeat(1_000)
+        );
+        let out = clean_html(&long, &at);
+        assert!(out.len() < long.len() * 2, "{} bytes", out.len());
+        assert!(out.ends_with("<b src=\"\">"));
+    }
+
+    /// A `javascript:` URL is recognised as the URL parser reads it, tabs,
+    /// newlines and leading control characters ignored; `srcdoc` and a
+    /// refreshing `<meta>` are dropped.
+    #[test]
+    fn clean_html_drops_hidden_script() {
+        let at = base("https://a.example/");
+        for href in [
+            "java&#9;script:alert(1)",
+            "&#1;javascript:alert(1)",
+            " JaVa&#10;Script:alert(1)",
+        ] {
+            assert_eq!(
+                clean_html(&format!("<a href=\"{href}\">x</a>"), &at),
+                "<a>x</a>",
+                "{href}"
+            );
+        }
+        let long = format!("java&#9;script:{}", "a".repeat(MAX_TARGET_BYTES));
+        assert_eq!(
+            clean_html(&format!("<a href=\"{long}\">x</a>"), &at),
+            "<a>x</a>"
+        );
+        assert_eq!(
+            clean_html(
+                "<iframe srcdoc=\"&lt;script&gt;go()&lt;/script&gt;\" title=\"t\"></iframe>\
+                 <meta http-equiv=\" Refresh\" content=\"0;url=javascript:go()\">\
+                 <meta charset=\"utf-8\">",
+                &at
+            ),
+            "<iframe title=\"t\"></iframe><meta charset=\"utf-8\">"
+        );
     }
 
     #[test]

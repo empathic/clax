@@ -6444,6 +6444,7 @@ router), and a test fails when it differs:
 | `POST /api/queues/{qid}/reports/{tid}/fix` | Own | `clax-comments` `reply` | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports/{tid}/diagnostics` | Own | `clax-comments` `read` | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports/{tid}/comments/{cid}/clip` | Own | `clax-comments` `read` | 2 MiB | yes |
+| `POST /api/bot/pages` | Own | none | 2 MiB | yes |
 
 | Route | Class | Refuses the owner's agents |
 |---|---|---|
@@ -6464,6 +6465,11 @@ router), and a test fails when it differs:
 | `GET /a/{aid}/v/{n}` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/{*rest}` | Denied | yes: 403 `not_for_agents` |
 | `GET /admin` | Denied | no |
+| `GET /api/admin/bot/grants` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/admin/bot/grants` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/admin/bot/grants/{id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/admin/browser` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/browser` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/people` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/admin/people/{person}/credits` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/admin/people/{person}/flags` | Denied | yes: 403 `not_for_agents` |
@@ -6541,9 +6547,14 @@ router), and a test fails when it differs:
 | `POST /api/bot/runs` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/bot/runs/{id}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/bot/runs/{id}/cancel` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/bot/runs/{id}/content/{item}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/bot/runs/{id}/draft/` | Denied | no |
 | `GET /api/bot/runs/{id}/draft/{*path}` | Denied | no |
 | `GET /api/bot/runs/{id}/events` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/bot/runs/{id}/exports` | Denied | no |
+| `POST /api/bot/runs/{id}/exports` | Denied | no |
+| `DELETE /api/bot/runs/{id}/exports/{eid}` | Denied | no |
+| `GET /api/bot/runs/{id}/exports/{eid}/capability` | Denied | no |
 | `GET /api/bot/surfaces` | Denied | no |
 | `PUT /api/bot/surfaces/{name}` | Denied | no |
 | `PUT /api/bot/surfaces/{name}/content` | Denied | no |
@@ -9074,6 +9085,7 @@ price_catalog_url = "https://tokenulator.dev/data/site.json"  # https://, or htt
 default = "claude-sonnet-5-5"
 quick = "claude-haiku-5-5"
 complex = "claude-opus-5-5"
+images = []                     # the model IDs shown the images a script step returns
 
 [bot.script]
 cpu_ms = 2000                   # 1 to 600,000
@@ -9096,9 +9108,18 @@ a leading `<think>…</think>`) shows as thinking and is not sent back; a
 stream that carries no token usage fails the turn. A model ID may hold
 `/` (`subconscious/glm-5.3-marathon`).
 
+Whether a model takes images is a fact of the model: `[bot.models]
+images` lists the model IDs ClaxBot shows the images a script step
+returns (`CLAX_BOT__MODELS__IMAGES='["claude-sonnet-5-5"]'`), whichever
+tier names them; a run on any other model is told its images were not
+sent. Not every model takes images and no model listing says which do,
+so none is listed by default. The older `[bot] model_takes_images =
+true`, which said every model does, is still taken. Both are read from
+the file and the environment alone.
+
 A `[bot]` table that is invalid (not a table, an unknown key, a mistyped
 value, an `api` other than those three, an `api` other than `anthropic`
-without a `base_url`, an empty `api_key_env` or model ID, a `base_url`
+without a `base_url`, an empty `api_key_env` or model ID (in `images` too), a `base_url`
 refused as `[sample]`'s is, or a value outside the range above) turns
 ClaxBot off and the daemon starts anyway. `clax doctor` prints a `config_tables` line that
 warns for an invalid `[toolpath]`, `[questions]` or `[bot]`.
@@ -9628,7 +9649,9 @@ the body below.
 | `bot.turn` | `run, step, model, key_source (instance\|own), input_tokens, cached_tokens, output_tokens, stop_reason, credits_milli` | a model turn's step committed |
 | `bot.script` | `run, step, title, code_sha256, calls[op], cpu_ms, mem_peak, credits_milli, error` (the code itself is in the run's step, never the body) | a script's step committed |
 | `bot.call` | `run, step, op, target, ok` | every API op a script called, reads included, with its step |
-| `bot.web` | `run, step, op (web.search\|web.fetch), query` or `url, source, provider, request_id, credits_milli` | a web call answered, with its charge, in the transaction that journals it |
+| `bot.spend` | `capability (clax-web:search\|clax-web:fetch\|clax-browser:open-url\|clax-browser:open-artifact\|clax-browser:open-content), run, step, op, ok` or `code, credits_milli`, and the call's summary: a search's `query, provider, request_id, response`; a fetch's `url, source, request_id` or `stored`; a test's `version?` (none for the draft) `, path, viewport, ms, passed`; a session's open `session, kind (url\|artifact\|content), viewport` and its `url`, or `version?, path`, or `files`, then `ms`; a session call's (`browser.page`, `browser.act`, `browser.expect`, `browser.close`) `session, ms` and `ok`; a page's share (`browser.page`, `action: share`) `session, capability` (the new capability's ID), `parent, actions, expires, origins` and a revoke (`action: revoke`) `session, capability`, never the capability itself; an end the host made, `op: browser.session.end`, its `session, kind, reason (idle\|lifetime\|revoked\|credits\|run_ended\|dropped), ms` (the point its browser closed at), `step` (the run's open step, or null) and the tail's `credits_milli` | a charged call of any capability past its declaration check, answered, with its charge, in the transaction that journals it; and each browser session the host ended rather than a call, once |
+| `grant.issue`, `grant.revoke` (ClaxBot's capability grants) | `grant.issue`: `grant_id, granter, grantee (people_of:instance\|person:<key>\|runs_of:<key>\|run:<ID>\|grant:<ID>), access` (RFC 9635 access objects of `clax-web` or `clax-browser`) `, parent?, event (admin\|bot\|share\|migration\|config), expires_at?`; `grant.revoke`: `grant_id, by, reason (granter\|controller\|owner\|parent_ended)` | a capability grant issued or revoked: an admin's (to everyone, a selector issuing each person a child, or to a person), a person's to their runs, or a page's share; a revoke records each grant it ended, its descendants `parent_ended` |
+| `bot.web` | `run, step, op (web.search\|web.fetch), query` or `url, source, provider, request_id, credits_milli` | historical: a web call before `bot.spend`; no longer written, and found by a search for `bot.spend` |
 | `bot.run_end` | `run, outcome (finished\|gave_up\|stopped), reason, credits_milli` (the run's total) | a run's terminal step committed |
 | `bot.cancel` | `run, by` (the person key of who asked) | someone asked a queued, running or parked run to stop |
 | `bot.surface.registered` | `registration, name, def_hash, registered_by, prompt_sha256?` (its prompt file's), `replaces?` (the registration it takes the place of), `changed?` | a surface registered for ClaxBot runs, or a registration gone on with a changed definition, prompt file or settings (`changed: true`), filed on the person who registered it |
@@ -9641,6 +9664,7 @@ the body below.
 | `admin.credits` | `person, lift_from, lift_to, reason` | a person's weekly lift changed |
 | `admin.provider` | `fields[]` (the setting keys that changed), `values{key: value}` (their new values; none is a secret) | ClaxBot's provider, models or caps changed |
 | `admin.key` | `scope (instance\|own), op (set\|clear\|use_own), last4, person?` (an own key's person), `value` (with `use_own`: whether the key is now in use) | a model key set or cleared, or an own key put in or out of use; never the key |
+| `me.web` | `person, value` | historical: a person let ClaxBot use the web for them, or stopped it, before capability grants; no longer written (a person's switch is a `grant.issue` or `grant.revoke`) |
 | `admin.cost_line` | `line, op (create\|update\|delete), fields{label?, unit?, cost_micro_usd?, margin_bp?, fixed_credits_milli?, applies?, source?, model?}`; `line` `*instance` with `fields{credit_price_micro_usd?, free_weekly_milli?}` for the price and free tier | a cost line or the instance's pricing changed |
 
 A system actor's event about someone names them in `body.for_actor`.
@@ -10157,17 +10181,20 @@ handle, `*system` as "Clax".
 
 | Route | Who | Records |
 |---|---|---|
-| `GET /api/me/bot`, `PUT /api/me/bot {use_own?, web?}`, `PUT`/`DELETE /api/me/bot/key` | the owner and connected people, their own; the answer's `web` is `{on, offered, operations, why_off, prices}`: `on` the person's own choice (default true), `offered` when the admin turned on search or fetch and the host's source can perform it (a daemon fetches without a Cloudflare account and searches only with one), `operations` `{search, fetch}` which, `why_off` `admin_off`, `person_off`, `not_configured` or `null` (web use is on), `prices` `{search_milli, fetch_milli}` the milli-credits one request costs them at their key source, a search on the active provider's `web.search.<provider>` line (each `null` for a line that does not exist); `PUT /api/me/bot` with neither field is 400 `empty_request`, and a request any field of which is refused (`use_own` without an own key: 404) changes nothing; `web` is recorded as `me.web {person, value}` | `admin.key` (scope `own`) |
+| `GET /api/me/bot`, `PUT /api/me/bot {use_own?, web?, capabilities?}`, `PUT`/`DELETE /api/me/bot/key` | the owner and connected people, their own; the answer's `capabilities` is `[{id, offered, granted, on, why_off, price_milli, per}]`, the five in order: `offered` when the admin's switch is on and the host can perform it, `granted` when an admin grant gives it to them, `on` when it reaches their runs, `why_off` `not_offered`, `not_configured`, `not_granted`, `person_off` or `null`, `price_milli` what one `per` (`request` or `minute`) costs them; `PUT` `capabilities: {<id>: bool}` turns their grant of each to their runs on or off (400 `unknown_capability` before anything is written), `web` sets both web capabilities; a browser session the caller's runs no longer hold the capability for is closed (`revoked`) before it answers; the answer's `web` is `{on, offered, operations, why_off, prices}`: `on` the person's own choice (default true), `offered` when the admin turned on search or fetch and the host's source can perform it (a daemon fetches without a Cloudflare account and searches only with one), `operations` `{search, fetch}` which, `why_off` `admin_off`, `person_off`, `not_configured` or `null` (web use is on), `prices` `{search_milli, fetch_milli}` the milli-credits one request costs them at their key source, a search on the active provider's `web.search.<provider>` line (each `null` for a line that does not exist); `PUT /api/me/bot` with no field is 400 `empty_request`, and a request any field of which is refused (`use_own` without an own key: 404) changes nothing; each grant a switch issues or revokes is recorded as `grant.issue` or `grant.revoke` (reason `controller`), and a run of theirs that declared a capability they no longer hold is asked to stop, `bot.cancel {run, by, reason: grant_revoked}`, ending `stopped` with that reason | `admin.key` (scope `own`) |
 | `GET /api/me/usage?week=` | the same; on a hosted Clax a run's `artifact_title` is `null` once its artifact is out of the caller's reach (its cost rows stay) | `view.usage` |
 | `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}` (each person's defaults filled in) | the same, their own; agents 403 `not_for_agents` | — |
 | `GET /api/agents` | as before; ClaxBot is listed first (`handle: "claxbot"`, `builtin: true`, `live`, or `unavailable: no_flag\|no_credits\|not_configured\|model_not_priced`) where the caller may send | — |
 | `POST /api/bot/runs {thread_ids, artifact_id}`; a send or batch with `to: "claxbot"`; `POST /api/artifacts:new` with `build: "claxbot"`; a person's comment on a thread whose last run ended | the sender (a person, or their agent: the run acts for that person); SameOrigin | `bot.run_start`, or `bot.refused` and 403 `no_flag`, `credits_exhausted`, `not_configured` or `model_not_priced` before any model call |
-| `GET /api/bot/runs?artifact=`, `GET /api/bot/runs/<id>`, `GET /api/bot/runs/<id>/events` | the person a run acts for, admins, and anyone who may read its artifact (read-only); a live page's runs the owner's alone; on a hosted Clax an admin as below | `view.run` |
-| `POST /api/bot/runs/<id>/cancel`, `GET /api/bot/runs/<id>/draft/<path>` | the person it acts for and admins (403 `not_permitted`, a draft 404); on a hosted Clax a draft for an admin only at an artifact they made | `bot.cancel` |
+| `GET /api/bot/runs?artifact=`, `GET /api/bot/runs/<id>`, `GET /api/bot/runs/<id>/events` | the person a run acts for, admins, and anyone who may read its artifact (read-only); a live page's runs the owner's alone; on a hosted Clax an admin as below; `GET /api/bot/runs/<id>` also answers, to the person it acts for and admins, `browser_sessions: [{session, kind, opened_at, charged_ms, closed_at, reason}]`, the run's browser sessions in the order they opened (`reason` `closed`, `idle`, `lifetime`, `revoked`, `credits`, `run_ended`, `dropped` (no committed `state` held its page when a script step ended) or `lost`; it and `closed_at` null while open); a browser call's `ms` is the browser time it charged | `view.run` |
+| `POST /api/bot/runs/<id>/cancel`, `GET /api/bot/runs/<id>/draft/<path>`, `GET /api/bot/runs/<id>/content/<item>` | the person it acts for and admins (403 `not_permitted`, a draft or an item 404); on a hosted Clax a draft or an item for an admin only at an artifact they made; `content/<item>` answers an image item of that run's content (a browser session's screenshot or a recording's frame: PNG, JPEG, GIF or WebP) under its media type, or a recording's frame manifest (`application/vnd.clax.frames+json`, `{width, height, frames: [{item, at_ms}]}`, each `item` a frame of the run's content) as `application/json`, `Content-Security-Policy: sandbox; default-src 'none'` and `X-Content-Type-Options: nosniff`, and 404 for another run's item or one that is neither; a reader of the artifact sees a browser call in the run without its `browser` summary | `bot.cancel` |
+| `GET`/`POST /api/bot/runs/<id>/exports`, `DELETE /api/bot/runs/<id>/exports/<eid>` | the person it acts for (404 for anyone else) | `GET` → `{pages: [{path}], grants: [{id, name}], exports: [{id, grant, actions, expires_at, issued_at}], released: false}`: the pages of the run's last committed `state` (`state.page`), the caller's live machine grants and their live exports; `POST {path, grant, actions?, expires_s?}` exports that page to that grant (the host mints its capability for `holder=grant:<ID>`, narrowed to `actions` and `expires_s`, and writes its grant row, parent the page's grant; 404 for no such page or grant of theirs, 400 `invalid_args` for an action that is none, 503 `browser_unavailable` with no browser sessions); `DELETE` revokes one of theirs and every grant under it; no export's capability is released to its holder yet (`released: false`) | `grant.issue`, `grant.revoke` |
 | `GET /api/admin/people`, `PUT …/<person>/flags`, `…/credits` | admins | `view.admin {page: people}`, `admin.flag`, `admin.credits` |
 | `PUT /api/admin/people/<person>/role {role}` | the owner alone (403 `owner_only`); the owner's own role 400 `owner_role` | `admin.role` |
 | `GET`/`PUT /api/admin/provider`, `PUT`/`DELETE …/key`, `POST …/test`, `GET …/models` | admins | `view.admin {page: provider\|provider.test\|provider.models}`, `admin.provider`, `admin.key` (scope `instance`) |
 | `GET`/`PUT /api/admin/web`, `PUT`/`DELETE /api/admin/web/token`; the answer's `configured` is `{search, fetch}`, which operations the host's source can perform now (the Worker: both; a daemon: fetch always, search once a Cloudflare account ID and token are set); `unavailable` is null, or the reason web use is off whatever the credentials, with both of `configured` false: the instance's configured public origin or site domain names no host, so it could not refuse a fetch of its own hosts (the reason quotes the value, and holds for the life of the process), or the host found its source cannot run where it runs (a Worker whose AI binding throws under `wrangler dev --local`); the first holds over the second; `checking` is true while the host's check of its source is still running (the Worker waits for it at most 2 s before answering) | admins | `view.admin {page: web}`, `admin.provider`, `admin.key` (scope `cloudflare`) |
+| `GET`/`PUT /api/admin/browser`: the three `browser.open` capabilities under `url`, `artifact` and `content`, each `{enabled, max_per_run, price_milli_per_minute, configured, unavailable}` (`url` also `url_rule`, `allowlist`), and the browser family's `call_seconds, idle_seconds, max_seconds, max_open_per_run, max_concurrent`, with `configured, unavailable, cloudflare: {account, token}, sources`; `configured` whether the host can open browsers now (a daemon with a key-encryption key, the Cloudflare account ID and token of `/api/admin/web`; the Worker never), `unavailable` null or why browser use is off whatever the settings, `cloudflare` whether each credential is set, `sources` where each field comes from by its dotted name (`artifact.enabled`, `max_concurrent`); `PUT` takes the settings' shape, any field left out, a null putting it back to its default; 400 `unknown_setting` for a field it does not show, a value its kind refuses 400 (`call_seconds` 10 to 120, `idle_seconds` 60 to 1,200, `max_seconds` 60 to 7,200, `max_open_per_run` 1 to 4, `max_concurrent` 1 to 50, `url_rule` `sender`, `sourced`, `allowlist` or `any_public`), and one `[bot.browser]` sets 409 `setting_overridden`. A switch offers its capability and grants it to no one | admins | `view.admin {page: browser}`, `admin.provider` |
+| `GET /api/admin/bot/grants` → `{grants: [{id, capability, grantee: everyone\|person, person, granter, conveys, issued_at}]}`, the live grants admins made (`granter` the admin's person key, `migration`, or `config`: a web switch config.toml turns on, granted to everyone once at the daemon's start; `conveys` false once the granter is no longer an admin), everyone's first; `POST {capability, grantee: "everyone" \| {person}}` issues one with the caller as granter (a grant to everyone is a selector, `people_of:instance`, that issues every person a child and their grant to their runs; 400 `unknown_capability`, `invalid_grantee`, `grant_exists`); the answer's `shares` lists each live page share and export, `{id, run, grant, granter, actions, origins, expires_at, issued_at}`; `DELETE …/<id>` revokes one of either and every grant issued under it (reason `granter` for the caller's own, `owner` otherwise; 404 for no such grant of that ID) | admins | `grant.issue` and `grant.revoke` per grant issued or revoked |
 | `GET`/`PUT /api/admin/pricing`, `POST`/`DELETE …/models`, `POST …/tokenulator`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
 | `POST /api/admin/pricing/catalog/refresh` | admins | — (it replaces the cached public price catalog alone) |
 | `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event (on a hosted Clax every event but those naming an artifact out of their own reach), anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |

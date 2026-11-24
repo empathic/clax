@@ -144,6 +144,18 @@ pub trait MaybeSendSync {}
 #[cfg(target_arch = "wasm32")]
 impl<T: ?Sized> MaybeSendSync for T {}
 
+/// `Send` natively, for a value one task owns and moves between threads
+/// (a browser's socket); nothing on wasm32 (see [`MaybeSendSync`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + ?Sized> MaybeSend for T {}
+/// `Send` natively; nothing on wasm32 (see the native definition).
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSend for T {}
+
 /// One script: a title (used as its file name in stack traces), the
 /// body of the async function it runs as, and, when given, what makes its
 /// run repeatable and the operations its `clax` has.
@@ -161,6 +173,18 @@ pub struct Script {
     /// the JSON when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ops: Option<Vec<String>>,
+    /// Whether the script's prelude has the browser layer
+    /// ([`BROWSER_LAYER`], [`prelude_source`]): asked for by a run that
+    /// holds a browser capability, and nothing without one. Left out of
+    /// the JSON when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub browser: bool,
+    /// The run's `state` this script starts from: `{value, handles}`, as
+    /// an earlier script of the run left it ([`StateOut::saved`]); `None`
+    /// for `{}`. See [`PRELUDE`], "State". Left out of the JSON when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<Value>,
 }
 
 /// What a script's clock and random numbers are, so a script run again
@@ -181,6 +205,28 @@ impl Script {
             code: code.into(),
             determinism: None,
             ops: None,
+            browser: false,
+            state: None,
+        }
+    }
+
+    /// The same script, starting from the run's `state` as `saved`
+    /// (`{value, handles}`, [`Script::state`]).
+    #[must_use]
+    pub fn with_state(self, saved: Value) -> Self {
+        Script {
+            state: Some(saved),
+            ..self
+        }
+    }
+
+    /// The same script, its prelude with the browser layer
+    /// ([`Script::browser`]).
+    #[must_use]
+    pub fn with_browser(self) -> Self {
+        Script {
+            browser: true,
+            ..self
         }
     }
 
@@ -443,15 +489,19 @@ fn shown(op: &str) -> String {
 
 /// A host call that failed, as the script sees it: a stable machine code
 /// (`not_found`, `forbidden`, …), a message for the model, and whether the
-/// same call may succeed if made again (`retryable`). The script's thrown
-/// error carries all three (`e.code`, `e.message`, `e.retryable`, false
-/// unless the host said otherwise).
+/// same call may succeed if made again (`retryable`), and, for a call a
+/// capability allows, that capability (`capability`, such as
+/// `web.fetch`). The script's thrown error carries them (`e.code`,
+/// `e.message`, `e.retryable`, false unless the host said otherwise, and
+/// `e.capability` when the host named one).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostError {
     pub code: String,
     pub message: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
 }
 
 impl HostError {
@@ -461,6 +511,7 @@ impl HostError {
             code: code.into(),
             message: message.into(),
             retryable: false,
+            capability: None,
         }
     }
 
@@ -474,16 +525,28 @@ impl HostError {
         }
     }
 
+    /// This failure, naming the capability the call needed.
+    #[must_use]
+    pub fn with_capability(self, capability: impl Into<String>) -> Self {
+        HostError {
+            capability: Some(capability.into()),
+            ..self
+        }
+    }
+
     /// The JSON the prelude's `settle` takes for a failed call:
-    /// `{code, message, retryable}`.
+    /// `{code, message, retryable}`, and `capability` when it names one.
     #[must_use]
     pub fn reply_json(&self) -> String {
-        serde_json::json!({
+        let mut v = serde_json::json!({
             "code": self.code,
             "message": self.message,
             "retryable": self.retryable,
-        })
-        .to_string()
+        });
+        if let Some(c) = &self.capability {
+            v["capability"] = serde_json::json!(c);
+        }
+        v.to_string()
     }
 }
 
@@ -718,6 +781,64 @@ pub struct ScriptOutcome {
     pub mem_peak_bytes: u64,
     /// Wall time of the whole run, host calls included, in microseconds.
     pub wall_us: u64,
+    /// The `state` the script left, as the prelude wrote it when the
+    /// script's body settled; `None` when it did not get to (a limit, a
+    /// cancel or a park stopped it first). See [`PRELUDE`], "State".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<StateOut>,
+}
+
+/// The `state` a script left ([`ScriptOutcome::state`]): its value, each
+/// of Clax's handles in it as `{"$clax": i}`, an index into `handles`;
+/// and what could not be kept, at most 20 with their paths and how many
+/// more.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct StateOut {
+    pub value: Value,
+    #[serde(default)]
+    pub handles: Vec<Value>,
+    #[serde(default)]
+    pub dropped: Vec<Dropped>,
+    #[serde(default)]
+    pub more: u64,
+    /// Why the text the prelude gave could not be read as a state, when
+    /// it could not ([`StateOut::read`]): nothing of it is kept, and the
+    /// step says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<String>,
+}
+
+/// A value of `state` that was not kept, and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dropped {
+    /// Where it was: `state.a.b[2]`.
+    pub path: String,
+    pub why: String,
+}
+
+impl StateOut {
+    /// What the prelude's `done` gave as its third argument, read; `None`
+    /// for none. Text that is not a state is read as one with only
+    /// [`StateOut::unread`], saying why.
+    #[must_use]
+    pub fn read(text: Option<&str>) -> Option<StateOut> {
+        let unread = |why: String| StateOut {
+            unread: Some(why),
+            ..StateOut::default()
+        };
+        Some(match serde_json::from_str::<StateOut>(text?) {
+            Ok(out) if out.value.is_object() => out,
+            Ok(_) => unread("its value is not an object".into()),
+            Err(e) => unread(format!("its JSON does not parse: {e}")),
+        })
+    }
+
+    /// What a later script starts from ([`Script::state`]): `{value,
+    /// handles}`.
+    #[must_use]
+    pub fn saved(&self) -> Value {
+        serde_json::json!({"value": self.value, "handles": self.handles})
+    }
 }
 
 impl ScriptOutcome {
@@ -753,13 +874,16 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 ///   characters, its length (a number); or `undefined` when they have no
 ///   JSON (`JSON.stringify` threw or gave nothing);
 /// - `log(line)`: the native function that keeps one log line;
-/// - `done(ok, payload)`: the native function told how the script ended:
-///   `done(true, json)` with the returned value's JSON (or `undefined`
-///   when there is none), or `done(false, errorJson)` with the JSON of
-///   [`Thrown`] for what it threw;
-/// - `options`: `{maxCallArgsBytes}`, from [`Limits`], and `nowMs` and
+/// - `done(ok, payload, state)`: the native function told how the script
+///   ended: `done(true, json, state)` with the returned value's JSON (or
+///   `undefined` when there is none), or `done(false, errorJson, state)`
+///   with the JSON of [`Thrown`] for what it threw; `state` is the JSON of
+///   [`StateOut`] ([`StateOut::read`]), or `undefined` when it could not
+///   be written;
+/// - `options`: `{maxCallArgsBytes}`, from [`Limits`]; `nowMs` and
 ///   `seed` from the script's [`Determinism`] when it has one (else left
-///   out: the engine's own clock and random numbers).
+///   out: the engine's own clock and random numbers); and `state`, the
+///   JSON text of [`Script::state`] when it has one.
 ///
 /// It defines the globals `clax` and `console` and returns an object of
 /// four functions, which capture every built-in they use before the
@@ -782,7 +906,144 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 /// - `settle(id, ok, json)` settles a host call: `ok` true with the
 ///   result's JSON, false with a [`HostError`]'s
 ///   [`HostError::reply_json`], `{code, message, retryable}`.
+///
+/// # State
+///
+/// The global `state` is the one value that outlives a script (spec
+/// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §17.1):
+/// a plain object, `options.state`'s value with each handle revived, or
+/// `{}`. Assigning it anything but a plain object throws a `TypeError`.
+/// When the script's body settles, returned or thrown, the prelude writes
+/// it out ([`StateOut`]) with the built-ins it captured: JSON values, and
+/// each object of the browser layer as a handle entry `{page, url, of,
+/// steps?, not?, timeout?, shown?}`, restored live in the next script, one `Page`
+/// per handle. A function, a symbol, a `bigint`, a number JSON cannot
+/// hold, a cycle, an object that is not plain data, a member named
+/// `$clax`, a value nested deeper than 64 levels or one whose reading
+/// throws is left out (an array item becomes `null`) and listed in
+/// [`StateOut::dropped`]; a member that is `undefined` is left out
+/// unlisted, as JSON leaves it. A lone surrogate in a string or a member
+/// name is kept as U+FFFD, so the text always reads; a member whose name
+/// is then another's is left out and listed. A script stopped before its
+/// body settled writes nothing.
+///
+/// # The browser layer
+///
+/// [`PRELUDE`] is every script's; the browser layer ([`BROWSER_LAYER`],
+/// `src/browser.js`) is spliced into it, at its `// browser-layer` line,
+/// only for a script that asks for it ([`Script::browser`]): what a
+/// sandbox evaluates is [`prelude_source`]. With it, and when `ops` holds
+/// all five of [`BROWSER_SESSION_OPS`], the prelude installs a
+/// Playwright-shaped layer over them (spec
+/// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §6.9,
+/// §6.10, §17.5): `clax.browser.open` answers a `Page`, whose `Locator`s,
+/// `keyboard`, `mouse` and the global `expect` make one call of
+/// `browser.page`, `browser.act` or `browser.expect` each, and
+/// `page.close()` one of `browser.close`. Those four leave
+/// `clax.browser`, so a script reaches them only through a `Page`;
+/// `browser.test` and any other listed browser operation stay. A `Page`
+/// names its session by the capability `browser.open` answered
+/// (`page`), which no script reads: a `Page` returned or logged shows
+/// `"<browser page>"`, a `Locator` `"<browser locator>"`, and no `Page` is
+/// made from a string. Nor does a hook a script sets on a built-in
+/// prototype see it: every call's arguments are sent from an array of no
+/// prototype (no `Array.prototype.toJSON`), and the layer's five calls
+/// answer into a record only the layer holds, through a promise that
+/// resolves to `undefined` and carries its own `constructor`, so neither
+/// `Object.prototype.then` nor `Promise.prototype.then` or `constructor`
+/// is consulted on the answer. `page.share(opts)` answers a new `Page` whose
+/// capability is the `share` call's answer `{page, shown}` (spec §18.4),
+/// shown as its `shown` (`"<browser page: read>"`, say), which its
+/// handle entry keeps. A later script reaches a session only through
+/// `state` (see "State"). Without the layer, or without all five operations, neither
+/// the layer nor `expect` exists.
+///
+/// The methods are built from one table, a JSON array between the lines
+/// `// browser-layer-table:begin` and `// browser-layer-table:end`
+/// ([`browser_layer_table`]): class, method, flat operation, action and
+/// parameter names, a row per method that reaches the browser. A
+/// method's positional arguments go into the call's `args` by those
+/// names, its `opts` spread beside them, a `RegExp` sent as `{regex,
+/// flags}`, the page's `setDefaultTimeout` added as `timeout` to a page or
+/// locator call that takes options and names none, and `not: true` to a
+/// negated matcher. An answer `{ok: false}` is thrown: a `TimeoutError`
+/// when it says `timeout`, an `Error` named `Expected` from `expect`, else
+/// an `Error`. `page.evaluate(fn, arg)` sends `fn`'s source text, read
+/// with the `Function.prototype.toString` captured before the script ran,
+/// and refuses a function whose text is `[native code]` with a
+/// `TypeError` before any call. `expect` of a value that is not a
+/// `Locator` or a `Page` has the saved-test harness's five matchers
+/// (`web/bridge/src/harness.ts`), checked in the sandbox with no call.
+/// Nothing in the layer reads a clock or a random number, so a replayed
+/// step makes the same calls.
 pub const PRELUDE: &str = include_str!("prelude.js");
+
+/// The most bytes [`PRELUDE`] may have: it is evaluated once per run in
+/// every sandbox (spec §6.9, "A budget", §17.5).
+pub const PRELUDE_BUDGET_BYTES: usize = 24 * 1024;
+
+/// The browser layer: statements [`prelude_source`] splices into
+/// [`PRELUDE`] for a script that asks for it (see [`PRELUDE`], "The
+/// browser layer").
+pub const BROWSER_LAYER: &str = include_str!("browser.js");
+
+/// The most bytes [`BROWSER_LAYER`] may have: it is evaluated only in a
+/// browser run's sandboxes, on top of [`PRELUDE_BUDGET_BYTES`] (spec
+/// §17.5).
+pub const BROWSER_LAYER_BUDGET_BYTES: usize = 20 * 1024;
+
+/// The line of [`PRELUDE`] the browser layer takes the place of.
+const LAYER_AT: &str = "  // browser-layer\n";
+
+/// The prelude a sandbox evaluates for a script: [`PRELUDE`], with
+/// [`BROWSER_LAYER`] in place of its `// browser-layer` line when
+/// `browser` ([`Script::browser`]).
+///
+/// # Panics
+/// When [`PRELUDE`] lacks the line: it is this crate's own file, and a
+/// test holds it.
+#[must_use]
+pub fn prelude_source(browser: bool) -> std::borrow::Cow<'static, str> {
+    assert!(
+        PRELUDE.contains(LAYER_AT),
+        "src/prelude.js has no `// browser-layer` line"
+    );
+    if browser {
+        std::borrow::Cow::Owned(PRELUDE.replacen(LAYER_AT, BROWSER_LAYER, 1))
+    } else {
+        std::borrow::Cow::Borrowed(PRELUDE)
+    }
+}
+
+/// The flat browser session operations whose presence in a script's
+/// operations installs the prelude's browser layer.
+pub const BROWSER_SESSION_OPS: [&str; 5] = [
+    "browser.open",
+    "browser.page",
+    "browser.act",
+    "browser.expect",
+    "browser.close",
+];
+
+/// The rows of the prelude's browser layer table, as [`BROWSER_LAYER`]
+/// writes them between its marker lines: `[class, method, operation, action or
+/// null, [parameter names]]` each.
+///
+/// # Panics
+/// When the markers are missing or what lies between them is not JSON:
+/// [`BROWSER_LAYER`] is this crate's own file, and a test holds both.
+#[must_use]
+pub fn browser_layer_table() -> serde_json::Value {
+    let begin = "// browser-layer-table:begin";
+    let end = "// browser-layer-table:end";
+    let from = BROWSER_LAYER.find(begin).map(|i| i + begin.len());
+    let to = BROWSER_LAYER.find(end);
+    match (from, to) {
+        (Some(from), Some(to)) if from < to => serde_json::from_str(&BROWSER_LAYER[from..to])
+            .unwrap_or_else(|e| panic!("the browser layer table is not JSON: {e}")),
+        _ => panic!("the browser layer table's markers are missing"),
+    }
+}
 
 /// What [`wrap`] puts before the code: its own line, as the `Function`
 /// constructors' source does, so a first line that opens with `-->` (an
@@ -1253,6 +1514,14 @@ mod tests {
             busy_us: 5,
             mem_peak_bytes: 2,
             wall_us: 4,
+            state: Some(StateOut {
+                value: serde_json::json!({"a": 1}),
+                dropped: vec![Dropped {
+                    path: "state.f".into(),
+                    why: "a function".into(),
+                }],
+                ..StateOut::default()
+            }),
         };
         let json = serde_json::to_value(&outcome).unwrap();
         assert_eq!(json["error"]["kind"], "invalid_limits");
@@ -1264,5 +1533,74 @@ mod tests {
             serde_json::from_value::<ScriptOutcome>(json).unwrap(),
             outcome
         );
+    }
+
+    /// Text the prelude gave that is not a state is told as such, never
+    /// taken for no state.
+    #[test]
+    fn a_state_text_that_does_not_read_says_why() {
+        assert_eq!(StateOut::read(None), None);
+        let ok = StateOut::read(Some(r#"{"value": {"a": 1}}"#)).unwrap();
+        assert_eq!((ok.value, ok.unread), (serde_json::json!({"a": 1}), None));
+        for text in [r#"{"value": {"a": "\ud83d"}}"#, r#"{"value": 1}"#, "nope"] {
+            let out = StateOut::read(Some(text)).unwrap();
+            assert!(out.unread.is_some(), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_prelude_and_the_layer_stay_within_their_budgets() {
+        assert!(
+            PRELUDE.len() <= PRELUDE_BUDGET_BYTES,
+            "src/prelude.js is {} bytes, over its budget of {PRELUDE_BUDGET_BYTES}",
+            PRELUDE.len()
+        );
+        assert!(
+            BROWSER_LAYER.len() <= BROWSER_LAYER_BUDGET_BYTES,
+            "src/browser.js is {} bytes, over its budget of {BROWSER_LAYER_BUDGET_BYTES}",
+            BROWSER_LAYER.len()
+        );
+    }
+
+    /// The layer is in a browser script's prelude, at the marker's place,
+    /// and in no other's.
+    #[test]
+    fn the_layer_is_spliced_only_for_a_browser_script() {
+        let plain = prelude_source(false);
+        assert_eq!(plain, PRELUDE);
+        assert!(!plain.contains("browser-layer-table:begin"));
+        let with = prelude_source(true);
+        assert!(with.contains(BROWSER_LAYER));
+        assert!(!with.contains(LAYER_AT));
+        assert_eq!(
+            with.len(),
+            PRELUDE.len() - LAYER_AT.len() + BROWSER_LAYER.len()
+        );
+        assert!(Script::new("t", "").with_browser().browser);
+        let json = serde_json::to_value(Script::new("t", "")).unwrap();
+        assert!(json.get("browser").is_none(), "{json}");
+    }
+
+    #[test]
+    fn the_browser_layer_table_is_rows_of_five() {
+        let table = browser_layer_table();
+        let rows = table.as_array().expect("an array");
+        assert!(!rows.is_empty());
+        for row in rows {
+            let r = row.as_array().expect("a row is an array");
+            assert_eq!(r.len(), 5, "{row}");
+            assert!(
+                r[0].is_string() && r[1].is_string() && r[2].is_string(),
+                "{row}"
+            );
+            assert!(r[3].is_string() || r[3].is_null(), "{row}");
+            assert!(
+                r[4].as_array()
+                    .is_some_and(|p| p.iter().all(serde_json::Value::is_string)),
+                "{row}"
+            );
+            let op = format!("browser.{}", r[2].as_str().unwrap_or_default());
+            assert!(BROWSER_SESSION_OPS.contains(&op.as_str()), "{row}");
+        }
     }
 }

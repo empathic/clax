@@ -187,13 +187,13 @@
           },
           "web.search": {
             "code": "web_disabled",
-            "message": "the admin turned clax.web.search off since this run started; do without it",
+            "message": "clax.web.search was turned off (not_offered) since this run started; do without it",
             "retryable": false,
-            "threw": "HostError: the admin turned clax.web.search off since this run started; do without it"
+            "threw": "HostError: clax.web.search was turned off (not_offered) since this run started; do without it"
           }
         }
       },
-      "content_bytes": 624,
+      "content_bytes": 640,
       "is_error": null
     }
   },
@@ -217,9 +217,9 @@
         "value": {
           "web.fetch": {
             "code": "web_disabled",
-            "message": "the admin turned clax.web.fetch off since this run started; do without it",
+            "message": "clax.web.fetch was turned off (not_offered) since this run started; do without it",
             "retryable": false,
-            "threw": "HostError: the admin turned clax.web.fetch off since this run started; do without it"
+            "threw": "HostError: clax.web.fetch was turned off (not_offered) since this run started; do without it"
           },
           "web.search": {
             "returned": {
@@ -239,7 +239,7 @@
           }
         }
       },
-      "content_bytes": 537,
+      "content_bytes": 553,
       "is_error": null
     }
   },
@@ -263,19 +263,19 @@
         "value": {
           "web.fetch": {
             "code": "web_disabled",
-            "message": "web use was turned off (admin_off) since this run started; do without it",
+            "message": "clax.web.fetch was turned off (not_offered) since this run started; do without it",
             "retryable": false,
-            "threw": "HostError: web use was turned off (admin_off) since this run started; do without it"
+            "threw": "HostError: clax.web.fetch was turned off (not_offered) since this run started; do without it"
           },
           "web.search": {
             "code": "web_disabled",
-            "message": "web use was turned off (admin_off) since this run started; do without it",
+            "message": "clax.web.search was turned off (not_offered) since this run started; do without it",
             "retryable": false,
-            "threw": "HostError: web use was turned off (admin_off) since this run started; do without it"
+            "threw": "HostError: clax.web.search was turned off (not_offered) since this run started; do without it"
           }
         }
       },
-      "content_bytes": 603,
+      "content_bytes": 641,
       "is_error": null
     }
   },
@@ -299,19 +299,19 @@
         "value": {
           "web.fetch": {
             "code": "web_disabled",
-            "message": "web use was turned off (person_off) since this run started; do without it",
+            "message": "clax.web.fetch was turned off (person_off) since this run started; do without it",
             "retryable": false,
-            "threw": "HostError: web use was turned off (person_off) since this run started; do without it"
+            "threw": "HostError: clax.web.fetch was turned off (person_off) since this run started; do without it"
           },
           "web.search": {
             "code": "web_disabled",
-            "message": "web use was turned off (person_off) since this run started; do without it",
+            "message": "clax.web.search was turned off (person_off) since this run started; do without it",
             "retryable": false,
-            "threw": "HostError: web use was turned off (person_off) since this run started; do without it"
+            "threw": "HostError: clax.web.search was turned off (person_off) since this run started; do without it"
           }
         }
       },
-      "content_bytes": 607,
+      "content_bytes": 637,
       "is_error": null
     }
   },
@@ -377,13 +377,13 @@
         "value": {
           "web.fetch": {
             "code": "web_disabled",
-            "message": "web use was turned off (not_configured) since this run started; do without it",
+            "message": "clax.web.fetch was turned off (not_offered) since this run started; do without it",
             "retryable": false,
-            "threw": "HostError: web use was turned off (not_configured) since this run started; do without it"
+            "threw": "HostError: clax.web.fetch was turned off (not_offered) since this run started; do without it"
           }
         }
       },
-      "content_bytes": 326,
+      "content_bytes": 334,
       "is_error": null
     }
   },

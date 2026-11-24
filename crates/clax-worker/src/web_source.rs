@@ -59,9 +59,8 @@ use clax_bot::web::page::{
 };
 use clax_bot::web::url::redirect_allowed;
 use clax_bot::web::{
-    CODE_WEB_BLOCKED, CODE_WEB_TOO_LARGE, CODE_WEB_UNAVAILABLE, CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
-    FetchLimits, FetchedPage, Format, PublicUrl, SearchAnswer, SearchHit, SearchQuery, WebError,
-    WebSource,
+    CODE_WEB_BLOCKED, CODE_WEB_TOO_LARGE, CODE_WEB_UNAVAILABLE, FetchLimits, FetchedPage, Format,
+    PublicUrl, SearchAnswer, SearchHit, SearchQuery, WebError, WebSource,
 };
 use clax_bot_sandbox::{CODE_CANCELLED, CancelToken};
 use serde_json::Value;
@@ -565,8 +564,9 @@ impl Conversion {
 /// `application/octet-stream` type is sniffed): HTML and documents to
 /// convert ([`Body::Convert`]; an HTML page is decoded by its charset
 /// ([`page::decode_html`]) and given as [`page::html_for_conversion`]'s
-/// UTF-8, its links read from the HTML), JSON pretty-printed
-/// in `Auto`, other text as it came, its links read from it. A 4xx or 5xx
+/// UTF-8, its links read from the HTML), an HTML page in `Html` cleaned of
+/// code ([`page::clean_html`]) with no conversion, JSON pretty-printed in
+/// `Markdown`, other text as it came, its links read from it. A 4xx or 5xx
 /// with a readable body is a page with its status.
 ///
 /// # Errors
@@ -594,26 +594,8 @@ pub fn read_body(
         request_id: None,
     };
     let text = match how {
-        Handling::Unsupported => {
-            let raw = if page::handling(&media, Format::Auto) != Handling::Unsupported {
-                " with format \"raw\"; fetch it without"
-            } else {
-                ""
-            };
-            let what = if media.is_empty() {
-                "of no known type"
-            } else {
-                &media
-            };
-            return Err(WebError::new(
-                CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
-                format!(
-                    "{} is {what}, which cannot be read as text{raw}. Use another source.",
-                    url.normalized()
-                ),
-                false,
-            )
-            .went_out(true));
+        Handling::Unsupported | Handling::NotHtml => {
+            return Err(page::unsupported(url, &media, format).went_out(true));
         }
         Handling::Document(ext) => {
             return Ok(Body::Convert(Conversion {
@@ -625,7 +607,9 @@ pub fn read_body(
                 base: url.clone(),
             }));
         }
-        Handling::Html | Handling::RawHtml => decode_html(&body, content_type),
+        Handling::Html | Handling::RawHtml | Handling::CleanHtml => {
+            decode_html(&body, content_type)
+        }
         _ => decode(&body, content_type),
     };
     Ok(match how {
@@ -643,6 +627,12 @@ pub fn read_body(
         Handling::RawHtml => {
             let links = links_of_html(&text, url);
             Body::Page(page(text, links))
+        }
+        // Cleaned here, in Rust, as the daemon does: `toMarkdown()` is not
+        // asked.
+        Handling::CleanHtml => {
+            let links = links_of_html(&text, url);
+            Body::Page(page(page::clean_html(&text, url), links))
         }
         Handling::Json => {
             let text = pretty_json(&text).unwrap_or(text);
@@ -1307,6 +1297,7 @@ mod binding {
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use clax_bot::web::CODE_WEB_UNSUPPORTED_CONTENT_TYPE;
     use clax_bot::web::{CODE_URL_NOT_ALLOWED, Provider};
     use serde_json::json;
 
@@ -1694,14 +1685,15 @@ mod tests {
             (404, "text/plain", Vec::new()),
             (500, "image/png", vec![0x89, b'P', b'N', b'G']),
         ] {
-            let e = match read_body(&u, status, content_type, body, Format::Auto) {
+            let e = match read_body(&u, status, content_type, body, Format::Markdown) {
                 Err(e) => e,
                 Ok(_) => panic!("{status} {content_type}: answered as a page"),
             };
             assert_eq!(e, http_error(&u, status), "{status} {content_type}");
         }
         // A readable error page is a page with its status.
-        let p = page_of(read_body(&u, 404, "text/plain", b"gone".to_vec(), Format::Auto).unwrap());
+        let p =
+            page_of(read_body(&u, 404, "text/plain", b"gone".to_vec(), Format::Markdown).unwrap());
         assert_eq!((p.status, p.text.as_str()), (404, "gone"));
     }
 
@@ -1715,7 +1707,7 @@ mod tests {
                 200,
                 "text/markdown",
                 b"# T\n[x](/x)".to_vec(),
-                Format::Auto,
+                Format::Markdown,
             )
             .unwrap(),
         );
@@ -1732,7 +1724,7 @@ mod tests {
                 200,
                 "application/json",
                 br#"{"a":1}"#.to_vec(),
-                Format::Auto,
+                Format::Markdown,
             )
             .unwrap(),
         );
@@ -1755,7 +1747,7 @@ mod tests {
                 200,
                 "text/plain; charset=iso-8859-1",
                 vec![0x63, 0x61, 0x66, 0xe9],
-                Format::Auto,
+                Format::Markdown,
             )
             .unwrap(),
         );
@@ -1767,7 +1759,7 @@ mod tests {
             200,
             "text/html; charset=utf-8",
             html.as_bytes().to_vec(),
-            Format::Auto,
+            Format::Markdown,
         )
         .unwrap() else {
             panic!("HTML is converted")
@@ -1794,6 +1786,30 @@ mod tests {
             read_body(&u, 200, "text/html", html.as_bytes().to_vec(), Format::Raw).unwrap(),
         );
         assert_eq!(p.text, html);
+        // HTML in Html is cleaned here, in Rust, and not converted: no
+        // script, no handler, links absolute.
+        let markup = "<p onclick=\"x()\">Hi <a href=\"/next\">next</a></p><script>bad()</script>";
+        let p = page_of(
+            read_body(
+                &u,
+                200,
+                "text/html",
+                markup.as_bytes().to_vec(),
+                Format::Html,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            p.text,
+            "<p>Hi <a href=\"https://a.example/next\">next</a></p>"
+        );
+        assert_eq!(p.links, ["https://a.example/next"]);
+        // Another type in Html is refused, naming the formats that read it.
+        let Err(e) = read_body(&u, 200, "application/json", b"{}".to_vec(), Format::Html) else {
+            panic!("JSON has no markup")
+        };
+        assert_eq!(e.code, CODE_WEB_UNSUPPORTED_CONTENT_TYPE);
+        assert!(e.message.contains("\"markdown\" or \"raw\""), "{e}");
         // A PDF is converted under its extension, its links read from the
         // Markdown.
         let Body::Convert(c) = read_body(
@@ -1801,7 +1817,7 @@ mod tests {
             200,
             "application/pdf",
             b"%PDF-1.7".to_vec(),
-            Format::Auto,
+            Format::Markdown,
         )
         .unwrap() else {
             panic!("a PDF is converted")
@@ -1819,7 +1835,7 @@ mod tests {
                 200,
                 "application/octet-stream",
                 b"plain words".to_vec(),
-                Format::Auto,
+                Format::Markdown,
             )
             .unwrap(),
         );
@@ -1834,7 +1850,7 @@ mod tests {
         let u = url("https://a.example/");
         let latin = b"<meta charset=\"iso-8859-1\"><p>caf\xe9</p>".to_vec();
         let Body::Convert(c) =
-            read_body(&u, 200, "text/html", latin.clone(), Format::Auto).unwrap()
+            read_body(&u, 200, "text/html", latin.clone(), Format::Markdown).unwrap()
         else {
             panic!("HTML is converted")
         };
@@ -1935,9 +1951,9 @@ mod tests {
     fn binary_bodies_and_unreadable_errors_are_refused() {
         let u = url("https://a.example/");
         for (ct, format) in [
-            ("image/png", Format::Auto),
-            ("audio/ogg", Format::Auto),
-            ("video/webm", Format::Auto),
+            ("image/png", Format::Markdown),
+            ("audio/ogg", Format::Markdown),
+            ("video/webm", Format::Markdown),
             ("application/zip", Format::Raw),
             ("application/pdf", Format::Raw),
         ] {
@@ -1946,19 +1962,27 @@ mod tests {
             assert!(e.went_out);
         }
         // A readable error page is a page with its status.
-        let p =
-            page_of(read_body(&u, 404, "text/plain", b"Not here".to_vec(), Format::Auto).unwrap());
+        let p = page_of(
+            read_body(
+                &u,
+                404,
+                "text/plain",
+                b"Not here".to_vec(),
+                Format::Markdown,
+            )
+            .unwrap(),
+        );
         assert_eq!((p.status, p.text.as_str()), (404, "Not here"));
         // One with nothing to read is unavailable; a server error may pass.
-        let e = read_body(&u, 503, "text/html", Vec::new(), Format::Auto).unwrap_err();
+        let e = read_body(&u, 503, "text/html", Vec::new(), Format::Markdown).unwrap_err();
         assert_eq!(
             (e.code, e.retryable, e.went_out),
             (CODE_WEB_UNAVAILABLE, true, true)
         );
-        let e = read_body(&u, 403, "image/png", b"x".to_vec(), Format::Auto).unwrap_err();
+        let e = read_body(&u, 403, "image/png", b"x".to_vec(), Format::Markdown).unwrap_err();
         assert_eq!((e.code, e.retryable), (CODE_WEB_UNAVAILABLE, false));
         let Body::Convert(c) =
-            read_body(&u, 500, "text/html", b"<p></p>".to_vec(), Format::Auto).unwrap()
+            read_body(&u, 500, "text/html", b"<p></p>".to_vec(), Format::Markdown).unwrap()
         else {
             panic!("converted")
         };
@@ -2007,7 +2031,7 @@ mod tests {
         let p = w
             .fetch(
                 &url("https://rust-lang.org/"),
-                Format::Auto,
+                Format::Markdown,
                 &FetchLimits::default(),
                 &any,
                 &c,

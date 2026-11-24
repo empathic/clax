@@ -52,6 +52,8 @@ extern crate self as clax_bot;
 pub mod api;
 pub mod bot_surfaces;
 pub mod broker;
+pub mod browser;
+pub mod capability;
 pub mod check;
 pub mod clax;
 pub mod draft;
@@ -86,6 +88,7 @@ pub mod script;
 #[warn(clippy::disallowed_methods)]
 #[cfg(test)]
 mod script_scenarios;
+pub mod state;
 pub mod surface;
 pub mod web;
 

@@ -3,6 +3,7 @@ import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { settle, stubFetch } from "../people/fixtures";
 import { flush, mount } from "../test/svelte";
 import AuditPage from "./AuditPage.svelte";
+import type { MeCapability } from "./api";
 import { errorDetail, meBot, settings } from "./fixtures";
 import { forget } from "./me";
 import MePage from "./MePage.svelte";
@@ -102,55 +103,60 @@ describe("You", () => {
     expect(m.root.querySelector('[role="switch"][aria-label="Use my own Anthropic key"]')!.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("me_shows_the_web_switch_and_prices", async () => {
-    let me = meBot();
-    const calls = stubFetch({
-      "GET /api/me/bot": () => me,
-      "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
-      "PUT /api/me/bot": (b: { web: boolean }) => { me = meBot({ web: { on: b.web, offered: true, operations: { search: true, fetch: true }, why_off: b.web ? null : "person_off", prices: { search_milli: 25, fetch_milli: 50 } } }); return me; },
-    });
-    const m = mount(MePage, { now: () => new Date("2026-10-21T14:05:00Z") });
-    await settle();
-    const sw = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Let ClaxBot search and read the web"]')!;
-    expect(sw.getAttribute("aria-checked")).toBe("true");
-    expect(sw.getAttribute("aria-disabled")).toBeNull();
-    expect(m.root.querySelector(".mew-web")!.textContent).toContain("Searches cost 25 credits and reading a page 50 credits, per thousand requests.");
-    click(sw);
-    await settle();
-    expect(calls.some(c => c.url === "/api/admin/pricing")).toBe(false);
-    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ web: false });
-    const off = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Let ClaxBot search and read the web"]')!;
-    // Their own choice: off, and still theirs to turn on.
-    expect([off.getAttribute("aria-checked"), off.getAttribute("aria-disabled")]).toEqual(["false", null]);
+  const USAGE = { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] };
+  const cap = (o: Partial<MeCapability> & { id: MeCapability["id"] }): MeCapability => ({
+    offered: true, granted: true, on: true, why_off: null, price_milli: o.id.startsWith("clax-web:") ? 50 : 150, per: o.id.startsWith("clax-web:") ? "request" : "minute", ...o,
   });
+  const ALL: MeCapability["id"][] = ["clax-web:search", "clax-web:fetch", "clax-browser:open-url", "clax-browser:open-artifact", "clax-browser:open-content"];
 
-  it("me_offers_only_reading_where_the_instance_cannot_search", async () => {
-    stubFetch({
-      "GET /api/me/bot": meBot({ web: { on: true, offered: true, operations: { search: false, fetch: true }, why_off: null, prices: { search_milli: 25, fetch_milli: 50 } } }),
-      "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
+  it("the_me_page_switches_one_capability", async () => {
+    let caps = ALL.map(id => cap({ id }));
+    const calls = stubFetch({
+      "GET /api/me/bot": () => meBot({ capabilities: caps }),
+      "GET /api/me/usage": USAGE,
+      "PUT /api/me/bot": (b: { capabilities: Record<string, boolean> }) => {
+        caps = caps.map(c => (c.id in b.capabilities ? { ...c, on: b.capabilities[c.id], why_off: b.capabilities[c.id] ? null : "person_off" } : c));
+        return meBot({ capabilities: caps });
+      },
     });
     const m = mount(MePage, {});
     await settle();
-    const sw = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Let ClaxBot read web pages"]')!;
-    expect(sw.getAttribute("aria-checked")).toBe("true");
-    const note = m.root.querySelector(".mew-web")!.textContent!;
-    expect(note).toContain("ClaxBot may read web pages for you; the pages a run reads can carry data out. Reading a page 50 credits, per thousand requests.");
-    expect(note).not.toContain("Searches");
+    const labels = [...m.root.querySelectorAll('.mecap [role="switch"]')].map(x => x.getAttribute("aria-label"));
+    expect(labels).toEqual(["Search the web", "Read web pages", "Open public pages in a browser", "Open the pages it builds in a browser", "Open content it makes in a browser"]);
+    const content = '[role="switch"][aria-label="Open content it makes in a browser"]';
+    expect(m.root.querySelector(content)!.getAttribute("aria-checked")).toBe("true");
+    expect(m.root.textContent).toContain("Browser time costs 0.15 credits a minute.");
+    expect(m.root.textContent).toContain("50 credits per thousand requests.");
+    click(m.root.querySelector<HTMLElement>(content)!);
+    await settle();
+    // One capability alone, by its ID.
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ capabilities: { "clax-browser:open-content": false } });
+    const off = m.root.querySelector<HTMLElement>(content)!;
+    expect([off.getAttribute("aria-checked"), off.getAttribute("aria-disabled")]).toEqual(["false", null]);
+    expect(m.root.querySelector('[role="switch"][aria-label="Read web pages"]')!.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("me_disables_the_switch_when_off_on_the_instance", async () => {
-    for (const [why, text] of [["admin_off", "Off on this instance"], ["not_configured", "Not configured"]] as const) {
-      stubFetch({
-        "GET /api/me/bot": meBot({ web: { on: true, offered: false, operations: { search: false, fetch: false }, why_off: why, prices: { search_milli: null, fetch_milli: null } } }),
-        "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
-      });
-      const m = mount(MePage, {});
-      await settle();
-      const sw = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Let ClaxBot search and read the web"]')!;
-      expect([sw.getAttribute("aria-checked"), sw.getAttribute("aria-disabled")]).toEqual(["false", "true"]);
-      expect(m.root.querySelector(".mew-web")!.textContent).toContain(text);
-      m.unmount();
-    }
+  it("an_offered_capability_not_granted_shows_not_granted_to_you", async () => {
+    stubFetch({
+      "GET /api/me/bot": meBot({ capabilities: [
+        cap({ id: "clax-web:fetch", granted: false, on: false, why_off: "not_granted" }),
+        cap({ id: "clax-browser:open-url", offered: false, granted: false, on: false, why_off: "not_offered" }),
+        cap({ id: "clax-browser:open-artifact", offered: false, granted: true, on: false, why_off: "not_offered" }),
+        cap({ id: "clax-browser:open-content", granted: true, on: false, why_off: "not_configured" }),
+      ] }),
+      "GET /api/me/usage": USAGE,
+    });
+    const m = mount(MePage, {});
+    await settle();
+    const state = (label: string) => { const x = m.root.querySelector(`[role="switch"][aria-label="${label}"]`); return x && [x.getAttribute("aria-checked"), x.getAttribute("aria-disabled")]; };
+    expect(state("Read web pages")).toEqual(["false", "true"]);
+    expect(m.root.textContent).toContain("Not granted to you.");
+    // Neither offered nor granted: not shown.
+    expect(state("Open public pages in a browser")).toBeNull();
+    expect(state("Open the pages it builds in a browser")).toEqual(["false", "true"]);
+    expect(m.root.textContent).toContain("Off on this instance.");
+    expect(state("Open content it makes in a browser")).toEqual(["false", "true"]);
+    expect(m.root.textContent).toContain("Not configured.");
   });
 
   it("shows the person's own key's last failed request, what the provider said, and keeps its problem line", async () => {

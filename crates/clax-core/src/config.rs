@@ -651,6 +651,12 @@ impl HomeConfig {
                 ));
             }
         }
+        if b.models.images.iter().any(|m| m.trim().is_empty()) {
+            return Err(bad(
+                "models.images",
+                "models.images lists an empty model ID".into(),
+            ));
+        }
         let ranges: [(&str, u64, u64, u64); 11] = [
             ("max_tokens", b.max_tokens.into(), 1, 1_000_000),
             ("max_steps", b.max_steps.into(), 1, 10_000),
@@ -685,6 +691,9 @@ impl HomeConfig {
             }
         }
         if let Some((key, what)) = bot_web_problem(&b.web) {
+            return Err(bad(key, what));
+        }
+        if let Some((key, what)) = bot_browser_problem(&b.browser) {
             return Err(bad(key, what));
         }
         Ok(b)
@@ -1112,6 +1121,8 @@ pub struct BotConfig {
     pub script: BotScript,
     /// `[bot.web]`: the web tools' settings ([`BotWeb`]).
     pub web: BotWeb,
+    /// `[bot.browser]`: browser testing's settings ([`BotBrowser`]).
+    pub browser: BotBrowser,
     /// Where the daemon fetches the price catalog from
     /// ([`PRICE_CATALOG_URL`] by default): `https://`, or `http://` on
     /// localhost, 127.0.0.1 or [::1] ([`base_url_ok`]); empty or `off`,
@@ -1119,9 +1130,11 @@ pub struct BotConfig {
     /// `CLAX_BOT__PRICE_CATALOG_URL=off`). Read from the file and the
     /// environment alone, never from the admin pages ([`BotConfig::catalog_url`]).
     pub price_catalog_url: String,
-    /// The instance's models take images in a tool result (default
-    /// false): ClaxBot shows a model the images a script step returns
-    /// only when this says it takes them. Read from the file and the
+    /// Every model takes images in a tool result (default false): the
+    /// instance-wide switch `[bot.models] images` replaced, still taken so
+    /// a `config.toml` that sets it keeps working. Which models take images
+    /// is a fact of each model: list them in `images` instead
+    /// ([`BotConfig::takes_images`]). Read from the file and the
     /// environment alone.
     pub model_takes_images: bool,
 }
@@ -1130,6 +1143,14 @@ pub struct BotConfig {
 pub const PRICE_CATALOG_URL: &str = "https://tokenulator.dev/data/site.json";
 
 impl BotConfig {
+    /// Whether ClaxBot shows `model` the images a script step returns: it
+    /// is one `[bot.models] images` lists, or `model_takes_images` says
+    /// every model takes them.
+    #[must_use]
+    pub fn takes_images(&self, model: &str) -> bool {
+        self.model_takes_images || self.models.images.iter().any(|m| m.trim() == model)
+    }
+
     /// The price catalog URL `price_catalog_url` names: `None` when it is
     /// empty or `off` (never fetched), or not a URL [`base_url_ok`] takes.
     #[must_use]
@@ -1163,6 +1184,7 @@ impl Default for BotConfig {
             models: BotModels::default(),
             script: BotScript::default(),
             web: BotWeb::default(),
+            browser: BotBrowser::default(),
             price_catalog_url: PRICE_CATALOG_URL.into(),
             model_takes_images: false,
         }
@@ -1244,13 +1266,21 @@ pub fn url_host(url: &str) -> String {
     host.trim_end_matches('.').to_string()
 }
 
-/// `[bot.models]`: the model ID of each tier; none empty.
+/// `[bot.models]`: the model ID of each tier, none empty, and the models
+/// that take images.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct BotModels {
     pub default: String,
     pub quick: String,
     pub complex: String,
+    /// The model IDs that take images in a tool result (default none):
+    /// ClaxBot shows a run's model the images a script step returns only
+    /// when its model is one of these, whichever tier it is. Not every
+    /// model takes images, and nothing in a model's metadata says which
+    /// do, so the instance names them. None empty. Read from the file and
+    /// the environment alone.
+    pub images: Vec<String>,
 }
 
 impl Default for BotModels {
@@ -1259,6 +1289,7 @@ impl Default for BotModels {
             default: "claude-sonnet-5-5".into(),
             quick: "claude-haiku-5-5".into(),
             complex: "claude-opus-5-5".into(),
+            images: Vec::new(),
         }
     }
 }
@@ -1350,7 +1381,7 @@ impl Default for BotWebSearch {
 pub struct BotWebFetch {
     /// The instance offers fetch (default false).
     pub enabled: bool,
-    /// `sourced` (the default), `any_public` or `allowlist`.
+    /// `sourced` (the default), `sender`, `any_public` or `allowlist`.
     pub url_rule: String,
     /// The hosts `allowlist` admits: at most 100 lowercase hostnames, each
     /// optionally starting `*.`, none twice (default none).
@@ -1367,6 +1398,212 @@ impl Default for BotWebFetch {
     }
 }
 
+/// `[bot.browser]`: ClaxBot's running browser (spec
+/// `docs/superpowers/specs/2026-11-19-claxbot-browser-design.md` §11.1),
+/// the stored `browser.*` settings of the same names that the file or the
+/// environment overrides (`[bot.browser] call_seconds` is
+/// `browser.call_seconds`, `[bot.browser.open-url] url_rule` is
+/// `browser.open-url.url_rule`). Each `open-*` action of `clax-browser` is offered on
+/// its own; none is granted to anyone here (grants are the admin page's).
+/// The Cloudflare account and token are the web tools' (`[bot.web]`), set
+/// at `/admin`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BotBrowser {
+    /// One browser call's time cap, in seconds: 10 to 120 (default 60).
+    pub call_seconds: u64,
+    /// Browsers open at once on the instance: 1 to 50 (default 2).
+    pub max_concurrent: u64,
+    /// A run's browser sessions open at once: 1 to 4 (default 1).
+    pub max_open_per_run: u64,
+    pub session: BotBrowserSession,
+    /// `[bot.browser.open-url]`.
+    #[serde(rename = "open-url")]
+    pub open_url: BotBrowserOpenUrl,
+    /// `[bot.browser.open-artifact]`.
+    #[serde(rename = "open-artifact")]
+    pub open_artifact: BotBrowserOpenKind,
+    /// `[bot.browser.open-content]`.
+    #[serde(rename = "open-content")]
+    pub open_content: BotBrowserOpenKind,
+}
+
+impl Default for BotBrowser {
+    fn default() -> Self {
+        BotBrowser {
+            call_seconds: 60,
+            max_concurrent: 2,
+            max_open_per_run: 1,
+            session: BotBrowserSession::default(),
+            open_url: BotBrowserOpenUrl::default(),
+            open_artifact: BotBrowserOpenKind::default(),
+            open_content: BotBrowserOpenKind::default(),
+        }
+    }
+}
+
+/// `[bot.browser.session]`: when a browser session ends by itself.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BotBrowserSession {
+    /// A session with no call for this long ends, in seconds: 60 to
+    /// 1,200 (default 300).
+    pub idle_seconds: u64,
+    /// A session open this long ends, in seconds: 60 to 7,200 (default
+    /// 1,800).
+    pub max_seconds: u64,
+}
+
+impl Default for BotBrowserSession {
+    fn default() -> Self {
+        BotBrowserSession {
+            idle_seconds: 300,
+            max_seconds: 1_800,
+        }
+    }
+}
+
+/// `[bot.browser.open-url]`: sessions on a public URL, the
+/// `clax-browser` action `open-url`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BotBrowserOpenUrl {
+    /// The instance offers it (default false).
+    pub enabled: bool,
+    /// `sender` (the default), `sourced`, `allowlist` or `any_public`.
+    pub url_rule: String,
+    /// The hosts `allowlist` admits, as `[bot.web.fetch] allowlist`'s
+    /// (default none).
+    pub allowlist: Vec<String>,
+    /// Sessions on a URL one run opens, `goto`s out included: at least 1
+    /// (default 5).
+    pub max_per_run: u64,
+}
+
+impl Default for BotBrowserOpenUrl {
+    fn default() -> Self {
+        BotBrowserOpenUrl {
+            enabled: false,
+            url_rule: "sender".into(),
+            allowlist: Vec::new(),
+            max_per_run: 5,
+        }
+    }
+}
+
+/// `[bot.browser.open-artifact]` and `[bot.browser.open-content]`:
+/// sessions on the run's clax, and on content the script supplies.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BotBrowserOpenKind {
+    /// The instance offers it (default false).
+    pub enabled: bool,
+    /// Sessions of the kind one run opens (for the clax, tests too): at
+    /// least 1 (default 10).
+    pub max_per_run: u64,
+}
+
+impl Default for BotBrowserOpenKind {
+    fn default() -> Self {
+        BotBrowserOpenKind {
+            enabled: false,
+            max_per_run: 10,
+        }
+    }
+}
+
+/// Whether `h` is an allowlist's host: a lowercase hostname, optionally
+/// starting `*.`.
+fn allowlist_host(h: &str) -> bool {
+    let h = h.strip_prefix("*.").unwrap_or(h);
+    h.len() <= 253
+        && h.split('.').all(|l| {
+            (1..=63).contains(&l.len())
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+}
+
+/// Why an allowlist `list` (the setting `key`) is refused; `None` when it
+/// checks: at most 100 distinct [`allowlist_host`]s.
+fn allowlist_problem(key: &'static str, list: &[String]) -> Option<(&'static str, String)> {
+    let distinct: std::collections::BTreeSet<&String> = list.iter().collect();
+    (list.len() > 100 || distinct.len() != list.len() || !list.iter().all(|h| allowlist_host(h)))
+        .then(|| {
+            (
+                key,
+                format!(
+                    "{key} must be at most 100 distinct lowercase hostnames, each optionally starting '*.'"
+                ),
+            )
+        })
+}
+
+/// Why `[bot.browser]` `b` is refused, as (key under `[bot]`, message);
+/// `None` when it checks, by the stored settings' own rules.
+fn bot_browser_problem(b: &BotBrowser) -> Option<(&'static str, String)> {
+    const ANY: u64 = 1_000_000_000_000;
+    for (key, v, lo, hi) in [
+        ("browser.call_seconds", b.call_seconds, 10, 120),
+        ("browser.max_concurrent", b.max_concurrent, 1, 50),
+        ("browser.max_open_per_run", b.max_open_per_run, 1, 4),
+        (
+            "browser.session.idle_seconds",
+            b.session.idle_seconds,
+            60,
+            1_200,
+        ),
+        (
+            "browser.session.max_seconds",
+            b.session.max_seconds,
+            60,
+            7_200,
+        ),
+        (
+            "browser.open-url.max_per_run",
+            b.open_url.max_per_run,
+            1,
+            ANY,
+        ),
+        (
+            "browser.open-artifact.max_per_run",
+            b.open_artifact.max_per_run,
+            1,
+            ANY,
+        ),
+        (
+            "browser.open-content.max_per_run",
+            b.open_content.max_per_run,
+            1,
+            ANY,
+        ),
+    ] {
+        if !(lo..=hi).contains(&v) {
+            let range = if hi == ANY {
+                format!("at least {lo}")
+            } else {
+                format!("from {lo} to {hi}")
+            };
+            return Some((key, format!("{key} must be {range}, not {v}")));
+        }
+    }
+    if !matches!(
+        b.open_url.url_rule.trim(),
+        "sender" | "sourced" | "allowlist" | "any_public"
+    ) {
+        return Some((
+            "browser.open-url.url_rule",
+            format!(
+                "browser.open-url.url_rule must be sender, sourced, allowlist or any_public, not \"{}\"",
+                b.open_url.url_rule
+            ),
+        ));
+    }
+    allowlist_problem("browser.open-url.allowlist", &b.open_url.allowlist)
+}
+
 /// Why `[bot.web]` `w` is refused, as (key under `[bot]`, message); `None`
 /// when it checks. The checks are the stored settings' own
 /// (`clax_store::bot_settings::Kind`), so a value the file may set is one
@@ -1377,17 +1614,6 @@ fn bot_web_problem(w: &BotWeb) -> Option<(&'static str, String)> {
         s.len() <= 64
             && s.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-    };
-    let hostname = |h: &str| {
-        let h = h.strip_prefix("*.").unwrap_or(h);
-        h.len() <= 253
-            && h.split('.').all(|l| {
-                (1..=63).contains(&l.len())
-                    && !l.starts_with('-')
-                    && !l.ends_with('-')
-                    && l.bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            })
     };
     let s = &w.search;
     let f = &w.fetch;
@@ -1425,26 +1651,19 @@ fn bot_web_problem(w: &BotWeb) -> Option<(&'static str, String)> {
             return Some((key, format!("{key} must be at least 1, not {v}")));
         }
     }
-    if !matches!(f.url_rule.trim(), "sourced" | "any_public" | "allowlist") {
+    if !matches!(
+        f.url_rule.trim(),
+        "sender" | "sourced" | "any_public" | "allowlist"
+    ) {
         return Some((
             "web.fetch.url_rule",
             format!(
-                "web.fetch.url_rule must be sourced, any_public or allowlist, not \"{}\"",
+                "web.fetch.url_rule must be sender, sourced, any_public or allowlist, not \"{}\"",
                 f.url_rule
             ),
         ));
     }
-    let distinct: std::collections::BTreeSet<&String> = f.allowlist.iter().collect();
-    if f.allowlist.len() > 100
-        || distinct.len() != f.allowlist.len()
-        || !f.allowlist.iter().all(|h| hostname(h))
-    {
-        return Some((
-            "web.fetch.allowlist",
-            "web.fetch.allowlist must be at most 100 distinct lowercase hostnames, each optionally starting '*.'".into(),
-        ));
-    }
-    None
+    allowlist_problem("web.fetch.allowlist", &f.allowlist)
 }
 
 /// How many live artifacts one GitHub member may keep by default
@@ -2399,6 +2618,45 @@ mod tests {
         }
     }
 
+    /// Which models take images is each model's: `[bot.models] images`
+    /// lists them, from the file or the environment; the old instance-wide
+    /// `[bot] model_takes_images` still says every model does; an empty
+    /// ID is refused.
+    #[test]
+    fn the_models_that_take_images_are_listed() {
+        let b = under("", &[]).bot().unwrap();
+        assert!(b.models.images.is_empty());
+        assert!(!b.takes_images("claude-sonnet-5-5"));
+        let b = under(
+            "[bot.models]\nimages = [\"claude-sonnet-5-5\", \"claude-opus-5-5\"]\n",
+            &[],
+        )
+        .bot()
+        .unwrap();
+        assert!(b.takes_images("claude-sonnet-5-5") && b.takes_images("claude-opus-5-5"));
+        assert!(
+            !b.takes_images("claude-haiku-5-5"),
+            "a model not listed takes none"
+        );
+        let b = under("", &[("CLAX_BOT__MODELS__IMAGES", "[\"m-1\"]")])
+            .bot()
+            .unwrap();
+        assert_eq!(b.models.images, vec!["m-1".to_string()]);
+        assert!(b.takes_images("m-1") && !b.takes_images("m-2"));
+        let b = under("[bot]\nmodel_takes_images = true\n", &[])
+            .bot()
+            .unwrap();
+        assert!(
+            b.takes_images("any-model"),
+            "the old switch says every model"
+        );
+        let e = under("[bot.models]\nimages = [\" \"]\n", &[])
+            .bot()
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("models.images"), "{e}");
+    }
+
     #[test]
     fn bot_defaults_and_overrides() {
         let b = under("", &[]).bot().unwrap();
@@ -2514,6 +2772,54 @@ mod tests {
     }
 
     #[test]
+    fn bot_browser_defaults_and_overrides() {
+        let b = under("", &[]).bot().unwrap().browser;
+        assert_eq!(b, BotBrowser::default());
+        assert_eq!(
+            (
+                b.call_seconds,
+                b.max_concurrent,
+                b.max_open_per_run,
+                b.session.idle_seconds,
+                b.session.max_seconds
+            ),
+            (60, 2, 1, 300, 1_800)
+        );
+        assert_eq!(
+            (
+                b.open_url.enabled,
+                b.open_url.url_rule.as_str(),
+                b.open_url.max_per_run
+            ),
+            (false, "sender", 5)
+        );
+        assert_eq!(
+            (b.open_artifact.enabled, b.open_artifact.max_per_run),
+            (false, 10)
+        );
+        assert_eq!(
+            (b.open_content.enabled, b.open_content.max_per_run),
+            (false, 10)
+        );
+        let c = under(
+            "[bot.browser]\ncall_seconds = 90\n[bot.browser.open-artifact]\nenabled = true\n[bot.browser.open-url]\nurl_rule = \"allowlist\"\nallowlist = [\"*.example.com\"]\n[bot.browser.session]\nidle_seconds = 600\n",
+            &[("CLAX_BOT__BROWSER__MAX_CONCURRENT", "5")],
+        );
+        let b = c.bot().unwrap().browser;
+        assert!(b.open_artifact.enabled && !b.open_content.enabled);
+        assert_eq!((b.call_seconds, b.max_concurrent), (90, 5));
+        assert_eq!(b.session.idle_seconds, 600);
+        assert_eq!(b.open_url.allowlist, vec!["*.example.com".to_string()]);
+        assert_eq!(c.source("bot.browser.call_seconds"), Source::File);
+        assert_eq!(c.source("bot.browser.open-artifact.enabled"), Source::File);
+        assert_eq!(
+            c.source("bot.browser.max_concurrent"),
+            Source::Env("CLAX_BOT__BROWSER__MAX_CONCURRENT".into())
+        );
+        assert_eq!(c.source("bot.browser.open-url.enabled"), Source::Default);
+    }
+
+    #[test]
     fn known_hosts_name_their_catalog_provider() {
         let g = "https://generativelanguage.googleapis.com/v1beta";
         assert_eq!(ModelApi::Gemini.catalog_provider(g), Some("google"));
@@ -2564,6 +2870,18 @@ mod tests {
             "[bot.web.fetch]\nurl_rule = \"open\"\n",
             "[bot.web.fetch]\nallowlist = [\"Example.com\"]\n",
             "[bot.web.fetch]\nallowlist = [\"a.com\", \"a.com\"]\n",
+            "[bot.browser]\nunknown = 1\n",
+            "[bot.browser]\nenabled = true\n",
+            "[bot.browser]\ncall_seconds = 9\n",
+            "[bot.browser]\ncall_seconds = 121\n",
+            "[bot.browser]\nmax_concurrent = 0\n",
+            "[bot.browser]\nmax_open_per_run = 5\n",
+            "[bot.browser.session]\nidle_seconds = 59\n",
+            "[bot.browser.session]\nmax_seconds = 7201\n",
+            "[bot.browser.open-artifact]\nmax_per_run = 0\n",
+            "[bot.browser.open-url]\nurl_rule = \"open\"\n",
+            "[bot.browser.open-url]\nallowlist = [\"Example.com\"]\n",
+            "[bot.browser.browse]\nenabled = true\n",
         ] {
             let c = with(&format!("{t}[serve]\nport = 7481\n"));
             let e = c.bot().unwrap_err();

@@ -415,6 +415,7 @@
       "ok": false,
       "op": "web.search",
       "result": {
+        "capability": "clax-web:search",
         "code": "web_disabled",
         "message": "clax.web.search is not available to this run"
       },
@@ -487,7 +488,7 @@
           "tool_use_id": "tu_1"
         },
         "stop_reason": "tool_use",
-        "system": "<13927 bytes, sha256 b43a054b2b06927dafc73de93a5c77220ced660163a5fe0dc7c6fbaae2ef9b46, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
+        "system": "<14146 bytes, sha256 8bfbd92b9070fbcd88df1e3e8818d066494621b9dec0bb385ea246d7ec9945e4, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
         "usage": {
           "cache_creation_input_tokens": 500,
           "cache_read_input_tokens": 2000,

@@ -9124,7 +9124,7 @@ impl BotWorld {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: String::new(),
+                    caps: String::new(),
                 },
             )
             .unwrap();

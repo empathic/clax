@@ -1,11 +1,13 @@
 //! ClaxBot's web tools in the store (migration 63, spec
 //! 2026-11-02-claxbot-web-tools).
 //!
-//! - A person's own choice (§9.2): web search and web fetch are on for a
-//!   person unless they turn them off, whatever the instance's
-//!   `web.*.enabled` settings say; the instance settings still decide
-//!   whether the tools exist at all. The choice is a row of
-//!   `bot_person_prefs`, kept per person key.
+//! - A person's own choice (§9.2), now their grants of each web
+//!   capability to their runs (migration 69, spec
+//!   2026-11-19-claxbot-browser-design §11.2, [`crate::bot_grants`]):
+//!   [`Store::web_choice`] and [`Store::set_web_choice`] read and set both
+//!   web capabilities' at once, for the Me route's `web` field, and
+//!   [`Store::set_cap_choice`] one capability's. `bot_person_prefs` is no
+//!   longer read.
 //! - The Spend transaction (§4.2, §7.2): a web call's journal entry, its
 //!   usage row and (for a fetch) its page commit together, before the
 //!   script sees the answer ([`Store::spend_journaled`]). The usage row is
@@ -18,12 +20,13 @@
 //!   from the store, so a second page of it is refused (`page_exists`).
 
 use super::Store;
+use crate::bot_grants::{Grantee, RevokeReason, WEB_CAPABILITIES};
 use crate::bot_runs::{
     CALL_COLS, CallEntry, DriverId, Run, call_in, check_claim, insert_call, open_step_in,
     row_to_call, run_in, same_call,
 };
-use crate::credits::{Metered, charge_in};
-use clax_core::audit::{Actor, AuditCtx, AuditKind, AuditRecord};
+use crate::credits::{LINE_BROWSER_TIME, Metered, charge_in, charge_rows_in};
+use clax_core::audit::{Actor, AuditCtx, AuditRecord};
 use clax_core::{CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::collections::BTreeMap;
@@ -35,6 +38,9 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebPageRow {
     pub url: String,
+    /// The format it was fetched in: `markdown`, `html` or `raw`. The
+    /// store keeps a page per URL and format.
+    pub format: String,
     pub step_n: i64,
     pub seq: i64,
     pub final_url: String,
@@ -57,9 +63,190 @@ pub struct Spend {
     pub usage: Option<Metered>,
     /// The page a fetch received, kept at the entry's journal place.
     pub page: Option<WebPageRow>,
-    /// The call's `bot.web` record: the store sets its artifact, `run`,
+    /// What a browser session call does to its session's row: opens it,
+    /// moves its charged point, or closes it. `usage` then holds the
+    /// segment, one item of [`LINE_BROWSER_TIME`] whose quantity is the
+    /// point the call charges through less the session's charged point,
+    /// charged after that point ([`Metered::after`]): a session's time is
+    /// rounded once, over the whole session.
+    pub session: Option<SessionSpend>,
+    /// What the call writes of the grants: a page's share, or its revoke
+    /// (spec 2026-11-19-claxbot-browser-design §18.4), recorded as
+    /// ClaxBot for the run's person.
+    pub grant: Option<crate::bot_grants::GrantWrite>,
+    /// The call's `bot.spend` record: the store sets its artifact, `run`,
     /// `step` and `credits_milli`.
     pub audit: AuditRecord,
+}
+
+/// What a browser session is open on (spec 2026-11-19-claxbot-browser-design
+/// §6.2): a public URL, the run's clax, or content the script supplied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SessionKind {
+    Url,
+    Artifact,
+    Content,
+}
+
+impl SessionKind {
+    /// Every kind.
+    pub const ALL: [SessionKind; 3] = [
+        SessionKind::Url,
+        SessionKind::Artifact,
+        SessionKind::Content,
+    ];
+
+    /// Its name in `bot_browser_sessions.kind`: `url`, `artifact`, `content`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionKind::Url => "url",
+            SessionKind::Artifact => "artifact",
+            SessionKind::Content => "content",
+        }
+    }
+
+    /// The kind named `s`.
+    pub fn parse(s: &str) -> Option<SessionKind> {
+        SessionKind::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
+    /// The capability a session of this kind needs: `browser.open.<kind>`.
+    pub fn capability(self) -> &'static str {
+        match self {
+            SessionKind::Url => "clax-browser:open-url",
+            SessionKind::Artifact => "clax-browser:open-artifact",
+            SessionKind::Content => "clax-browser:open-content",
+        }
+    }
+}
+
+/// Why a browser session ended (spec 2026-11-19-claxbot-browser-design §6.3,
+/// §6.4): the reason `browser_session_closed` names, or `lost`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SessionEnd {
+    /// The script closed it (`page.close()`).
+    Closed,
+    /// No call for the idle time.
+    Idle,
+    /// Open for its lifetime.
+    Lifetime,
+    /// A revoke the run's capabilities no longer cover.
+    Revoked,
+    /// A call refused `credits_exhausted`.
+    Credits,
+    /// The run ended.
+    RunEnded,
+    /// Its page was not in the run's `state` when a script step
+    /// committed: nothing held it any more.
+    Dropped,
+    /// Its browser is gone: the daemon restarted, the socket dropped, the
+    /// page crashed or detached.
+    Lost,
+}
+
+impl SessionEnd {
+    /// Every reason.
+    pub const ALL: [SessionEnd; 8] = [
+        SessionEnd::Closed,
+        SessionEnd::Idle,
+        SessionEnd::Lifetime,
+        SessionEnd::Revoked,
+        SessionEnd::Credits,
+        SessionEnd::RunEnded,
+        SessionEnd::Dropped,
+        SessionEnd::Lost,
+    ];
+
+    /// Its name: `closed`, `idle`, `lifetime`, `revoked`, `credits`,
+    /// `run_ended`, `dropped`, `lost`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionEnd::Closed => "closed",
+            SessionEnd::Idle => "idle",
+            SessionEnd::Lifetime => "lifetime",
+            SessionEnd::Revoked => "revoked",
+            SessionEnd::Credits => "credits",
+            SessionEnd::RunEnded => "run_ended",
+            SessionEnd::Dropped => "dropped",
+            SessionEnd::Lost => "lost",
+        }
+    }
+
+    /// The reason named `s`.
+    pub fn parse(s: &str) -> Option<SessionEnd> {
+        SessionEnd::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+}
+
+/// What a browser session call of a [`Spend`] does to its session's row
+/// (spec 2026-11-19-claxbot-browser-design §10.3). Points are milliseconds
+/// since the session opened (the WebSocket's upgrade); each call charges
+/// the segment from the session's charged point to its own `through_ms`
+/// and moves the point there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionSpend {
+    /// `browser.open`: the session's row, its first segment `0..through_ms`.
+    Open {
+        session: String,
+        kind: SessionKind,
+        opened_at: chrono::DateTime<chrono::Utc>,
+        through_ms: i64,
+    },
+    /// A call on an open session; `kind` when the call changed what the
+    /// session is (a `goto` out of its origin makes it a URL session).
+    Call {
+        session: String,
+        through_ms: i64,
+        kind: Option<SessionKind>,
+    },
+    /// `browser.close`: the last segment, and the session closed for
+    /// `reason`.
+    Close {
+        session: String,
+        through_ms: i64,
+        reason: SessionEnd,
+    },
+}
+
+impl SessionSpend {
+    /// The session the call is on.
+    pub fn session(&self) -> &str {
+        match self {
+            SessionSpend::Open { session, .. }
+            | SessionSpend::Call { session, .. }
+            | SessionSpend::Close { session, .. } => session,
+        }
+    }
+
+    /// The point the call charges through.
+    pub fn through_ms(&self) -> i64 {
+        match self {
+            SessionSpend::Open { through_ms, .. }
+            | SessionSpend::Call { through_ms, .. }
+            | SessionSpend::Close { through_ms, .. } => *through_ms,
+        }
+    }
+}
+
+/// A browser session of a run, as `bot_browser_sessions` keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRow {
+    pub run_id: String,
+    pub session_id: String,
+    pub kind: SessionKind,
+    pub opened_at: String,
+    /// The point its time is charged through, in milliseconds since it
+    /// opened.
+    pub charged_ms: i64,
+    pub closed_at: Option<String>,
+    pub reason: Option<SessionEnd>,
+}
+
+impl SessionRow {
+    /// Whether it is still open.
+    pub fn is_open(&self) -> bool {
+        self.closed_at.is_none()
+    }
 }
 
 /// What [`Store::spend_journaled`] answered.
@@ -74,8 +261,135 @@ pub struct Spent {
     pub replayed: bool,
 }
 
+const SESSION_COLS: &str = "run_id, session_id, kind, opened_at, charged_ms, closed_at, reason";
+
+fn row_to_session(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
+    let kind: String = r.get(2)?;
+    let reason: Option<String> = r.get(6)?;
+    Ok(SessionRow {
+        run_id: r.get(0)?,
+        session_id: r.get(1)?,
+        // The table's CHECK holds the kind to the three names.
+        kind: SessionKind::parse(&kind).unwrap_or(SessionKind::Url),
+        opened_at: r.get(3)?,
+        charged_ms: r.get(4)?,
+        closed_at: r.get(5)?,
+        reason: reason.as_deref().and_then(SessionEnd::parse),
+    })
+}
+
+fn session_in(c: &Connection, run_id: &str, session: &str) -> Result<Option<SessionRow>> {
+    Ok(c.prepare_cached(&format!(
+        "SELECT {SESSION_COLS} FROM bot_browser_sessions
+              WHERE run_id = ?1 AND session_id = ?2"
+    ))?
+    .query_row(params![run_id, session], row_to_session)
+    .optional()?)
+}
+
+fn session_mismatch(run_id: &str, msg: String) -> CoreError {
+    CoreError::invalid("session_mismatch", format!("run {run_id}: {msg}"))
+}
+
+/// Applies `s`, a session call of run `run_id` whose `usage` is `usage`,
+/// to its session's row on `c` at `now` (see [`Spend::session`]).
+///
+/// # Errors
+/// `session_mismatch` for an open of a session the run has, a call or
+/// close of one it does not have or that is closed, a point before the
+/// session's charged one, or a `usage` that does not hold the segment;
+/// the store's.
+fn apply_session(
+    c: &Connection,
+    run_id: &str,
+    s: &SessionSpend,
+    usage: Option<&Metered>,
+    now: &str,
+) -> Result<()> {
+    let id = s.session();
+    let through = s.through_ms();
+    let row = session_in(c, run_id, id)?;
+    let charged = match (s, &row) {
+        (SessionSpend::Open { .. }, None) => 0,
+        (SessionSpend::Open { .. }, Some(_)) => {
+            return Err(session_mismatch(
+                run_id,
+                format!("session {id} is already open"),
+            ));
+        }
+        (_, None) => return Err(session_mismatch(run_id, format!("no session {id}"))),
+        (_, Some(r)) if !r.is_open() => {
+            return Err(session_mismatch(run_id, format!("session {id} is closed")));
+        }
+        (_, Some(r)) => r.charged_ms,
+    };
+    if through < charged {
+        return Err(session_mismatch(
+            run_id,
+            format!("session {id} is charged through {charged} ms, past {through} ms"),
+        ));
+    }
+    let segment = through - charged;
+    if !usage.is_some_and(|m| m.line == LINE_BROWSER_TIME && m.qty == segment && m.after == charged)
+    {
+        return Err(session_mismatch(
+            run_id,
+            format!(
+                "a call of session {id} through {through} ms charges {segment} ms of \
+                 {LINE_BROWSER_TIME} after {charged} ms"
+            ),
+        ));
+    }
+    match s {
+        SessionSpend::Open {
+            kind, opened_at, ..
+        } => {
+            c.execute(
+                "INSERT INTO bot_browser_sessions (run_id, session_id, kind, opened_at, charged_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    run_id,
+                    id,
+                    kind.as_str(),
+                    clax_core::time::stamp(*opened_at),
+                    through
+                ],
+            )?;
+        }
+        SessionSpend::Call { kind, .. } => {
+            c.execute(
+                "UPDATE bot_browser_sessions SET charged_ms = ?3, kind = COALESCE(?4, kind)
+                  WHERE run_id = ?1 AND session_id = ?2",
+                params![run_id, id, through, kind.map(SessionKind::as_str)],
+            )?;
+        }
+        SessionSpend::Close { reason, .. } => {
+            close_session_in(c, run_id, id, through, *reason, now)?;
+        }
+    }
+    Ok(())
+}
+
+/// Closes session `id` of `run_id` on `c` at `at`, for `reason`, charged
+/// through `through`: whether it was open.
+fn close_session_in(
+    c: &Connection,
+    run_id: &str,
+    id: &str,
+    through: i64,
+    reason: SessionEnd,
+    at: &str,
+) -> Result<bool> {
+    Ok(c.execute(
+        "UPDATE bot_browser_sessions SET charged_ms = MAX(charged_ms, ?3), closed_at = ?4,
+                reason = ?5
+          WHERE run_id = ?1 AND session_id = ?2 AND closed_at IS NULL",
+        params![run_id, id, through, at, reason.as_str()],
+    )? == 1)
+}
+
 const PAGE_COLS: &str =
-    "url, step_n, seq, final_url, status, content_type, text, total_chars, links_json";
+    "url, step_n, seq, final_url, status, content_type, text, total_chars, links_json, format";
 
 fn row_to_page(r: &Row<'_>) -> rusqlite::Result<WebPageRow> {
     let links: String = r.get(8)?;
@@ -89,14 +403,16 @@ fn row_to_page(r: &Row<'_>) -> rusqlite::Result<WebPageRow> {
         text: r.get(6)?,
         total_chars: r.get(7)?,
         links: serde_json::from_str(&links).unwrap_or_default(),
+        format: r.get(9)?,
     })
 }
 
 /// Keeps `page` for run `run_id` at journal place `(step_n, seq)` on `c`.
 ///
 /// # Errors
-/// `page_exists` when the run already keeps a page of its URL (a fetch of
-/// it is answered from the store, never fetched again); the store's.
+/// `page_exists` when the run already keeps a page of its URL in its
+/// format (a fetch of it is answered from the store, never fetched
+/// again); the store's.
 fn insert_page(
     c: &Connection,
     run_id: &str,
@@ -106,9 +422,9 @@ fn insert_page(
 ) -> Result<()> {
     let inserted = c.execute(
         "INSERT INTO bot_web_pages (run_id, url, step_n, seq, final_url, status, content_type,
-            text, total_chars, links_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-         ON CONFLICT (run_id, url) DO NOTHING",
+            text, total_chars, links_json, format)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT (run_id, url, format) DO NOTHING",
         params![
             run_id,
             page.url,
@@ -120,14 +436,15 @@ fn insert_page(
             page.text,
             page.total_chars,
             serde_json::to_string(&page.links).expect("serialisable links"),
+            page.format,
         ],
     )?;
     if inserted == 0 {
         return Err(CoreError::invalid(
             "page_exists",
             format!(
-                "run {run_id} already keeps a page of {}; answer from the store",
-                page.url
+                "run {run_id} already keeps a page of {} as {}; answer from the store",
+                page.url, page.format
             ),
         ));
     }
@@ -135,52 +452,83 @@ fn insert_page(
 }
 
 impl Store {
-    /// Whether `person` allows ClaxBot the web tools: `true` when they
-    /// never chose.
+    /// Whether both web capabilities reach `person`'s runs: each held by
+    /// them and granted to their runs ([`Store::person_caps`]).
     ///
     /// # Errors
     /// The store's.
     pub fn web_choice(&self, person: &str) -> Result<bool> {
-        self.with_read(|c| {
-            Ok(
-                c.prepare_cached("SELECT web FROM bot_person_prefs WHERE person = ?1")?
-                    .query_row(params![person], |r| r.get::<_, bool>(0))
-                    .optional()?
-                    .unwrap_or(true),
-            )
-        })
+        self.family_reaches_runs(person, &WEB_CAPABILITIES)
     }
 
-    /// Sets whether `person` allows ClaxBot the web tools, as `ctx`; a
-    /// change is recorded as `me.web {person, value}`. Returns whether the
-    /// choice changed.
+    /// Turns `person`'s grants of both web capabilities to their runs on
+    /// or off, as `ctx` ([`Store::set_family_choice`]). Returns whether
+    /// any grant changed.
     ///
     /// # Errors
     /// The store's.
     pub fn set_web_choice(&self, ctx: &AuditCtx, person: &str, on: bool) -> Result<bool> {
-        self.with_tx(|tx| {
-            let was: bool = tx
-                .query_row(
-                    "SELECT web FROM bot_person_prefs WHERE person = ?1",
-                    params![person],
-                    |r| r.get(0),
-                )
-                .optional()?
-                .unwrap_or(true);
-            if was == on {
-                return Ok(false);
+        self.set_family_choice(ctx, person, &WEB_CAPABILITIES, on)
+    }
+
+    /// Turns `person`'s grant of capability `cap` to their runs on or off,
+    /// as `ctx`: off revokes it; on issues it under the admin grant that
+    /// gives them `cap`, a capability they do not hold left as it is.
+    /// Returns whether a grant changed.
+    ///
+    /// # Errors
+    /// `unknown_capability`; the store's.
+    pub fn set_cap_choice(
+        &self,
+        ctx: &AuditCtx,
+        person: &str,
+        cap: &str,
+        on: bool,
+    ) -> Result<bool> {
+        let Some(cap) = crate::bot_grants::CAPABILITIES.iter().find(|c| **c == cap) else {
+            return Err(clax_core::CoreError::invalid(
+                "unknown_capability",
+                format!("no capability is named {cap}"),
+            ));
+        };
+        self.set_family_choice(ctx, person, &[*cap], on)
+    }
+
+    fn family_reaches_runs(&self, person: &str, caps: &[&str]) -> Result<bool> {
+        let held = self.person_caps(person)?;
+        Ok(caps.iter().all(|c| held[*c].reaches_runs()))
+    }
+
+    /// Off revokes each live grant of `caps` to `person`'s runs; on issues
+    /// one, under the admin grant that gives them the capability, for each
+    /// they hold and have not granted to their runs. A capability they do
+    /// not hold is left as it is. Returns whether any grant changed.
+    fn set_family_choice(
+        &self,
+        ctx: &AuditCtx,
+        person: &str,
+        caps: &[&str],
+        on: bool,
+    ) -> Result<bool> {
+        let held = self.person_caps(person)?;
+        let runs = Grantee::RunsOf(person.to_string()).as_text();
+        let mut changed = false;
+        for cap in caps {
+            let h = &held[*cap];
+            match (on, &h.granted_by, &h.runs_grant) {
+                (false, _, Some(g)) => {
+                    changed |= !self
+                        .revoke_cap_grant(ctx, g, RevokeReason::Controller)?
+                        .is_empty();
+                }
+                (true, Some(_), None) => {
+                    self.issue_cap_grant(ctx, cap, person, &runs)?;
+                    changed = true;
+                }
+                _ => {}
             }
-            tx.execute(
-                "INSERT INTO bot_person_prefs (person, web, set_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (person) DO UPDATE SET web = excluded.web, set_at = excluded.set_at",
-                params![person, on, self.now()],
-            )?;
-            let rec = AuditRecord::new(AuditKind::MeWeb, self.now())
-                .with("person", person)
-                .with("value", on);
-            self.record_audit(tx, ctx, rec)?;
-            Ok(true)
-        })
+        }
+        Ok(changed)
     }
 
     /// Journals web call `s.entry` of `run` for `driver`, which holds the
@@ -193,7 +541,9 @@ impl Store {
     /// - Else charges `s.usage` to the run's person on the entry's step, as
     ///   a step's commit charges its rows (rates, free allowance, snapshot),
     ///   adds the charge to the run's `credits_milli`, keeps `s.page` at
-    ///   the entry's place, journals the entry, and records `s.audit` with
+    ///   the entry's place, applies `s.session` to its session's row (a
+    ///   replayed call touches no session), journals the entry, and
+    ///   records `s.audit` with
     ///   the run's artifact, `run`, `step` and `credits_milli` (the charge
     ///   just computed, over any the caller set) set, as ClaxBot for the
     ///   run's person.
@@ -204,6 +554,9 @@ impl Store {
     /// another run; `key_reused` when the place holds another call;
     /// `step_mismatch` when the entry's step is not the run's open step;
     /// `page_exists` when the run already keeps a page of `s.page`'s URL;
+    /// `session_mismatch` when `s.session` does not fit its session's row
+    /// ([`Spend::session`]: a closed or missing session, a point before
+    /// its charged one, a usage that is not the segment);
     /// the charge's (`unknown_cost_line`, `invalid_usage`); the store's.
     /// A refused Spend writes nothing.
     pub fn spend_journaled(&self, run: &Run, driver: &DriverId, s: Spend) -> Result<Spent> {
@@ -213,6 +566,8 @@ impl Store {
             entry,
             usage,
             page,
+            session,
+            grant,
             audit,
         } = s;
         self.with_tx(|tx| {
@@ -250,6 +605,10 @@ impl Store {
                     format!("step {n} of run {} is not begun and uncommitted", run.id),
                 ));
             }
+            let now = clax_core::time::stamp(at);
+            if let Some(session) = &session {
+                apply_session(tx, &run.id, session, usage.as_ref(), &now)?;
+            }
             let rows = charge_in(
                 tx,
                 &ov,
@@ -259,7 +618,6 @@ impl Store {
                 at,
             )?;
             let credits: i64 = rows.iter().map(|u| u.credits_milli).sum();
-            let now = clax_core::time::stamp(at);
             if credits != 0 {
                 tx.execute(
                     "UPDATE bot_runs SET credits_milli = credits_milli + ?2, updated_at = ?3
@@ -271,17 +629,20 @@ impl Store {
                 insert_page(tx, &run.id, n, entry.seq(), page)?;
             }
             insert_call(tx, &entry, &now)?;
-            let mut rec = audit;
-            rec.ids.artifact = Some(run.artifact_id.clone());
-            rec.body.insert("run".into(), run.id.as_str().into());
-            rec.body.insert("step".into(), n.into());
-            rec.body.insert("credits_milli".into(), credits.into());
             let ctx = AuditCtx {
                 actor: Actor::Bot {
                     on_behalf_of: run.person.clone(),
                 },
                 ..AuditCtx::DAEMON
             };
+            if let Some(w) = &grant {
+                self.write_grant_in(tx, &ctx, &run.id, w)?;
+            }
+            let mut rec = audit;
+            rec.ids.artifact = Some(run.artifact_id.clone());
+            rec.body.insert("run".into(), run.id.as_str().into());
+            rec.body.insert("step".into(), n.into());
+            rec.body.insert("credits_milli".into(), credits.into());
             self.record_audit(tx, &ctx, rec)?;
             Ok(Spent {
                 entry,
@@ -291,16 +652,279 @@ impl Store {
         })
     }
 
-    /// The page run `run_id` keeps of `url` (normalised), or `None`.
+    /// Session `session` of run `run_id`, open or closed, or `None`.
     ///
     /// # Errors
     /// The store's.
-    pub fn web_page(&self, run_id: &str, url: &str) -> Result<Option<WebPageRow>> {
+    pub fn bot_browser_session(&self, run_id: &str, session: &str) -> Result<Option<SessionRow>> {
+        self.with_read(|c| session_in(c, run_id, session))
+    }
+
+    /// Every browser session of run `run_id`, in the order they opened
+    /// (by `opened_at`, then ID).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn bot_browser_sessions(&self, run_id: &str) -> Result<Vec<SessionRow>> {
         self.with_read(|c| {
             Ok(c.prepare_cached(&format!(
-                "SELECT {PAGE_COLS} FROM bot_web_pages WHERE run_id = ?1 AND url = ?2"
+                "SELECT {SESSION_COLS} FROM bot_browser_sessions
+                  WHERE run_id = ?1 ORDER BY opened_at, session_id"
             ))?
-            .query_row(params![run_id, url], row_to_page)
+            .query_map(params![run_id], row_to_session)?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Ends session `session` of run `run_id` for `reason`, an end the host
+    /// makes rather than a call (spec 2026-11-19-claxbot-browser-design
+    /// §10.3: idle, lifetime, revoke, credits, the run's end), its browser
+    /// closed `at_ms` milliseconds after it opened: charges the last
+    /// segment, from its charged point to `at_ms` (nothing when `at_ms` is
+    /// not past it), as [`LINE_BROWSER_TIME`] to the run's person on the
+    /// run, on its open step if one is open and else on none, adds it to
+    /// the run's `credits_milli`, records `bot.spend` with `op:
+    /// "browser.session.end"`, its capability, session, kind, reason and
+    /// `ms`, and closes the row, in one transaction. Only while the session
+    /// is open: a session closed already, or one the run never had, is
+    /// left as it is and charged nothing. Answers the credits charged.
+    ///
+    /// # Errors
+    /// The charge's (`unknown_cost_line`); the store's. A refused end
+    /// writes nothing.
+    pub fn end_bot_browser_session(
+        &self,
+        run_id: &str,
+        session: &str,
+        at_ms: i64,
+        reason: SessionEnd,
+    ) -> Result<i64> {
+        self.end_bot_session_row(run_id, session, at_ms, reason, None)
+    }
+
+    /// Charges a call of session `session` of run `run_id` that the holder
+    /// of an export made (spec 2026-11-19-claxbot-browser-design §18.5,
+    /// §18.8), the session's browser at `at_ms` milliseconds after it
+    /// opened when it answered: the segment from its charged point to
+    /// `at_ms` (nothing when `at_ms` is not past it), as
+    /// [`LINE_BROWSER_TIME`] to the run's person on the run, on its open
+    /// step if one is open and else on none, added to the run's
+    /// `credits_milli`; moves the charged point to `at_ms`, or for a
+    /// `close` closes the row `closed`; and records `audit` (a `bot.spend`
+    /// record) with the run's artifact, `run`, `step`, `ms` (the segment)
+    /// and `credits_milli` set, as ClaxBot for the run's person; in one
+    /// transaction. Answers the segment and the credits charged. Nothing
+    /// enters the run's journal: the call is no step's.
+    ///
+    /// # Errors
+    /// `NotFound` for no such run; `run_invalid` when it has ended;
+    /// `session_mismatch` for a session the run does not have or that is
+    /// closed; the charge's (`unknown_cost_line`); the store's. A refused
+    /// charge writes nothing.
+    pub fn charge_held_browser_call(
+        &self,
+        run_id: &str,
+        session: &str,
+        at_ms: i64,
+        close: bool,
+        audit: AuditRecord,
+    ) -> Result<(i64, i64)> {
+        let at = self.now_utc();
+        let ov = self.bot_overrides();
+        self.with_tx(|tx| {
+            let run = run_in(tx, run_id)?.ok_or(CoreError::NotFound)?;
+            if run.status.is_terminal() {
+                return Err(CoreError::invalid(
+                    "run_invalid",
+                    format!("run {run_id} has ended"),
+                ));
+            }
+            let Some(row) = session_in(tx, run_id, session)?.filter(SessionRow::is_open) else {
+                return Err(session_mismatch(
+                    run_id,
+                    format!("session {session} is not open"),
+                ));
+            };
+            let step = open_step_in(tx, run_id)?.map(|s| s.n);
+            let through = at_ms.max(row.charged_ms);
+            let segment = through - row.charged_ms;
+            let rows = charge_rows_in(
+                tx,
+                &ov,
+                &run.person,
+                Some(run_id),
+                step,
+                &[Metered {
+                    after: row.charged_ms,
+                    ..Metered::new(LINE_BROWSER_TIME, segment, run.key_source)
+                }],
+                at,
+            )?;
+            let credits: i64 = rows.iter().map(|u| u.credits_milli).sum();
+            let now = clax_core::time::stamp(at);
+            if credits != 0 {
+                tx.execute(
+                    "UPDATE bot_runs SET credits_milli = credits_milli + ?2, updated_at = ?3
+                      WHERE id = ?1",
+                    params![run_id, credits, now],
+                )?;
+            }
+            if close {
+                close_session_in(tx, run_id, session, through, SessionEnd::Closed, &now)?;
+            } else {
+                tx.execute(
+                    "UPDATE bot_browser_sessions SET charged_ms = ?3
+                      WHERE run_id = ?1 AND session_id = ?2",
+                    params![run_id, session, through],
+                )?;
+            }
+            let mut rec = audit
+                .with("run", run_id)
+                .with("step", step)
+                .with("ms", segment)
+                .with("credits_milli", credits);
+            rec.ids.artifact = Some(run.artifact_id.clone());
+            let ctx = AuditCtx {
+                actor: Actor::Bot {
+                    on_behalf_of: run.person.clone(),
+                },
+                ..AuditCtx::DAEMON
+            };
+            self.record_audit(tx, &ctx, rec)?;
+            Ok((segment, credits))
+        })
+    }
+
+    /// [`Store::end_bot_browser_session`] for a session whose open was
+    /// never written (its Spend refused): when run `run_id` has no row for
+    /// `session`, one of `kind` opened at `opened_at` is made first,
+    /// charged through 0, so the end charges its whole time `0..at_ms`,
+    /// once. A row the run has already is ended as
+    /// [`Store::end_bot_browser_session`] ends it.
+    ///
+    /// # Errors
+    /// As [`Store::end_bot_browser_session`].
+    pub fn end_unwritten_bot_browser_session(
+        &self,
+        run_id: &str,
+        session: &str,
+        kind: SessionKind,
+        opened_at: chrono::DateTime<chrono::Utc>,
+        at_ms: i64,
+        reason: SessionEnd,
+    ) -> Result<i64> {
+        self.end_bot_session_row(run_id, session, at_ms, reason, Some((kind, opened_at)))
+    }
+
+    fn end_bot_session_row(
+        &self,
+        run_id: &str,
+        session: &str,
+        at_ms: i64,
+        reason: SessionEnd,
+        unwritten: Option<(SessionKind, chrono::DateTime<chrono::Utc>)>,
+    ) -> Result<i64> {
+        let at = self.now_utc();
+        let ov = self.bot_overrides();
+        self.with_tx(|tx| {
+            if let Some((kind, opened_at)) = unwritten
+                && session_in(tx, run_id, session)?.is_none()
+            {
+                tx.execute(
+                    "INSERT INTO bot_browser_sessions (run_id, session_id, kind, opened_at, charged_ms)
+                     VALUES (?1, ?2, ?3, ?4, 0)",
+                    params![
+                        run_id,
+                        session,
+                        kind.as_str(),
+                        clax_core::time::stamp(opened_at)
+                    ],
+                )?;
+            }
+            let Some(row) = session_in(tx, run_id, session)?.filter(SessionRow::is_open) else {
+                return Ok(0);
+            };
+            let run = run_in(tx, run_id)?.ok_or(CoreError::NotFound)?;
+            let step = open_step_in(tx, run_id)?.map(|s| s.n);
+            let through = at_ms.max(row.charged_ms);
+            let segment = through - row.charged_ms;
+            let rows = charge_rows_in(
+                tx,
+                &ov,
+                &run.person,
+                Some(run_id),
+                step,
+                &[Metered {
+                    after: row.charged_ms,
+                    ..Metered::new(LINE_BROWSER_TIME, segment, run.key_source)
+                }],
+                at,
+            )?;
+            let credits: i64 = rows.iter().map(|u| u.credits_milli).sum();
+            let now = clax_core::time::stamp(at);
+            if credits != 0 {
+                tx.execute(
+                    "UPDATE bot_runs SET credits_milli = credits_milli + ?2, updated_at = ?3
+                      WHERE id = ?1",
+                    params![run_id, credits, now],
+                )?;
+            }
+            close_session_in(tx, run_id, session, through, reason, &now)?;
+            let mut rec = AuditRecord::new(clax_core::audit::AuditKind::BotSpend, self.now())
+                .with("capability", row.kind.capability())
+                .with("op", "browser.session.end")
+                .with("ok", true)
+                .with("session", session)
+                .with("kind", row.kind.as_str())
+                .with("reason", reason.as_str())
+                .with("ms", through)
+                .with("run", run_id)
+                .with("step", step)
+                .with("credits_milli", credits);
+            rec.ids.artifact = Some(run.artifact_id.clone());
+            let ctx = AuditCtx {
+                actor: Actor::Bot {
+                    on_behalf_of: run.person.clone(),
+                },
+                ..AuditCtx::DAEMON
+            };
+            self.record_audit(tx, &ctx, rec)?;
+            Ok(credits)
+        })
+    }
+
+    /// Marks every browser session the store holds open as lost, closed
+    /// at `at`, charging nothing (spec 2026-11-19-claxbot-browser-design
+    /// §6.4: a daemon starting holds no session, and the time after a
+    /// session's last charged point is the instance's loss). Answers how
+    /// many it marked.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn lose_open_bot_browser_sessions(&self, at: chrono::DateTime<chrono::Utc>) -> Result<u32> {
+        let at = clax_core::time::stamp(at);
+        self.with_write(|c| {
+            let n = c.execute(
+                "UPDATE bot_browser_sessions SET closed_at = ?1, reason = ?2
+                  WHERE closed_at IS NULL",
+                params![at, SessionEnd::Lost.as_str()],
+            )?;
+            Ok(u32::try_from(n).unwrap_or(u32::MAX))
+        })
+    }
+
+    /// The page run `run_id` keeps of `url` (normalised) in `format`
+    /// (`markdown`, `html`, `raw`), or `None`.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn web_page(&self, run_id: &str, url: &str, format: &str) -> Result<Option<WebPageRow>> {
+        self.with_read(|c| {
+            Ok(c.prepare_cached(&format!(
+                "SELECT {PAGE_COLS} FROM bot_web_pages
+                  WHERE run_id = ?1 AND url = ?2 AND format = ?3"
+            ))?
+            .query_row(params![run_id, url, format], row_to_page)
             .optional()?)
         })
     }
@@ -324,21 +948,38 @@ impl Store {
     }
 
     /// How many of run `id`'s journaled web calls each op made that its
-    /// entry marks `counted` (a result whose `counted` is true: the call
-    /// reached its source), by op; an op with none is absent. Counted in
-    /// the database, without reading the entries' results out.
+    /// entry marks `counted`, by op ([`Store::bot_spend_counts`] of `web`).
     ///
     /// # Errors
     /// The store's.
     pub fn bot_web_counts(&self, id: &str) -> Result<BTreeMap<String, u32>> {
+        self.bot_spend_counts(id, "web")
+    }
+
+    /// How many of run `id`'s journaled calls of the operation family
+    /// `namespace` (`web`, `browser`: the ops `<namespace>.<name>`) each
+    /// op made that its entry marks `counted` (a result whose `counted` is
+    /// true: the call reached its source), by op, or by the entry's
+    /// `count_as` when it has one (a browser session's open and a test
+    /// are counted under the capability of their source kind,
+    /// `clax-browser:open-url`); a key with none is absent. Counted in the
+    /// database, without reading the entries' results out. `namespace` is
+    /// one of the crate's callers' names, never a script's: it holds no
+    /// `%` or `_`.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn bot_spend_counts(&self, id: &str, namespace: &str) -> Result<BTreeMap<String, u32>> {
+        debug_assert!(!namespace.contains(['%', '_']), "{namespace}");
         self.with_read(|c| {
             let mut q = c.prepare_cached(
-                "SELECT op, COUNT(*) FROM bot_calls
-                  WHERE run_id = ?1 AND op LIKE 'web.%'
+                "SELECT COALESCE(json_extract(result_json, '$.count_as'), op), COUNT(*)
+                   FROM bot_calls
+                  WHERE run_id = ?1 AND op LIKE ?2 || '.%'
                     AND json_extract(result_json, '$.counted') = 1
-                  GROUP BY op",
+                  GROUP BY 1",
             )?;
-            let rows = q.query_map(params![id], |r| {
+            let rows = q.query_map(params![id, namespace], |r| {
                 let n: i64 = r.get(1)?;
                 Ok((r.get(0)?, u32::try_from(n).unwrap_or(u32::MAX)))
             })?;
@@ -366,11 +1007,12 @@ impl Store {
 mod tests {
     use super::*;
     use crate::bot_runs::{CallEntry, DriverId, NewRun, RequestKind, Run, StepCommit, StepKind};
-    use crate::credits::{KeySource, LINE_HARNESS_FEE, LINE_WEB_FETCH, Metered};
+    use crate::credits::{KeySource, LINE_BROWSER_TIME, LINE_HARNESS_FEE, LINE_WEB_FETCH, Metered};
     use crate::roles::OWNER;
     use crate::test_util::{DAEMON, artifact, store};
     use clax_core::CoreError;
     use clax_core::audit::Actor;
+    use clax_core::audit::AuditKind;
     use serde_json::json;
 
     fn bot() -> AuditCtx {
@@ -397,7 +1039,7 @@ mod tests {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
-                    web: "search,fetch".into(),
+                    caps: "clax-web:fetch,clax-web:search".into(),
                 },
             )
             .unwrap();
@@ -411,6 +1053,7 @@ mod tests {
     fn page(url: &str) -> WebPageRow {
         WebPageRow {
             url: url.into(),
+            format: "markdown".into(),
             step_n: 1,
             seq: 0,
             final_url: format!("{url}/"),
@@ -431,6 +1074,8 @@ mod tests {
             entry,
             usage: Some(Metered::new(LINE_WEB_FETCH, 1, KeySource::Instance)),
             page: Some(WebPageRow { seq, ..page(url) }),
+            session: None,
+            grant: None,
             audit: AuditRecord::new(AuditKind::BotWeb, st.now())
                 .with("op", "web.fetch")
                 .with("url", url)
@@ -473,8 +1118,15 @@ mod tests {
         let after = st.run(&run.id).unwrap().unwrap();
         assert_eq!(after.credits_milli, run.credits_milli + spent.credits_milli);
 
-        assert_eq!(st.web_page(&run.id, url).unwrap(), Some(page(url)));
-        assert_eq!(st.web_page(&run.id, "https://example.com/b").unwrap(), None);
+        assert_eq!(
+            st.web_page(&run.id, url, "markdown").unwrap(),
+            Some(page(url))
+        );
+        assert_eq!(
+            st.web_page(&run.id, "https://example.com/b", "markdown")
+                .unwrap(),
+            None
+        );
         let journal = st.bot_calls(&run.id, 1).unwrap();
         assert_eq!(journal, vec![spent.entry.clone()]);
 
@@ -585,6 +1237,58 @@ mod tests {
     }
 
     #[test]
+    fn spend_counts_are_per_namespace() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        let journal = |seq: i64, op: &str, result: serde_json::Value| {
+            let e = st
+                .call_entry(&run.id, &d, 1, 1, seq, op, &format!("h-{seq}"))
+                .unwrap()
+                .answered(false, result);
+            st.record_bot_call(&e).unwrap();
+        };
+        assert!(st.bot_spend_counts(&run.id, "browser").unwrap().is_empty());
+        journal(0, "web.fetch", json!({"value": {}, "counted": true}));
+        journal(1, "browser.test", json!({"value": {}, "counted": true}));
+        journal(
+            2,
+            "browser.test",
+            json!({"code": "browser_unavailable", "counted": true}),
+        );
+        journal(3, "browser.open", json!({"code": "browser_cap"}));
+        journal(4, "browserx.test", json!({"value": {}, "counted": true}));
+        // An entry with `count_as` is counted under it, not its op.
+        journal(
+            5,
+            "browser.open",
+            json!({"value": {}, "counted": true, "count_as": "clax-browser:open-url"}),
+        );
+        journal(
+            6,
+            "browser.test",
+            json!({"value": {}, "counted": true, "count_as": "clax-browser:open-artifact"}),
+        );
+        let pairs = |m: BTreeMap<String, u32>| m.into_iter().collect::<Vec<_>>();
+        assert_eq!(
+            pairs(st.bot_spend_counts(&run.id, "browser").unwrap()),
+            vec![
+                ("browser.test".to_string(), 2),
+                ("clax-browser:open-artifact".to_string(), 1),
+                ("clax-browser:open-url".to_string(), 1)
+            ]
+        );
+        assert_eq!(
+            pairs(st.bot_spend_counts(&run.id, "web").unwrap()),
+            vec![("web.fetch".to_string(), 1)]
+        );
+        assert_eq!(
+            st.bot_web_counts(&run.id).unwrap(),
+            st.bot_spend_counts(&run.id, "web").unwrap()
+        );
+        assert!(st.bot_spend_counts(&run.id, "files").unwrap().is_empty());
+    }
+
+    #[test]
     fn a_spend_for_a_run_not_claimed_is_refused() {
         let (_d, st) = store();
         let (run, d) = running(&st);
@@ -640,6 +1344,8 @@ mod tests {
             entry,
             usage: None,
             page: None,
+            session: None,
+            grant: None,
             audit: AuditRecord::new(AuditKind::BotWeb, st.now())
                 .with("op", "web.search")
                 .with("query", "rust"),
@@ -702,7 +1408,10 @@ mod tests {
             .unwrap();
         let again = fetch(&st, &run, &d, 1, url);
         assert_eq!(refused(&st, &run, &d, again), "page_exists");
-        assert_eq!(st.web_page(&run.id, url).unwrap(), Some(page(url)));
+        assert_eq!(
+            st.web_page(&run.id, url, "markdown").unwrap(),
+            Some(page(url))
+        );
     }
 
     #[test]
@@ -771,25 +1480,573 @@ mod tests {
         assert_eq!((pages(&st, &run), pages(&st, &going)), (0, 1));
     }
 
+    fn everyone(st: &Store, caps: &[&str]) {
+        for cap in caps {
+            st.issue_cap_grant(
+                DAEMON,
+                cap,
+                crate::roles::OWNER,
+                crate::bot_grants::EVERYONE,
+            )
+            .unwrap();
+        }
+    }
+
+    /// Each `grant.issue` and `grant.revoke`, as (kind, the capability of
+    /// its grant, its reason or event).
+    fn grant_ops(st: &Store) -> Vec<(String, String, String)> {
+        st.events_after(0, 1000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind.starts_with("grant."))
+            .map(|e| {
+                let b: serde_json::Value = serde_json::from_str(&e.body).unwrap();
+                let g = st
+                    .cap_grant(b["grant_id"].as_str().unwrap())
+                    .unwrap()
+                    .unwrap();
+                let why = b.get("reason").unwrap_or(&b["event"]);
+                (
+                    e.kind.clone(),
+                    g.capability().unwrap_or_default().to_string(),
+                    why.as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn a_person_chooses_web_off_and_back() {
         let (_d, st) = store();
+        assert!(!st.web_choice(OWNER).unwrap(), "no grant, no web");
+        assert!(
+            !st.set_web_choice(DAEMON, OWNER, true).unwrap(),
+            "nothing held to turn on"
+        );
+        everyone(&st, &["clax-web:search"]);
+        assert!(!st.web_choice(OWNER).unwrap(), "fetch is not granted");
+        everyone(&st, &["clax-web:fetch"]);
         assert!(st.web_choice(OWNER).unwrap());
+        let before = grant_ops(&st).len();
         assert!(!st.set_web_choice(DAEMON, OWNER, true).unwrap());
         assert!(st.set_web_choice(DAEMON, OWNER, false).unwrap());
         assert!(!st.web_choice(OWNER).unwrap());
         assert!(!st.set_web_choice(DAEMON, OWNER, false).unwrap());
-        let events: Vec<String> = st
-            .events_after(0, 100)
-            .unwrap()
-            .into_iter()
-            .filter(|e| e.kind == "me.web")
-            .map(|e| e.body)
-            .collect();
-        assert_eq!(events.len(), 1, "one change, one event");
-        assert!(events[0].contains("\"value\":false"), "{}", events[0]);
+        assert_eq!(
+            grant_ops(&st)[before..],
+            [
+                (
+                    "grant.revoke".to_string(),
+                    "clax-web:search".to_string(),
+                    "controller".to_string()
+                ),
+                (
+                    "grant.revoke".to_string(),
+                    "clax-web:fetch".to_string(),
+                    "controller".to_string()
+                )
+            ],
+            "each runs grant revoked, recorded once"
+        );
         assert!(st.set_web_choice(DAEMON, OWNER, true).unwrap());
         assert!(st.web_choice(OWNER).unwrap());
-        assert!(st.web_choice("someone-else").unwrap());
+        assert!(!st.web_choice("someone-else").unwrap(), "not a person");
+    }
+
+    /// A browser session call of `run` at `(step, seq)`: `s` with its
+    /// segment, `qty` milliseconds of browser time ending at its point.
+    fn session_spend(
+        st: &Store,
+        run: &Run,
+        d: &DriverId,
+        (step, seq): (i64, i64),
+        qty: i64,
+        s: SessionSpend,
+    ) -> Spend {
+        let entry = st
+            .call_entry(
+                &run.id,
+                d,
+                step,
+                1,
+                seq,
+                "browser.page",
+                &format!("h-{step}-{seq}"),
+            )
+            .unwrap()
+            .answered(true, json!({"value": {"ok": true}}));
+        Spend {
+            entry,
+            usage: Some(Metered {
+                after: s.through_ms() - qty,
+                ..Metered::new(LINE_BROWSER_TIME, qty, KeySource::Instance)
+            }),
+            page: None,
+            session: Some(s),
+            grant: None,
+            audit: AuditRecord::new(AuditKind::BotSpend, st.now())
+                .with("capability", "clax-browser:open-artifact")
+                .with("op", "browser.page"),
+        }
+    }
+
+    fn open(st: &Store, through_ms: i64) -> SessionSpend {
+        SessionSpend::Open {
+            session: "s1".into(),
+            kind: SessionKind::Artifact,
+            opened_at: st.now_utc(),
+            through_ms,
+        }
+    }
+
+    fn call(through_ms: i64) -> SessionSpend {
+        SessionSpend::Call {
+            session: "s1".into(),
+            through_ms,
+            kind: None,
+        }
+    }
+
+    /// The milliseconds of browser time charged to `run`, and the rows.
+    fn browser_ms(st: &Store, run: &Run) -> (i64, usize) {
+        let rows: Vec<_> = st
+            .usage_of_run(&run.id)
+            .unwrap()
+            .into_iter()
+            .filter(|u| u.line == LINE_BROWSER_TIME)
+            .collect();
+        (rows.iter().map(|u| u.qty).sum(), rows.len())
+    }
+
+    fn spend_events(st: &Store) -> Vec<serde_json::Value> {
+        st.events_after(0, 10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "bot.spend")
+            .map(|e| serde_json::from_str(&e.body).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn segments_of_a_session_sum_to_its_open_time() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 1_200, open(&st, 1_200)),
+        )
+        .unwrap();
+        let row = st.bot_browser_session(&run.id, "s1").unwrap().unwrap();
+        assert_eq!(
+            (row.kind, row.charged_ms, row.is_open()),
+            (SessionKind::Artifact, 1_200, true)
+        );
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 1), 3_800, call(5_000)),
+        )
+        .unwrap();
+        // A call that took no time charges an empty segment.
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 2), 0, call(5_000)),
+        )
+        .unwrap();
+        // A goto out makes it a URL session.
+        let out = SessionSpend::Call {
+            session: "s1".into(),
+            through_ms: 7_000,
+            kind: Some(SessionKind::Url),
+        };
+        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 3), 2_000, out))
+            .unwrap();
+        assert_eq!(
+            st.bot_browser_session(&run.id, "s1").unwrap().unwrap().kind,
+            SessionKind::Url
+        );
+        let close = SessionSpend::Close {
+            session: "s1".into(),
+            through_ms: 9_000,
+            reason: SessionEnd::Closed,
+        };
+        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 4), 2_000, close))
+            .unwrap();
+        assert_eq!(browser_ms(&st, &run), (9_000, 5));
+        let row = st.bot_browser_session(&run.id, "s1").unwrap().unwrap();
+        assert_eq!(
+            (row.charged_ms, row.is_open(), row.reason),
+            (9_000, false, Some(SessionEnd::Closed))
+        );
+        let charged: i64 = st
+            .usage_of_run(&run.id)
+            .unwrap()
+            .iter()
+            .map(|u| u.credits_milli)
+            .sum();
+        assert!(charged > 0);
+        assert_eq!(st.run(&run.id).unwrap().unwrap().credits_milli, charged);
+        // The host's end of a closed session charges nothing.
+        assert_eq!(
+            st.end_bot_browser_session(&run.id, "s1", 20_000, SessionEnd::Idle)
+                .unwrap(),
+            0
+        );
+        assert_eq!(browser_ms(&st, &run), (9_000, 5));
+    }
+
+    #[test]
+    fn a_replayed_call_charges_nothing() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 1_000, open(&st, 1_000)),
+        )
+        .unwrap();
+        let first = st
+            .spend_journaled(
+                &run,
+                &d,
+                session_spend(&st, &run, &d, (1, 1), 2_000, call(3_000)),
+            )
+            .unwrap();
+        // The same call again, as a step run again makes it: the journal
+        // answers, though its segment no longer fits the session's row.
+        let again = st
+            .spend_journaled(
+                &run,
+                &d,
+                session_spend(&st, &run, &d, (1, 1), 2_000, call(3_000)),
+            )
+            .unwrap();
+        assert!(again.replayed);
+        assert_eq!((again.entry, again.credits_milli), (first.entry, 0));
+        assert_eq!(browser_ms(&st, &run), (3_000, 2));
+        assert_eq!(
+            st.bot_browser_session(&run.id, "s1")
+                .unwrap()
+                .unwrap()
+                .charged_ms,
+            3_000
+        );
+        assert_eq!(spend_events(&st).len(), 2);
+    }
+
+    #[test]
+    fn a_host_end_with_no_open_step_charges_once() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 1_500, open(&st, 1_500)),
+        )
+        .unwrap();
+        st.commit_bot_step(&bot(), &run.id, &d, 1, StepCommit::default())
+            .unwrap();
+        let before = st.run(&run.id).unwrap().unwrap().credits_milli;
+        let credits = st
+            .end_bot_browser_session(&run.id, "s1", 301_500, SessionEnd::Idle)
+            .unwrap();
+        assert!(credits > 0);
+        let tail: Vec<_> = st
+            .usage_of_run(&run.id)
+            .unwrap()
+            .into_iter()
+            .filter(|u| u.line == LINE_BROWSER_TIME && u.qty == 300_000)
+            .collect();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(
+            (
+                tail[0].run_id.as_deref(),
+                tail[0].step_n,
+                tail[0].credits_milli
+            ),
+            (Some(run.id.as_str()), None, credits)
+        );
+        assert_eq!(
+            st.run(&run.id).unwrap().unwrap().credits_milli,
+            before + credits
+        );
+        let row = st.bot_browser_session(&run.id, "s1").unwrap().unwrap();
+        assert_eq!(
+            (row.charged_ms, row.reason, row.is_open()),
+            (301_500, Some(SessionEnd::Idle), false)
+        );
+        let ends: Vec<_> = spend_events(&st)
+            .into_iter()
+            .filter(|b| b["op"] == "browser.session.end")
+            .collect();
+        assert_eq!(ends.len(), 1);
+        let e = &ends[0];
+        assert_eq!(
+            (&e["capability"], &e["reason"], &e["session"], &e["kind"]),
+            (
+                &json!("clax-browser:open-artifact"),
+                &json!("idle"),
+                &json!("s1"),
+                &json!("artifact")
+            )
+        );
+        assert_eq!(
+            (&e["step"], &e["ms"], &e["run"]),
+            (&json!(null), &json!(301_500), &json!(run.id))
+        );
+        assert_eq!(e["credits_milli"], credits);
+
+        // An end while a step is open charges on that step.
+        st.begin_step(&run.id, &d, 2, StepKind::Script).unwrap();
+        let s2 = SessionSpend::Open {
+            session: "s2".into(),
+            kind: SessionKind::Content,
+            opened_at: st.now_utc(),
+            through_ms: 10,
+        };
+        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (2, 0), 10, s2))
+            .unwrap();
+        st.end_bot_browser_session(&run.id, "s2", 1_010, SessionEnd::RunEnded)
+            .unwrap();
+        let on_step: Vec<_> = st
+            .usage_of_run(&run.id)
+            .unwrap()
+            .into_iter()
+            .filter(|u| u.qty == 1_000)
+            .collect();
+        assert_eq!(on_step.len(), 1);
+        assert_eq!(on_step[0].step_n, Some(2));
+    }
+
+    #[test]
+    fn a_second_end_charges_nothing() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 100, open(&st, 100)),
+        )
+        .unwrap();
+        let first = st
+            .end_bot_browser_session(&run.id, "s1", 60_100, SessionEnd::Revoked)
+            .unwrap();
+        assert!(first > 0);
+        assert_eq!(
+            st.end_bot_browser_session(&run.id, "s1", 90_000, SessionEnd::Idle)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            st.end_bot_browser_session(&run.id, "no-such", 90_000, SessionEnd::Idle)
+                .unwrap(),
+            0
+        );
+        assert_eq!(browser_ms(&st, &run), (60_100, 2));
+        assert_eq!(
+            st.bot_browser_session(&run.id, "s1")
+                .unwrap()
+                .unwrap()
+                .reason,
+            Some(SessionEnd::Revoked)
+        );
+        let ends = spend_events(&st)
+            .into_iter()
+            .filter(|b| b["op"] == "browser.session.end")
+            .count();
+        assert_eq!(ends, 1);
+        // A call of the closed session is refused, writing nothing.
+        let late = session_spend(&st, &run, &d, (1, 1), 1, call(60_101));
+        assert_eq!(refused(&st, &run, &d, late), "session_mismatch");
+    }
+
+    #[test]
+    fn a_point_before_the_charged_one_is_refused() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 5_000, open(&st, 5_000)),
+        )
+        .unwrap();
+        let before = browser_ms(&st, &run);
+        let back = session_spend(&st, &run, &d, (1, 1), 0, call(4_000));
+        assert_eq!(refused(&st, &run, &d, back), "session_mismatch");
+        // A usage that is not the segment.
+        let wrong = session_spend(&st, &run, &d, (1, 1), 999, call(6_000));
+        assert_eq!(refused(&st, &run, &d, wrong), "session_mismatch");
+        // A session the run does not have, and an open of one it has.
+        let missing = SessionSpend::Call {
+            session: "s9".into(),
+            through_ms: 10,
+            kind: None,
+        };
+        let missing = session_spend(&st, &run, &d, (1, 1), 10, missing);
+        assert_eq!(refused(&st, &run, &d, missing), "session_mismatch");
+        let twice = session_spend(&st, &run, &d, (1, 1), 6_000, open(&st, 6_000));
+        assert_eq!(refused(&st, &run, &d, twice), "session_mismatch");
+        assert_eq!(browser_ms(&st, &run), before);
+        assert_eq!(
+            st.bot_browser_session(&run.id, "s1")
+                .unwrap()
+                .unwrap()
+                .charged_ms,
+            5_000
+        );
+    }
+
+    /// A session's time is rounded once over the session: 100 segments of
+    /// 30 ms cost what 3 s cost, and a segment priced as a row of its own
+    /// (not after the session's charged point) is refused.
+    #[test]
+    fn a_session_is_rounded_once_over_its_time() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 30, open(&st, 30)),
+        )
+        .unwrap();
+        for seq in 1..99 {
+            st.spend_journaled(
+                &run,
+                &d,
+                session_spend(&st, &run, &d, (1, seq), 30, call((seq + 1) * 30)),
+            )
+            .unwrap();
+        }
+        let close = SessionSpend::Close {
+            session: "s1".into(),
+            through_ms: 3_000,
+            reason: SessionEnd::Closed,
+        };
+        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 99), 30, close))
+            .unwrap();
+        assert_eq!(browser_ms(&st, &run), (3_000, 100));
+        let r = st.rate_of(LINE_BROWSER_TIME).unwrap().unwrap();
+        let whole = crate::credits::row_credits_milli(
+            3_000,
+            r.cost_micro_usd,
+            r.margin_bp,
+            r.fixed_credits_milli,
+            r.credit_price_micro_usd,
+            r.unit.base(),
+        )
+        .unwrap();
+        let charged: i64 = st
+            .usage_of_run(&run.id)
+            .unwrap()
+            .iter()
+            .filter(|u| u.line == LINE_BROWSER_TIME)
+            .map(|u| u.credits_milli)
+            .sum();
+        assert_eq!(charged, whole);
+        assert!(charged < 100, "one milli-credit a segment: {charged}");
+        assert_eq!(st.run(&run.id).unwrap().unwrap().credits_milli, charged);
+    }
+
+    #[test]
+    fn a_segment_not_after_the_charged_point_is_refused() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 5_000, open(&st, 5_000)),
+        )
+        .unwrap();
+        let mut alone = session_spend(&st, &run, &d, (1, 1), 1_000, call(6_000));
+        alone.usage = Some(Metered::new(LINE_BROWSER_TIME, 1_000, KeySource::Instance));
+        assert_eq!(refused(&st, &run, &d, alone), "session_mismatch");
+        assert_eq!(browser_ms(&st, &run), (5_000, 1));
+    }
+
+    #[test]
+    fn a_start_marks_open_sessions_lost() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        let (other, d2) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 10, open(&st, 10)),
+        )
+        .unwrap();
+        let closed = SessionSpend::Open {
+            session: "s2".into(),
+            kind: SessionKind::Url,
+            opened_at: st.now_utc(),
+            through_ms: 10,
+        };
+        st.spend_journaled(&run, &d, session_spend(&st, &run, &d, (1, 1), 10, closed))
+            .unwrap();
+        st.end_bot_browser_session(&run.id, "s2", 20, SessionEnd::Closed)
+            .unwrap();
+        st.spend_journaled(
+            &other,
+            &d2,
+            session_spend(&st, &other, &d2, (1, 0), 10, open(&st, 10)),
+        )
+        .unwrap();
+        let usage =
+            st.usage_of_run(&run.id).unwrap().len() + st.usage_of_run(&other.id).unwrap().len();
+        assert_eq!(st.lose_open_bot_browser_sessions(st.now_utc()).unwrap(), 2);
+        for r in [&run, &other] {
+            let row = st.bot_browser_session(&r.id, "s1").unwrap().unwrap();
+            assert_eq!((row.reason, row.charged_ms), (Some(SessionEnd::Lost), 10));
+            assert!(!row.is_open());
+        }
+        assert_eq!(
+            st.bot_browser_session(&run.id, "s2")
+                .unwrap()
+                .unwrap()
+                .reason,
+            Some(SessionEnd::Closed)
+        );
+        assert_eq!(
+            st.usage_of_run(&run.id).unwrap().len() + st.usage_of_run(&other.id).unwrap().len(),
+            usage,
+            "a lost session charges nothing"
+        );
+        assert_eq!(st.lose_open_bot_browser_sessions(st.now_utc()).unwrap(), 0);
+        let listed: Vec<_> = st
+            .bot_browser_sessions(&run.id)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.session_id, r.reason))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("s1".to_string(), Some(SessionEnd::Lost)),
+                ("s2".to_string(), Some(SessionEnd::Closed))
+            ]
+        );
+    }
+
+    #[test]
+    fn session_rows_go_with_the_journal_of_an_ended_run() {
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-11-19T10:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let (run, d) = running(&st);
+        st.spend_journaled(
+            &run,
+            &d,
+            session_spend(&st, &run, &d, (1, 0), 10, open(&st, 10)),
+        )
+        .unwrap();
+        st.commit_bot_step(&bot(), &run.id, &d, 1, StepCommit::default())
+            .unwrap();
+        st.begin_step(&run.id, &d, 2, StepKind::GiveUp).unwrap();
+        st.commit_bot_step(&bot(), &run.id, &d, 2, StepCommit::default())
+            .unwrap();
+        clock.advance(crate::bot_runs::BOT_JOURNAL_KEEP.as_secs() as i64 + 1);
+        assert_eq!(st.prune_ended_runs().unwrap().browser_sessions, 1);
+        assert_eq!(st.bot_browser_session(&run.id, "s1").unwrap(), None);
     }
 }

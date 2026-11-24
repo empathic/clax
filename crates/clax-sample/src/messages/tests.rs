@@ -1318,7 +1318,7 @@ fn a_model_that_takes_no_images_is_sent_none_and_told_so() {
     // The note says that images were not sent and which setting sends
     // them, not that the model takes none, which nothing here knows.
     assert!(!IMAGES_NOT_SHOWN.contains("takes no images"));
-    assert!(IMAGES_NOT_SHOWN.contains("[bot] model_takes_images is off"));
+    assert!(IMAGES_NOT_SHOWN.contains("[bot.models] images does not list it"));
 }
 
 /// A tool that carries its schema as text is sent that text, in its

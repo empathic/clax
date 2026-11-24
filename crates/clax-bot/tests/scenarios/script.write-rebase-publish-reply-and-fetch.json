@@ -70,6 +70,7 @@
       },
       "at": "2026-10-21T10:00:00.000Z",
       "body": {
+        "capability": "clax-web:fetch",
         "clax_commit": "<build>",
         "clax_version": "<build>",
         "credits_milli": 95,
@@ -92,7 +93,7 @@
         "session": null,
         "thread": null
       },
-      "kind": "bot.web"
+      "kind": "bot.spend"
     },
     {
       "actor": {
@@ -811,7 +812,7 @@
       "result": {
         "cost_milli": 95,
         "counted": true,
-        "format": "auto",
+        "format": "markdown",
         "source": {
           "comment_id": "<comment>",
           "kind": "comment",
@@ -944,7 +945,7 @@
           "tool_use_id": "tu_1"
         },
         "stop_reason": "tool_use",
-        "system": "<14359 bytes, sha256 9743855ac509320aaaf0cbfb2c10bf3eb34f21ccfe85d2b39431ad6621d1fa5b, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
+        "system": "<14842 bytes, sha256 558758718f110fe23bf27e6d0ce6788f644aeb28ec0f6442a5097f0fb052bc23, from \"You are ClaxBot, the agent built into Clax, a place where pe\">",
         "usage": {
           "cache_creation_input_tokens": 500,
           "cache_read_input_tokens": 2000,
