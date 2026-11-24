@@ -121,6 +121,18 @@ describe("PanelLink", () => {
     expect(link.failures).toBe(1);
     p.onMessage.fire({ t: "failed", code: "no_page", message: "No live page." });
     expect(link.failures).toBe(2);
+    // A failed list of sites is the Sites tab's, not the tab's error; asking again or an answer clears it.
+    p.onMessage.fire({ t: "failed", code: "http_401", message: "Not paired.", of: "list-sites" });
+    expect(link.sitesFailed).toEqual({ code: "http_401", message: "Not paired." });
+    expect(link.state?.error).toEqual({ code: "no_page", message: "No live page." });
+    expect(link.failures).toBe(2);
+    link.post({ t: "list-sites" });
+    expect(link.sitesFailed).toBeNull();
+    p.onMessage.fire({ t: "failed", code: "http_401", message: "Not paired.", of: "list-sites" });
+    p.onMessage.fire({ t: "sites", sites: [] });
+    expect([link.sitesFailed, link.sites]).toEqual([null, []]);
+    p.onMessage.fire({ t: "failed", code: "x", message: "m", of: "other" });
+    expect(link.sitesFailed).toBeNull();
     p.onMessage.fire({ t: "stream-status", up: false });
     expect(link.up).toBe(false);
     p.onMessage.fire({ t: "tab", state: "<script>" });

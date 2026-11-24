@@ -43,7 +43,7 @@ function setup(over: { closed?: boolean; remaining?: number; page?: typeof page 
       split: api("split", { split: true, site: SITE }),
       answer: api("answer", {}),
       suggest: api("suggest", { origin: "http://localhost:5173", site: SITE, suggestions: [{ origin: "http://localhost:7702", site: { ...SITE, origins: [{ origin: "http://localhost:7702", joined_at: null, last_used_at: null }] }, reason: "path", path: "/app" }] }),
-      sites: api("sites", { sites: [{ site: SITE }] }),
+      sites: api("sites", { sites: [{ site: SITE, pages: 3, threads: 7, joining: 0, last_activity: "t" }] }),
       clip: api("clip", "data:image/png;base64,iVBORw0KGgo="),
       approvesFirst: api("approvesFirst", [null, SAM_ID]),
       artifact: api("artifact", { artifact: { participants: { people: [], agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }] } }, versions: [{ artifact_id: "x", n: 1, created_at: "t", label: "l", note: "n", files: { "index.html": {} }, agent_harness: "claude" }] }),
@@ -232,12 +232,55 @@ describe("panelAction on the tab's site", () => {
     expect(s.out).toEqual([
       { t: "suggestion", origin: "http://localhost:5173", suggestion: { origin: "http://localhost:7702", origins: ["http://localhost:7702"], reason: "path", path: "/app" } },
       { t: "suggestion", origin: "http://localhost:5173", suggestion: null },
-      { t: "sites", sites: [{ key: SITE.key, name: SITE.name, origins: ["http://localhost:5174", "http://localhost:5173"] }] },
+      { t: "sites", sites: [{ key: SITE.key, name: SITE.name, origins: ["http://localhost:5174", "http://localhost:5173"], pages: 3, threads: 7, joining: 0 }] },
     ]);
     // A tab Clax is off in asks nothing.
     const off = setup({ page: null });
     await off.run({ t: "suggest" }, null);
     expect(off.calls).toEqual([]);
+    // The list of sites is told whichever page the tab shows, and with no tab (the Sites tab's).
+    await off.run({ t: "list-sites" });
+    await off.run({ t: "list-sites" }, null);
+    expect(off.calls).toEqual(["sites ", "sites "]);
+    expect(off.out.map(o => o.t)).toEqual(["sites", "sites"]);
+  });
+
+  it("tells a failed list of sites as the list's, never as the tab's error", async () => {
+    const s = setup({ fail: "sites", failCode: "http_401" });
+    await s.run({ t: "list-sites" });
+    expect(s.calls).toEqual(["sites "]);
+    expect(s.out).toEqual([{ t: "failed", code: "http_401", message: "No such thread.", of: "list-sites" }]);
+  });
+
+  it("joins and splits any site for the Sites tab, for a tab on no site or no tab, the given origins reaching the daemon", async () => {
+    const off = setup({ page: null, remaining: 2 });
+    await off.run({ t: "site-join", req: 3, origin: "http://localhost:3000", with: "http://localhost:7702" });
+    await off.run({ t: "site-split", req: 4, origin: "http://localhost:3000" }, null);
+    expect(off.calls).toEqual([`join "http://localhost:3000" "http://localhost:7702"`, `split "http://localhost:3000"`]);
+    expect(off.out).toEqual([{ t: "step", req: 3, moved: 1, remaining: 2 }, { t: "step", req: 4, moved: 0, remaining: 0 }]);
+    // A failure is the request's, never the tab's error.
+    const bad = setup({ page: null, fail: "join", failCode: "http_401" });
+    await bad.run({ t: "site-join", req: 5, origin: "http://localhost:3000", with: "http://localhost:7702" });
+    expect(bad.calls).toEqual([`join "http://localhost:3000" "http://localhost:7702"`]);
+    expect(bad.out).toEqual([{ t: "failed", code: "http_401", message: "No such thread.", req: 5 }]);
+  });
+
+  it("reloads the tab's site when the Sites tab's change touches it, and only then", async () => {
+    // Another site joined into one the tab is not on: nothing of the tab's changes.
+    const away = setup({ site: ["http://localhost:5173"] });
+    await away.run({ t: "site-join", req: 1, origin: "http://localhost:3000", with: "http://localhost:3001" });
+    expect(away.calls).toEqual([`join "http://localhost:3000" "http://localhost:3001"`]);
+    // Joined into the tab's site: its listing, and once done its page, are looked up again.
+    const into = setup({ site: ["http://localhost:5173"] });
+    await into.run({ t: "site-join", req: 2, origin: "http://localhost:3000", with: "http://localhost:5173" });
+    expect(into.calls).toEqual([`join "http://localhost:3000" "http://localhost:5173"`, "load http://localhost:5173", `route 4 ${URL1} true`]);
+    // An address split off the tab's site.
+    const split = setup({ site: ["http://localhost:5174", "http://localhost:5173"] });
+    await split.run({ t: "site-split", req: 3, origin: "http://localhost:5174" });
+    expect(split.calls).toEqual([`split "http://localhost:5174"`, "load http://localhost:5173", `route 4 ${URL1} true`]);
+    const other = setup({ site: ["http://localhost:5173"] });
+    await other.run({ t: "site-split", req: 4, origin: "http://localhost:3000" });
+    expect(other.calls).toEqual([`split "http://localhost:3000"`]);
   });
 
   it("moves a thread to a page of the tab's origin only", async () => {

@@ -76,12 +76,12 @@ export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelTo
     const f = failed(e);
     // Only a tab's own action leaves its error on the tab (the Page view's notice).
     if (tabId !== null && RETRYABLE.has(f.code) && !INBOX_ACTIONS.has(m.t)) d.tabs.fail(tabId, e);
-    reply("req" in m ? { ...f, req: m.req } : f);
+    reply("req" in m ? { ...f, req: m.req } : m.t === "list-sites" ? { ...f, of: "list-sites" } : f);
   }
 }
 
-/** The question and inbox requests, which act on no tab. */
-const INBOX_ACTIONS = new Set<PanelToWorker["t"]>(["q-answer", "q-decline", "q-release", "q-pull", "inbox-page", "inbox-mark", "inbox-mark-all", "open-url", "open-clax"]);
+/** The question and inbox requests, and the list of sites and the Sites tab's actions, which act on no tab. */
+const INBOX_ACTIONS = new Set<PanelToWorker["t"]>(["q-answer", "q-decline", "q-release", "q-pull", "inbox-page", "inbox-mark", "inbox-mark-all", "open-url", "open-clax", "list-sites", "site-join", "site-split"]);
 const LIVE_ITEM = /^\/a\/([0-9a-hjkmnp-tv-z]{12})(?:[/?#]|$)/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
@@ -134,6 +134,37 @@ async function inboxAction(d: PanelDeps, m: PanelToWorker, reply: (r: WorkerToPa
   }
 }
 
+/** The listing of every site, and the Sites tab's join and split, which act
+ * on any site whatever the tab shows: acted on, and answered; false for any
+ * other message. When the tab is on for a site the change touched, its
+ * listing is loaded again and, once a join is done, its page looked up again. */
+async function sitesAction(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: (r: WorkerToPanel) => void): Promise<boolean> {
+  if (m.t === "list-sites") {
+    const r = await d.api.sites();
+    reply({ t: "sites", sites: r.sites.slice(0, MAX_SITES).map(x => ({ key: x.site.key, name: x.site.name, origins: x.site.origins.map(o => o.origin), pages: x.pages, threads: x.threads, joining: x.joining })) });
+    return true;
+  }
+  if (m.t !== "site-join" && m.t !== "site-split") return false;
+  const s = tabId === null ? undefined : d.tabs.state(tabId);
+  const on = s?.on;
+  // The tab's site before the change (a split takes an origin out of it): touched when either origin is in it.
+  const before = on ? d.sites.origins(on) : [];
+  const touched = before.includes(m.origin) || (m.t === "site-join" && before.includes(m.with));
+  let remaining = 0;
+  if (m.t === "site-join") {
+    const r = await d.api.join(m.origin, m.with);
+    reply({ t: "step", req: m.req, moved: r.moved.length, remaining: r.remaining });
+    remaining = r.remaining;
+  } else {
+    await d.api.split(m.origin);
+    reply({ t: "step", req: m.req, moved: 0, remaining: 0 });
+  }
+  if (!on || tabId === null || !touched) return true;
+  await d.sites.load(on);
+  if (!remaining && s?.url) await d.tabs.route(tabId, s.url, true);
+  return true;
+}
+
 async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: (r: WorkerToPanel) => void): Promise<void> {
   // A restarted worker reads its tabs back first: an action before then would find no tab.
   await d.tabs.ready();
@@ -141,6 +172,7 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
   // None needs a tab: the name is the owner's, the pairing is the worker's, the ping keeps the worker up.
   if (m.t === "set-name") { d.tabs.setViewer((await d.api.setName(m.name)).viewer); return; }
   if (m.t === "confirm-pairing") { await d.open.create(await d.open.confirmation()); return; }
+  if (await sitesAction(d, tabId, m, reply)) return;
   // A request (`req`) is always answered: a step or a failure.
   if (tabId === null && "req" in m) throw new PanelFailure("no_tab", "The panel shows no tab.");
   if (m.t === "ping" || m.t === "visible" || tabId === null) return;
@@ -195,7 +227,7 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
   }
   // The site's actions (spec §7.1, §7.2): on the origin Clax is on for in the tab, and its site.
   const on = s?.on;
-  if (!on && (m.t === "suggest" || m.t === "answer" || m.t === "list-sites")) return;
+  if (!on && (m.t === "suggest" || m.t === "answer")) return;
   if (on) {
     const site = d.sites.origins(on);
     switch (m.t) {
@@ -245,11 +277,6 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
         await d.api.answer(on, m.with, m.answer);
         reply({ t: "suggestion", origin: on, suggestion: null });
         return;
-      case "list-sites": {
-        const r = await d.api.sites();
-        reply({ t: "sites", sites: r.sites.slice(0, MAX_SITES).map(x => ({ key: x.site.key, name: x.site.name, origins: x.site.origins.map(o => o.origin) })) });
-        return;
-      }
       case "rule": case "unrule": {
         // The panel names the site it means: another tab now shows in it, or the tab left the site.
         if (m.origin !== on) throw changed();

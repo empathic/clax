@@ -17,7 +17,8 @@ import { PanelQuestions } from "./questions";
 
 /** A request the worker answers with `step` (its `req` is the link's to give). */
 export type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string }
-  | { t: "join"; origin: string; with: string } | { t: "split"; origin: string };
+  | { t: "join"; origin: string; with: string } | { t: "split"; origin: string }
+  | { t: "site-join"; origin: string; with: string } | { t: "site-split"; origin: string };
 /** A question or inbox request, without its `req`. */
 type Req<M = PanelToWorker> = M extends { req: number } ? Omit<M, "req"> : never;
 export type InboxReq = Exclude<Req, Ask | { t: "clip" | "far-page" | "firsts" }>;
@@ -50,6 +51,8 @@ export class PanelLink {
   suggestion = $state<{ origin: string; suggestion: Suggestion | null } | null>(null);
   /** Every site Clax has live pages of, once asked for (`list-sites`). */
   sites = $state<SiteChoice[] | null>(null);
+  /** Why the last `list-sites` failed, until it is asked for again or answered. */
+  sitesFailed = $state<{ code: string; message: string } | null>(null);
   /** How many of the panel's actions have failed: a failure the panel was
    * told to hide shows again when an action fails again, even the same way. */
   failures = $state(0);
@@ -107,7 +110,8 @@ export class PanelLink {
       if (m.t === "tab") this.state = this.failure && !m.state.error ? { ...m.state, error: this.failure } : m.state;
       else if (m.t === "site") this.site = m.site;
       else if (m.t === "suggestion") this.suggestion = { origin: m.origin, suggestion: m.suggestion };
-      else if (m.t === "sites") this.sites = m.sites;
+      else if (m.t === "sites") { this.sites = m.sites; this.sitesFailed = null; }
+      else if (m.t === "failed" && m.of === "list-sites") this.sitesFailed = { code: m.code, message: m.message };
       else if (m.t === "failed" && m.req === undefined && this.state) {
         this.failure = { code: m.code, message: m.message };
         this.state = { ...this.state, error: this.failure };
@@ -150,6 +154,7 @@ export class PanelLink {
   post(m: PanelToWorker): void {
     if (this.closed) return;
     if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab" && m.t !== "clip" && m.t !== "far-page" && m.t !== "firsts") this.failure = null;
+    if (m.t === "list-sites") this.sitesFailed = null;
     try { this.port.postMessage(m); } catch { /* the port closed; the link connects again */ }
   }
 

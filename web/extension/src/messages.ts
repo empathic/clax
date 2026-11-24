@@ -81,8 +81,9 @@ export type SiteInfo = { key: string; name: string; joined: boolean; origins: Si
 export type SiteView = { origin: string; site?: SiteInfo; rules: SiteRule[]; pages: { page: PageView; threads: Thread[] }[] };
 /** A suggested join: the site the tab's origin may be the same app as, named by its newest origin. */
 export type Suggestion = { origin: string; origins: string[]; reason: "path" | "title"; path: string | null };
-/** A site of the listing `GET /api/live/sites`, as the panel offers it for "Same app as…". */
-export type SiteChoice = { key: string; name: string; origins: string[] };
+/** A site of the listing `GET /api/live/sites`, as the panel offers it for "Same app as…" and lists it in the Sites tab:
+ * its live pages and threads, and the threads a join not finished has still to re-file (`joining`). */
+export type SiteChoice = { key: string; name: string; origins: string[]; pages: number; threads: number; joining: number };
 
 /** A `url` the overlay sends is null when the page's address is over
  * MAX_URL: the worker then tells the person, never looks it up. */
@@ -162,8 +163,8 @@ export type PanelState = {
 };
 export type WorkerToPanel =
   | { t: "tab"; state: PanelState }
-  /** `req`: the request (`rule`, `unrule`) that failed. */
-  | { t: "failed"; code: string; message: string; req?: number }
+  /** `req`: the request (`rule`, `unrule`) that failed; `of: "list-sites"`: the list of sites could not be read (the Sites tab says so, not the tab). */
+  | { t: "failed"; code: string; message: string; req?: number; of?: "list-sites" }
   /** Whether the worker's event stream is up (told on `watch-tab` and on every change). */
   | { t: "stream-status"; up: boolean }
   /** Every thread of the tab's site (told on `watch-tab` and on every change); null until it is loaded. */
@@ -172,7 +173,7 @@ export type WorkerToPanel =
   | { t: "step"; req: number; moved: number; remaining: number }
   /** Whether the tab's origin may be the same app as another site (null: no suggestion). */
   | { t: "suggestion"; origin: string; suggestion: Suggestion | null }
-  /** Every site Clax has live pages of, for "Same app as…". */
+  /** Every site Clax has live pages of, the most recently active first, for "Same app as…" and the Sites tab. */
   | { t: "sites"; sites: SiteChoice[] }
   /** The clip `clip` asked for, as a `data:image/png` URL; null when the thread has none or it could not be fetched. */
   | { t: "clip"; req: number; url: string | null }
@@ -246,8 +247,13 @@ export type PanelToWorker =
   | { t: "suggest" }
   /** The owner's answer to the suggestion that the tab's origin is the same app as `with`. */
   | { t: "answer"; with: string; answer: "never" | "later" }
-  /** Asks for every site Clax has live pages of: answered by `sites`. */
+  /** Asks for every site Clax has live pages of, whatever the tab shows: answered by `sites`. */
   | { t: "list-sites" }
+  /** The Sites tab's: one batch of joining `origin` (with its site) to the
+   * site of `with`, whatever the tab shows; repeated as `join`. */
+  | { t: "site-join"; req: number; origin: string; with: string }
+  /** The Sites tab's: splits `origin` off its site, whatever the tab shows. */
+  | { t: "site-split"; req: number; origin: string }
   | { t: "retry" }
   /** The owner's questions and inbox (spec 2026-10-06-agent-questions-and-inbox
    * §9.6), on no tab: each is a request, answered by its `q-done`,
@@ -395,13 +401,13 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
   }
 }
 
-/** The most sites the "Same app as…" list carries, and the most origins one site joins (the daemon's bound). */
+/** The most sites the "Same app as…" list carries. */
 export const MAX_SITES = 200;
-export const MAX_SITE_ORIGINS = 16;
-const origins = (v: unknown) => Array.isArray(v) && v.length >= 1 && v.length <= MAX_SITE_ORIGINS && v.every(origin);
+const origins = (v: unknown) => Array.isArray(v) && v.length >= 1 && v.every(origin);
 const suggestion = (v: unknown) => shape(v, ["origin", "origins", "reason", "path"]) && origin(v.origin) && origins(v.origins)
   && (v.reason === "path" || v.reason === "title") && (v.path === null || path(v.path));
-const siteChoice = (v: unknown) => shape(v, ["key", "name", "origins"]) && origin(v.key) && origin(v.name) && origins(v.origins);
+const siteChoice = (v: unknown) => shape(v, ["key", "name", "origins", "pages", "threads", "joining"]) && origin(v.key) && origin(v.name) && origins(v.origins)
+  && count(v.pages) && count(v.threads) && count(v.joining);
 
 /** What a side panel takes from the worker. The worker is trusted; this
  * keeps the panel to the messages it knows, of the right shape. */
@@ -414,7 +420,8 @@ export function isToPanel(m: unknown): m is WorkerToPanel {
   const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   switch (m.t) {
     case "tab": return has("state") && obj(m.state);
-    case "failed": return shape(m, ["t", "code", "message"], ["req"]) && str(m.code, 64) && str(m.message, MAX_BODY) && (m.req === undefined || count(m.req));
+    case "failed": return shape(m, ["t", "code", "message"], ["req", "of"]) && str(m.code, 64) && str(m.message, MAX_BODY) && (m.req === undefined || count(m.req))
+      && (m.of === undefined || m.of === "list-sites");
     case "stream-status": return has("up") && bool(m.up);
     case "site": return has("site") && (m.site === null || obj(m.site));
     case "step": return has("req", "moved", "remaining") && count(m.req) && count(m.moved) && count(m.remaining);
@@ -513,8 +520,8 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "rule": return has("req", "origin", "pattern") && count(m.req) && origin(m.origin)
       && typeof m.pattern === "string" && m.pattern.length <= MAX_PATTERN && /^\/[\x21-\x7e]*$/.test(m.pattern);
     case "unrule": return has("req", "origin", "ruleId") && count(m.req) && origin(m.origin) && ulid(m.ruleId);
-    case "join": return has("req", "origin", "with") && count(m.req) && origin(m.origin) && origin(m.with) && m.origin !== m.with;
-    case "split": return has("req", "origin") && count(m.req) && origin(m.origin);
+    case "join": case "site-join": return has("req", "origin", "with") && count(m.req) && origin(m.origin) && origin(m.with) && m.origin !== m.with;
+    case "split": case "site-split": return has("req", "origin") && count(m.req) && origin(m.origin);
     case "answer": return has("with", "answer") && origin(m.with) && (m.answer === "never" || m.answer === "later");
     case "suggest": case "list-sites": return has();
     case "q-answer": return has("req", "questionId", "body") && count(m.req) && ulid(m.questionId) && answerBody(m.body);

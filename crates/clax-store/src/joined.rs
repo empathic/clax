@@ -25,8 +25,6 @@ use clax_core::{CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
-/// The most origins one joined site holds.
-pub const MAX_SITE_ORIGINS: usize = 16;
 /// The most suggestions one request answers.
 pub const MAX_SUGGESTIONS: usize = 3;
 /// The most recently active sites a suggestion looks at.
@@ -466,9 +464,8 @@ impl Store {
     ///
     /// # Errors
     /// `same_origin` when they are one origin; `unknown_site` when `with`'s
-    /// site has no live page; `too_many_origins` past
-    /// [`MAX_SITE_ORIGINS`]; `too_many_rules` when the site would hold more
-    /// than [`MAX_RULES`] rules in force.
+    /// site has no live page; `too_many_rules` when the site would hold
+    /// more than [`MAX_RULES`] rules in force.
     pub fn join_origins(&self, ctx: &AuditCtx, origin: &str, with: &str) -> Result<Joined> {
         if origin == with {
             return Err(CoreError::invalid(
@@ -504,13 +501,6 @@ impl Store {
                 return Err(joining());
             }
             let mx = site_of_key(tx, &kx)?.origin_names();
-            let my = site_of_key(tx, &ky)?.origin_names();
-            if mx.len() + my.len() > MAX_SITE_ORIGINS {
-                return Err(CoreError::invalid(
-                    "too_many_origins",
-                    format!("a site joins at most {MAX_SITE_ORIGINS} origins"),
-                ));
-            }
             let patterns = |k: &str| -> Result<Vec<(String, String, bool)>> {
                 let mut st = tx.prepare(
                     "SELECT id, pattern, deleted_at IS NULL FROM live_rules WHERE origin = ?1",
@@ -1145,6 +1135,25 @@ mod tests {
         assert!(!again.changed && again.rekeyed.is_empty());
         let again = st.join_origins(DAEMON, A, B).unwrap();
         assert!(!again.changed);
+    }
+
+    #[test]
+    fn a_site_joins_any_number_of_origins() {
+        let (_d, st) = store();
+        page(&st, A, "/", "App");
+        let others: Vec<String> = (0..19)
+            .map(|i| format!("http://localhost:{}", 7800 + i))
+            .collect();
+        for (i, o) in others.iter().enumerate() {
+            page(&st, o, &format!("/p{i}"), "Page");
+            assert!(st.join_origins(DAEMON, o, A).unwrap().changed);
+        }
+        let site = st.join_origins(DAEMON, B, A).unwrap().site;
+        assert_eq!(site.key, A);
+        assert_eq!(site.origins.len(), 21, "A, B and 19 more");
+        for o in &others {
+            assert!(site.origin_names().contains(o));
+        }
     }
 
     #[test]
