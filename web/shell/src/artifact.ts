@@ -109,10 +109,19 @@ export function mountArtifactView(root: HTMLElement, props: ArtifactProps, opts:
     // view's effects started before.
     const cancelStart = b ? () => {} : afterPaint(begin);
     const offs = [islands.topbar(sk.topbarIsland, ctl), islands.stage(sk.stageIsland, ctl), islands.sidebar(sk.sidebarIsland, ctl)];
+    // Read-only WebMCP tools for the page's threads, in a chunk loaded only
+    // where the browser has the API (`webmcp.ts`).
+    let stopWebMcp: (() => void) | null = null;
+    let stopped = false;
+    if ("modelContext" in root.ownerDocument || "modelContext" in navigator) {
+      void import("./webmcp").then(m => { if (!stopped) stopWebMcp = m.registerWebMcp(root.ownerDocument.defaultView!, ctl); }, () => {});
+    }
     return {
       ctl,
       stop: () => {
         cancelStart();
+        stopped = true;
+        stopWebMcp?.();
         for (const off of offs) off();
         offPage();
         resized?.disconnect();
