@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { OVERLAY_HOSTS, OVERLAY_TAG } from "../../bridge/src/anchor";
 import { overlay } from "./main";
 
@@ -20,6 +20,48 @@ function pageStrings(root: Document | ShadowRoot): string[] {
 }
 
 describe("overlay()", () => {
+  it("refuses an instance that is not an origin, and adds nothing to the page", () => {
+    expect(() => overlay({ ...opts, instance: "https://apps.example.com/clax" })).toThrow(/^Clax\.overlay: instance must be an origin/);
+    expect(document.querySelectorAll(OVERLAY_TAG)).toHaveLength(0);
+  });
+
+  it("refuses an onShowReports that is not a function and a reportsLabel that is not a non-empty string, adding nothing to the page", () => {
+    expect(() => overlay({ ...opts, onShowReports: "/feedback" as never })).toThrow(new TypeError("Clax.overlay: onShowReports must be a function"));
+    for (const reportsLabel of ["", "  ", 7]) expect(() => overlay({ ...opts, reportsLabel: reportsLabel as never })).toThrow(new TypeError("Clax.overlay: reportsLabel must be a non-empty string"));
+    expect(document.querySelectorAll(OVERLAY_TAG)).toHaveLength(0);
+  });
+
+  it("logs an onShowReports that throws, and the launcher goes on working", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    let asked = 0;
+    const handle = overlay({ ...opts, onShowReports: () => { asked++; throw new Error("no route"); } });
+    try {
+      await new Promise(r => setTimeout(r, 0));
+      const btn = document.querySelector(OVERLAY_TAG)?.shadowRoot?.querySelector<HTMLButtonElement>(".reports-btn");
+      if (!btn) throw new Error("no Your reports button");
+      btn.click();
+      btn.click();
+      expect(asked).toBe(2);
+      expect(errors.mock.calls.filter(([m]) => m === "Clax.overlay: onShowReports threw")).toHaveLength(2);
+    } finally {
+      handle.close();
+      errors.mockRestore();
+    }
+  });
+
+  // A style attribute's !important text spacing fails WCAG 1.4.12 checks
+  // (axe's avoid-inline-spacing): the host's rules are its root's `:host`.
+  it("gives its host no style attribute", () => {
+    const handle = overlay(opts);
+    try {
+      const host = document.querySelector(OVERLAY_TAG)!;
+      expect(host.hasAttribute("style")).toBe(false);
+      expect(host.shadowRoot).not.toBeNull();
+    } finally {
+      handle.close();
+    }
+  });
+
   // As a React app in StrictMode does in development: its effect's setup,
   // cleanup and setup again, in one task.
   it("leaves nothing in the page when closed in the task that started it", () => {

@@ -1076,6 +1076,7 @@ fn name(cli: &crate::Cli, home: &Home, a: &NameArgs) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

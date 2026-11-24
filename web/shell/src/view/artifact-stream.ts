@@ -228,7 +228,7 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
       c.set(s => ({ working: c.workingAt > t ? s.working : d.artifact.working ?? [], attention: d.attention ?? s.attention, looked: { ...s.looked, ...d.attention?.looked } }));
       c.agentsFetched(t, d.artifact.participants?.agents ?? []);
       if (n > c.latestKnown) { c.latestKnown = n; c.set({ newer: n }); }
-    }, err => { if (err instanceof ApiError && err.status === 404) c.set({ deleted: true }); });
+    }, err => { if (err instanceof ApiError && err.clax && err.status === 404) c.set({ deleted: true }); });
   }
 }
 

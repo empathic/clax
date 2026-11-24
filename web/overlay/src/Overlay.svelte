@@ -18,6 +18,12 @@
   // when the panel closes. The composer or the panel, the notice and the
   // launcher stack up from the bottom right corner, none over another.
   //
+  // A host with a page of its own for the reporter's reports gives
+  // `onShowReports`: the Filed notice's button and the launcher's "Your
+  // reports" call it in place of opening the panel. `showReports()`, the
+  // host's own ask, still opens the panel, and so does going back to it
+  // from a "Still broken" note.
+  //
   // Every feedback feature is a plugin (sdk/src/plugin.ts, `plugins`): the
   // capture methods, the Annotator and its tools, the privacy filters (run
   // on each capture before the reporter sees it), the attachments (each its
@@ -74,6 +80,12 @@
     timers?: Timers;
     onBadge?: (n: number) => void;
     onFiled?: (r: Report) => void;
+    /** Called in place of opening "Your reports" from the Filed notice
+     * (with the report filed) and the launcher (with none). */
+    onShowReports?: (r?: Report) => void;
+    /** What the overlay calls the place the reporter's replies show, over
+     * the container's `copy.reportsLabel`. */
+    reportsLabel?: string;
     /** Told whether a report is under way (the mode bar, a pick, or the form
      * open), each time that changes: the host's own trigger shows it. */
     onActive?: (on: boolean) => void;
@@ -92,7 +104,7 @@
   };
   let {
     client, doc, host, picker: makePicker, session, externalId, launcher = "corner", canFile = true, capture: captureDeps = {}, flatten: flattenDeps = browserFlatten,
-    timers = realTimers, onBadge, onFiled, onActive, plugins, presentation: presentationId, css = "", defaults = {}, copy = {},
+    timers = realTimers, onBadge, onFiled, onShowReports, reportsLabel: reportsLabelGiven, onActive, plugins, presentation: presentationId, css = "", defaults = {}, copy = {},
     openWindow = (w: Window) => w.open("", "feedback-composer", "popup,width=480,height=760"),
     reports: reportsMode = "button", elementPicker = true, wording = DEFAULT_WORDING, queueInfo = null,
   }: Props = $props();
@@ -783,11 +795,40 @@
     showReports();
   }
 
+  /** The launcher's "Your reports": closes the panel when it is open, else
+   * opens it, or hands it to the host's `onShowReports`. */
+  function launcherReports(): void {
+    if (open || !onShowReports) toggleReports();
+    else handOff();
+  }
+
+  /** The Filed notice's "View in …": the report just filed, in the panel
+   * or on the host's page. */
   function viewFiled(): void {
     const r = filed;
     filed = null;
+    if (onShowReports) {
+      // The notice's button goes with it: focus on it goes to Report, as
+      // a draft's Cancel gives it, else back to the page.
+      const root = viewBtn?.getRootNode() as Document | ShadowRoot | undefined;
+      if (viewBtn && root?.activeElement === viewBtn) {
+        if (reportBtn) reportBtn.focus();
+        else viewBtn.blur();
+      }
+      handOff(r ?? undefined);
+      return;
+    }
     if (r) expanded = r.id;
     showReports();
+  }
+
+  /** Gives the host's `onShowReports` the reporter's ask for their reports
+   * (with report `r`, when there is one), closing what opening the panel
+   * closes: the Filed notice, and the mode bar but for a reopen's. */
+  function handOff(r?: Report): void {
+    filed = null;
+    if (bar && draft?.purpose.kind !== "reopen") closeBar(false);
+    onShowReports?.(r);
   }
 
   function expand(id: string | null): void {
@@ -842,7 +883,7 @@
   const dialogTitle = $derived(reopening ? "Still broken" : copy.title || "Send feedback");
   /** The framed composer (dialog, drawer, sheet, window) is the reference dialog: intro, a labelled note, Attach, What will be sent, retention. */
   const framed = $derived(dockLayout !== "dock" || inWindow);
-  const reportsLabel = $derived(copy.reportsLabel || "Your reports");
+  const reportsLabel = $derived(reportsLabelGiven || copy.reportsLabel || "Your reports");
   /** The container's reports link, if it is http(s); otherwise the reports open in the overlay's own view. */
   const reportsUrl = $derived.by(() => { try { const u = new URL(copy.reportsUrl ?? ""); return /^https?:$/.test(u.protocol) ? u.href : null; } catch { return null; } });
   /** Where Your reports links: the queue's reporter page in the instance (through a view link) when the install names the queue, else the container's link. */
@@ -1012,10 +1053,10 @@
 
   {#if filed && !open && !draft}
     <section class="filed" role="status" aria-label="Filed">
-      <p><strong>Filed.</strong>{#if reportsOn} Replies and fixes show in Your reports.{/if}</p>
+      <p><strong>Filed.</strong>{#if reportsOn} Replies and fixes show in {reportsLabel}.{/if}</p>
       <div class="actions">
         <button type="button" class="ghost" aria-label="Dismiss" onclick={() => { filed = null; }}>✕</button>
-        {#if reportsOn}<button type="button" class="primary" bind:this={viewBtn} onclick={viewFiled}>View in Your reports</button>{/if}
+        {#if reportsOn}<button type="button" class="primary" bind:this={viewBtn} onclick={viewFiled}>View in {reportsLabel}</button>{/if}
       </div>
     </section>
   {/if}
@@ -1028,7 +1069,7 @@
   {#if launcher === "corner"}
     <div class="launcher" class:pulse>
       {#if reportsOn}
-        <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports{#if count}{" "}<span class="count" aria-label={`${count} waiting`}>{count}</span>{/if}</button>
+        <button type="button" class="reports-btn" aria-expanded={open} onclick={launcherReports}>Your reports{#if count}{" "}<span class="count" aria-label={`${count} waiting`}>{count}</span>{/if}</button>
       {/if}
       {#if canFile}
         <button type="button" class="primary report-btn" bind:this={reportBtn} aria-pressed={picking} onclick={() => (picking ? closeBar() : report())}>

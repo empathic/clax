@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { settled } from "./test/settled";
 import { flush, mount } from "./test/svelte";
 import Clone from "./ui/Clone.svelte";
 import CloneDialog from "./ui/CloneDialog.svelte";
@@ -38,42 +39,36 @@ function serve(options: unknown, posted: string[] = []) {
   }));
 }
 
-const until = async <T,>(f: () => T | null | undefined | false): Promise<T> => {
-  for (let i = 0; i < 200; i++) {
-    flush();
-    const v = f();
-    if (v) return v;
-    await new Promise(r => setTimeout(r, 5));
-  }
-  throw new Error("not reached");
-};
+/** `f`'s first truthy value, applying updates before each look. */
+const until = <T,>(f: () => T | null | undefined | false): Promise<T> => vi.waitFor(() => {
+  flush();
+  const v = f();
+  if (!v) throw new Error("not reached");
+  return v;
+});
 
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = ""; });
 
 describe("Clone", () => {
-  it("shows nothing where Clax keeps no repositories, or for a viewer with no scope", async () => {
+  it("offers nothing where Clax keeps no repositories, or for a viewer with no scope", async () => {
     serve({ available: false, scopes: [] });
     const m = mount(Clone, { id: ID });
-    await new Promise(r => setTimeout(r, 20));
-    flush();
-    expect(m.root.querySelector("button.clone")).toBeNull();
+    await settled();
     expect(cloneOpen.current).toBeNull();
     m.unmount();
     serve({ available: true, scopes: [], reason: { code: "sign_in_required", message: "…" } });
     const g = mount(Clone, { id: ID });
-    await new Promise(r => setTimeout(r, 20));
-    flush();
-    expect(g.root.querySelector("button.clone")).toBeNull();
+    await settled();
+    expect(cloneOpen.current).toBeNull();
     g.unmount();
   });
 
-  it("shows Clone where the viewer may clone, offers the more menu's item, and opens the dialog", async () => {
+  it("draws no button, offers the more menu's item where the viewer may clone, and opens the dialog", async () => {
     serve({ available: true, scopes: ["read"], ttl_s: 3600 });
     const m = mount(Clone, { id: ID });
-    const b = await until(() => m.root.querySelector<HTMLButtonElement>("button.clone"));
-    expect(b.classList.contains("hide-sm")).toBe(true);
-    expect(cloneOpen.current).not.toBeNull();
-    flush(() => b.click());
+    const open = await until(() => cloneOpen.current);
+    expect(m.root.querySelector("button"), "the top bar has no Clone button").toBeNull();
+    flush(() => open());
     const dialog = await until(() => document.querySelector("[role=dialog]"));
     expect(dialog.getAttribute("aria-modal")).toBe("true");
     expect(dialog.querySelector("h2")?.textContent).toBe("Clone with git or jj");
@@ -138,10 +133,10 @@ describe("Clone dialog", () => {
     m.unmount();
   });
 
-  it("shows Clone to a link's reader", async () => {
+  it("offers Clone to a link's reader", async () => {
     serve({ available: true, scopes: ["read"], ttl_s: 900, link: true });
     const m = mount(Clone, { id: ID });
-    await until(() => m.root.querySelector<HTMLButtonElement>("button.clone"));
+    await until(() => cloneOpen.current);
     m.unmount();
   });
 
@@ -153,8 +148,22 @@ describe("Clone dialog", () => {
   });
 });
 
-describe("the more menu at phone width", () => {
-  it("lists Clone with git when the viewer may clone, which closes it and opens the dialog", async () => {
+describe("the more menu", () => {
+  it("lists Clone with git at full width when the viewer may clone, which closes it and opens the dialog", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    const onClone = vi.fn();
+    const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), onClone });
+    flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
+    await new Promise(r => setTimeout(r));
+    const items = Array.from(m.root.querySelectorAll<HTMLElement>("[role=menuitem]"));
+    expect(items.map(i => i.textContent)).toEqual(["Open raw", "Copy link", "Clone with git…"]);
+    flush(() => items[2].click());
+    expect(onClone).toHaveBeenCalledTimes(1);
+    expect(m.root.querySelector("[role=menu]")).toBeNull();
+    m.unmount();
+  });
+
+  it("lists Clone with git at phone width too", async () => {
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(max-width: 700px)" }));
     const onClone = vi.fn();
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), onClone });

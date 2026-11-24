@@ -1,6 +1,7 @@
 //! Homes that installed builds of the Clax app wrote, opened through the
 //! embedded core (spec 2026-10-19 §10.2): each is backed up, adopted into
 //! this build's numbering and migrated to its end, and keeps every row.
+#![warn(clippy::disallowed_methods)]
 
 use clax_embed::frame::{self, As, RequestHead, ResponseHead};
 use clax_embed::{Embed, OpenEvent, OpenOptions};
@@ -355,10 +356,9 @@ async fn the_installed_flutter_app_home_backs_up_and_is_adopted() {
     );
     assert_rows_kept(&before, &copies[0], None);
 
-    // Adopted and migrated to this build's last migration, the queue
-    // responders'.
+    // Adopted and migrated to this build's last migration: the last entry
+    // of `MIGRATIONS`, whichever it is.
     let version = clax_store::schema_version(&home).unwrap();
-    assert_eq!(version, Some(clax_store::migrations::RESPONDERS_MIGRATION));
     assert_eq!(
         version,
         Some(clax_store::migrations::MIGRATIONS.len() as u32)

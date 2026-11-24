@@ -9,14 +9,35 @@
 //!   `…/credits {lift_milli, reason}` → the person. `<person>` is a person
 //!   key, URL-encoded (`%2Aowner`).
 //! - `GET/PUT /api/admin/provider`, `PUT/DELETE /api/admin/provider/key`,
-//!   `POST /api/admin/provider/test`, `GET /api/admin/provider/models`.
+//!   `POST /api/admin/provider/test`, `GET /api/admin/provider/models`,
+//!   `GET /api/admin/provider/failures` (the provider failure log:
+//!   [`failures`]).
 //!   `api` names the wire API the base URL speaks (`anthropic`, `openai`,
 //!   `gemini`).
 //!   A field the daemon's configuration sets (`config.toml` or the
 //!   environment) shows its source and is refused 409
 //!   `setting_overridden` here. The instance key is write-only; a key in
 //!   `[bot] api_key_env`'s variable takes precedence over a stored one
-//!   (`sources.key` `env:<NAME>`).
+//!   (`sources.key` `env:<NAME>`). `kek {set, fingerprint}` says whether a
+//!   key-encryption key seals the keys and which ([`Kek::fingerprint`]),
+//!   for checking a backup of it; nothing public shows the fingerprint.
+//!
+//!   [`Kek::fingerprint`]: clax_store::secrets::Kek::fingerprint
+//! - `GET/PUT /api/admin/web`: the web tools' settings, `{search: {enabled,
+//!   provider, gateway, byok_alias, limit, max_per_run}, fetch: {enabled,
+//!   url_rule, allowlist, max_per_run}, cloudflare: {account_id, token}}`,
+//!   with `configured {search, fetch}` (which operations the host's
+//!   source can perform now: on a daemon, fetch always and search with a
+//!   Cloudflare account ID and token) and `sources`
+//!   keyed `search.provider`, `fetch.url_rule` and so on; `PUT` takes the
+//!   same shape without `configured`, `sources` or `token`, any field may
+//!   be left out and a null puts it back to its default. A value the
+//!   setting's kind refuses is 400; a field the daemon's configuration
+//!   sets is refused 409 `setting_overridden`, as the provider's are.
+//!   `PUT/DELETE /api/admin/web/token` seals or clears the Cloudflare API
+//!   token (503 `no_kek` without a key-encryption key); the token is
+//!   write-only, shown as `key_info` (`last4`), and bound to Cloudflare's
+//!   API origin whatever the model base URL is.
 //! - `GET/PUT /api/admin/pricing`: the credit price, the free tier, the
 //!   default token rates, `require_explicit_price` and the cost lines,
 //!   with each priced model's rates and where they come from (`models`)
@@ -57,12 +78,14 @@ use clax_http::viewer::SameOrigin;
 use clax_sample::messages::{ApiKey, MessagesClient, ModelApi};
 use clax_store::Store;
 use clax_store::bot_settings::Setting;
+use clax_store::credits::KeySource;
 use clax_store::credits::{
     Applies, CostLine, CostLinePatch, ModelPrices, ModelPricing, ModelRates, Rate, RateSource,
     TOKEN_MARGIN_BP, Unit, UnitPricing, UnitRate, credits_per_unit_milli, parse_token_line,
     token_line,
 };
-use clax_store::roles::Role;
+use clax_store::provider_failures::{FailureQuery, NewFailure};
+use clax_store::roles::{OWNER, Role};
 use clax_store::secrets::SecretSlot;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -305,8 +328,10 @@ pub fn provider_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
     let mut names = Names::new(st);
     let (key, key_source) = match bot.env_key_for(st)? {
         Some(k) => (
+            // The environment's key keeps no state: no request with it is
+            // noted, so it has no problem to show.
             json!({"set": true, "last4": k.last4(), "set_at": null, "set_by": null,
-                   "last_ok_at": null}),
+                   "last_ok_at": null, "host": null, "problem": null, "last_problem": null}),
             format!("env:{}", k.var),
         ),
         None => {
@@ -338,10 +363,15 @@ pub fn provider_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         caps.insert((*name).into(), get(*s));
         sources.insert(format!("caps.{name}"), json!(src(*s)));
     }
+    // Which key-encryption key seals the keys: its fingerprint, so an
+    // admin can check a backup of it (docs/prod.md, "CLAX_KEK"); `null`
+    // without one. Never in public: /healthz says only whether there is one.
+    let kek = bot.kek.as_ref().map(clax_store::secrets::Kek::fingerprint);
     Ok(json!({
         "api": get(Setting::Api),
         "base_url": get(Setting::BaseUrl),
         "models": models, "key": key, "caps": caps, "sources": sources,
+        "kek": {"set": kek.is_some(), "fingerprint": kek},
     }))
 }
 
@@ -469,6 +499,202 @@ pub async fn clear_key(
     Ok(Json(v))
 }
 
+// ---------------------------------------------------------------------------
+// Web tools
+// ---------------------------------------------------------------------------
+
+/// The web settings by their place in the page: (group, field, setting).
+const WEB: &[(&str, &str, Setting)] = &[
+    ("search", "enabled", Setting::WebSearchEnabled),
+    ("search", "provider", Setting::WebSearchProvider),
+    ("search", "gateway", Setting::WebSearchGateway),
+    ("search", "byok_alias", Setting::WebSearchByokAlias),
+    ("search", "limit", Setting::WebSearchLimit),
+    ("search", "max_per_run", Setting::WebMaxSearchesPerRun),
+    ("fetch", "enabled", Setting::WebFetchEnabled),
+    ("fetch", "url_rule", Setting::WebFetchUrlRule),
+    ("fetch", "allowlist", Setting::WebFetchAllowlist),
+    ("fetch", "max_per_run", Setting::WebMaxFetchesPerRun),
+    ("cloudflare", "account_id", Setting::WebCloudflareAccountId),
+];
+
+/// The web settings as `GET /api/admin/web` shows them, with which
+/// operations are configured, when the host found its own source cannot run
+/// where it runs why (`unavailable`, else null), and whether that check
+/// is still running (`checking`).
+///
+/// # Errors
+/// The store's.
+pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
+    let eff = st.effective_bot_settings()?;
+    let mut groups: serde_json::Map<String, Value> = serde_json::Map::new();
+    let mut sources = serde_json::Map::new();
+    for (group, field, setting) in WEB {
+        let entry = eff.get(setting);
+        let value = entry.map(|e| e.value.clone()).unwrap_or(Value::Null);
+        let source = entry
+            .map(|e| e.source.label())
+            .unwrap_or_else(|| "default".into());
+        groups
+            .entry((*group).to_string())
+            .or_insert_with(|| json!({}))[*field] = value;
+        sources.insert(format!("{group}.{field}"), json!(source));
+    }
+    let meta = st.secret_meta(&SecretSlot::Cloudflare)?;
+    sources.insert(
+        "cloudflare.token".into(),
+        json!(if meta.is_some() { "db" } else { "default" }),
+    );
+    let mut names = Names::new(st);
+    groups["cloudflare"]["token"] = clax_http::bot::key_info(
+        &mut names,
+        meta.as_ref(),
+        clax_store::secrets::CLOUDFLARE_ORIGIN,
+        "the Cloudflare token",
+    )?;
+    let configured = crate::bot::web_configured(st, bot)?;
+    let mut v = json!({
+        "configured": {"search": configured.search, "fetch": configured.fetch},
+        "unavailable": bot.web_check.why(),
+        "checking": bot.web_check.state() == clax_bot::web::WebCheck::Checking,
+        "sources": sources,
+    });
+    for (k, g) in groups {
+        v[k] = g;
+    }
+    Ok(v)
+}
+
+/// `GET /api/admin/web` (see the module documentation).
+pub async fn web(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let (caller, _) = admin(&s, &d).await?;
+    let bot = s.bot.clone();
+    if let Some(check) = &bot.admin_web_check {
+        check.before_view().await;
+    }
+    let v = s
+        .store_call(move |st| {
+            let v = web_view(st, &bot)?;
+            viewed(st, &bot, &who, &caller, "web", None)?;
+            Ok(v)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `PUT /api/admin/web`'s body: each group a map of the fields it may set.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebBody {
+    #[serde(default)]
+    search: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    fetch: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    cloudflare: Option<serde_json::Map<String, Value>>,
+}
+
+/// `PUT /api/admin/web {search?, fetch?, cloudflare?}`: each field given is
+/// set (null: back to its default). 400 `unknown_setting` for a field the
+/// page does not show or a value its kind refuses; 409 `setting_overridden`
+/// for one the daemon's configuration sets.
+pub async fn set_web(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    req: Result<Json<WebBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let b = body(req)?;
+    let mut changes: Vec<(Setting, Option<Value>)> = Vec::new();
+    for (group, map) in [
+        ("search", b.search),
+        ("fetch", b.fetch),
+        ("cloudflare", b.cloudflare),
+    ] {
+        for (k, v) in map.unwrap_or_default() {
+            let setting = WEB
+                .iter()
+                .find(|(g, f, _)| *g == group && *f == k)
+                .map(|(_, _, s)| *s)
+                .ok_or_else(|| {
+                    ApiError::bad_request(
+                        "unknown_setting",
+                        format!("no setting is named {group}.{k}"),
+                    )
+                })?;
+            changes.push((setting, (!v.is_null()).then_some(v)));
+        }
+    }
+    let bot = s.bot.clone();
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.set_bot_settings(&ctx, &changes)?;
+            web_view(st, &bot)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `PUT /api/admin/web/token {token}`'s body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenBody {
+    token: String,
+}
+
+/// `PUT /api/admin/web/token {token}`: seals the Cloudflare API token.
+pub async fn set_web_token(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    req: Result<Json<TokenBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let b = body(req)?;
+    let bot = s.bot.clone();
+    bot.kek()?;
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            let kek = bot.kek.as_ref().ok_or(CoreError::NotFound)?;
+            st.set_secret(&ctx, kek, &SecretSlot::Cloudflare, &b.token)?;
+            web_view(st, &bot)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `DELETE /api/admin/web/token`: clears the stored Cloudflare API token.
+pub async fn clear_web_token(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let bot = s.bot.clone();
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.clear_secret(&ctx, &SecretSlot::Cloudflare)?;
+            web_view(st, &bot)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
 /// A key to send and the slot to mark when a request with it succeeds
 /// (`None` for the environment's).
 type KeyInUse = (ApiKey, Option<SecretSlot>);
@@ -525,12 +751,30 @@ pub fn messages_client(store: &clax_store::Store) -> MessagesClient {
     }
 }
 
-/// The provider's models with the instance key, or why not.
+/// Why the provider's models could not be listed: `error`, Clax's own
+/// words ([`clax_sample::messages::MessagesError::summary`], or that no key
+/// is set), and `detail`, what the provider answered
+/// ([`clax_sample::messages::ErrorDetail::to_json`]: `{class, status, type,
+/// message, request_id}`, plain text, bounded, never the key), `None` when
+/// no request was made.
+struct ModelsFailure {
+    error: String,
+    detail: Option<Value>,
+    /// The API and the base URL's host the request was made to.
+    api: ModelApi,
+    host: Option<String>,
+}
+
+/// The provider's models with the instance key, or why not, for the admin
+/// page `page` (`test`, `models`). A failed request is logged as one
+/// warning: the page, the API, the base URL's origin (never the key), the
+/// detail's members and how long the request took.
 async fn models_of(
     s: &AppState,
+    page: &'static str,
 ) -> Result<
     (
-        Result<Vec<clax_sample::messages::ModelInfo>, String>,
+        Result<Vec<clax_sample::messages::ModelInfo>, ModelsFailure>,
         Option<SecretSlot>,
     ),
     ApiError,
@@ -543,25 +787,60 @@ async fn models_of(
         })
         .await?;
     let Some((key, slot)) = key else {
-        return Ok((Err(NO_KEY.into()), None));
+        return Ok((
+            Err(ModelsFailure {
+                error: NO_KEY.into(),
+                detail: None,
+                api,
+                host: None,
+            }),
+            None,
+        ));
     };
     let store = s.store.clone();
+    let origin = clax_core::config::key_host(&base_url);
+    let started = web_time::Instant::now();
     // The provider's request is not `Send` on the Worker's one thread.
     let r = clax_rt::sendable(async move {
         messages_client(&store)
             .list_models(api, &base_url, &key)
             .await
-            // Its own words, never the answer's text: the base URL may be
-            // anyone's host.
-            .map_err(|e| e.summary())
+            .map_err(|e| (e.summary(), e.detail()))
     })
     .await;
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let r = r.map_err(|(summary, d)| {
+        tracing::warn!(
+            target: clax_bot::run::RUNS_LOG,
+            page,
+            api = api.as_str(),
+            origin = origin.as_deref().unwrap_or_default(),
+            class = d.class,
+            status = d.status,
+            provider_type = ?d.kind,
+            message = ?d.message,
+            request_id = ?d.request_id,
+            latency_ms,
+            "the provider's model list failed"
+        );
+        // `error` is Clax's own words; the provider's are in `detail`.
+        ModelsFailure {
+            error: summary,
+            detail: Some(d.to_json()),
+            api,
+            host: origin.clone(),
+        }
+    });
     Ok((r, slot))
 }
 
-/// `POST /api/admin/provider/test` → `{ok, latency_ms, error?}`: lists
-/// the provider's models with the instance key and base URL in effect,
-/// recorded as `view.admin {page: "provider.test"}`.
+/// `POST /api/admin/provider/test` → `{ok, latency_ms, error, detail}`:
+/// lists the provider's models with the instance key and base URL in
+/// effect, recorded as `view.admin {page: "provider.test"}`. On a failure
+/// `error` is Clax's own words and `detail` what the provider answered
+/// (`{class, status, type, message, request_id}`; null on success or when
+/// no key is set). A stored key's success clears its last problem, a
+/// failure becomes it ([`Store::note_secret_problem`]).
 pub async fn test(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -571,27 +850,178 @@ pub async fn test(
     d.refuse_agents()?;
     let (caller, _) = admin(&s, &d).await?;
     let started = web_time::Instant::now();
-    let (r, slot) = models_of(&s).await?;
+    let (r, slot) = models_of(&s, "test").await?;
     let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let bot = s.bot.clone();
-    let ok = r.is_ok();
+    let outcome = outcome_of(&r);
     s.store_call(move |st| {
-        if let (true, Some(slot)) = (ok, &slot) {
-            st.mark_secret_ok(slot)?;
-        }
+        note_outcome(st, &caller, "provider.test", slot.as_ref(), &outcome)?;
         viewed(st, &bot, &who, &caller, "provider.test", None)
     })
     .await?;
     Ok(Json(match r {
-        Ok(_) => json!({"ok": true, "latency_ms": latency_ms, "error": null}),
-        Err(e) => json!({"ok": false, "latency_ms": latency_ms, "error": e}),
+        Ok(_) => json!({"ok": true, "latency_ms": latency_ms, "error": null, "detail": null}),
+        Err(f) => json!({"ok": false, "latency_ms": latency_ms, "error": f.error,
+                         "detail": f.detail}),
     }))
+}
+
+/// A failed request of an admin page, for the provider failure log: the
+/// failure's detail, the API and the base URL's host.
+type Failed = (Value, ModelApi, Option<String>);
+
+/// What the outcome `r` of an admin page's request is noted as
+/// ([`note_outcome`]): a success (`Ok`), a failure that made no request
+/// (`Err(None)`), or a failure as the provider answered (`Err(Some)`).
+fn outcome_of<T>(r: &Result<T, ModelsFailure>) -> Result<(), Option<Failed>> {
+    match r {
+        Ok(_) => Ok(()),
+        Err(f) => Err(f.detail.clone().map(|d| (d, f.api, f.host.clone()))),
+    }
+}
+
+/// A request of admin page `page` (`provider.test`, `provider.models`),
+/// made with the instance's key (`slot` when stored) for `caller`,
+/// succeeded (`Ok`) or failed as `Err` holds: a stored key's `last_ok_at`
+/// or its last problem, and a failure kept in the provider failure log
+/// ([`Store::log_provider_failure`]). Nothing for a failure that made no
+/// request.
+fn note_outcome(
+    st: &Store,
+    caller: &Caller,
+    page: &str,
+    slot: Option<&SecretSlot>,
+    outcome: &Result<(), Option<Failed>>,
+) -> clax_core::Result<()> {
+    match (slot, outcome) {
+        (Some(slot), Ok(())) => st.mark_secret_ok(slot)?,
+        (slot, Err(Some((detail, api, host)))) => {
+            if let Some(slot) = slot {
+                st.note_secret_problem(slot, detail)?;
+            }
+            let person = clax_http::bot::person_of(caller).unwrap_or_else(|| OWNER.to_string());
+            st.log_provider_failure(&NewFailure {
+                person: &person,
+                run_id: None,
+                request: page,
+                model: None,
+                api: api.as_str(),
+                host: host.as_deref(),
+                key_source: KeySource::Instance.as_str(),
+                detail,
+            })?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The query of `GET /api/admin/provider/failures`.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FailuresQuery {
+    person: Option<String>,
+    run: Option<String>,
+    model: Option<String>,
+    class: Option<String>,
+    status: Option<i64>,
+    since: Option<String>,
+    until: Option<String>,
+    before: Option<String>,
+    limit: Option<usize>,
+}
+
+/// The most entries a page of `GET /api/admin/provider/failures` holds
+/// when the query does not say.
+const FAILURES_PAGE: usize = 50;
+
+/// A time of the failures' query, as the store writes times.
+fn failure_time(k: &str, v: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(v) = v.filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    chrono::DateTime::parse_from_rfc3339(&v)
+        .map(|t| Some(clax_core::time::stamp(t.with_timezone(&chrono::Utc))))
+        .map_err(|_| ApiError::bad_request("invalid_query", format!("{k} is an RFC 3339 time")))
+}
+
+/// `GET /api/admin/provider/failures?person=&run=&model=&class=&status=&since=&until=&before=&limit=`
+/// → `{failures: [{id, at, person: {id, name}, run_id, request, model,
+/// api, host, key_source, class, status, type, message, request_id,
+/// since_key_change}], next}`: the provider failure log
+/// ([`clax_store::provider_failures`]), each failed request made with the
+/// instance's key, newest first, narrowed by each parameter given
+/// (`since` at or after, `until` before; RFC 3339), `limit` entries (1 to
+/// 200, 50 when not given) after the `before` cursor, `next` the cursor
+/// of the page after (`null` at the last). `since_key_change`: the
+/// failure came after the stored instance key was last set (always, for
+/// the environment's key). Admins only; recorded as `view.admin {page:
+/// "provider.failures", subject_person?}`.
+pub async fn failures(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+    q: Result<Query<FailuresQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let (caller, _) = admin(&s, &d).await?;
+    let q = q
+        .map(|Query(q)| q)
+        .map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let query = FailureQuery {
+        since: failure_time("since", q.since)?,
+        until: failure_time("until", q.until)?,
+        person: q.person.filter(|p| !p.is_empty()),
+        run_id: q.run.filter(|r| !r.is_empty()),
+        model: q.model.filter(|m| !m.is_empty()),
+        class: q.class.filter(|c| !c.is_empty()),
+        status: q.status,
+        before: q.before.filter(|b| !b.is_empty()),
+        limit: q.limit.unwrap_or(FAILURES_PAGE),
+    };
+    let bot = s.bot.clone();
+    let v = s
+        .store_call(move |st| {
+            let page = st.provider_failures(&query)?;
+            let key_set_at = match bot.env_key_for(st)? {
+                Some(_) => None,
+                None => st.secret_meta(&SecretSlot::Instance)?.map(|m| m.set_at),
+            };
+            let mut names = Names::new(st);
+            let failures = page
+                .failures
+                .iter()
+                .map(|f| {
+                    Ok(json!({
+                        "id": f.id.to_string(), "at": f.at, "person": names.person(&f.person)?,
+                        "run_id": f.run_id, "request": f.request, "model": f.model,
+                        "api": f.api, "host": f.host, "key_source": f.key_source,
+                        "class": f.class, "status": f.status, "type": f.provider_type,
+                        "message": f.message, "request_id": f.request_id,
+                        "since_key_change": key_set_at.as_ref().is_none_or(|t| f.at >= *t),
+                    }))
+                })
+                .collect::<clax_core::Result<Vec<_>>>()?;
+            viewed(
+                st,
+                &bot,
+                &who,
+                &caller,
+                "provider.failures",
+                query.person.as_deref(),
+            )?;
+            Ok(json!({"failures": failures, "next": page.next}))
+        })
+        .await?;
+    Ok(Json(v))
 }
 
 /// `GET /api/admin/provider/models` → `{models: [{id, display_name,
 /// pricing}], fetched_at}`: the provider's model list with the instance key
 /// and base URL in effect (502 `provider_error` when it fails, 409
-/// `no_key` without a key), each with how it is priced now
+/// `no_key` without a key; the 502's `error.detail` is what the provider
+/// answered, `{class, status, type, message, request_id}`), each with how
+/// it is priced now
 /// ([`model_summary`]), recorded as `view.admin {page:
 /// "provider.models"}`.
 pub async fn models(
@@ -601,18 +1031,16 @@ pub async fn models(
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let (caller, _) = admin(&s, &d).await?;
-    let (r, slot) = models_of(&s).await?;
+    let (r, slot) = models_of(&s, "models").await?;
     let bot = s.bot.clone();
-    let ok = r.is_ok();
+    let outcome = outcome_of(&r);
     let ids: Vec<String> = r
         .as_ref()
         .map(|l| l.iter().map(|m| m.id.clone()).collect())
         .unwrap_or_default();
     let (fetched_at, pricing) = s
         .store_call(move |st| {
-            if let (true, Some(slot)) = (ok, &slot) {
-                st.mark_secret_ok(slot)?;
-            }
+            note_outcome(st, &caller, "provider.models", slot.as_ref(), &outcome)?;
             viewed(st, &bot, &who, &caller, "provider.models", None)?;
             let pricing: Vec<Value> = st.model_pricing(&ids)?.iter().map(model_summary).collect();
             Ok((st.now(), pricing))
@@ -625,16 +1053,21 @@ pub async fn models(
             })).collect::<Vec<_>>(),
             "fetched_at": fetched_at,
         }))),
-        Err(e) if e == NO_KEY => Err(ApiError::new(
+        Err(ModelsFailure { detail: None, .. }) => Err(ApiError::new(
             axum::http::StatusCode::CONFLICT,
             "no_key",
             "set the instance key to list the provider's models",
         )),
-        Err(e) => Err(ApiError::new(
-            axum::http::StatusCode::BAD_GATEWAY,
-            "provider_error",
-            e,
-        )),
+        Err(ModelsFailure {
+            error,
+            detail: Some(detail),
+            ..
+        }) => {
+            let mut err =
+                ApiError::new(axum::http::StatusCode::BAD_GATEWAY, "provider_error", error);
+            err.extra.insert("detail".into(), detail);
+            Err(err)
+        }
     }
 }
 

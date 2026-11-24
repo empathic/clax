@@ -20,6 +20,19 @@
 //   module that was deleted from the checkout, and pass. The copy holds
 //   what was declared and nothing else, so a result depends on that alone.
 //
+// The packages are not copied. Each package rules_js fetched from the
+// lockfile is a directory of its own in its store
+// (node_modules/.aspect_rules_js/<package>@<version>/node_modules/<name>),
+// which Bazel writes whole and never keeps a stale file in. The copy links
+// each one to its real place (project-copy.mjs): a package's files then
+// have one path, the real one, for native code and JavaScript alike, and a
+// package reaches its own dependencies through the store's links beside
+// it. The project's node_modules directories, the links that say which
+// packages it has, are still the copy's own, so a package dropped from the
+// lockfile is gone from the run. A tool that limits the files it reads to
+// the project's (Vite's server.fs.allow) must allow the store as well
+// (web/vitest.config.ts).
+//
 // `--skip <path>` leaves a declared file or directory (relative to the
 // workspace) out of the copy: a binary that must be run as the file Bazel
 // ran once (macOS assesses each new file on its first run), or a browser
@@ -31,22 +44,18 @@
 import { spawn } from 'node:child_process';
 import {
   chmodSync,
-  constants,
-  copyFileSync,
   cpSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
-  readlinkSync,
   realpathSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join, relative, resolve, sep } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
+import { copyProject } from './project-copy.mjs';
 import { candidates, makeScratch, removedByBazel } from './scratch.mjs';
 
 const argv = process.argv.slice(2);
@@ -79,12 +88,11 @@ const realRoot = real.slice(0, real.length - join(dir, 'package.json').length - 
 // Where the copy goes: the first writable place that Bazel cleans up
 // itself (scratch.mjs has the order and the reasons).
 const project = makeScratch(candidates({ env: process.env, cwd: process.cwd(), systemTmp: realpathSync(tmpdir()) }));
-// The copy is a whole project with its packages, so it is also removed
-// here however this ends: at the end, on an error, and on a signal that
-// can be caught. A copy in a test's own temporary directory is the
-// exception: Bazel removes that itself (scratch.mjs, removedByBazel), and
-// removing tens of thousands of files here would only add to the test's
-// time. The marker names this process, so that scripts/bazel-gc.sh can
+// The copy is a whole project, so it is also removed here however this
+// ends: at the end, on an error, and on a signal that can be caught. A copy
+// in a test's own temporary directory is the exception: Bazel removes that
+// itself (scratch.mjs, removedByBazel), and removing it here would only add
+// to the test's time. The marker names this process, so that scripts/bazel-gc.sh can
 // tell a copy still in use from one left in the machine's temporary
 // directory by a process that was killed outright.
 writeFileSync(join(project, '.npm-script-private'), `${process.pid}\n`);
@@ -110,46 +118,7 @@ for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
     process.exit(128 + ({ SIGHUP: 1, SIGINT: 2, SIGTERM: 15 })[signal]);
   });
 }
-const inside = (root, path) => path === root || path.startsWith(root + sep);
-
-// Copies `from` to `to` inside the private project. A link that leads to
-// the same place in the real tree, or out of it, is followed: its target's
-// contents are what was declared. A link to elsewhere in the real tree is
-// one of pnpm's (a package to the store, the store to a dependency): it is
-// kept as a link, and its target is copied to the same place in the copy.
-const pending = [[declared, project]];
-const done = new Set();
-function copy(from, to) {
-  if (done.has(to)) return;
-  const here = relative(project, to);
-  if (skips.some((skip) => here === skip || here.startsWith(skip + sep))) return;
-  const stat = lstatSync(from);
-  if (stat.isSymbolicLink()) {
-    const target = resolve(dirname(from), readlinkSync(from));
-    const at = inside(project, to) ? relative(project, to) : null;
-    const realTarget = existsSync(target) ? realpathSync(target) : target;
-    if (inside(realRoot, realTarget) && relative(realRoot, realTarget) !== at) {
-      const twin = join(project, relative(realRoot, realTarget));
-      done.add(to);
-      mkdirSync(dirname(to), { recursive: true });
-      symlinkSync(relative(dirname(to), twin), to);
-      pending.push([realTarget, twin]);
-      return;
-    }
-    return copy(realTarget, to);
-  }
-  done.add(to);
-  if (stat.isDirectory()) {
-    mkdirSync(to, { recursive: true });
-    for (const name of readdirSync(from)) copy(join(from, name), join(to, name));
-  } else {
-    mkdirSync(dirname(to), { recursive: true });
-    // A clone where the file system has them (APFS, Btrfs, XFS); a copy otherwise.
-    copyFileSync(from, to, constants.COPYFILE_FICLONE);
-    chmodSync(to, stat.mode | 0o200);
-  }
-}
-while (pending.length > 0) copy(...pending.pop());
+copyProject({ declared, project, realRoot, skips });
 
 const cwd = join(project, dir);
 const scripts = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')).scripts ?? {};

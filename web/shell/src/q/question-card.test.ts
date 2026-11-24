@@ -1,11 +1,13 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { flush, mount } from "../test/svelte";
+import * as api from "../api";
 import { guardedAction, keyboardTrail } from "../view/trail";
 import QuestionCard from "./QuestionCard.svelte";
 import { view } from "./fixtures";
 import { loadMarkdown } from "../view/md-load.svelte";
 import { useTrail } from "./trail";
+import { settled } from "../test/settled";
 
 const buttons = (root: Element, text: string) => [...root.querySelectorAll("button")].filter(b => b.textContent === text);
 /** A trusted pointer's click (`detail` 1), or Enter or Space on a button (`detail` 0). */
@@ -149,7 +151,7 @@ describe("QuestionCard", () => {
     ] });
     const selected = (root: Element) => [...root.querySelectorAll('[role="tab"]')].findIndex(t => t.getAttribute("aria-selected") === "true");
     // Lets the card's focus move (after the DOM update) run.
-    const settle = async () => { flush(); await Promise.resolve(); await Promise.resolve(); flush(); };
+    const settle = settled;
 
     it("moves on to the next unanswered question after a single choice is picked, and not after a multi choice or Other", async () => {
       const m = mount(QuestionCard, { q: four(), onAnswer: vi.fn(), onDecline: vi.fn() });
@@ -394,16 +396,24 @@ describe("QuestionCard", () => {
 
   it("says when an action failed and lets it be tried again", async () => {
     let fail = true;
-    const onDecline = vi.fn(async () => { if (fail) throw new Error("down"); });
+    let why: unknown = new api.ApiError(530, "");
+    const onDecline = vi.fn(async () => { if (fail) throw why; });
     const m = mount(QuestionCard, { q: view(), onAnswer: vi.fn(), onDecline });
+    // An answer that is not Clax's (a CDN's page for a Clax taken down) says so, with no status.
     click(buttons(m.root, "Skip")[0]);
-    await vi.waitFor(() => expect(m.root.querySelector(".act-hint")!.textContent).toBe("Not sent: Clax did not answer. Try again."));
+    await vi.waitFor(() => expect(m.root.querySelector(".act-hint")!.textContent).toBe("Not sent: this Clax is not answering. It may have been taken down or moved."));
     flush();
+    why = new TypeError("Failed to fetch");
+    click(buttons(m.root, "Skip")[0]);
+    await vi.waitFor(() => expect(m.root.querySelector(".act-hint")!.textContent).toBe("Not sent: Clax did not answer."));
+    flush();
+    // Shown as a failure, not as a hint.
+    expect(m.root.querySelector(".act-hint")!.classList.contains("act-failed")).toBe(true);
     expect((buttons(m.root, "Skip")[0] as HTMLButtonElement).disabled).toBe(false);
     fail = false;
     click(buttons(m.root, "Skip")[0]);
     await flush();
-    expect(onDecline).toHaveBeenCalledTimes(2);
+    expect(onDecline).toHaveBeenCalledTimes(3);
     m.unmount();
   });
 

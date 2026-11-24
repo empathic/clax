@@ -33,7 +33,7 @@ describe("the bridge outside the inspect view", () => {
     send({ type: "clax:test", requestId: "t1", files: [] });
     send({ type: "clax:migrate", requestId: "m1", file: "migrate.js", from: 1, to: 2 });
     send({ type: "clax:inspect", requestId: "u0", settleMs: 0 });
-    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:inspection")).toHaveLength(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:inspection")).toHaveLength(1));
     expect(posted.filter(m => m.type === "clax:tests" || m.type === "clax:migration")).toEqual([]);
     posted.length = 0;
   });
@@ -41,7 +41,7 @@ describe("the bridge outside the inspect view", () => {
   it("still answers an inspection, with no errors kept", async () => {
     console.error("not kept");
     send({ type: "clax:inspect", requestId: "u1", settleMs: 0 });
-    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:inspection")).toHaveLength(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:inspection")).toHaveLength(1));
     expect(posted.find(m => m.type === "clax:inspection")).toMatchObject({ requestId: "u1", errors: [] });
   });
 });

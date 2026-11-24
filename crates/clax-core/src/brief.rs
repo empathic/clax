@@ -106,6 +106,7 @@ pub fn placeholder_html(title: &str) -> String {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

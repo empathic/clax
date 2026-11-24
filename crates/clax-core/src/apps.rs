@@ -262,9 +262,12 @@ impl Apps {
         out
     }
 
-    /// Whether origin list `listed` admits `origin` ([`Apps::expand`]).
+    /// Whether origin list `listed` admits exact origin `origin`: one of
+    /// its entries, an `app:` reference expanded to that app's origins
+    /// ([`Apps::expand`]), lists it or matches it as a pattern
+    /// ([`crate::queue::queue_allows_origin`]).
     pub fn admits(&self, listed: &[String], origin: &str) -> bool {
-        self.expand(listed).iter().any(|o| o == origin)
+        crate::queue::queue_allows_origin(&self.expand(listed), origin)
     }
 
     /// The public origin of live app `name`: its Service's own origin

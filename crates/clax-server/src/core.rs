@@ -16,8 +16,19 @@ use tokio::sync::watch;
 const SESSION_IDLE: Duration = Duration::from_secs(Store::SESSION_IDLE_SECS);
 /// How often the core deletes drafts older than
 /// [`clax_store::drafts::DRAFT_MAX_AGE`] and prunes ended ClaxBot runs
-/// ([`Store::prune_ended_runs`]), and once at start.
+/// ([`Store::prune_ended_runs`]), and once at start; the prune comes
+/// again after [`PRUNE_AGAIN`] instead while it leaves more.
 const DRAFT_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
+/// The most prune passes one wake-up of the core's pruner runs, one after
+/// another while each leaves more ([`Store::prune_ended_runs_while`]).
+const PRUNE_PASSES_PER_WAKE: usize = 16;
+/// How long, by the store's clock, one wake-up of the pruner begins
+/// passes for.
+const PRUNE_WAKE_BUDGET: Duration = Duration::from_secs(30);
+/// How soon the pruner wakes again after a wake-up that left more: a
+/// backlog drains at [`PRUNE_PASSES_PER_WAKE`] passes a wake-up, not one
+/// pass an hour.
+const PRUNE_AGAIN: Duration = Duration::from_secs(10);
 /// How long shutdown waits for the journal appender to close its segment.
 /// The appender stops as shutdown begins, beside the connection drain, and
 /// catches up for at most 0.5 s; a wedged one is left on its own thread,
@@ -95,6 +106,37 @@ pub struct CoreConfig {
     pub catalog_url: Option<Option<String>>,
 }
 
+/// Opens the store of `home` (its backup, adoption, migrations and audit
+/// backfill) and withdraws the hook questions a previous process left
+/// open, on a blocking thread, so a long migration holds none of the
+/// runtime's workers: the runtime goes on answering everything else (a
+/// fleet's other instances, its health checks) meanwhile. `progress` hears
+/// the backfill's progress on the caller's task, in order. Answers the
+/// store and the IDs of the questions withdrawn.
+async fn open_store(
+    home: &Home,
+    progress: &mut (dyn FnMut(&clax_store::backfill::Progress) + Send),
+) -> anyhow::Result<(Store, Vec<String>)> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let home = home.clone();
+    let opening = tokio::task::spawn_blocking(move || {
+        let store = Store::open_reporting(&home, &mut |p| {
+            let _ = tx.send(*p);
+        })?;
+        // Hooks that waited on the previous daemon are gone: their
+        // questions are withdrawn (and kept, as every question is).
+        let gone = store.withdraw_hook_questions_on_start()?;
+        anyhow::Ok((store, gone))
+    });
+    // Ends when the blocking side drops its sender, as it returns.
+    while let Some(p) = rx.recv().await {
+        progress(&p);
+    }
+    opening
+        .await
+        .map_err(|e| anyhow::anyhow!("opening the store failed: {e}"))?
+}
+
 /// A started core: its state, its router, and the tasks it runs until
 /// [`Core::stop`] (its background tasks and its listeners).
 pub struct Core {
@@ -113,8 +155,9 @@ impl Core {
     /// state, the journal, the listeners and the background tasks: the
     /// session reaper, the grant sweeper, the planner statistics refresh,
     /// the drafts sweeper, the working sweeper and the price catalog's
-    /// refresh. Runs on the caller's
-    /// Tokio runtime.
+    /// refresh. Runs on the caller's Tokio runtime, the store's opening on
+    /// one of its blocking threads, so a long migration leaves the
+    /// runtime's workers free.
     ///
     /// # Errors
     /// When the store does not open or the state cannot be assembled.
@@ -123,10 +166,8 @@ impl Core {
         progress: &mut (dyn FnMut(&clax_store::backfill::Progress) + Send),
     ) -> anyhow::Result<Core> {
         cfg.home.ensure_dirs()?;
-        let store = Arc::new(Store::open_reporting(&cfg.home, progress)?);
-        // Hooks that waited on the previous daemon are gone: their questions
-        // are withdrawn (and kept, as every question is).
-        let gone = store.withdraw_hook_questions_on_start()?;
+        let (store, gone) = open_store(&cfg.home, progress).await?;
+        let store = Arc::new(store);
         if !gone.is_empty() {
             tracing::info!(count = gone.len(), "withdrew mirrored questions left open");
         }
@@ -264,6 +305,10 @@ impl Core {
         let mut tasks = background_tasks(&state, cfg.reap_interval);
         tasks.extend(listeners);
         tasks.push(crate::bot::start_driver(&bot_driver));
+        // The registered surfaces' deadlines (`clax_http::bot_surfaces`).
+        tasks.push(tokio::spawn(clax_http::bot_surfaces::run_timer(
+            state.clone(),
+        )));
         // The artifacts whose documents the instance still holds move to
         // their own stores now, one at a time, rather than each at its
         // first call.
@@ -468,7 +513,13 @@ fn loose_mode(path: &std::path::Path) -> Option<u32> {
 /// precedence over a stored one. A hosted core reads no `[bot]` and no
 /// such variable. Either takes its price catalog's URL from `catalog_url`
 /// when given, else from `[bot] price_catalog_url`
-/// ([`crate::catalog::url_of`]).
+/// ([`crate::catalog::url_of`]). Both web operations are configured from
+/// the start in the test mode of [`crate::web_source::fixtures`];
+/// otherwise the run driver gives the daemon its own source
+/// ([`crate::bot::driver`]), which fetches, and searches while the
+/// instance holds a Cloudflare account ID and token
+/// ([`crate::bot::web_configured`]). `[bot.web]` is laid over the stored
+/// `web.*` settings as the rest of `[bot]` is ([`web_overrides`]).
 fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bot::Bot {
     let catalog_url = catalog_url.unwrap_or_else(|| {
         // A hosted core reads it from the file and the environment too,
@@ -481,6 +532,11 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
     });
     let mut bot = clax_http::bot::Bot {
         catalog_url,
+        web_configured: if crate::web_source::fixtures().is_some() {
+            clax_bot::web::WebShape::BOTH
+        } else {
+            clax_bot::web::WebShape::default()
+        },
         ..Default::default()
     };
     clax_store::secrets::sweep_leftovers(&s.home, s.store.now_utc());
@@ -497,7 +553,7 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
     let Some(cfg) = s.settings.running.as_ref() else {
         return bot;
     };
-    let (ov, enabled) = clax_http::bot::configured(cfg);
+    let (ov, enabled) = bot_overrides(cfg);
     s.store.set_bot_overrides(ov);
     bot.enabled = enabled;
     if let Ok(b) = cfg.bot()
@@ -510,6 +566,49 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
         });
     }
     bot
+}
+
+/// The settings `cfg`'s `[bot]` sets, `[bot.web]` included, as overrides
+/// of the stored ones, and whether ClaxBot is on
+/// ([`clax_http::bot::configured`]). `[bot.web]` is laid over whenever
+/// `[bot]` checks, as the rest of `[bot]` is, whether or not it turns
+/// ClaxBot on.
+pub fn bot_overrides(
+    cfg: &clax_core::config::HomeConfig,
+) -> (clax_store::bot_settings::Overrides, bool) {
+    let (mut ov, enabled) = clax_http::bot::configured(cfg);
+    if cfg.bot().is_ok() {
+        web_overrides(cfg, &mut ov);
+    }
+    (ov, enabled)
+}
+
+/// The `web.*` settings `cfg`'s `[bot.web]` sets, from the file or the
+/// environment, added to `ov` as [`clax_http::bot::configured`] adds the
+/// rest of `[bot]`: each `bot.web.<key>` overrides the stored setting
+/// `web.<key>`. The Cloudflare account ID is the admin pages' alone.
+fn web_overrides(
+    cfg: &clax_core::config::HomeConfig,
+    ov: &mut clax_store::bot_settings::Overrides,
+) {
+    use clax_store::bot_settings::Setting;
+    for &setting in Setting::ALL {
+        if !setting.key().starts_with("web.") || setting == Setting::WebCloudflareAccountId {
+            continue;
+        }
+        let full = format!("bot.{}", setting.key());
+        let source = cfg.source(&full);
+        if source == clax_core::config::Source::Default {
+            continue;
+        }
+        let Some(v) = cfg.value(&full) else { continue };
+        let Ok(v) = v.deserialize::<serde_json::Value>() else {
+            continue;
+        };
+        if let Err(e) = ov.set(setting, &v, source.label()) {
+            tracing::warn!("[bot.web] {} is not taken: {e}", setting.key());
+        }
+    }
 }
 
 /// Stops `store` ([`Store::shutdown`]), waiting at most `within` for its
@@ -531,9 +630,73 @@ pub(crate) async fn stop_store(store: Arc<Store>, within: Duration) -> bool {
     }
 }
 
+/// One wake-up of the core's pruner: prune passes of ended ClaxBot runs
+/// one after another while each leaves more, [`PRUNE_PASSES_PER_WAKE`] at
+/// the most and none begun [`PRUNE_WAKE_BUDGET`] after the first by the
+/// store's clock, then as many retention passes of site analytics' daily
+/// totals ([`clax_http::analytics::retention`]), logged. How long until
+/// the next wake-up: [`PRUNE_AGAIN`] while either left more, else
+/// [`DRAFT_SWEEP_INTERVAL`].
+fn prune_wake(st: &Store) -> Duration {
+    prune_wake_within(st, PRUNE_PASSES_PER_WAKE, PRUNE_WAKE_BUDGET)
+}
+
+/// [`prune_wake`] with `passes` and `budget` for its bounds.
+fn prune_wake_within(st: &Store, passes: usize, budget: Duration) -> Duration {
+    let analytics_more = match clax_http::analytics::retention(st, passes) {
+        Ok(p) => {
+            if p.deleted > 0 {
+                tracing::info!(
+                    rows = p.deleted,
+                    more = p.more,
+                    "deleted old site analytics"
+                );
+            }
+            p.more
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "site analytics retention failed");
+            false
+        }
+    };
+    let again = |more: bool| {
+        if more || analytics_more {
+            PRUNE_AGAIN
+        } else {
+            DRAFT_SWEEP_INTERVAL
+        }
+    };
+    let until = st.now_utc() + chrono::Duration::from_std(budget).unwrap_or(chrono::Duration::MAX);
+    match st.prune_ended_runs_while(passes, Some(until)) {
+        Ok((p, passes)) => {
+            if p != clax_store::bot_runs::Pruned::default() {
+                tracing::info!(
+                    passes,
+                    calls = p.calls,
+                    pages = p.pages,
+                    draft_files = p.draft_files,
+                    pending_calls = p.pending_calls,
+                    run_ends = p.run_ends,
+                    messages = p.messages,
+                    contents = p.contents,
+                    registrations = p.registrations,
+                    more = p.more,
+                    "pruned ended ClaxBot runs"
+                );
+            }
+            again(p.more)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "ClaxBot run prune failed");
+            again(false)
+        }
+    }
+}
+
 /// The background tasks a core runs: the session reaper, the grant
 /// sweeper, the planner statistics refresh, the drafts sweeper, the
-/// working sweeper and the price catalog's refresh.
+/// pruner of ended ClaxBot runs, the working sweeper and the price
+/// catalog's refresh.
 fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::task::JoinHandle<()>> {
     let fctx = state.feedback_ctx();
     let reap_state = state.clone();
@@ -623,15 +786,20 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
                 Ok(n) => tracing::info!(count = n, "removed old drafts"),
                 Err(e) => tracing::warn!(error = %e, "draft sweep failed"),
             }
-            match drafts_store.call(|st| st.prune_ended_runs()).await {
-                Ok(p) if p == clax_store::bot_runs::Pruned::default() => {}
-                Ok(p) => tracing::info!(
-                    calls = p.calls,
-                    draft_files = p.draft_files,
-                    "pruned ended ClaxBot runs"
-                ),
-                Err(e) => tracing::warn!(error = %e, "ClaxBot run prune failed"),
-            }
+        }
+    });
+
+    // Ended ClaxBot runs' rows past their keep: at start, then every
+    // DRAFT_SWEEP_INTERVAL, or every PRUNE_AGAIN while a wake-up leaves
+    // more.
+    let prune_store = state.store.clone();
+    let pruner = tokio::spawn(async move {
+        loop {
+            let next = prune_store
+                .call(|st| Ok(prune_wake(st)))
+                .await
+                .unwrap_or(DRAFT_SWEEP_INTERVAL);
+            tokio::time::sleep(next).await;
         }
     });
 
@@ -653,6 +821,7 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
         grant_sweeper,
         optimizer,
         drafts_sweeper,
+        pruner,
         sweeper,
         catalog,
     ]
@@ -688,7 +857,181 @@ fn owner_devices(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
+    #[test]
+    fn bot_web_is_laid_over_the_stored_web_settings() {
+        use clax_store::bot_settings::{Overrides, Setting};
+        let cfg = clax_core::config::HomeConfig::from_text(
+            std::path::PathBuf::from("/h/config.toml"),
+            "[bot.web]\nmax_fetches_per_run = 3\n[bot.web.search]\nprovider = \"linkup\"\n[bot.web.fetch]\nallowlist = [\"*.example.com\"]\n",
+            [("CLAX_BOT__WEB__SEARCH__ENABLED".to_string(), "true".to_string())],
+        )
+        .unwrap();
+        let mut ov = Overrides::default();
+        super::web_overrides(&cfg, &mut ov);
+        let mut want = Overrides::default();
+        want.set(Setting::WebMaxFetchesPerRun, &serde_json::json!(3), "file")
+            .unwrap();
+        want.set(
+            Setting::WebSearchProvider,
+            &serde_json::json!("linkup"),
+            "file",
+        )
+        .unwrap();
+        want.set(
+            Setting::WebFetchAllowlist,
+            &serde_json::json!(["*.example.com"]),
+            "file",
+        )
+        .unwrap();
+        want.set(
+            Setting::WebSearchEnabled,
+            &serde_json::json!(true),
+            "env:CLAX_BOT__WEB__SEARCH__ENABLED",
+        )
+        .unwrap();
+        assert_eq!(ov, want);
+        // ClaxBot off keeps the overlay, as it keeps the rest of [bot].
+        let off = clax_core::config::HomeConfig::from_text(
+            std::path::PathBuf::from("/h/config.toml"),
+            "[bot]\nenabled = false\n[bot.web.search]\nlimit = 3\n",
+            [],
+        )
+        .unwrap();
+        let (ov, enabled) = super::bot_overrides(&off);
+        assert!(!enabled);
+        let mut want = Overrides::default();
+        want.set(Setting::WebSearchLimit, &serde_json::json!(3), "file")
+            .unwrap();
+        assert_eq!(ov, want);
+        // A value the file may set, the store takes.
+        let cfg = clax_core::config::HomeConfig::from_text(
+            std::path::PathBuf::from("/h/config.toml"),
+            "[bot.web.search]\ngateway = \"\"\nprovider = \" exa \"\n[bot.web.fetch]\nurl_rule = \"any_public \"\n",
+            [],
+        )
+        .unwrap();
+        assert!(cfg.bot().is_ok());
+        let mut ov = Overrides::default();
+        super::web_overrides(&cfg, &mut ov);
+        let mut want = Overrides::default();
+        want.set(Setting::WebSearchGateway, &serde_json::json!(""), "file")
+            .unwrap();
+        want.set(
+            Setting::WebSearchProvider,
+            &serde_json::json!("exa"),
+            "file",
+        )
+        .unwrap();
+        want.set(
+            Setting::WebFetchUrlRule,
+            &serde_json::json!("any_public"),
+            "file",
+        )
+        .unwrap();
+        assert_eq!(ov, want);
+    }
+
+    /// The pruner goes on while a pass leaves more, within its bounds,
+    /// and wakes again soon when it stops with more left.
+    #[test]
+    fn the_pruner_drains_a_backlog_by_wake_ups_and_wakes_again_soon_while_it_has_more() {
+        use clax_store::bot_runs::{PRUNE_RUNS_PER_TX, PRUNE_TXS_PER_PASS};
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().join("clax"));
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-21T10:00:00Z"));
+        let st = clax_store::Store::open_with_clock(&home, clock).unwrap();
+        let runs = PRUNE_RUNS_PER_TX * PRUNE_TXS_PER_PASS * 2 + 5;
+        rusqlite::Connection::open(home.db_path())
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
+                        model, key_source, base_version, created_at, updated_at, ended_at)
+                 WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < {runs})
+                 SELECT printf('01JC%022d', i), 'a', 'u', 'thread', '[]', 'finished',
+                        'claude-sonnet-5-5', 'instance', 1, '2026-10-01T00:00:00.000Z',
+                        '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z'
+                   FROM n;
+                 INSERT INTO bot_calls (run_id, step_n, seq, attempt, op, args_hash, ok,
+                        result_json, at)
+                 SELECT id, 1, 0, 1, 'threads.read', 'h', 1, '{{}}', '2026-10-01T00:00:00.000Z'
+                   FROM bot_runs;"
+            ))
+            .unwrap();
+        let held = || -> usize {
+            rusqlite::Connection::open(home.db_path())
+                .unwrap()
+                .query_row("SELECT count(*) FROM bot_calls", [], |r| r.get(0))
+                .unwrap()
+        };
+        // One pass a wake-up: it left more, and wakes again soon.
+        assert_eq!(
+            super::prune_wake_within(&st, 1, super::PRUNE_WAKE_BUDGET),
+            super::PRUNE_AGAIN
+        );
+        assert_eq!(held(), runs - PRUNE_RUNS_PER_TX * PRUNE_TXS_PER_PASS);
+        // A wake-up with room goes on until nothing is left, and sleeps
+        // until the next interval.
+        assert_eq!(super::prune_wake(&st), super::DRAFT_SWEEP_INTERVAL);
+        assert_eq!(held(), 0);
+    }
+
+    /// The pruner deletes site analytics' daily totals past their keep, as
+    /// an instance with no views (and so no rollover) still must.
+    #[test]
+    fn the_pruner_deletes_site_analytics_past_their_keep() {
+        use clax_core::analytics::{Batch, DaySums, Device, Seen, View, parse_day};
+        let dir = tempfile::tempdir().unwrap();
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-11-19T10:00:00Z"));
+        let st =
+            clax_store::Store::open_with_clock(&clax_core::Home::at(dir.path().join("c")), clock)
+                .unwrap();
+        let p = clax_core::publish::validate(
+            serde_json::from_value(serde_json::json!({
+                "title": "Doc",
+                "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (a, _) = st
+            .create_artifact(&clax_core::audit::AuditCtx::DAEMON, p, None)
+            .unwrap();
+        let aid = clax_core::ArtifactId::parse(&a.id).unwrap();
+        let mut batch = Batch::default();
+        for d in ["2025-10-18", "2025-10-19"] {
+            let mut sums = DaySums::default();
+            sums.add(
+                &View {
+                    path: "index.html".into(),
+                    referrer: String::new(),
+                    country: "XX".into(),
+                    device: Device::Desktop,
+                    version: 1,
+                    framed: false,
+                    load_ms: None,
+                    lcp_ms: None,
+                },
+                Seen::default(),
+            );
+            batch.sums.insert((a.id.to_string(), d.into()), sums);
+        }
+        st.analytics_record(&batch).unwrap();
+        assert_eq!(super::prune_wake(&st), super::DRAFT_SWEEP_INTERVAL);
+        let r = st
+            .analytics_range(
+                &aid,
+                parse_day("2025-10-18").unwrap(),
+                parse_day("2025-10-19").unwrap(),
+            )
+            .unwrap();
+        let views: Vec<u64> = r.days.iter().map(|d| d.views).collect();
+        assert_eq!(views, vec![0, 1], "2025-10-19 is the oldest day kept");
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_grant_file_others_may_read_is_loose() {

@@ -1,6 +1,6 @@
 //! The `clax` binary: the commands (`clax-commands`) with the files the
-//! binary embeds (`clax-embedded`) and the daemon it runs in process
-//! (`clax-server`). A new commit, a web UI edit or a daemon edit rebuilds
+//! binary embeds (`clax-embedded`), the daemon it runs in process
+//! (`clax-server`) and ClaxBot's own surface (`clax-bot`). A new commit, a web UI edit or a daemon edit rebuilds
 //! this crate, which is a few hundred lines; the commands are not rebuilt.
 
 mod bundle;
@@ -11,5 +11,6 @@ fn main() -> std::process::ExitCode {
         embedded: &bundle::Embedded,
         serve: serve::run,
         build_commit: env!("CLAX_BUILD_COMMIT"),
+        bot_surface: clax_bot::api::definition,
     })
 }

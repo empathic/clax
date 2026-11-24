@@ -5,21 +5,25 @@
 // new local version, and is refused when the public copy moved, then pushes
 // onto a fork of it.
 //
-// Usage: CLAX_TEST_BIN=<absolute path to clax> node e2e-publish.mjs [--no-build]
-// (the web UI built first with scripts/build-web.sh). Run state lives under
+// Usage: CLAX_TEST_BIN=<absolute path to clax> node e2e-publish.mjs
+// [--no-build] (the web UI built first with scripts/build-web.sh). Run
+// state lives under
 // target/clax-worker/e2e-publish/; the local daemon's home is a fresh temporary
 // directory, stopped by its PID and removed at the end.
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HANG_MS, STATE, build, freePort, pruneRuns, start, timeout, until, writeConfig } from "./harness.mjs";
 
 const ROOT = join(STATE, "e2e-publish");
 const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const SECRET = "e2e setup secret " + Math.random().toString(36).slice(2);
-const LIMIT = 30_000;
-const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+/** How long the daemon is given to end on its own before it is ended by its PID. */
+const STOP_GRACE_MS = 5_000;
+// Just past the device-code grant's poll interval (DEVICE_INTERVAL_SECS,
+// crates/clax-store/src/device.rs): a poll sooner is refused `slow_down`.
+const POLL_INTERVAL_MS = 5_200;
 
 function check(ok, what, detail) {
   if (!ok) throw new Error(`FAIL ${what}: ${JSON.stringify(detail)}`);
@@ -43,40 +47,61 @@ async function call(base, method, path, { body, headers = {} } = {}) {
   return { status: res.status, body: v, headers: res.headers };
 }
 
-/** The local daemon: a fresh home, `clax serve` on a free port. */
+/** The `sh -c` script the local daemon runs under (`sh -c HELD sh <clax>
+ * serve …`), as web/e2e/fixtures.ts runs its daemons: a background reader
+ * of the shell's standard input (a pipe this process holds and never
+ * writes; fd 3, since a background job's own input is /dev/null) sends the
+ * daemon SIGTERM when that input ends, and the shell execs the daemon,
+ * which keeps the shell's PID. The input ends when `stop` closes the pipe,
+ * or when the system does as this process ends, however it ends. */
+const HELD = 'exec 3<&0; (cat <&3; kill -TERM $$) >/dev/null 2>&1 & exec "$@" </dev/null 3<&-';
+
+/** The local daemon: a fresh home, `clax serve` on a free port, ready
+ * once it says it listens (`clax daemon listening`, its daemon.json
+ * written then) and answers its health check. It runs under `HELD`, so
+ * when this process ends, however it ends, the daemon is sent SIGTERM.
+ * `stop` asks it to shut down, then ends it by its PID. */
 async function localDaemon(bin) {
   const home = mkdtempSync(join(tmpdir(), "clax-e2e-publish-"));
   writeFileSync(join(home, "config.toml"), '[sample]\napi_key_env = "CLAX_E2E_UNSET_KEY"\n');
   const port = await freePort();
-  const child = spawn(bin, ["serve", "--foreground", "--bind", "127.0.0.1", "--port", String(port)], {
+  const child = spawn("/bin/sh", ["-c", HELD, "sh", bin, "serve", "--foreground", "--bind", "127.0.0.1", "--port", String(port)], {
     env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "" },
-    stdio: ["ignore", "ignore", "inherit"],
+    stdio: ["pipe", "pipe", "inherit"],
   });
-  const info = join(home, "daemon.json");
-  const end = Date.now() + LIMIT;
-  while (!existsSync(info)) {
-    if (Date.now() > end || child.exitCode !== null) throw new Error("the local daemon did not start");
-    await tick(20);
+  const ended = () => child.exitCode !== null || child.signalCode !== null;
+  const exited = new Promise((r) => (ended() ? r() : child.once("exit", r)));
+  const listening = new Promise((resolve) => {
+    let out = "";
+    child.stdout.on("data", (b) => {
+      out = (out + b.toString()).slice(-4000);
+      if (out.includes("clax daemon listening")) resolve(true);
+    });
+    void exited.then(() => resolve(false));
+  });
+  const stopPid = async () => {
+    if (!ended()) child.kill();
+    if ((await Promise.race([exited, timeout(STOP_GRACE_MS)])) === "timeout") child.kill("SIGKILL");
+    await exited;
+    child.stdin.destroy();
+    rmSync(home, { recursive: true, force: true });
+  };
+  const ready = await Promise.race([listening, timeout(HANG_MS)]);
+  if (ready !== true) {
+    await stopPid();
+    throw new Error(ready === "timeout" ? `the local daemon did not listen within the ${HANG_MS / 1000} s hang guard` : "the local daemon exited before it listened");
   }
-  let d = null;
-  while (!d) {
-    try {
-      d = JSON.parse(readFileSync(info, "utf8"));
-    } catch {
-      await tick(20);
-    }
-  }
+  const d = JSON.parse(readFileSync(join(home, "daemon.json"), "utf8"));
   const base = `http://127.0.0.1:${port}`;
-  while (!(await fetch(`${base}/healthz`).then((r) => r.ok, () => false))) await tick(20);
+  await until("the local daemon answers its health check", () => fetch(`${base}/healthz`).then((r) => r.ok, () => false));
   const auth = { authorization: `Bearer ${d.token}` };
   return {
     base,
     api: (method, path, body) => call(base, method, path, { body, headers: auth }),
     stop: async () => {
       await fetch(`${base}/api/admin/shutdown`, { method: "POST", headers: auth }).catch(() => {});
-      await Promise.race([new Promise((r) => child.once("exit", r)), tick(5000)]);
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      rmSync(home, { recursive: true, force: true });
+      await Promise.race([exited, timeout(STOP_GRACE_MS)]);
+      await stopPid();
     },
   };
 }
@@ -117,13 +142,12 @@ async function main() {
     check(pending.body.status === "pending", "before approval the sign-in waits", pending.body);
     const approve = await browser("POST", `/api/hosted/device/${add.body.user_code}/approve`, {});
     check(approve.status === 200, "the owner approves it", approve.body);
-    let connected;
-    const end = Date.now() + LIMIT;
-    for (;;) {
-      await tick(5200);
-      connected = await local.api("POST", "/api/remotes/tides/poll", {});
-      if (connected.body.status !== "pending" || Date.now() > end) break;
-    }
+    const connected = await until("the local daemon's sign-in is no longer pending", async () => {
+      // oxlint-disable-next-line clax-timing/timer-delay -- the grant's poll interval is real time on the Worker (a sooner poll is refused slow_down), which no clock of this process reaches: each poll waits it out, and the answer decides
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      const r = await local.api("POST", "/api/remotes/tides/poll", {});
+      return r.body.status !== "pending" && r;
+    });
     check(connected.body.status === "connected" && connected.body.remote.person_name === "Ada", "the local daemon receives the owner's agent token", connected.body);
     const tokens = await browser("GET", "/api/hosted/agent-tokens");
     check(tokens.body.tokens.some((t) => t.id === connected.body.remote.grant_id), "the token is listed on People", tokens.body);

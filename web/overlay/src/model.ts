@@ -460,6 +460,6 @@ export function safeLink(url: string | undefined): string | null {
 // reports" polling and the badge watch; re-exported here so this module's
 // own callers (Overlay.svelte, model.test.ts) are unchanged. ReporterApi
 // moved next to ReporterClient in sdk/src/reporter.ts, which it describes.
-export { BADGE_POLL_MS, BadgeWatch, POLL_MS, Poll, realTimers } from "../../sdk/src/lifecycle";
+export { BADGE_POLL_MS, BadgeWatch, POLL_BACKOFF_MAX, POLL_MS, Poll, realTimers } from "../../sdk/src/lifecycle";
 export type { BadgeHooks, Timers, Visibility } from "../../sdk/src/lifecycle";
 export type { ReporterApi } from "../../sdk/src/reporter";

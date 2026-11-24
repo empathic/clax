@@ -1,0 +1,24 @@
+{
+  "content": {
+    "calls": [
+      {
+        "code": "replay_diverged",
+        "ok": false,
+        "op": "files.list"
+      }
+    ],
+    "error": {
+      "kind": "host_error",
+      "message": "HostError replay_diverged: call 0 was files.read before and is files.list now: the script took another path when run again"
+    },
+    "logs": [],
+    "replay": {
+      "completed": [],
+      "diverged_at": 0,
+      "why": "call 0 was files.read before and is files.list now: the script took another path when run again"
+    },
+    "value": null
+  },
+  "content_bytes": 401,
+  "is_error": true
+}

@@ -3,6 +3,7 @@ import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { settle, stubFetch } from "../people/fixtures";
 import { flush, mount } from "../test/svelte";
 import ConfirmationCard from "./ConfirmationCard.svelte";
+import ConfirmToasts from "./ConfirmToasts.svelte";
 import { ConfirmationFeed, type ConfirmationView } from "./confirm.svelte";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
@@ -30,11 +31,14 @@ function view(over: Partial<ConfirmationView> = {}): ConfirmationView {
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 describe("ConfirmationCard", () => {
-  it("asks to confirm the decision in words and lists the agents live now", () => {
+  it("asks to confirm the decision in words and counts the agents live now, named when opened", () => {
     const m = mount(ConfirmationCard, { c: view(), now });
     const card = m.root.querySelector(".cfcard")!;
     expect(card.getAttribute("data-confirmation")).toBe(ID);
     expect(card.querySelector(".cwhat")!.textContent).toBe("Confirm: push “Plan” to https://clax.dev");
+    expect(card.querySelector(".cwhy")!.textContent).toBe("Confirm only if you asked for this.");
+    expect(card.querySelector<HTMLDetailsElement>(".cagents")!.open).toBe(false);
+    expect(card.querySelector(".cagents summary")!.textContent).toBe("2 agents running now could have asked as you");
     expect([...card.querySelectorAll(".cagents li")].map(l => l.textContent)).toEqual(["ada in /w/site", "codex a-9q2m"]);
     expect(buttons(m.root).map(b => b.textContent!.trim())).toEqual(["Confirm", "Decline"]);
   });
@@ -55,6 +59,15 @@ describe("ConfirmationCard", () => {
     }
   });
 
+  it("says a Clax taken down is not answering, rather than nothing, and keeps the buttons", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } })));
+    const m = mount(ConfirmationCard, { c: view(), now });
+    click(buttons(m.root)[0]);
+    await settle();
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("this Clax is not answering. It may have been taken down or moved.");
+    expect(buttons(m.root)).toHaveLength(2);
+  });
+
   it("shows the daemon's refusal and keeps the buttons", async () => {
     stubFetch({ [`POST /api/confirmations/${ID}`]: [403, { error: { code: "browser_required", message: "a confirmation is answered in the owner's browser: open the inbox in Clax" } }] });
     const m = mount(ConfirmationCard, { c: view(), now });
@@ -62,6 +75,22 @@ describe("ConfirmationCard", () => {
     await settle();
     expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("a confirmation is answered in the owner's browser: open the inbox in Clax");
     expect(buttons(m.root)).toHaveLength(2);
+  });
+
+  it("says one the daemon finds expired has expired, and drops its buttons", async () => {
+    for (const n of [0, 1]) {
+      stubFetch({ [`POST /api/confirmations/${ID}`]: [410, { error: { code: "confirmation_expired", message: "this confirmation has expired: make the call again, without it, for a new one" } }] });
+      const heard: ConfirmationView[] = [];
+      const m = mount(ConfirmationCard, { c: view(), now, onanswered: (c: ConfirmationView) => heard.push(c) });
+      click(buttons(m.root)[n]);
+      await settle();
+      expect(m.root.querySelector(".outcome")!.textContent).toBe("Expired: make the call again for a new one");
+      expect(m.root.querySelector('[role="alert"]')).toBeNull();
+      expect(buttons(m.root)).toHaveLength(0);
+      expect(heard.map(c => [c.id, c.status])).toEqual([[ID, "expired"]]);
+      m.unmount();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows every word as text", () => {
@@ -91,6 +120,41 @@ describe("ConfirmationFeed", () => {
     expect(feed.open.map(c => c.id)).toEqual([ID, "cf_ff"]);
     on!({ type: "confirmation", confirmation: view({ status: "approved" }) });
     expect(feed.open.map(c => c.id)).toEqual(["cf_ff"]);
+  });
+
+  it("reads the open ones again as one falls due, and hears one gone then as expired", async () => {
+    vi.useFakeTimers();
+    try {
+      const due = view({ created_at: new Date(Date.now() - 540_000).toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() });
+      let listed = [due];
+      let reads = 0;
+      const feed = new ConfirmationFeed({ list: async () => { reads++; return listed; } });
+      const ended: [string, string][] = [];
+      feed.onEnded(c => ended.push([c.id, c.status]));
+      await feed.refresh();
+      expect(feed.open.map(c => c.id)).toEqual([ID]);
+      listed = [];
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(reads).toBe(1);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(reads).toBe(2);
+      expect(feed.open).toEqual([]);
+      expect(ended).toEqual([[ID, "expired"]]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("shows no toasts while the page lists the open ones itself, as the inbox does", async () => {
+    const feed = new ConfirmationFeed({ list: async () => [view()] });
+    await feed.refresh();
+    const m = mount(ConfirmToasts, { feed });
+    await settle();
+    expect(m.root.querySelectorAll(".confirm-toasts .cfcard")).toHaveLength(1);
+    const unlist = feed.listHere();
+    await settle();
+    expect(m.root.querySelector(".confirm-toasts")).toBeNull();
+    unlist();
+    await settle();
+    expect(m.root.querySelectorAll(".confirm-toasts .cfcard")).toHaveLength(1);
   });
 
   it("stops for a browser that is not the owner's", async () => {

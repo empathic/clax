@@ -366,19 +366,13 @@ async fn an_agents_push_waits_for_the_owners_approval_in_the_browser() {
         Some(&sid),
     )
     .await;
-    let mut current = 0;
-    for _ in 0..3000 {
+    clax_testkit::until("version 4 on the public copy", || async {
         let (_, pv) = public
             .cli(reqwest::Method::GET, &format!("/api/artifacts/{rid}"), None)
             .await;
-        current = pv["artifact"]["current_version"].as_u64().unwrap_or(0);
-        if current == 4 {
-            break;
-        }
-        tokio::task::yield_now().await;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert_eq!(current, 4);
+        (pv["artifact"]["current_version"].as_u64() == Some(4)).then_some(())
+    })
+    .await;
     // Declined: refused.
     let other = local.publish("Other", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
         .as_str()
@@ -662,6 +656,27 @@ async fn a_link_says_when_its_remote_signed_this_clax_out() {
 }
 
 #[tokio::test]
+async fn a_push_naming_no_remote_says_the_only_remote_signed_out() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = local
+        .publish("Plan", &[("index.html", "<h1>v1</h1>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Signed out as the linked sync does on meeting the revoked token,
+    // before any push of the person's meets it.
+    assert!(local.store.sign_out_remote(&rid).unwrap());
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    assert_eq!((s, code(&v)), (502, "remote_signed_out"), "{v}");
+}
+
+#[tokio::test]
 async fn the_clax_apps_route_meeting_a_revoked_token_signs_the_remote_out() {
     let public = Public::new().await;
     let local = TestServer::spawn().await;
@@ -885,8 +900,7 @@ async fn a_refused_automatic_push_reaches_the_owners_inbox() {
         None,
     )
     .await;
-    let mut item = Value::Null;
-    for _ in 0..3000 {
+    let item = clax_testkit::until("a push item in the inbox", || async {
         let (_, v) = local_req(
             &local,
             reqwest::Method::GET,
@@ -895,13 +909,9 @@ async fn a_refused_automatic_push_reaches_the_owners_inbox() {
             None,
         )
         .await;
-        if let Some(i) = v["items"].as_array().and_then(|a| a.first()) {
-            item = i.clone();
-            break;
-        }
-        tokio::task::yield_now().await;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+        v["items"].as_array().and_then(|a| a.first()).cloned()
+    })
+    .await;
     assert_eq!(item["kind"], "push", "{item}");
     assert_eq!(item["push"]["n"], 4, "{item}");
     assert_eq!(item["push"]["code"], "remote_moved", "{item}");

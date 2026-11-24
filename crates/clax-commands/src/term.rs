@@ -149,6 +149,7 @@ pub fn span(secs: i64) -> String {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

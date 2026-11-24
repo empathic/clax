@@ -305,9 +305,32 @@ async fn a_core_takes_its_price_catalog_url_from_bot_and_fetches_it_at_start() {
     given.catalog_url = Some(Some(url.clone()));
     let core = Core::start(given, &mut |_| {}).await.unwrap();
     assert_eq!(core.state().bot.catalog_url.as_deref(), Some(url.as_str()));
-    tokio::time::timeout(std::time::Duration::from_secs(30), hits.recv())
+    clax_testkit::within("a catalog request at start", hits.recv())
         .await
-        .expect("a catalog request at start")
         .unwrap();
+    core.stop().await;
+}
+
+/// The store opens (and migrates) on a blocking thread: while it waits,
+/// here on a lock another connection holds, the core's start is pending
+/// and the runtime's one worker runs everything else.
+#[tokio::test]
+async fn opening_the_store_leaves_the_runtime_free() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = clax_core::Home::at(dir.path().to_path_buf());
+    home.ensure_dirs().unwrap();
+    let lock = rusqlite::Connection::open(home.db_path()).unwrap();
+    lock.execute_batch("BEGIN EXCLUSIVE;").unwrap();
+    let mut progress = |_: &clax_store::backfill::Progress| {};
+    let mut start = std::pin::pin!(Core::start(
+        cfg(dir.path(), clax_testkit::web_ui(), false),
+        &mut progress
+    ));
+    assert!(
+        futures::poll!(start.as_mut()).is_pending(),
+        "the start held the runtime's worker while the store waited"
+    );
+    drop(lock);
+    let core = start.await.unwrap();
     core.stop().await;
 }

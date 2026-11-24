@@ -679,7 +679,8 @@ pub struct PushBody {
     question_id: Option<String>,
 }
 
-/// The remote a push names, or the only connected one.
+/// The remote a push names, or the only connected one, or else the only
+/// remote there is (so a push to it says why it waits).
 ///
 /// # Errors
 /// 404 `no_remote`; 400 `remote_required` for several connected and none
@@ -688,29 +689,27 @@ pub struct PushBody {
 pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Remote, ApiError> {
     let r = match key {
         Some(k) => remote_named(s, &k).await?,
-        None => match s
-            .store_call(|st| st.remotes())
-            .await?
-            .into_iter()
-            .filter(|r| r.status == "connected")
-            .collect::<Vec<_>>()
-            .as_slice()
-        {
-            [one] => one.clone(),
-            [] => {
-                return Err(ApiError::new(
-                    StatusCode::NOT_FOUND,
-                    "no_remote",
-                    "this Clax is signed in to no public Clax: add one with `clax remote add <url>`",
-                ));
+        None => {
+            let all = s.store_call(|st| st.remotes()).await?;
+            let connected: Vec<&Remote> = all.iter().filter(|r| r.status == "connected").collect();
+            match (connected.as_slice(), all.as_slice()) {
+                ([one], _) => (*one).clone(),
+                ([], [only]) => only.clone(),
+                ([], _) => {
+                    return Err(ApiError::new(
+                        StatusCode::NOT_FOUND,
+                        "no_remote",
+                        "this Clax is signed in to no public Clax: add one with `clax remote add <url>`",
+                    ));
+                }
+                _ => {
+                    return Err(ApiError::bad_request(
+                        "remote_required",
+                        "this Clax is signed in to several public Clax instances: name one",
+                    ));
+                }
             }
-            _ => {
-                return Err(ApiError::bad_request(
-                    "remote_required",
-                    "this Clax is signed in to several public Clax instances: name one",
-                ));
-            }
-        },
+        }
     };
     if r.status == "signed_out" {
         return Err(public::signed_out(&r.origin));

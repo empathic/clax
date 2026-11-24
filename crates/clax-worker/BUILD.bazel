@@ -1,6 +1,7 @@
 load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("@npm_worker//:defs.bzl", "npm_link_all_packages")
+load("@npm_worker//crates/clax-worker:wrangler/package_json.bzl", wrangler_bin = "bin")
 load("//bazel:cargo.bzl", "cargo_package")
 load("//bazel/wasm:worker.bzl", "worker_bundle")
 
@@ -50,13 +51,53 @@ worker_bundle(
 js_test(
     name = "deploy_lib_test",
     data = [":scripts"],
-    entry_point = "deploy-lib.test.mjs",
+    entry_point = ":deploy-lib.test_mjs",
+    node_options = ["--test"],
+    patch_node_fs = False,
+)
+
+# A preview's teardown and the reaper (teardown.mjs), and the Cloudflare API
+# calls deploy.mjs makes (cloudflare-api.mjs), against a fake Cloudflare
+# and GitHub API on a loopback port.
+js_test(
+    name = "teardown_test",
+    data = [":scripts"],
+    entry_point = ":test-teardown_mjs",
     node_options = ["--test"],
     patch_node_fs = False,
 )
 
 # wrangler, from pnpm-lock.yaml.
 npm_link_all_packages(name = "node_modules")
+
+# The locked wrangler command line, for `just wrangler` (scripts/run.sh
+# wrangler): the package's own bin, as rules_js generates it, like
+# //web:playwright. `bazel run` starts it in the workspace's directory, so
+# its login is the user's own (wrangler keeps it in the user's
+# configuration directory).
+wrangler_bin.wrangler_binary(name = "wrangler")
+
+# The tests' entry points, each in bazel-bin by a target of its own
+# (`:test-wasm_mjs` for test-wasm.mjs), so that one copy serves both its
+# js_test and the web lint's test-timing rules (//web:lint, js_sources).
+ENTRIES = [
+    "deploy-lib.test.mjs",
+    "e2e.mjs",
+    "e2e-github.mjs",
+    "e2e-hosted.mjs",
+    "test-bot.mjs",
+    "test-deploy-config.mjs",
+    "test-feedback.mjs",
+    "test-sandbox.mjs",
+    "test-smoke-minted.mjs",
+    "test-teardown.mjs",
+    "test-wasm.mjs",
+]
+
+[copy_to_bin(
+    name = entry.replace(".mjs", "_mjs"),
+    srcs = [entry],
+) for entry in ENTRIES]
 
 # What the checks run under `wrangler dev --local` read: the scripts, the
 # harness and wrangler.jsonc, beside the Worker as Bazel built it
@@ -66,19 +107,16 @@ copy_to_bin(
     name = "scripts",
     srcs = glob(
         ["*.mjs"],
-        # The tests' entry points, which js_test places itself.
-        exclude = [
-            "deploy-lib.test.mjs",
-            "e2e.mjs",
-            "e2e-github.mjs",
-            "e2e-hosted.mjs",
-            "test-bot.mjs",
-            "test-deploy-config.mjs",
-            "test-feedback.mjs",
-            "test-sandbox.mjs",
-            "test-wasm.mjs",
-        ],
+        exclude = ENTRIES,
     ) + ["wrangler.jsonc"],
+)
+
+# The Worker's scripts, for the web lint's test-timing rules
+# (web/lint/timing.json), which read its test scripts and harness.
+filegroup(
+    name = "js_sources",
+    srcs = [":scripts"] + [":" + entry.replace(".mjs", "_mjs") for entry in ENTRIES],
+    visibility = ["//web:__pkg__"],
 )
 
 # Each under `wrangler dev --local` on the Worker Bazel built: the wasm
@@ -95,7 +133,7 @@ copy_to_bin(
         ":scripts",
         "//web:dist",
     ],
-    entry_point = "test-%s.mjs" % name,
+    entry_point = ":test-%s_mjs" % name,
     env = {"CLAX_WORKER_BUNDLE": "$(rootpath :bundle)"},
     patch_node_fs = False,
     # Each starts wrangler and workerd, more than once across a restart.
@@ -106,6 +144,25 @@ copy_to_bin(
     "sandbox",
     "bot",
 ]]
+
+# The smoke as a staging deploy runs it, on a local Worker no one has set
+# up: an agent token minted with the owner token alone, and nothing secret
+# printed (test-smoke-minted.mjs).
+js_test(
+    name = "smoke_minted_test",
+    args = ["--no-build"],
+    data = [
+        ":bundle",
+        ":node_modules",
+        ":scripts",
+        "//web:dist",
+    ],
+    entry_point = ":test-smoke-minted_mjs",
+    env = {"CLAX_WORKER_BUNDLE": "$(rootpath :bundle)"},
+    patch_node_fs = False,
+    tags = ["cpu:2"],
+    timeout = "long",
+)
 
 # clax.dev's own feedback path over HTTP on a hosted Clax, the reporter's
 # calls signed by the SDK's own code (test-feedback.mjs).
@@ -119,7 +176,7 @@ js_test(
         "//web:dist",
         "//web:sdk_sign",
     ],
-    entry_point = "test-feedback.mjs",
+    entry_point = ":test-feedback_mjs",
     env = {"CLAX_WORKER_BUNDLE": "$(rootpath :bundle)"},
     patch_node_fs = False,
     # It starts wrangler and workerd twice, across a restart.
@@ -161,16 +218,16 @@ js_test(
     ] + (["manual"] if name == "e2e_github" else []),
     timeout = "long",
 ) for name, entry in [
-    ("e2e", "e2e.mjs"),
-    ("e2e_hosted", "e2e-hosted.mjs"),
-    ("e2e_github", "e2e-github.mjs"),
+    ("e2e", ":e2e_mjs"),
+    ("e2e_hosted", ":e2e-hosted_mjs"),
+    ("e2e_github", ":e2e-github_mjs"),
 ]]
 
 # The config deploy.mjs generates, without wrangler.
 js_test(
     name = "deploy_config_test",
     data = [":scripts"],
-    entry_point = "test-deploy-config.mjs",
+    entry_point = ":test-deploy-config_mjs",
     patch_node_fs = False,
 )
 

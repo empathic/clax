@@ -5,21 +5,33 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
+  PREVIEW_BUCKET,
   SMOKE_CANNOT,
   buildId,
+  builtCommitOf,
   builtFromRefusal,
   checkCiOptions,
+  checkStaging,
   ciSecretsRefusal,
   doneText,
+  envOf,
   healthOf,
+  kekPlan,
+  maskTokens,
   partialTriggerUpdate,
   prodTipOf,
   productionGate,
   reelVars,
+  secretsToMake,
+  siteZoneOf,
   smokeCannot,
   smokeCredential,
+  tailErrors,
   versionIdOf,
+  wildcardRecordOf,
+  wranglerError,
 } from "./deploy-lib.mjs";
+import { liveBuildOf } from "./deploy-lib.mjs";
 
 // What `wrangler deploy` printed when the custom-domains call failed after
 // the upload (Cloudflare API code 10013); running it again succeeded.
@@ -72,7 +84,60 @@ test("a build ID names the commit, the time and the random part", () => {
 
 test("the wait is done only when /healthz names the build just uploaded", () => {
   const want = "0a2f4805a1b2-20261023T101500Z-9f86d081";
-  assert.deepEqual(healthOf(JSON.stringify({ version: "0.6.0", pid: null, started_at: "t", commit: "0a2f4805a1b2", build: want }), want), { done: true });
+  assert.deepEqual(healthOf(JSON.stringify({ version: "0.6.0", pid: null, started_at: "t", commit: "0a2f4805a1b2", build: want }), want), { done: true, kek: undefined });
+  // Whether the instance has its CLAX_KEK, as /healthz says.
+  for (const kek of [true, false]) {
+    assert.deepEqual(healthOf(JSON.stringify({ version: "0.6.0", build: want, kek }), want), { done: true, kek });
+  }
+});
+
+test("--unless-live takes only a /healthz naming the whole commit and a build", () => {
+  const commit = "97f93b34034a55e9b04a24f7f0bd0a59d32058f6";
+  const build = "97f93b34034a-20261110T152837Z-2f4d2626";
+  assert.deepEqual(liveBuildOf(JSON.stringify({ build, commit, kek: true, version: "0.7.0" }), commit), { build });
+  // Another commit, a prefix of this one, no build, no commit to compare, not JSON.
+  assert.equal(liveBuildOf(JSON.stringify({ build, commit: "f57ec462bb3b".padEnd(40, "0") }), commit), null);
+  assert.equal(liveBuildOf(JSON.stringify({ build, commit: commit.slice(0, 12) }), commit), null);
+  assert.equal(liveBuildOf(JSON.stringify({ commit }), commit), null);
+  assert.equal(liveBuildOf(JSON.stringify({ build, commit: "" }), ""), null);
+  assert.equal(liveBuildOf("", commit), null);
+  assert.equal(liveBuildOf("<html>", commit), null);
+});
+
+test("CLAX_KEK: the Worker's is kept; one without gets the key given; only a preview's may be new", () => {
+  const given = "ab".repeat(32);
+  const kept = kekPlan({ have: ["CLAX_KEK"], given: null });
+  assert.equal(kept.upload, null);
+  assert.equal(kept.error, null);
+  assert.match(kept.say, /kept \(never rotated\)$/);
+  // A key given to a Worker that has one is never uploaded over it.
+  const over = kekPlan({ have: ["CLAX_KEK"], given });
+  assert.equal(over.upload, null);
+  assert.match(over.say, /not uploaded \(compare fingerprints/);
+  assert.doesNotMatch(over.say, new RegExp(given));
+  // A Worker without one gets the key given, never shown.
+  const put = kekPlan({ have: [], given: `${given}\n` });
+  assert.equal(put.upload, given);
+  assert.doesNotMatch(put.say, new RegExp(given));
+  assert.equal(kekPlan({ have: [], given, dryRun: true }).upload, null, "a dry run uploads nothing");
+  // A preview's may be new: kept nowhere else.
+  const fresh = kekPlan({ have: [], given: null, ephemeral: true });
+  assert.match(fresh.upload, /^[0-9a-f]{64}$/);
+  assert.doesNotMatch(fresh.say, new RegExp(fresh.upload));
+  assert.equal(kekPlan({ have: [], given: null, ephemeral: true, dryRun: true }).upload, null);
+  // dev's or prod's without one, and none given: refused, naming its backup.
+  for (const dryRun of [false, true]) {
+    const refused = kekPlan({ have: [], given: null, dryRun });
+    assert.equal(refused.upload, null);
+    assert.match(refused.error, /no CLAX_KEK and none was given: .*from its backup/);
+  }
+  // A key given that is not one is refused, whatever the Worker has.
+  for (const have of [[], ["CLAX_KEK"], null]) {
+    assert.match(kekPlan({ have, given: "not-a-key" }).error, /not 64 hex digits/);
+  }
+  // Without a login nothing is known: nothing is uploaded or refused.
+  assert.deepEqual(kekPlan({ have: null, given: null }).upload, null);
+  assert.equal(kekPlan({ have: null, given: null }).error, null);
 });
 
 test("an instance from before the deploy, of the same version, is waited past", () => {
@@ -180,7 +245,80 @@ test("--ci refuses to turn GitHub sign-in off, or to leave it without its secret
   assert.match(ciSecretsRefusal(ALL, { githubClientId: "Iv1" }), /neither the Worker nor GITHUB_CLIENT_SECRET/);
 });
 
-const DONE = { pub: "clax.example.com", name: "clax", diag: false, record: "/r/clax.example.com.json", kek: "/r/clax.example.com.kek", smoke: "node smoke-remote.mjs --deploy /r/clax.example.com.json" };
+test("prod keeps clax.dev's names, and dev has a bucket, queue and namespace of its own", () => {
+  const prod = { env: "prod", worker: "clax", bucket: "clax-assets", queue: "clax-artifacts-events", namespace: "clax", ephemeral: false };
+  assert.deepEqual(envOf(), prod);
+  assert.deepEqual(envOf("prod"), prod);
+  assert.deepEqual(envOf("dev"), { env: "dev", worker: "clax-dev", bucket: "clax-assets-dev", queue: "clax-artifacts-events-dev", namespace: "clax-dev", ephemeral: false });
+});
+
+test("a preview is its own Worker, with a queue and namespace of its own, on the shared preview bucket", () => {
+  assert.deepEqual(envOf("pr-12"), {
+    env: "pr-12",
+    worker: "clax-pr-12",
+    bucket: PREVIEW_BUCKET,
+    queue: "clax-artifacts-events-pr-12",
+    namespace: "clax-pr-12",
+    ephemeral: true,
+  });
+  assert.equal(envOf("x").worker, "clax-x");
+  const longest = envOf("a".repeat(40));
+  assert.equal(longest.worker, `clax-${"a".repeat(40)}`);
+  // Cloudflare takes queue names of at most 63 characters.
+  assert.ok(longest.queue.length <= 63, longest.queue);
+  for (const bad of ["", "PR-12", "pr_12", "-pr", "pr-", "pr.12", "a".repeat(41), "pr 12"]) {
+    assert.throws(() => envOf(bad), /--env takes prod, dev or a preview's name/, JSON.stringify(bad));
+  }
+});
+
+test("the site route's zone is the site domain, or a zone it is under", () => {
+  assert.equal(siteZoneOf("example.run"), "example.run");
+  assert.equal(siteZoneOf("example.run", ""), "example.run");
+  assert.equal(siteZoneOf("pr-12.preview.run", "preview.run"), "preview.run");
+  assert.equal(siteZoneOf("pr-12.preview.run", "Preview.run."), "preview.run");
+  assert.equal(siteZoneOf("preview.run", "preview.run"), "preview.run");
+  assert.throws(() => siteZoneOf("pr-12.preview.run", "other.run"), /not in the zone other\.run/);
+  assert.throws(() => siteZoneOf("pr-12.xpreview.run", "preview.run"), /not in the zone/);
+  assert.equal(wildcardRecordOf("example.run", "example.run"), null);
+  assert.equal(wildcardRecordOf("pr-12.preview.run", "preview.run"), "*.pr-12.preview.run");
+});
+
+test("a preview's --ci deploy needs GitHub sign-in, and no --store", () => {
+  const preview = { ...CI, store: "artifacts", storeGiven: false, ephemeral: true, "github-client-id": "Iv1", "owner-github": "someone" };
+  assert.doesNotThrow(() => checkCiOptions(preview));
+  assert.throws(() => checkCiOptions({ ...preview, "github-client-id": undefined, "owner-github": undefined }), /--github-client-id <ID> \(a preview's only sign-in is GitHub's\)/);
+});
+
+test("a preview's first --ci deploy makes no first-time secrets, and still needs GitHub's", () => {
+  const e = { ephemeral: true };
+  assert.equal(ciSecretsRefusal([], { ...e, githubClientId: "Iv1", githubSecretGiven: true }), null);
+  assert.equal(ciSecretsRefusal(["CLAX_KEK", "GITHUB_CLIENT_SECRET"], { ...e, githubClientId: "Iv1" }), null);
+  assert.match(ciSecretsRefusal([], { ...e, githubClientId: "Iv1" }), /neither the Worker nor GITHUB_CLIENT_SECRET/);
+  assert.match(ciSecretsRefusal(["GITHUB_CLIENT_SECRET"], e), /would turn GitHub sign-in off/);
+});
+
+test("staging is a pull request's environment, deployed by CI, and not production", () => {
+  const s = { staging: true, production: false, env: "pr-12", ci: true };
+  assert.doesNotThrow(() => checkStaging(s));
+  assert.doesNotThrow(() => checkStaging({ staging: false, production: true, env: "prod", ci: true }));
+  assert.throws(() => checkStaging({ ...s, production: true }), /--staging is not --production/);
+  for (const env of ["prod", "dev", "pr-0", "pr-12a", "feature", undefined]) {
+    assert.throws(() => checkStaging({ ...s, env }), /--staging takes --env pr-<N>/, String(env));
+  }
+  assert.throws(() => checkStaging({ ...s, ci: false }), /--staging goes with --ci/);
+});
+
+test("staging gets a new owner token on every deploy and no setup secret; a preview from CI gets neither", () => {
+  const all = ["SETUP_SECRET", "CLAX_TOKEN", "CLAX_KEK"];
+  assert.deepEqual(secretsToMake({ have: [], ci: true, ephemeral: true, staging: true }), ["CLAX_TOKEN"]);
+  assert.deepEqual(secretsToMake({ have: all, ci: true, ephemeral: true, staging: true }), ["CLAX_TOKEN"]);
+  assert.deepEqual(secretsToMake({ have: [], ci: true, ephemeral: true }), []);
+  assert.deepEqual(secretsToMake({ have: [], ci: false, ephemeral: false }), ["SETUP_SECRET", "CLAX_TOKEN"]);
+  assert.deepEqual(secretsToMake({ have: all, ci: true, ephemeral: false }), []);
+  assert.deepEqual(secretsToMake({ have: all, ci: false, ephemeral: false, rotate: true }), ["SETUP_SECRET", "CLAX_TOKEN"]);
+});
+
+const DONE = { pub: "clax.example.com", name: "clax", diag: false, record: "/r/clax.example.com.json", smoke: "node smoke-remote.mjs --deploy /r/clax.example.com.json" };
 const FIRST_TIME = [/Shown once/, /Setup: +https:\/\/clax\.example\.com\/setup/, /Next:/, /Smoke the platform first/];
 
 test("the first deploy prints its secrets once and the setup steps", () => {
@@ -197,13 +335,16 @@ test("a redeploy prints no first-time setup text, whatever else it uploaded", ()
     const t = doneText({ ...DONE, generated });
     for (const re of FIRST_TIME) assert.doesNotMatch(t, re, JSON.stringify(generated));
     assert.match(t, /Record: +\/r\/clax\.example\.com\.json/);
-    assert.match(t, /CLAX_KEK backup: \/r\/clax\.example\.com\.kek/);
     assert.match(t, /Logs: +npx wrangler tail clax/);
+    // Its backup is its operator's, never a file the deploy keeps.
+    assert.doesNotMatch(t, /CLAX_KEK|\.kek/);
   }
 });
 
-test("a --ci deploy names no CLAX_KEK backup", () => {
-  assert.doesNotMatch(doneText({ ...DONE, kek: null, generated: null }), /CLAX_KEK/);
+test("a CI deploy prints no secret it generated: its log may be public", () => {
+  const t = doneText({ ...DONE, ci: true, generated: { CLAX_TOKEN: "t0ken", SETUP_SECRET: "s3cret" } });
+  assert.doesNotMatch(t, /t0ken|s3cret|Shown once/);
+  assert.match(t, /Record: +\/r\/clax\.example\.com\.json/);
 });
 
 test("the smoke's credential: a session, then an agent token, then setup, then the owner token", () => {
@@ -278,6 +419,27 @@ test("--no-build deploys only a Worker built from the checked-out commit", () =>
   assert.equal(builtFromRefusal(wasm, null, ""), null);
 });
 
+test("--no-build deploys a Worker built from another commit with the checked-out commit's tree", () => {
+  // The release candidate is built from the release branch's head; Deploy
+  // prod checks out the merge commit on prod, whose tree is the head's.
+  const merge = "1111111111111111111111111111111111111111";
+  const head = "2222222222222222222222222222222222222222";
+  const other = "3333333333333333333333333333333333333333";
+  const wasm = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);
+  const record = (commit) => JSON.stringify({ commit, wasm_sha256: createHash("sha256").update(wasm).digest("hex") });
+  assert.equal(builtCommitOf(record(head)), head);
+  assert.equal(builtCommitOf("not JSON"), null);
+  assert.equal(builtCommitOf(null), null);
+  // Only a commit ID: the deploy passes it to git.
+  assert.equal(builtCommitOf(JSON.stringify({ commit: "--output=x" })), null);
+  const trees = { [merge]: "aaaa", [head]: "aaaa", [other]: "bbbb" };
+  assert.equal(builtFromRefusal(wasm, record(head), merge, trees), null);
+  assert.match(builtFromRefusal(wasm, record(other), merge, trees), /not built from HEAD 111111111111 or a commit with its tree/);
+  // A tree that could not be read is no match.
+  assert.match(builtFromRefusal(wasm, record(head), merge, { [merge]: "aaaa" }), /not built from HEAD 111111111111/);
+  assert.match(builtFromRefusal(wasm, record(head), merge, {}), /not built from HEAD 111111111111/);
+});
+
 test("the reel's addresses become the Worker's REEL_URL and REEL_POSTER_URL, https:// alone", () => {
   assert.deepEqual(reelVars({}), {});
   const video = "https://customer-x.cloudflarestream.com/u/downloads/default.mp4";
@@ -287,4 +449,83 @@ test("the reel's addresses become the Worker's REEL_URL and REEL_POSTER_URL, htt
   assert.throws(() => reelVars({ "reel-poster-url": poster }), /--reel-poster-url needs --reel-url/);
   assert.throws(() => reelVars({ "reel-url": "http://videos.example/r.mp4" }), /--reel-url takes an https:\/\/ URL/);
   assert.throws(() => reelVars({ "reel-url": video, "reel-poster-url": "nope" }), /--reel-poster-url takes an https:\/\/ URL/);
+});
+
+// What `wrangler r2 bucket create` printed on an account without R2: the
+// reason is on the line after wrangler's own.
+const NO_R2 = `
+ ⛅️ wrangler 4.149.0 (update available 4.156.2)
+───────────────────────────────────────────────
+Creating bucket 'clax-assets-preview'...
+
+\x1b[31m✘ \x1b[41;31m[\x1b[41;97mERROR\x1b[41;31m]\x1b[0m \x1b[1mA request to the Cloudflare API (/accounts/c0be/r2/buckets) failed.\x1b[0m
+
+  Please enable R2 through the Cloudflare Dashboard. [code: 10042]
+  
+  If you think this is a bug, please open an issue at: \x1b[4mhttps://github.com/cloudflare/workers-sdk/issues/new/choose\x1b[0m
+
+🪵  Logs were written to "/home/runner/.config/.wrangler/logs/wrangler.log"
+`;
+
+test("a wrangler error keeps Cloudflare's reason, without colour", () => {
+  assert.equal(
+    wranglerError({ code: 1, out: "", err: NO_R2 }),
+    "A request to the Cloudflare API (/accounts/c0be/r2/buckets) failed. Please enable R2 through the Cloudflare Dashboard. [code: 10042]",
+  );
+  // A one-line error, and no output at all.
+  assert.equal(wranglerError({ code: 1, out: "", err: "✘ [ERROR] Missing entry-point\n" }), "Missing entry-point");
+  assert.equal(wranglerError({ code: 1, out: "Uploading…\nsomething broke", err: "" }), "something broke");
+  assert.equal(wranglerError({ code: 3, out: "", err: "" }), "exit 3");
+});
+
+// What `wrangler tail --format json` printed for a request, a queue batch
+// and a quiet request: pretty-printed objects one after another, after
+// wrangler's own banner.
+const TAIL = `Successfully created tail, expires at 2026-11-08T03:00:00Z
+Connected to clax-pr-73, waiting for logs...
+${JSON.stringify({
+  outcome: "ok",
+  scriptName: "clax-pr-73",
+  exceptions: [],
+  logs: [
+    { message: ['fork a-jd2eeq9f8zdm: repo_unavailable: {"code": 1}'], level: "error", timestamp: 1 },
+    { message: ["an info line"], level: "log", timestamp: 2 },
+  ],
+  eventTimestamp: Date.UTC(2026, 10, 7, 19, 53, 31),
+  event: {
+    request: { url: "https://pr-73.clax-staging.dev/mcp?secret=s3cr3t", method: "POST", headers: { authorization: "Bearer clax_x" } },
+    response: { status: 200 },
+  },
+}, null, 2)}
+${JSON.stringify({
+  outcome: "exception",
+  scriptName: "clax-pr-73",
+  exceptions: [{ name: "Error", message: "token art_v1_abcDEF123?expires=1762560000 refused" }],
+  logs: [{ message: ["recording the pushes to jd2eeq9f8zdm answered 500"], level: "error", timestamp: 3 }],
+  eventTimestamp: Date.UTC(2026, 10, 7, 19, 53, 40),
+  event: { queue: "clax-artifacts-events-pr-73", batchSize: 1 },
+})}
+${JSON.stringify({ outcome: "ok", scriptName: "clax-pr-73", exceptions: [], logs: [{ message: ["fine"], level: "log" }], eventTimestamp: 0, event: { request: { url: "https://x/health", method: "GET" } } })}
+`;
+
+test("the Worker's errors from wrangler tail: what served each, its errors, credentials masked", () => {
+  assert.deepEqual(tailErrors(TAIL), [
+    '2026-11-07T19:53:31.000Z clax-pr-73 POST /mcp → 200: error fork a-jd2eeq9f8zdm: repo_unavailable: {"code": 1}',
+    "2026-11-07T19:53:40.000Z clax-pr-73 queue clax-artifacts-events-pr-73 (1 message(s)): outcome exception",
+    "2026-11-07T19:53:40.000Z clax-pr-73 queue clax-artifacts-events-pr-73 (1 message(s)): exception Error: token art_v1_<masked> refused",
+    "2026-11-07T19:53:40.000Z clax-pr-73 queue clax-artifacts-events-pr-73 (1 message(s)): error recording the pushes to jd2eeq9f8zdm answered 500",
+    "3 invocation(s) in the log: 2 request, 1 queue",
+  ]);
+  // The request's query and headers never appear.
+  assert.ok(!tailErrors(TAIL).join("\n").includes("s3cr3t"));
+  assert.deepEqual(tailErrors("no JSON here\n{not json}\n"), []);
+  // A log of requests alone says that no queue batch came.
+  const quiet = JSON.stringify({ outcome: "ok", scriptName: "w", logs: [], event: { request: { url: "https://x/health", method: "GET" } } });
+  assert.deepEqual(tailErrors(quiet), ["1 invocation(s) in the log: 1 request (no queue batch)"]);
+});
+
+test("credentials are masked in what the tail prints", () => {
+  assert.equal(maskTokens("Bearer abc.def and bearer x"), "Bearer <masked> and bearer <masked>");
+  assert.equal(maskTokens("a secret 0123456789abcdef0123456789abcdef01 here"), "a secret <masked> here");
+  assert.equal(maskTokens("/api/artifacts/jd2eeq9f8zdm/fork stays"), "/api/artifacts/jd2eeq9f8zdm/fork stays");
 });

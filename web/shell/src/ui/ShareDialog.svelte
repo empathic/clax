@@ -4,7 +4,8 @@
   // The Share dialog (crates/clax-server/src/hosted.rs, the sharing routes),
   // loaded on first use, for whoever may share the artifact (the owner and
   // its maker). First the Comments switch: off, nobody comments on the
-  // artifact, whatever their access (`onComments` hears each change). Add people: a GitHub login (`@login`), or one of the people
+  // artifact, whatever their access (`onComments` hears each change).
+  // Add people: a GitHub login (`@login`), or one of the people
   // here the daemon suggests (the owner's dialog only), at Can view, Can
   // comment or Can edit; a login no one has signed in with yet gets access
   // at its first GitHub sign-in. The people with access, each with their
@@ -12,13 +13,20 @@
   // Anyone with the link, or Public (listed on the public page too), the
   // last two at Can view or Can comment. Site: Open to the world, with the
   // site's address (when the daemon says them; the comments and history
-  // keep the access above). Copy link. Names and logins are
+  // keep the access above), and Serve this clax without Clax's Content
+  // Security Policy (ContentSecurityPolicySetting, as the Permissions panel shows it):
+  // turning it on first shows what that lets its pages do, inside the
+  // dialog, and sends `unrestricted` only once the person confirms (Cancel
+  // sends nothing); turning it off sends `self` at once; a clax served
+  // unrestricted says so beside its site. Copy link. Names and logins are
   // people's text, rendered as text. A modal dialog: everything else is
   // inert while it is open, Tab stays inside, Escape, Done or a click
   // outside closes it and focus goes back.
   import { onMount, tick } from "svelte";
   import * as api from "../hosted/api";
+  import { reasonText } from "../trouble";
   import { inertOutside, trapTab } from "./modal";
+  import ContentSecurityPolicySetting from "./ContentSecurityPolicySetting.svelte";
   import {
     ACCESS_LABEL, ACCESSES, COMMENTS_LABEL, COMMENTS_NOTE, GENERAL_LABEL, GENERAL_NOTE, GENERALS, LINK_ACCESSES, SITE_NOTE,
     linkRequest, shareDetail, shareName, subject, suggest,
@@ -56,7 +64,7 @@
       const fresh = await api.sharing(id);
       if (fresh.can_share) data = fresh; else onClose();
       return true;
-    } catch (x) { err = x instanceof Error ? x.message : String(x); return false; } finally { busy = false; }
+    } catch (x) { err = reasonText(x); return false; } finally { busy = false; }
   }
 
   async function add(e: Event) {
@@ -98,6 +106,9 @@
   async function setWorld(box: HTMLInputElement) {
     if (!(await act(() => api.setSiteAccess(id, box.checked ? "world" : "private")))) box.checked = data.site_access === "world";
   }
+
+  /** The Content Security Policy setting's change (ContentSecurityPolicySetting), which reloads the dialog. */
+  const setCsp = (p: api.ContentSecurityPolicy) => act(() => api.setContentSecurityPolicy(id, p));
 
   function copy() {
     void navigator.clipboard?.writeText(data.url).then(() => {
@@ -183,6 +194,9 @@
       <label class="world"><input type="checkbox" name="world" checked={data.site_access === "world"}
         onchange={e => { void setWorld(e.currentTarget); }} />Open to the world</label>
       <p class="meta" data-testid="site-note">{SITE_NOTE[data.site_access]}<a class="site" href={data.site_url} target="_blank" rel="noopener noreferrer">{data.site_url}</a></p>
+      {#if data.content_security_policy}
+        <div class="csp"><ContentSecurityPolicySetting held={data.content_security_policy} {busy} set={setCsp} /></div>
+      {/if}
     {/if}
 
     {#if err}<p class="error" role="alert">{err}</p>{/if}
@@ -227,6 +241,7 @@
   .sw input:focus-visible + .track { outline: 2px solid var(--focus); outline-offset: 2px; }
   .general { display: flex; flex-wrap: wrap; gap: 8px; }
   .world { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .csp { margin-top: 12px; }
   .site { overflow-wrap: anywhere; }
   .meta, .none { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
   .none { margin: 0; }

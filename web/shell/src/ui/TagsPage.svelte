@@ -18,7 +18,8 @@
   import { type TagFields, type TagList, type TagView, createTag, deleteTag, failure, listTags, updateTag } from "../view/tags-api";
   import TagForm from "./TagForm.svelte";
 
-  const p: { stream: EventStream } = $props();
+  /** `onready`: called once the page shows its first data (the list and what this viewer may do). */
+  const p: { stream: EventStream; onready?: () => void } = $props();
   let list = $state<TagList | null>(null);
   // Why the list could not load, and why the last change was refused.
   let loadError = $state<string | null>(null);
@@ -75,8 +76,7 @@
 
   onMount(() => {
     document.title = "Tags · Clax";
-    void load();
-    void fetch("/api/viewers/me").then(r => (r.ok ? r.json() : null)).then((b: { may_create?: boolean } | null) => { mayCreate = !!b?.may_create; }, () => {});
+    void Promise.all([load(), fetch("/api/viewers/me").then(r => (r.ok ? r.json() : null)).then((b: { may_create?: boolean } | null) => { mayCreate = !!b?.may_create; }, () => {})]).then(() => p.onready?.());
     return p.stream.watch(["gallery"], e => { if (e.type === "tags" || e.type === "ready" || e.type === "resync") void load(); });
   });
 </script>

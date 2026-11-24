@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
-import { test, expect, type Daemon, openArtifact, publishWith, setName } from "./fixtures";
+import { test, expect, type Daemon, fence, frameAt, openArtifact, publishWith, setName } from "./fixtures";
 import { guestOn, hostedDaemon, ownerOf, shareByLink } from "./hosted-helpers";
-import { settle } from "./time";
+import { quietEval, settle } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -52,7 +52,7 @@ test(`a reload is a new peer, and the old one leaves`, async ({ context }) => {
   await expect.poll(async () => {
     const now = await fa.locator("#peers li").evaluateAll(els => els.map(e => (e as HTMLElement).dataset.peer));
     return now.length === 2 && now.some(p => !before.includes(p));
-  }, { timeout: 15_000 }).toBe(true);
+  }).toBe(true);
 });
 
 /** A foreign document that greets nobody and keeps every message it receives. */
@@ -73,10 +73,13 @@ test("a document that leaves takes its peer with it, and nothing of the room rea
   await fb.locator("#pick-b").click();
   await fb.locator("#wave").click();
   await expect(fb.locator("#log")).toContainText("wave from this tab");
-  await expect.poll(() => a.frame({ url: /foreign\.test/ }) !== null).toBe(true);
-  const rec = a.frame({ url: /foreign\.test/ })!;
-  // Long enough for B's presence and wave to have reached A's shell, were its socket still open.
+  const rec = await frameAt(a, /foreign\.test/);
+  // B's presence and wave reached the daemon after A's peer left it, so
+  // the daemon sends A's shell neither. Whatever A's shell had to pass on to
+  // its frame it has passed on before a message of the test's own from the
+  // shell's window arrives there.
   await settle(a);
+  await fence("a message from A's shell window", () => quietEval(a, `document.querySelector("iframe.frame").contentWindow.postMessage("e2e-fence", "*")`), () => rec.evaluate(() => (window as unknown as { got: unknown[] }).got.includes("e2e-fence")));
   const got = await rec.evaluate(() => (window as unknown as { got: { type?: string }[] }).got);
   expect(got.filter(m => m && typeof m === "object" && String(m.type).startsWith("clax:"))).toEqual([]);
 });

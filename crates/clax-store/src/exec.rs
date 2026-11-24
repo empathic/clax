@@ -1088,6 +1088,7 @@ fn task_panicked(panic: &(dyn std::any::Any + Send)) {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::test_util::{pool_store as store, single_store};
@@ -1107,6 +1108,15 @@ mod tests {
     fn workers(st: &Store) -> Option<&Workers> {
         match &st.exec {
             Exec::Pool { workers, .. } => workers.get(),
+            Exec::Single(_) => panic!("a pool store"),
+        }
+    }
+
+    /// How many write tickets the writer has handed out: one per caller
+    /// that has arrived, whether it has had its turn or still waits.
+    fn tickets(st: &Store) -> u64 {
+        match &st.exec {
+            Exec::Pool { writer, .. } => writer.lock().next,
             Exec::Single(_) => panic!("a pool store"),
         }
     }
@@ -1156,12 +1166,10 @@ mod tests {
         let (_d, st) = store();
         st.set_read_limit(Duration::from_millis(100));
         let forever = "WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r) SELECT COUNT(*) FROM r";
-        let started = Instant::now();
         let e = st
             .with_read(|c| Ok(c.query_row(forever, [], |r| r.get::<_, i64>(0))?))
             .unwrap_err();
         assert!(matches!(e, CoreError::ReadTimeout), "{e:?}");
-        assert!(started.elapsed() < Duration::from_secs(5));
         // The reader is usable again, and integrity checks have no limit.
         assert_eq!(viewers(&st), 0);
         assert_eq!(st.integrity_check().unwrap(), "ok");
@@ -1198,7 +1206,7 @@ mod tests {
         let running = std::sync::atomic::AtomicUsize::new(0);
         let overlapped = AtomicBool::new(false);
         let first_in = Barrier::new(2);
-        let release = AtomicBool::new(false);
+        let release = Barrier::new(2);
         let job = |i: usize| {
             if running.fetch_add(1, Ordering::SeqCst) != 0 {
                 overlapped.store(true, Ordering::SeqCst);
@@ -1210,9 +1218,7 @@ mod tests {
             s.spawn(|| {
                 st.with_tx(|_| {
                     first_in.wait();
-                    while !release.load(Ordering::SeqCst) {
-                        thread::sleep(Duration::from_millis(1));
-                    }
+                    release.wait();
                     job(0);
                     Ok(())
                 })
@@ -1228,10 +1234,12 @@ mod tests {
                     })
                     .unwrap();
                 });
-                // Each caller arrives before the next one.
-                thread::sleep(Duration::from_millis(20));
+                // Each caller holds its ticket before the next one comes.
+                crate::test_util::wait_until(&format!("caller {i} in the write queue"), || {
+                    tickets(st) == i as u64 + 1
+                });
             }
-            release.store(true, Ordering::SeqCst);
+            release.wait();
         });
         assert_eq!(*order.lock().unwrap(), vec![0, 1, 2, 3, 4, 5]);
         assert!(!overlapped.load(Ordering::SeqCst));
@@ -1303,6 +1311,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reads_keep_running_while_writes_wait_on_a_lock() {
         let (_d, st) = store();
+        crate::test_util::patient_writer(&st);
         let st = Arc::new(st);
         // Another process holds the write lock, so the first write waits on
         // it (busy timeout) and the rest wait for their turn.
@@ -1329,21 +1338,19 @@ mod tests {
             })
             .collect();
         // More writes than base workers all start: waiting writes do not
-        // hold the workers reads need.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while started.load(Ordering::SeqCst) < n {
-            assert!(Instant::now() < deadline, "writes hold every worker");
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        let t0 = Instant::now();
-        let read =
-            tokio::time::timeout(Duration::from_secs(1), st.call(|s| s.integrity_check())).await;
-        assert_eq!(
-            read.expect("the read ran behind the waiting writes")
-                .unwrap(),
-            "ok"
-        );
-        assert!(t0.elapsed() < Duration::from_secs(1));
+        // hold the workers reads need. The lock is held until the read is
+        // answered, so the read runs beside them.
+        crate::test_util::until(
+            "every write started (waiting writes hold no worker reads need)",
+            || started.load(Ordering::SeqCst) == n,
+        )
+        .await;
+        let read = crate::test_util::within(
+            "the read behind the waiting writes",
+            st.call(|s| s.integrity_check()),
+        )
+        .await;
+        assert_eq!(read.unwrap(), "ok");
         other.execute_batch("COMMIT").unwrap();
         for w in writes {
             w.await.unwrap().unwrap();
@@ -1356,17 +1363,19 @@ mod tests {
         let (_d, st) = store();
         let st = Arc::new(st);
         let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let go = Arc::new(AtomicBool::new(false));
+        let go = Arc::new((Mutex::new(false), Condvar::new()));
         let n = readers(&st).max() * 3;
         let calls: Vec<_> = (0..n)
             .map(|_| {
                 let (st, done, go) = (st.clone(), done.clone(), go.clone());
                 tokio::spawn(async move {
                     st.call(move |s| {
-                        while !go.load(Ordering::SeqCst) {
-                            thread::sleep(Duration::from_millis(1));
+                        let (open, opened) = &*go;
+                        let mut g = lock(open);
+                        while !*g {
+                            g = opened.wait(g).unwrap_or_else(PoisonError::into_inner);
                         }
-                        thread::sleep(Duration::from_millis(10));
+                        drop(g);
                         done.fetch_add(1, Ordering::SeqCst);
                         s.integrity_check()
                     })
@@ -1377,12 +1386,24 @@ mod tests {
         // Every call is queued (holds a slot) before the drain starts; none
         // finishes before `go`.
         let queued = || workers(&st).map_or(0, |w| QUEUE_CAPACITY - w.slots.available_permits());
-        while queued() < n {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        go.store(true, Ordering::SeqCst);
+        crate::test_util::until("every call queued", || queued() == n).await;
+        // A thread of its own, not tokio's blocking pool: a shutdown that
+        // hangs fails this test instead of hanging the runtime's exit.
+        let (drained_tx, drained) = tokio::sync::oneshot::channel();
         let s = st.clone();
-        tokio::task::spawn_blocking(move || s.shutdown())
+        thread::spawn(move || {
+            s.shutdown();
+            let _ = drained_tx.send(());
+        });
+        // The pool closes while every call still waits for `go`.
+        crate::test_util::until("the pool closed", || {
+            lock(&workers(&st).unwrap().shared.queue).closed
+        })
+        .await;
+        let (open, opened) = &*go;
+        *lock(open) = true;
+        opened.notify_all();
+        crate::test_util::within("the shutdown's return", drained)
             .await
             .unwrap();
         assert_eq!(done.load(Ordering::SeqCst), n, "every queued call ran");
@@ -1412,12 +1433,31 @@ mod tests {
 
     #[test]
     fn a_write_waits_for_another_process_lock_instead_of_failing() {
+        /// Whether the writer has met the other connection's lock: SQLite
+        /// calls the busy handler only while the lock is held.
+        static WAITED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+        fn waiting(_tries: i32) -> bool {
+            *lock(&WAITED.0) = true;
+            WAITED.1.notify_all();
+            thread::yield_now();
+            true
+        }
         let (_d, st) = store();
+        st.exec
+            .write(|c| Ok(c.busy_handler(Some(waiting))?))
+            .unwrap();
         let other = Connection::open(st.home().db_path()).unwrap();
         other.execute_batch("BEGIN IMMEDIATE").unwrap();
         thread::scope(|s| {
             s.spawn(move || {
-                thread::sleep(Duration::from_millis(300));
+                let mut waited = lock(&WAITED.0);
+                while !*waited {
+                    waited = WAITED
+                        .1
+                        .wait(waited)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+                drop(waited);
                 other.execute_batch("COMMIT").unwrap();
             });
             // Reading before writing: the write lock is still waited for.
@@ -1451,20 +1491,20 @@ mod tests {
                 })
             })
             .collect();
-        while started.load(Ordering::SeqCst) < n {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
+        crate::test_util::until("every worker busy", || started.load(Ordering::SeqCst) == n).await;
         let ran = Arc::new(AtomicBool::new(false));
         let r = ran.clone();
-        let gave_up = tokio::time::timeout(
-            Duration::from_millis(50),
-            st.call(move |_| {
-                r.store(true, Ordering::SeqCst);
-                Ok(())
-            }),
-        )
-        .await;
-        assert!(gave_up.is_err(), "the call timed out while queued");
+        // Polled once, the call is queued behind the busy workers; its
+        // caller then gives up on it.
+        let mut call = Box::pin(st.call(move |_| {
+            r.store(true, Ordering::SeqCst);
+            Ok(())
+        }));
+        assert!(
+            futures_util::FutureExt::now_or_never(&mut call).is_none(),
+            "the call waits while queued"
+        );
+        drop(call);
         gate.wait();
         for b in busy {
             b.await.unwrap().unwrap();
@@ -1568,9 +1608,11 @@ mod tests {
         for _ in 0..cap {
             started.recv().await.unwrap();
         }
-        let read = tokio::time::timeout(Duration::from_secs(5), st.call(|s| s.integrity_check()))
-            .await
-            .expect("the interactive call ran beside the bulk ones");
+        let read = crate::test_util::within(
+            "the interactive call beside the bulk ones",
+            st.call(|s| s.integrity_check()),
+        )
+        .await;
         assert_eq!(read.unwrap(), "ok");
         assert!(
             started.try_recv().is_err(),
@@ -1584,13 +1626,12 @@ mod tests {
         }
         // A caller has its result just before its worker counts the bulk
         // job as ended; every count comes back down.
-        tokio::time::timeout(Duration::from_secs(5), async {
+        crate::test_util::within("every bulk job counted as ended", async {
             while lock(&workers(&st).unwrap().shared.queue).bulk_running != 0 {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("every bulk job counted as ended");
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1642,9 +1683,8 @@ mod tests {
         let (open, opened) = &*gate;
         *lock(open) = true;
         opened.notify_all();
-        tokio::time::timeout(Duration::from_secs(10), drained)
+        crate::test_util::within("the shutdown's return", drained)
             .await
-            .expect("shutdown returned")
             .unwrap();
         for b in bulk {
             assert_eq!(b.await.unwrap().unwrap(), "ok");

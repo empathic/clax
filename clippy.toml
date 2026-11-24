@@ -1,1 +1,32 @@
+# The timing rules for Rust test code (docs/usage.md, "Developing Clax"):
+# disallowed-methods on real time. .bazelrc's `build:clippy` (and the
+# native runs) allow the lint on the command line, so product code is
+# never flagged, and test code turns it back on: each `#[cfg(test)]`
+# module and function, each test crate root (tests/, benches/),
+# clax-testkit and clax-fake-exe, and the test_util modules carry
+# `warn(clippy::disallowed_methods)` (scripts/check-rust-test-timing.py
+# checks that they do), which `-D warnings` makes an error.
+#
+# Test code moves time with tokio's paused clock (`start_paused`,
+# `tokio::time::pause`/`advance`) or a manual clock the code under test
+# already takes (ManualSleeper, ManualClock), and bounds a wait with
+# clax_testkit::{within, recv_within, until} and HANG. A test-support
+# function whose job is real time names why in a narrow
+# `#[expect(clippy::disallowed_methods, reason = "…")]`.
 too-many-arguments-threshold = 8
+
+disallowed-methods = [
+    { path = "std::thread::sleep", reason = "a sleep stands in for a condition: wait on the condition (clax_testkit::until), or move paused tokio time" },
+    { path = "tokio::time::sleep", reason = "a sleep stands in for a condition: wait on the condition (clax_testkit::until), or move paused tokio time" },
+    { path = "tokio::time::sleep_until", reason = "a sleep stands in for a condition: wait on the condition (clax_testkit::until), or move paused tokio time" },
+    { path = "tokio::time::interval", reason = "move paused tokio time instead of waiting on real time" },
+    { path = "tokio::time::interval_at", reason = "move paused tokio time instead of waiting on real time" },
+    { path = "tokio::time::timeout", reason = "bound the wait with clax_testkit::within (the HANG guard), or move paused tokio time" },
+    { path = "tokio::time::timeout_at", reason = "bound the wait with clax_testkit::within (the HANG guard), or move paused tokio time" },
+    { path = "std::time::Instant::now", reason = "a wall-clock budget must not decide a result: read time from a manual clock, or bound the wait with clax_testkit::within" },
+    { path = "tokio::time::Instant::now", reason = "a wall-clock budget must not decide a result: read time from a manual clock, or bound the wait with clax_testkit::within" },
+    { path = "std::time::SystemTime::now", reason = "take the time from a manual clock (or a fixed time), not the wall clock" },
+    { path = "chrono::Utc::now", reason = "take the time from a manual clock (or a fixed time), not the wall clock" },
+    { path = "chrono::Local::now", reason = "take the time from a manual clock (or a fixed time), not the wall clock" },
+    { path = "std::sync::mpsc::Receiver::recv_timeout", reason = "clax_testkit::recv_within (the HANG guard)" },
+]

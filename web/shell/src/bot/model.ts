@@ -6,20 +6,14 @@
 // before and after the free tier; a run's state as its events arrive; the
 // audit's time ranges; and the settings' sections. Pure: no clock but the
 // one passed in.
-import type { AdminUsage, BotCall, BotRun, BotStep, CostLine, MeBot, PriceSummary, RateSource, RunEvent, RunStatus, SettingField, Source, TokenUnit, Unavailable, Unit, Week } from "./api";
+import type { AdminUsage, BotCall, BotRun, BotStep, CostLine, ErrorDetail, KeySource, MeBot, PriceSummary, RateSource, RunEvent, RunStatus, SettingField, Source, TokenUnit, Unavailable, Unit, Week } from "./api";
+import { credits, meter, ownKey, resetDay } from "./meter";
+
+export { type Banner, type Meter, OWN_KEY_SPEND, banner, credits, meter, meterWords, ownKey, resetDay } from "./meter";
 
 /** A setting as its section lists it: its dotted name and the rest of it after the section. */
 export type Setting = SettingField & { key: string; label: string };
 
-const int = new Intl.NumberFormat("en-US");
-
-/** Milli-credits as credits: whole numbers with separators ("1,690"),
- * a fraction to two places where there is one ("0.76"). */
-export function credits(milli: number): string {
-  if (milli % 1000 === 0) return int.format(milli / 1000);
-  const v = milli / 1000;
-  return new Intl.NumberFormat("en-US", { minimumFractionDigits: Math.abs(v) < 1 ? 2 : 0, maximumFractionDigits: 2 }).format(v);
-}
 
 /** Micro-USD as dollars: cents ("$34.10"), and four places under a cent ("$0.0040"). */
 export function money(micro: number): string {
@@ -36,39 +30,6 @@ export function tokens(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1e6) return `${(n / 1000).toFixed(n < 1e4 ? 1 : 0).replace(/\.0$/, "")}k`;
   return `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
-}
-
-/** When the week's credits reset: the week's end as a UTC date ("Monday, Oct 27"). */
-export const resetDay = (end: string): string =>
-  new Date(end).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric", timeZone: "UTC" });
-
-/** The week's meter. `weekly_milli` is the whole allowance (the free tier
- * and any lift); warn from 80 % (§7.4, the UI's own state, also given by
- * the daemon), exhausted once spent reaches it. Unenforced, the meter
- * shows the numbers and never the exhausted state's block. */
-export type Meter = { spent: number; total: number; left: number; ratio: number; warn: boolean; exhausted: boolean };
-export function meter(w: Week): Meter {
-  const total = Math.max(0, w.weekly_milli);
-  const spent = Math.max(0, w.spent_milli);
-  const ratio = total ? spent / total : spent ? 1 : 0;
-  const exhausted = w.exhausted || (total > 0 && spent >= total);
-  return { spent, total, left: Math.max(0, total - spent), ratio: Math.min(1, ratio), warn: !exhausted && (w.warn || ratio >= 0.8), exhausted };
-}
-
-/** The usage banner a page shows for `me`: none, a warning from 80 %, or
- * the exhausted state (not for an unenforced person, whom ClaxBot never stops). */
-export type Banner = { kind: "warn" | "exhausted"; text: string; detail: string } | null;
-export function banner(me: MeBot | null): Banner {
-  if (!me?.enabled) return null;
-  const m = meter(me.week);
-  const reset = resetDay(me.week.end);
-  if (m.exhausted && !me.unenforced) {
-    return { kind: "exhausted", text: "This week's credits are used up.", detail: `You've used ${credits(m.spent)} of ${credits(m.total)} credits. Your pages, comments and local agents keep working; ClaxBot is paused until ${reset}.` };
-  }
-  if (m.warn || (m.exhausted && me.unenforced)) {
-    return { kind: "warn", text: `You've used ${credits(m.spent)} of your ${credits(m.total)} credits this week.`, detail: me.unenforced ? `Your limit is not enforced: ClaxBot keeps working. Resets ${reset}.` : `ClaxBot keeps working until you reach it. Resets ${reset}.` };
-  }
-  return null;
 }
 
 /** Why ClaxBot cannot run for this person, in words. */
@@ -88,10 +49,10 @@ export function unavailableText(reason: Unavailable | null | undefined, week?: W
  * when only an admin can help. */
 export function unavailableFix(reason: Unavailable | null | undefined, admin: boolean): { text: string; href: string } | null {
   switch (reason) {
-    case "not_configured": return admin ? { text: "Set a model key under Admin → Provider", href: "/admin?tab=provider" } : { text: "Use your own Anthropic key under You", href: "/me" };
-    case "model_not_priced": return admin ? { text: "Price it under Admin → Pricing", href: "/admin?tab=pricing" } : null;
-    case "no_flag": return admin ? { text: "Turn it on under Admin → People & flags", href: "/admin?tab=people" } : null;
-    case "no_credits": return admin ? { text: "Give a lift under Admin → People & flags", href: "/admin?tab=people" } : { text: "See your usage under You", href: "/me" };
+    case "not_configured": return admin ? { text: "Set a model key under Settings → Model provider", href: "/settings/provider" } : { text: "Use your own Anthropic key under Settings → Your ClaxBot", href: "/settings/claxbot#me-k" };
+    case "model_not_priced": return admin ? { text: "Price it under Settings → Pricing", href: "/settings/pricing" } : null;
+    case "no_flag": return admin ? { text: "Turn it on under Settings → Roles & ClaxBot access", href: "/settings/roles" } : null;
+    case "no_credits": return admin ? { text: "Give a lift under Settings → Roles & ClaxBot access", href: "/settings/roles" } : { text: "See your usage under Settings → Your ClaxBot", href: "/settings/claxbot" };
     default: return null;
   }
 }
@@ -101,7 +62,7 @@ export function unavailableFix(reason: Unavailable | null | undefined, admin: bo
 export function availability(live: boolean, reason: Unavailable | null | undefined, me: MeBot | null): string {
   if (!live) return unavailableText(reason ?? (me?.unavailable_reason ?? null), me?.week);
   if (!me) return "Runs in Clax";
-  const key = me.key.use_own && me.key.own?.set ? "your key" : "instance key";
+  const key = ownKey(me) ? "your key" : "instance key";
   const m = meter(me.week);
   return `Runs in Clax · ${key} · ${credits(m.left)} credits left${me.unenforced ? " (not enforced)" : ""}`;
 }
@@ -114,15 +75,37 @@ export function perUnitMilli(line: Pick<CostLine, "cost_micro_usd" | "margin_bp"
   return Math.ceil((line.cost_micro_usd * (10_000 + line.margin_bp) * 1000) / (10_000 * priceMicro));
 }
 
+/** The web cost lines' price per thousand requests in milli-credits: a search on each provider, and a fetch (`null` where the lines do not list it). */
+export function webPrices(lines: Pick<CostLine, "id" | "cost_micro_usd" | "margin_bp" | "fixed_credits_milli">[], priceMicro: number): { search: Record<string, number>; fetch: number | null } {
+  const out: { search: Record<string, number>; fetch: number | null } = { search: {}, fetch: null };
+  for (const l of lines) {
+    if (l.id === "web.fetch") out.fetch = perUnitMilli(l, priceMicro);
+    else if (l.id.startsWith("web.search.")) out.search[l.id.slice("web.search.".length)] = perUnitMilli(l, priceMicro);
+  }
+  return out;
+}
+
+/** A fetch's source in words: the sender's comment, or the search or page whose result named the URL ("from search #2"). */
+export function webSource(source: string | undefined): string | null {
+  if (!source) return null;
+  return source === "comment" ? "from the sender's comment" : `from ${source}`;
+}
+
+/** What a web call cost, in credits; nothing for a call with no cost (a page from the store, or a call that failed uncharged). */
+export function callCost(milli: number | undefined): string | null {
+  if (!milli || milli <= 0) return null;
+  return `${credits(milli)} ${milli === 1000 ? "credit" : "credits"}`;
+}
+
 export const UNITS: Record<Unit, string> = {
   mtok_input: "1M input tokens", mtok_cached_input: "1M cached tokens", mtok_cache_write: "1M cache-write tokens", mtok_output: "1M output tokens",
-  cpu_gb_s: "CPU·GB-s", mreq: "1M requests", gb_month: "GB-month", run: "run",
+  cpu_gb_s: "CPU·GB-s", mreq: "1M requests", gb_month: "GB-month", run: "run", kreq: "thousand requests",
 };
 
 /** The base unit a usage row counts in (§7.3), by its line's unit. */
 export const BASE_UNITS: Record<Unit, string> = {
   mtok_input: "tokens", mtok_cached_input: "tokens", mtok_cache_write: "tokens", mtok_output: "tokens",
-  cpu_gb_s: "CPU·MiB·ms", mreq: "requests", gb_month: "byte·s", run: "runs",
+  cpu_gb_s: "CPU·MiB·ms", mreq: "requests", gb_month: "byte·s", run: "runs", kreq: "requests",
 };
 
 /** A rate card's token units, in order, with their names. */
@@ -167,17 +150,100 @@ const REASONS: Record<string, string> = {
   max_steps: "it reached the most steps one run may take",
   max_time: "it ran out of time",
   cancelled: "it was stopped",
+  request_gone: "what it was asked to answer is gone",
+  disabled: "ClaxBot is turned off here",
+  no_flag: "ClaxBot is not turned on for you",
+  not_configured: "no model key is set up",
+  model_not_priced: "the model has no price set",
+  key_rejected: "the model provider refused the key",
+  model_error: "the model provider answered with an error",
+  model_timeout: "the model took longer to answer than a run allows",
+  internal_error: "Clax could not save its work",
+  history_unreadable: "Clax could not read what it had done",
+  policy_error: "Clax could not work out what this run may do",
 };
-/** The run's state in a few words. */
-export function runStatus(r: Pick<BotRun, "status" | "reason">): string {
+/** What a failed model call on the instance's key is called: the
+ * provider's own answer is for admins, so the run says this instead. */
+const INSTANCE_MODEL_ERROR = "ClaxBot could not use this Clax's model provider";
+/** Why a run stopped, in words, for its stop code (crates/clax-bot's
+ * `lead` names the same codes); null for a code this shell has no words
+ * for, which is then never shown as it is. A run on the instance's key
+ * (`keySource`) that stopped on a model error says so in Clax's words. */
+export function stopWords(reason: string | null | undefined, keySource?: KeySource): string | null {
+  if (!reason) return null;
+  if (reason === "model_error" && keySource === "instance") return INSTANCE_MODEL_ERROR;
+  if (Object.hasOwn(REASONS, reason)) return REASONS[reason];
+  if (reason.startsWith("policy_history_")) return "Clax could not put together what to send the model";
+  return null;
+}
+/** The run's state in a few words (`key_source` says whose key a model error was on). */
+export function runStatus(r: Pick<BotRun, "status" | "reason"> & { key_source?: KeySource }): string {
   switch (r.status) {
     case "queued": return "Starting…";
     case "running": return "Working";
     case "stopping": return "Stopping…";
     case "finished": return "Finished";
     case "gave_up": return "Gave up";
-    case "stopped": return r.reason ? `Stopped: ${REASONS[r.reason] ?? r.reason}` : "Stopped";
+    case "stopped": { const w = stopWords(r.reason, r.key_source); return w ? `Stopped: ${w}` : "Stopped"; }
   }
+}
+
+/** A failed model call in words (`errorDetail`): what went wrong (`lead`),
+ * what the provider said, quoted (`said`; the client's own description
+ * where no provider answered), the status, type and request ID (`meta`),
+ * and what to do next, with the page to do it on for an admin, or for
+ * the person whose own key it was. */
+export type ErrorWords = { lead: string; said: string | null; meta: string; next: { text: string; href?: string } | null };
+const LEADS: Record<string, string> = {
+  invalid_request: "The model provider refused the request as invalid.",
+  auth: "The model provider refused the key.",
+  rate_limited: "The model provider is limiting how often this key may call it.",
+  overloaded: "The model provider is overloaded.",
+  network: "The model provider could not be reached.",
+  stream_cut: "The model provider's answer was cut off.",
+  protocol: "The model provider's answer could not be read.",
+  unknown_event: "The model provider's answer could not be read.",
+  redirected: "The provider's base URL is not one Clax sends a key to.",
+  bad_base_url: "The provider's base URL is not one Clax sends a key to.",
+  api: "The model provider answered with an error.",
+};
+/** The classes whose `message` is this client's description of what it saw, not the provider's words. */
+const OWN_WORDS: ReadonlySet<string> = new Set(["network", "stream_cut", "protocol", "unknown_event"]);
+/** The classes that pass with time; every other one needs the key or the model looked at. */
+const PASSING: ReadonlySet<string> = new Set(["rate_limited", "overloaded", "network", "stream_cut"]);
+/** A failed model call in words, by its class (any class this shell does
+ * not know reads as `api`) and, for `api`, its type or status. The
+ * provider's message is untrusted text, shown as it is and never read to
+ * decide anything. What to do next, for a class that does not pass with
+ * time: on the person's own key (`keySource` `own`, admin or not), check
+ * it under Settings → Your ClaxBot, where they set it; on the instance's,
+ * check it under Settings → Model provider (an admin, with the link) or
+ * ask an admin to. */
+export function errorDetail(d: ErrorDetail, admin: boolean, keySource?: KeySource): ErrorWords {
+  const cls = Object.hasOwn(LEADS, d.class) ? d.class : "api";
+  const lead = cls === "api" && (d.type === "not_found_error" || d.status === 404)
+    ? "The model provider does not know this model, or this key may not use it."
+    : LEADS[cls];
+  const msg = d.message?.trim() ?? "";
+  const said = !msg ? null : OWN_WORDS.has(cls) ? `Details: ${msg}` : `The provider said: “${msg}”`;
+  const meta = [d.status !== null && d.status !== undefined ? `HTTP ${d.status}` : "", d.type ?? "", d.request_id ? `request ${d.request_id}` : ""].filter(Boolean).join(" · ");
+  const next = PASSING.has(cls) ? { text: "Try again in a little while." }
+    : keySource === "own" ? { text: "Check your key under Settings → Your ClaxBot.", href: "/settings/claxbot#me-k" }
+    : admin ? { text: "Check the key and the model under Settings → Model provider.", href: "/settings/provider" }
+    : { text: "An admin can check the key and the model under Settings → Model provider." };
+  return { lead, said, meta, next };
+}
+
+/** Clax's own message for a model call on the instance's key that failed,
+ * as anyone but an admin sees it (`BotStep.instance_problem`): what
+ * happened (`lead`), what it means for them (`body`), and the run to quote
+ * to an admin (`ref`). Never anything the provider said. */
+export type InstanceProblemWords = { lead: string; body: string; ref: string };
+export function instanceProblemWords(p: { busy: boolean }, runId: string): InstanceProblemWords {
+  const ref = `If you ask an admin about it, quote run ${runId}.`;
+  return p.busy
+    ? { lead: "This Clax's model provider is busy.", body: "Try again in a little while.", ref }
+    : { lead: `${INSTANCE_MODEL_ERROR}.`, body: "This is a problem with how this Clax is set up, not with your request. It has been recorded for the people who run this Clax; try again later.", ref };
 }
 
 /** Whether a step's card is open: the live one, and any step that failed,
@@ -253,7 +319,12 @@ export function stepLine(ev: RunEvent, run: BotRun): string {
     case "script": { const n = s.calls?.length ?? 0; return `Script “${s.title ?? "Script"}” ${s.error ? "failed" : "done"}, ${n} call${n === 1 ? "" : "s"}.`; }
     case "finish": return `Done: ${first(s.summary)}`;
     case "give_up": return `Gave up: ${first(s.reason)}`;
-    default: return `Stopped: ${first(s.reason)}`;
+    default: {
+      if (s.instance_problem) return s.instance_problem.busy ? "Stopped: this Clax's model provider is busy." : `Stopped: ${INSTANCE_MODEL_ERROR}.`;
+      const w = stopWords(s.reason, run.key_source);
+      const lead = s.error_detail ? ` ${errorDetail(s.error_detail, false).lead}` : "";
+      return `${w ? `Stopped: ${w}.` : "Stopped."}${lead}`;
+    }
   }
 }
 

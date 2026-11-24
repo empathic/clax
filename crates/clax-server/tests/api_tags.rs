@@ -709,18 +709,37 @@ async fn the_tags_page_is_the_gallery() {
     let a = ts.get("/").await;
     let b = ts.get("/tags").await;
     assert_eq!(a.status(), b.status());
-    assert_eq!(a.text().await.unwrap(), b.text().await.unwrap());
+    // The same entry; each page's first-load data is its own.
+    assert_eq!(
+        clax_testkit::without_boot(&a.text().await.unwrap()),
+        clax_testkit::without_boot(&b.text().await.unwrap())
+    );
 }
 
 #[tokio::test]
 async fn the_claxbot_pages_are_the_gallery() {
     let ts = TestServer::spawn().await;
     let a = ts.get("/").await;
-    let (status, page) = (a.status(), a.text().await.unwrap());
-    for path in ["/admin", "/settings", "/me", "/audit", "/reports"] {
+    // The same entry; each page's first-load data is its own.
+    let (status, page) = (
+        a.status(),
+        clax_testkit::without_boot(&a.text().await.unwrap()),
+    );
+    for path in [
+        "/admin",
+        "/settings",
+        "/settings/people",
+        "/me",
+        "/audit",
+        "/reports",
+    ] {
         let b = ts.get(path).await;
         assert_eq!(status, b.status(), "{path}");
-        assert_eq!(page, b.text().await.unwrap(), "{path}");
+        assert_eq!(
+            page,
+            clax_testkit::without_boot(&b.text().await.unwrap()),
+            "{path}"
+        );
     }
 }
 

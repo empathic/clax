@@ -5,6 +5,9 @@
 // from the Send menu runs on the daemon and its run panel follows the run's
 // events to its end; the admin pages read and change the daemon's people,
 // provider and pricing; the audit view lists the run's events.
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, openArtifact, postThread, publish, startDaemon, test } from "./fixtures";
 import { fakeMessages, finishTurn, scriptTurn } from "./fake-messages";
 
@@ -48,7 +51,7 @@ test("a Send to ClaxBot runs on the daemon and the run panel follows it to its e
     await expect(card).toContainText("ClaxBot");
 
     // The audit view lists the run's events, ClaxBot acting for the owner.
-    await page.goto(`${d.base}/audit?group=bot`);
+    await page.goto(`${d.base}/settings/audit?group=bot`);
     await expect(page.getByRole("button", { name: /ClaxBot for / }).first()).toBeVisible();
   } finally {
     await d.stop();
@@ -60,8 +63,10 @@ test("the admin pages read and change the daemon's people, provider and pricing"
   const fake = await fakeMessages();
   const d = await botDaemon(fake);
   try {
+    // The page that was `/admin` goes to its screen in Settings.
     await page.goto(`${d.base}/admin`);
-    await expect(page.getByRole("heading", { name: "Admin", level: 2 })).toBeFocused();
+    await page.waitForURL(`${d.base}/settings/roles`);
+    await expect(page.getByRole("heading", { name: "Roles & ClaxBot access", level: 2 })).toBeFocused();
     // The owner, on by default; turning the limit off for them is recorded.
     const unenforced = page.getByRole("switch", { name: /^Unenforced limit for / }).first();
     await expect(unenforced).toHaveAttribute("aria-checked", "false");
@@ -72,17 +77,78 @@ test("the admin pages read and change the daemon's people, provider and pricing"
 
     // The provider: its URL from config.toml (read-only), its key from the
     // environment, its models from the provider's list.
-    await page.getByRole("navigation", { name: "Admin sections" }).getByRole("link", { name: "Provider" }).click();
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Model provider" }).click();
     await expect(page.locator("#pv-base")).toHaveValue(fake.base);
     await expect(page.locator("#pv-base")).toHaveAttribute("readonly", "");
     await page.getByRole("button", { name: "Test connection" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Connected" })).toContainText("Connected in");
 
     // Pricing lists the seeded cost lines.
-    await page.getByRole("navigation", { name: "Admin sections" }).getByRole("link", { name: "Pricing" }).click();
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Pricing" }).click();
     await expect(page.getByRole("spinbutton", { name: /^Margin on / }).first()).toBeVisible();
   } finally {
     await d.stop();
     await fake.stop();
+  }
+});
+
+test("an admin turns web on and a run searches, fetches a fixture page and lists its sources", async ({ page }) => {
+  const dir = await mkdtemp(join(tmpdir(), "clax-web-fixtures-"));
+  const fixtures = join(dir, "web.json");
+  const PAGE = "https://docs.example.com/runes";
+  await writeFile(fixtures, JSON.stringify({
+    searches: { "svelte runes": [{ url: PAGE, title: "Runes", description: "State in Svelte 5" }] },
+    pages: { [PAGE]: { status: 200, content_type: "text/markdown", text: "# Runes\n\n$state makes a value reactive.\n", links: [] } },
+  }));
+  const fake = await fakeMessages([
+    scriptTurn("tu_1", "Look up runes", "const s = await clax.web.search('svelte runes');\nconst p = await clax.web.fetch(s.results[0].url);\nreturn p.text.length;", "Searching for it."),
+    finishTurn("Added what runes are."),
+  ]);
+  const d = await startDaemon({
+    config: `[sample]\napi_key_env = "CLAX_E2E_UNSET_KEY"\n[bot]\nbase_url = "${fake.base}"\napi_key_env = "CLAX_E2E_BOT_KEY"\n`,
+    env: { CLAX_E2E_BOT_KEY: "sk-ant-e2e-not-a-real-key-0000", CLAX_TEST_WEB_FIXTURES: fixtures },
+  });
+  try {
+    // The admin turns search and fetch on.
+    await page.goto(`${d.base}/settings/web`);
+    const search = page.getByRole("switch", { name: "Web search" });
+    const fetchSw = page.getByRole("switch", { name: "Web fetch" });
+    await expect(search).toHaveAttribute("aria-checked", "false");
+    await search.click();
+    await fetchSw.click();
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Saved." })).toBeVisible();
+
+    // A thread sent to ClaxBot runs a script that searches and fetches.
+    const { artifact } = await publish(d.base, d.token, "Web run", { "index.html": "<main><h2>Runes</h2></main>" });
+    const t = await postThread(d.base, artifact.id, "Add a line on what runes are.");
+    await openArtifact(page, d.base, artifact.id, 1);
+    if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+    const card = page.locator(`.thread-card[data-thread="${t.id}"]`);
+    await card.getByRole("button", { name: "Choose the agent" }).click();
+    await card.getByRole("group", { name: "Clax" }).getByRole("menuitemradio", { name: /ClaxBot/ }).click();
+    await card.getByRole("button", { name: "Send to ClaxBot" }).click();
+    const panel = page.getByRole("complementary", { name: "ClaxBot" });
+    await expect(panel.locator(".st")).toHaveText("Finished");
+    const script = panel.locator("li.script details");
+    await expect(script.locator("summary")).toContainText("2 calls");
+    await script.locator("summary").click();
+    const calls = script.getByLabel("Calls");
+    const searchRow = calls.locator("li", { hasText: "web.search" });
+    await expect(searchRow).toContainText("svelte runes");
+    await expect(searchRow).toContainText(/\d[\d.]* credits?/);
+    const fetchRow = calls.locator("li", { hasText: "web.fetch" });
+    await expect(fetchRow).toContainText(PAGE);
+    await expect(fetchRow).toContainText(/from search #\d+/);
+    await expect(fetchRow).toContainText(/\d[\d.]* credits?/);
+    // The finish lists the page it read.
+    await expect(panel.locator(".finish")).toContainText("Added what runes are.");
+    const link = panel.getByRole("list", { name: "Sources" }).getByRole("link", { name: "Runes" });
+    await expect(link).toHaveAttribute("href", PAGE);
+    expect(fake.left()).toBe(0);
+  } finally {
+    await d.stop();
+    await fake.stop();
+    await rm(dir, { recursive: true, force: true });
   }
 });

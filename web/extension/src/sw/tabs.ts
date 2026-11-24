@@ -126,8 +126,9 @@ export const CLOSED_MS = 5 * 60_000;
 
 /** What the person is told while the native host is slow to answer. */
 export const HOST_SLOW = "Clax is taking a while to start. It carries on as soon as it has.";
-/** What the person is told while the pairing waits for their confirmation. */
-export const CONFIRM_PAIRING = "Confirm pairing in your Clax browser tab.";
+/** What the person is told while the pairing waits for their confirmation
+ * (the panel adds Confirm in Clax, which opens it). */
+export const CONFIRM_PAIRING = "An agent is running, so Clax asks you to confirm pairing this extension first.";
 /** What the person is told when the overlay could not be put in a page between two documents. */
 export const PAGE_LOADING = "The page was still loading. Try again.";
 const failure = (e: unknown) => {

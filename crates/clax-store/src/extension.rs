@@ -115,6 +115,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use clax_core::extension::{MAX_CREDENTIALS, credential_hash};
 
@@ -208,7 +209,7 @@ mod tests {
     fn a_credential_unused_for_the_ttl_is_not_live_and_a_touch_records_a_use() {
         let (_dir, st) = store();
         let m = st.mint_extension_credential(EXT).unwrap();
-        let old = (chrono::Utc::now() - chrono::Duration::days(31))
+        let old = (st.now_utc() - chrono::Duration::days(31))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let set = |at: &str| {
             st.with_write(|c| {

@@ -4,24 +4,29 @@
   // The threads panel's New comment box: a comment on the whole artifact,
   // not a spot on it. Pressing it opens the usual composer (Composer.svelte)
   // in place, on the version shown, posting through `host` (`postWhole`);
-  // posting closes it, and Cancel or Escape too. It loads apart from the
+  // posting closes it, and Cancel or Escape too. A failed post keeps the
+  // text and says why in the composer's status line. It loads apart from the
   // sidebar, with whole-comment.ts (Sidebar.svelte imports it when given
   // `compose`).
   import Composer from "./Composer.svelte";
   import { WHOLE_LABEL, type WholeHost, postWhole, wholeDraft } from "../view/whole-comment";
+  import { POST_FAILED, failureText } from "../failure";
+  import { connKept } from "../conn-notice";
 
   // `onText` hears the composer's text as it is typed, and "" as it closes.
   let { version, host, onText }: { version: number; host: WholeHost; onText?(text: string): void } = $props();
   let open = $state(false);
   let opener: HTMLButtonElement | undefined = $state();
   const draft = $derived(wholeDraft(version, `whole-${version}`));
+  // While it holds text, the connection notice says what was written is kept.
+  const typed = (text: string) => { connKept("new-comment", !!text.trim()); onText?.(text); };
   // Focus goes back to the box when the composer closes.
   const close = () => { open = false; queueMicrotask(() => opener?.focus()); };
 </script>
 
 <div class="new-comment">
   {#if open}
-    <Composer {draft} {onText} onCancel={close} onSubmit={async body => { await postWhole(host, version, body); close(); }} />
+    <Composer {draft} onText={typed} inline={e => failureText(POST_FAILED, e)} onCancel={close} onSubmit={async body => { await postWhole(host, version, body); close(); }} />
   {:else}
     <button type="button" class="new-comment-open" bind:this={opener} aria-label={`New comment on ${WHOLE_LABEL.toLowerCase()}`}
       onclick={() => { open = true; }}><span class="plus" aria-hidden="true">+</span>New comment<span class="muted small">on the whole artifact</span></button>

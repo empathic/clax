@@ -42,9 +42,11 @@ CORE = {"clax-core", "clax-rt"}
 STORE = CORE | {"clax-store"}
 REALTIME = STORE | {"clax-realtime"}
 SAMPLE = CORE | {"clax-sample"}
-# ClaxBot's run loop and its sandbox contract, which the routes and the
-# daemon wire in.
-BOT = STORE | SAMPLE | {"clax-bot", "clax-bot-sandbox"}
+# ClaxBot's run loop, its sandbox contract and its surface definitions
+# (clax-surface, which the run loop depends on), which the routes and the
+# daemon wire in. A crate that names a type of clax-surface depends on it
+# directly, not through clax-bot.
+BOT = STORE | SAMPLE | {"clax-bot", "clax-bot-sandbox", "clax-surface"}
 HTTP = REALTIME | SAMPLE | BOT | {"clax-http"}
 MCP = CORE | {"clax-mcp"}
 HOOKS = CORE | {"clax-hooks"}
@@ -69,11 +71,15 @@ ALLOWED = {
     "clax-http": REALTIME | SAMPLE | BOT,
     # The native sandbox, optional (`native-sandbox`).
     "clax-server": HTTP | MCP | {"clax-bot-js"},
-    "clax-commands": STORE | MCP | HOOKS,
+    # The commands read surface definitions themselves (`clax bot surface`),
+    # which needs no daemon: clax-surface depends on no workspace crate.
+    "clax-commands": STORE | MCP | HOOKS | {"clax-surface"},
     "clax-cli": SERVER | COMMANDS | {"clax-embedded"},
     # The core inside the Clax app's process, behind four C functions:
     # what `clax serve` runs, without its listener, and no command.
     "clax-embed": SERVER | {"clax-embedded"},
+    # The testkit's host of the ClaxBot surfaces protocol (fake_host)
+    # builds and reads its messages, which clax-surface (in BOT) defines.
     "clax-testkit": SERVER | {"clax-fake-exe"},
     # The hosted Worker: the server's routes in a Durable Object, its
     # database on the SQLite VFS over the object's storage (clax-do-vfs,
@@ -88,11 +94,14 @@ ALLOWED = {
     # the conformance suite, for both targets) and its native QuickJS
     # implementation over it.
     "clax-bot-sandbox": set(),
+    # ClaxBot surface definitions: the model, the .d.ts reader, the checks
+    # and the printers, pure and for both targets.
+    "clax-surface": set(),
     "clax-bot-js": {"clax-bot-sandbox", "clax-rquickjs-core"},
     # ClaxBot's run loop: the script API, prompts, the step state machine
     # and its driver, over the store, the Messages client and the sandbox
     # contract (never a sandbox implementation: the server wires one in).
-    "clax-bot": STORE | SAMPLE | {"clax-bot-sandbox"},
+    "clax-bot": STORE | SAMPLE | {"clax-bot-sandbox", "clax-surface"},
     # Patched copies of third-party crates under names of their own
     # (third_party/, docs/bazel.md, "Patched third-party crates").
     "clax-rquickjs-sys": set(),

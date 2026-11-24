@@ -18,8 +18,10 @@
 //!   (`clax_server::routes::site`), the UI's files under `/_clax/` from the
 //!   static assets as the site routes serve them, with the headers the site
 //!   layer gives every site response (`site_access::site_headers`) and no
-//!   `Access-Control-Allow-Origin`. No path-first route below is reached
-//!   on a site host: `/git/`, `/_diag/`, `/_dev/repos/` and `/do/` are the
+//!   `Access-Control-Allow-Origin`. A page view's report there (`POST
+//!   /_clax/api/analytics`) goes to the instance with `CF-IPCountry` set
+//!   from `request.cf.country`, replacing the client's ([`with_country`]).
+//!   No path-first route below is reached on a site host: `/git/`, `/_diag/`, `/_dev/repos/` and `/do/` are the
 //!   site's own paths, as `/mcp` and `/api/` are;
 //! - with `CLAX_TEST_ROUTES` = `1` (`0` in `wrangler.jsonc`), `/do/{name}/…`
 //!   goes to the spike object named `name` (below), whose routes check no
@@ -27,8 +29,11 @@
 //! - on the app host, `/`, `/inbox`, `/people`, `/tags`, `/admin`,
 //!   `/settings`, `/me` and `/audit` are the shell's
 //!   `index.html`, from the static assets, with the headers the daemon's
-//!   `shell::gallery_page` sends (no framing, revalidated), except on a
-//!   hosted instance (`HOSTED` = `1`), whose gate decides who gets them;
+//!   `shell::gallery_page` sends (no framing, revalidated) and no
+//!   first-load data (its marker an inert comment: the shell fetches it),
+//!   except on a hosted instance (`HOSTED` = `1`), whose gate decides who
+//!   gets them and whose instance serves them as the daemon does, with
+//!   each viewer's first-load data (`clax_server::shell::gallery`);
 //! - `/_clax/<path>` is the web UI's file from the static assets with the
 //!   daemon's caching (`shell::asset_cache`), and for the embeddable
 //!   overlay's files its type and any-origin reads (`shell::embed_file`),
@@ -105,10 +110,12 @@ mod app_data;
 pub mod bot;
 pub mod diag;
 mod instance;
+mod log;
 pub mod repos;
 pub mod sandbox;
 mod store;
 mod web;
+pub mod web_source;
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -143,7 +150,7 @@ use crate::store::DoPageStore;
 /// reading or cancelling that one throws past wasm-bindgen).
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response> {
-    console_error_panic_hook::set_once();
+    crate::log::init();
     let path = req.path();
     let url_host = req.url()?.host_str().map(str::to_owned);
     let host = req.headers().get("host")?.unwrap_or_default();
@@ -189,14 +196,17 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
         }
         Route::Site => {
             // A service worker's script, of any path, is the instance's
-            // answer: Clax's own, which unregisters itself
-            // (`clax_http::host::site_layer`).
+            // answer: Clax's own, which unregisters itself, or on a site
+            // whose `content_security_policy` is `unrestricted` its own file
+            // (`clax_http::host::site_layer`, which reads the setting).
             let worker_script = req
                 .headers()
                 .get("service-worker")?
                 .is_some_and(|v| v.eq_ignore_ascii_case("script"));
-            if worker_script {
-                return to_instance(&env, req).await;
+            match site_first(&path, worker_script) {
+                SiteFirst::PageView => return to_instance(&env, with_country(req)?).await,
+                SiteFirst::Instance => return to_instance(&env, req).await,
+                SiteFirst::Files => {}
             }
             if let Some(mut res) = static_asset(&env, &path, false).await? {
                 let hosted = env.var("HOSTED").is_ok_and(|v| v.to_string() == "1");
@@ -219,6 +229,68 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
         return Response::try_from(res);
     }
     to_instance(&env, req).await
+}
+
+/// A page view's report on a site host (`POST /_clax/api/analytics`,
+/// `clax_server::routes::site_api`).
+const PAGE_VIEW_PATH: &str = "/_clax/api/analytics";
+
+/// Where a site host's request goes before the static files are looked in.
+#[derive(Debug, PartialEq, Eq)]
+enum SiteFirst {
+    /// A page view's report: to the instance with Cloudflare's country
+    /// ([`with_country`]).
+    PageView,
+    /// A service worker's script: to the instance as it came.
+    Instance,
+    /// The static files, then the instance.
+    Files,
+}
+
+/// Where a site host's request for `path` goes first, `worker_script` when
+/// it carries `Service-Worker: script`. A page view's report goes with
+/// Cloudflare's country whatever else it carries: anyone may send a
+/// `Service-Worker` header, and a report sent with one must not take the
+/// client's own `CF-IPCountry` to the instance.
+fn site_first(path: &str, worker_script: bool) -> SiteFirst {
+    if path == PAGE_VIEW_PATH {
+        SiteFirst::PageView
+    } else if worker_script {
+        SiteFirst::Instance
+    } else {
+        SiteFirst::Files
+    }
+}
+
+/// The header a page view's country is forwarded in.
+const COUNTRY_HEADER: &str = "cf-ipcountry";
+
+/// `req`, a page view's report, with `CF-IPCountry` set to the country
+/// Cloudflare places the client in (`request.cf.country`,
+/// [`forwarded_country`]), replacing whatever the client sent, and removed
+/// where Cloudflare names none: the instance's object, whose request has no
+/// `cf` of its own, takes the header as given
+/// (`clax_http::hosted::Hosted::country`). The runtime's request cannot be
+/// changed, so it is made anew over the same body.
+fn with_country(req: Request) -> Result<Request> {
+    let headers = req.headers().clone();
+    match forwarded_country(req.cf().and_then(worker::Cf::country)) {
+        Some(c) => headers.set(COUNTRY_HEADER, &c)?,
+        None => headers.delete(COUNTRY_HEADER)?,
+    }
+    let init = worker::web_sys::RequestInit::new();
+    init.set_headers(headers.as_ref());
+    let made = worker::web_sys::Request::new_with_request_and_init(req.inner(), &init)?;
+    Ok(Request::from(made))
+}
+
+/// The `CF-IPCountry` the Worker forwards for a client Cloudflare places
+/// in `cf` (`request.cf.country`: two letters, `T1` for Tor, `XX` for
+/// unknown): the code as given when it is letters and digits alone, else
+/// `None`, no header.
+fn forwarded_country(cf: Option<String>) -> Option<String> {
+    cf.map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty() && c.len() <= 8 && c.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
 /// `req` for the instance's object, unless its declared body is too large;
@@ -482,7 +554,7 @@ pub(crate) async fn owner_reaches(env: &Env, artifact: &str) -> Result<bool> {
 #[event(queue)]
 async fn queue(batch: worker::MessageBatch<Value>, env: Env, _ctx: worker::Context) -> Result<()> {
     use worker::MessageExt;
-    console_error_panic_hook::set_once();
+    crate::log::init();
     let messages = batch.messages()?;
     let plan = clax_git::events::plan_batch(messages.iter().map(|m| m.body()));
     for i in plan.ack {
@@ -520,14 +592,15 @@ async fn queue(batch: worker::MessageBatch<Value>, env: Env, _ctx: worker::Conte
 
 /// Whether `path` is one of the gallery shell's pages, which the daemon
 /// serves as its shell page (`clax_server::router`): `/`, `/inbox`,
-/// `/people`, `/tags`, `/admin`, `/settings`, `/me`, `/audit`, and the
-/// Queues page with a queue's and a report's views (`/queues`,
-/// `/queues/<qid>`, `/queues/<qid>/<tid>`).
+/// `/people`, `/tags`, `/admin`, `/settings`, `/me`, `/audit`, a Settings
+/// screen (`/settings/<screen>`), and the Queues page with a queue's and a
+/// report's views (`/queues`, `/queues/<qid>`, `/queues/<qid>/<tid>`).
 fn shell_page(path: &str) -> bool {
     let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     matches!(
         segs.as_slice(),
         [""] | ["inbox" | "people" | "tags" | "reports" | "admin" | "settings" | "me" | "audit"]
+            | ["settings", _]
             | ["queues"]
             | ["queues", _]
             | ["queues", _, _]
@@ -845,7 +918,7 @@ impl ClaxDb {
 
 impl DurableObject for ClaxDb {
     fn new(state: State, _env: Env) -> Self {
-        console_error_panic_hook::set_once();
+        crate::log::init();
         ClaxDb {
             state,
             opened: std::cell::RefCell::new(None),
@@ -921,6 +994,7 @@ impl DurableObject for ClaxDb {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{Hosts, Route, SiteHosts};
 
@@ -946,6 +1020,7 @@ mod tests {
             "/inbox",
             "/audit",
             "/reports",
+            "/settings/people",
             "/queues",
             "/queues/01J0000000000000000000000A",
             "/queues/01J0000000000000000000000A/01J0000000000000000000000B",
@@ -1135,6 +1210,47 @@ mod tests {
             ),
             Route::Site
         );
+    }
+
+    /// A page view's report goes to the instance on a site host, with the
+    /// country Cloudflare names, never the client's.
+    #[test]
+    fn a_page_views_country_is_cloudflares_alone() {
+        assert_eq!(
+            super::PAGE_VIEW_PATH,
+            format!("{}analytics", clax_server::routes::site_api::PREFIX)
+        );
+        let sites = SiteHosts::new("clax.run").unwrap();
+        assert_eq!(
+            route(super::PAGE_VIEW_PATH, Some(SITE), SITE, &sites, false),
+            Route::Site
+        );
+        // A report with a service worker's header still takes Cloudflare's
+        // country, never the one it sent.
+        assert_eq!(
+            super::site_first(super::PAGE_VIEW_PATH, true),
+            super::SiteFirst::PageView
+        );
+        assert_eq!(
+            super::site_first(super::PAGE_VIEW_PATH, false),
+            super::SiteFirst::PageView
+        );
+        assert_eq!(
+            super::site_first("/sw.js", true),
+            super::SiteFirst::Instance
+        );
+        assert_eq!(
+            super::site_first("/_clax/bridge.js", false),
+            super::SiteFirst::Files
+        );
+        let fwd = |c: Option<&str>| super::forwarded_country(c.map(String::from));
+        assert_eq!(fwd(Some("DE")).as_deref(), Some("DE"));
+        assert_eq!(fwd(Some("T1")).as_deref(), Some("T1"));
+        assert_eq!(fwd(Some(" XX ")).as_deref(), Some("XX"));
+        // None, or nothing a header could carry: the client's is removed.
+        for c in [None, Some(""), Some("D\nE"), Some("DE, US"), Some("ÄÖ")] {
+            assert_eq!(fwd(c), None, "{c:?}");
+        }
     }
 
     #[test]

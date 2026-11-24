@@ -3,6 +3,7 @@
 //! on a port of its own in this one.
 //!
 //! [`Fleet`]: clax_fleet::fleet::Fleet
+#![warn(clippy::disallowed_methods)]
 
 mod common;
 mod proxy;

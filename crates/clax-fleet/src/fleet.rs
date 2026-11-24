@@ -12,10 +12,12 @@
 //!
 //! A forwarded request carries its hop count ([`HOP_HEADER`]), its
 //! instance's name ([`INSTANCE_HEADER`]) and the fleet's peer key
-//! ([`KEY_HEADER`]); without the key, the first two are a client's and are
-//! ignored. The process a forward reaches serves that instance or answers
-//! 503, whatever its own catalog makes of the `Host`. One forwarded twice
-//! is answered where it lands, so no request circles. An instance being
+//! ([`KEY_HEADER`]). The process a forward reaches serves that instance or
+//! answers 503, whatever its own catalog makes of the `Host`; without the
+//! key, the instance's name is a client's and ignored, and the `Host`
+//! decides. The hop count is believed from anyone: one forwarded twice is
+//! answered where it lands, so no request circles, even between processes
+//! whose keys and catalogs disagree. An instance being
 //! stopped here is refused 503 until the stop ends. A process that is
 //! draining starts nothing.
 //!
@@ -103,6 +105,94 @@ impl Peers {
     }
 }
 
+/// What is wrong with `peers` for a fleet of `shards` whose process
+/// `pod` is shard `ordinal`: an error when a template names one host for
+/// every shard of several, or when what it names for this shard is not a
+/// `host:port` (a scheme, a path, no port: a forward would reach no
+/// process), and a warning when this shard's host, a name not an address,
+/// does not begin with the pod's name (a StatefulSet renamed by a
+/// kustomize namePrefix, the template left as it was).
+fn check_peers(
+    peers: &Peers,
+    shards: u32,
+    ordinal: u32,
+    pod: &str,
+) -> Result<Option<String>, String> {
+    let Peers::Template(t) = peers else {
+        return Ok(None);
+    };
+    if shards > 1 && !t.contains("{shard}") {
+        return Err(format!(
+            "the peer template {t} (CLAX_FLEET_PEER) has no {{shard}}, so every shard's forwards would reach one host"
+        ));
+    }
+    let Some(addr) = peers.addr(ordinal) else {
+        return Ok(None);
+    };
+    let authority = addr
+        .parse::<axum::http::uri::Authority>()
+        .ok()
+        .filter(|a| a.port_u16().is_some() && !a.as_str().contains('@'));
+    let Some(authority) = authority else {
+        return Err(format!(
+            "the peer template {t} (CLAX_FLEET_PEER) names {addr} for shard {ordinal}, which is not host:port: give it as clax-{{shard}}.clax-peers:7480, with the port and without a scheme"
+        ));
+    };
+    let host = authority.host();
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.parse::<IpAddr>().is_ok() || host.eq_ignore_ascii_case("localhost") {
+        return Ok(None);
+    }
+    let first = host.split('.').next().unwrap_or(host);
+    if first.eq_ignore_ascii_case(pod) {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "the peer template (CLAX_FLEET_PEER) reaches this shard at {addr}, which is not this pod, {pod}: forwards to the other shards will fail; give the template the StatefulSet's pod names"
+    )))
+}
+
+/// Instance secret `var`. With a secrets directory `dir`, the file
+/// `<dir>/<var>` less surrounding whitespace, and nothing when there is no
+/// such file (or it is empty): the directory is the Secret as it is now, so
+/// a key removed from it is gone, whatever the environment the process
+/// started with holds. A file that cannot be read is logged and counts as
+/// none. Without a directory, `env`'s.
+fn read_secret(
+    dir: Option<&std::path::Path>,
+    var: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let Some(dir) = dir else {
+        return env(var);
+    };
+    if !var.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    let path = dir.join(var);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Some(s.trim().to_owned()).filter(|s| !s.is_empty()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "an instance's secret file cannot be read; the instance starts without it");
+            None
+        }
+    }
+}
+
+/// Refuses a secrets directory that is not one: every instance secret
+/// would read as absent, with nothing else said.
+fn check_secrets_dir(dir: Option<&std::path::Path>) -> anyhow::Result<()> {
+    if let Some(dir) = dir {
+        anyhow::ensure!(
+            dir.is_dir(),
+            "the secrets directory {} (CLAX_FLEET_SECRETS_DIR) is not a directory: mount the clax-secrets Secret there, or leave it unset to read instances' secrets from the environment",
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
 /// What a fleet runs with.
 pub struct FleetConfig {
     /// This process's name: the pod's.
@@ -126,6 +216,11 @@ pub struct FleetConfig {
     pub kek: Option<[u8; 32]>,
     /// The key forwards between this fleet's processes carry.
     pub peer_key: String,
+    /// Where instances' secrets are read, each from the file named as its
+    /// variable (a mounted Secret, which the kubelet keeps current, so an
+    /// instance started later reads a key added since, and not one removed
+    /// since); the environment only when absent.
+    pub secrets_dir: Option<PathBuf>,
     /// The port the instances are told they serve on.
     pub port: u16,
     /// The clock a failed start's backoff is timed by.
@@ -199,6 +294,7 @@ struct Metrics {
     start_failures: AtomicU64,
     stops: AtomicU64,
     catalog_errors: AtomicU64,
+    peer_key_mismatches: AtomicU64,
 }
 
 /// The catalog's reload state, for `/status`.
@@ -217,6 +313,8 @@ pub struct Fleet {
     slots: Mutex<HashMap<String, Arc<Slot>>>,
     draining: AtomicBool,
     metrics: Metrics,
+    /// A request with another peer key was logged.
+    warned_key_mismatch: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -245,6 +343,17 @@ impl Fleet {
         let catalog = Catalog::load(&cfg.catalog).map_err(|e| {
             anyhow::anyhow!("{e}\n(the catalog in effect on the other processes stays; fix the ConfigMap, or check it first with clax-fleet check-catalog)")
         })?;
+        match check_peers(
+            &cfg.shard.peers,
+            catalog.shards,
+            cfg.shard.ordinal,
+            &cfg.pod,
+        ) {
+            Err(e) => anyhow::bail!(e),
+            Ok(Some(warning)) => tracing::warn!("{warning}"),
+            Ok(None) => {}
+        }
+        check_secrets_dir(cfg.secrets_dir.as_deref())?;
         std::fs::create_dir_all(cfg.data_dir.join("instances"))?;
         let proxy = Proxy::new(&cfg.peer_key);
         let fleet = Arc::new(Fleet {
@@ -258,6 +367,7 @@ impl Fleet {
             slots: Mutex::default(),
             draining: AtomicBool::new(false),
             metrics: Metrics::default(),
+            warned_key_mismatch: AtomicBool::new(false),
         });
         fleet.check_ordinal();
         Ok(fleet)
@@ -307,6 +417,27 @@ impl Fleet {
             .get(KEY_HEADER)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|k| key_matches(&self.cfg.peer_key, k))
+    }
+
+    /// [`Fleet::is_peer`] for a request on the instances' port, counting
+    /// one that carries a peer key other than this process's
+    /// (`clax_fleet_peer_key_mismatches_total`, and a warning the first
+    /// time): processes that hold different keys (a rotation under way, a
+    /// Secret edited for some pods) no longer believe each other's
+    /// forwards.
+    fn check_peer_key(&self, headers: &HeaderMap) -> bool {
+        let peer = self.is_peer(headers);
+        if !peer && headers.contains_key(KEY_HEADER) {
+            self.metrics
+                .peer_key_mismatches
+                .fetch_add(1, Ordering::Relaxed);
+            if !self.warned_key_mismatch.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    "a request carried a peer key other than this process's: the fleet's processes hold different CLAX_FLEET_PEER_KEY values, so their forwards are not believed; give every shard the same key and restart them"
+                );
+            }
+        }
+        peer
     }
 
     fn slot(&self, name: &str) -> Arc<Slot> {
@@ -516,6 +647,13 @@ impl Fleet {
                 home.root().display()
             );
         }
+        if !home.db_path().exists() {
+            tracing::warn!(
+                instance = %inst.name,
+                home = %home.root().display(),
+                "making a new, empty home for the instance (create = true); remove create = true from its catalog entry once it has started"
+            );
+        }
         home.ensure_dirs()?;
         claim_origin_file(&home, &inst.name, &inst.origin)?;
         write_if_changed(
@@ -530,18 +668,22 @@ impl Fleet {
         let hosted_cfg = config
             .hosted()?
             .ok_or_else(|| anyhow::anyhow!("instance {} has no [hosted]", inst.name))?;
-        let hosted = clax_http::hosted::Hosted::from_config(&hosted_cfg).ok_or_else(|| {
-            anyhow::anyhow!(
-                "instance {}'s public_origin {} is not usable",
-                inst.name,
-                hosted_cfg.public_origin
-            )
-        })?;
+        let env = |var: &str| std::env::var(var).ok();
+        let secret = |var: &str| read_secret(self.cfg.secrets_dir.as_deref(), var, &env);
+        let hosted =
+            clax_http::hosted::Hosted::from_config_with(&hosted_cfg, &secret).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "instance {}'s public_origin {} is not usable",
+                    inst.name,
+                    hosted_cfg.public_origin
+                )
+            })?;
         if !hosted.setup_open() {
             tracing::warn!(
                 instance = %inst.name,
                 env = %hosted_cfg.setup_secret_env,
-                "no setup secret in this process's environment, so /setup stays closed; add it to the Secret and restart the pods (kubectl rollout restart)"
+                secrets_dir = ?self.cfg.secrets_dir,
+                "no setup secret (in the secrets directory, or in this process's environment when there is none), so /setup stays closed; add it to the clax-secrets Secret, and pause and unpause the instance once the pod has it (or restart the pods, when the Secret is not mounted)"
             );
         }
         let core_cfg = CoreConfig {
@@ -640,10 +782,17 @@ impl Fleet {
     /// longer has, or that is paused, or whose config or shard changed,
     /// with why it must stop. It compares every tick, whether or not the
     /// catalog changed: an instance started from the catalog a reload
-    /// replaced stops too. A catalog that does not load is logged once per
+    /// replaced stops too. A catalog that does not load, or that moves an
+    /// instance to another shard while `create = true`, is logged once per
     /// distinct error and kept out of effect.
     async fn reload(&self) -> Vec<(String, &'static str)> {
-        match Catalog::load(&self.cfg.catalog) {
+        let loaded = Catalog::load(&self.cfg.catalog).and_then(|next| {
+            match moved_with_create(&self.catalog(), &next) {
+                Some(e) => Err(format!("{}: {e}", self.cfg.catalog.display())),
+                None => Ok(next),
+            }
+        });
+        match loaded {
             Ok(next) => {
                 let changed = *self.catalog() != next;
                 if changed {
@@ -795,6 +944,11 @@ impl Fleet {
             "Catalog reloads that failed.",
             &m.catalog_errors,
         );
+        counter(
+            "peer_key_mismatches_total",
+            "Requests carrying a peer key other than this process's.",
+            &m.peer_key_mismatches,
+        );
         let catalog = self.catalog();
         let failing = lock(&self.catalog_state).error.is_some();
         out.push_str(&format!(
@@ -867,6 +1021,23 @@ impl Fleet {
     }
 }
 
+/// Why `next` may not replace `prev`, when it gives an instance of `prev`
+/// another shard while `create = true`: the new shard, finding no home
+/// there, would make an empty one and answer the tenant's hosts with it.
+/// `create` is for an instance's first start; a moved instance's home is
+/// copied to its new shard first (docs/kubernetes.md, Moving an instance).
+fn moved_with_create(prev: &Catalog, next: &Catalog) -> Option<String> {
+    next.instances.iter().find_map(|i| {
+        let was = prev.get(&i.name)?;
+        (i.create && was.shard != i.shard).then(|| {
+            format!(
+                "instance {}'s shard changes from {} to {} while it has create = true, which would make an empty home on shard {}; remove create = true and move its home (docs/kubernetes.md, Moving an instance)",
+                i.name, was.shard, i.shard, i.shard
+            )
+        })
+    })
+}
+
 /// Places the fleet's key-encryption key in `home` when it has none, and
 /// refuses one that holds another: every secret it sealed depends on it.
 fn place_kek(home: &Home, name: &str, kek: &[u8; 32]) -> anyhow::Result<()> {
@@ -935,11 +1106,15 @@ fn hops(req: &Request) -> u8 {
 
 async fn dispatch(State(fleet): State<Arc<Fleet>>, mut req: Request) -> Response {
     let catalog = fleet.catalog();
-    // A client's hop and instance headers are not believed: only a forward
-    // carrying the peer key is another process's.
-    let peer = fleet.is_peer(req.headers());
-    let hops = if peer { hops(&req) } else { 0 };
-    let inst = if hops > 0 {
+    // The hop count is believed from anyone, as a floor: a client that sets
+    // it only keeps its own request from being forwarded, and a forward
+    // from a process whose peer key differs (a key rotation under way)
+    // still counts its hops, so no two processes pass a request between
+    // them without end. The instance header is believed only from a
+    // forward carrying the peer key: from anyone else, the `Host` decides.
+    let peer = fleet.check_peer_key(req.headers());
+    let hops = hops(&req);
+    let inst = if peer && hops > 0 {
         // A forward names its instance; this process's catalog must have it.
         let name = req
             .headers()
@@ -1003,6 +1178,7 @@ fn write_if_changed(path: &std::path::Path, bytes: &[u8], mode: u32) -> std::io:
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -1023,6 +1199,84 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("made for https://acme.test"), "{err}");
+    }
+
+    /// With a secrets directory, an instance's secret is the file of its
+    /// variable's name there, a mounted Secret the kubelet keeps current,
+    /// less the newline a file ends in, and nothing without one: a key
+    /// removed from the Secret is not read from the environment the pod
+    /// started with. Without a directory, the environment's.
+    #[test]
+    fn a_secrets_directory_is_the_only_source_of_instance_secrets() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("secrets");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("CLAX_SETUP_SECRET_ACME"), "from-file\n").unwrap();
+        std::fs::write(dir.join("EMPTY"), "\n").unwrap();
+        std::fs::create_dir(dir.join("A_DIRECTORY")).unwrap();
+        std::fs::write(root.path().join("OUTSIDE"), "x").unwrap();
+        let env = |var: &str| (var != "UNSET").then(|| format!("env-{var}"));
+        let read = |var: &str| read_secret(Some(&dir), var, &env);
+        assert_eq!(read("CLAX_SETUP_SECRET_ACME").as_deref(), Some("from-file"));
+        // Removed from the Secret (or never in it): none, though the
+        // environment has it.
+        assert_eq!(read("CLAX_SETUP_SECRET_REMOVED"), None);
+        assert_eq!(read("EMPTY"), None);
+        // A file that cannot be read is none too.
+        assert_eq!(read("A_DIRECTORY"), None);
+        assert_eq!(read("UNSET"), None);
+        // No variable name reaches outside the directory.
+        assert_eq!(read("../OUTSIDE"), None);
+        assert_eq!(
+            read_secret(None, "CLAX_SETUP_SECRET_ACME", &env).as_deref(),
+            Some("env-CLAX_SETUP_SECRET_ACME")
+        );
+        assert!(check_secrets_dir(Some(&dir)).is_ok());
+        assert!(check_secrets_dir(None).is_ok());
+        let err = check_secrets_dir(Some(&root.path().join("missing")))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("CLAX_FLEET_SECRETS_DIR"), "{err}");
+    }
+
+    /// A peer template is refused without `{shard}` when there is more than
+    /// one shard, or when it is not `host:port` (no port, a scheme, a
+    /// path), and a template whose host for this shard does not begin with
+    /// this pod's name (a StatefulSet renamed by a namePrefix) is named in
+    /// a warning.
+    #[test]
+    fn a_peer_template_is_checked_against_the_shards_and_the_pod() {
+        let t = |s: &str| Peers::Template(s.into());
+        let ok = t("clax-{shard}.clax-peers:7480");
+        assert_eq!(check_peers(&ok, 3, 1, "clax-1"), Ok(None));
+        let err = check_peers(&t("clax.clax-peers:7480"), 2, 0, "clax-0").unwrap_err();
+        assert!(
+            err.contains("CLAX_FLEET_PEER") && err.contains("{shard}"),
+            "{err}"
+        );
+        assert_eq!(check_peers(&t("localhost:7480"), 1, 0, "fleet"), Ok(None));
+        let warn = check_peers(&ok, 3, 1, "prod-clax-1").unwrap().unwrap();
+        assert!(
+            warn.contains("clax-1.clax-peers:7480") && warn.contains("prod-clax-1"),
+            "{warn}"
+        );
+        assert_eq!(check_peers(&t("127.0.0.1:748{shard}"), 3, 1, "x"), Ok(None));
+        assert_eq!(check_peers(&t("[::1]:748{shard}"), 3, 1, "x"), Ok(None));
+        let list = Peers::List(vec!["a:1".into(), "b:1".into()]);
+        assert_eq!(check_peers(&list, 2, 0, "x"), Ok(None));
+        for bad in [
+            "clax-{shard}.clax-peers",
+            "http://clax-{shard}.clax-peers:7480",
+            "clax-{shard}.clax-peers:7480/",
+            "clax-{shard}.clax-peers:port",
+            "user@clax-{shard}.clax-peers:7480",
+        ] {
+            let err = check_peers(&t(bad), 3, 1, "clax-1").unwrap_err();
+            assert!(
+                err.contains("CLAX_FLEET_PEER") && err.contains("host:port"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     /// A drain waits for a start under way at most [`STOP_TIMEOUT`], so a
@@ -1050,6 +1304,7 @@ mod tests {
             },
             kek: None,
             peer_key: "k".into(),
+            secrets_dir: None,
             port: 7480,
             clock: Arc::new(clax_core::working::ManualClock::at("2026-01-01T00:00:00Z")),
         })
@@ -1058,11 +1313,15 @@ mod tests {
         let slot = fleet.slot("acme");
         let start = slot.running.lock().await;
 
-        let a_day = Duration::from_secs(86_400);
-        let stop = tokio::time::timeout(a_day, fleet.stop("acme", "paused")).await;
-        assert!(stop.is_err(), "a catalog's stop waits for the start");
-        let drained = tokio::time::timeout(a_day, fleet.drain()).await;
-        assert!(drained.is_ok(), "the drain waited for the start for a day");
+        let stop = tokio::spawn({
+            let fleet = fleet.clone();
+            async move { fleet.stop("acme", "paused").await }
+        });
+        // Paused time passes STOP_TIMEOUT for the drain alone: the drain
+        // ends while the catalog's stop still waits for the start.
+        fleet.drain().await;
+        assert!(!stop.is_finished(), "a catalog's stop waits for the start");
+        stop.abort();
         drop(start);
     }
 }

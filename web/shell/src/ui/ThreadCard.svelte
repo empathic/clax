@@ -11,6 +11,9 @@
   import { plainText } from "../view/md-load.svelte";
   import { SEEN_AFTER_MS, authorLabel, pageLabel } from "../view/sidebar-model";
   import { after } from "../clock";
+  import { connKept } from "../conn-notice";
+  import { failureText } from "../trouble";
+  import { POST_FAILED } from "../failure";
   import { guardedAction, keyboardTrail } from "../view/trail";
   import { waitingLabel } from "../waiting";
   import { clock, midName, whose } from "../view/working-model";
@@ -60,10 +63,13 @@
     writers?: Snippet<[string]>;
     /** Hears the reply box's text as it is typed, and "" once it is sent. */
     onReplyText?(t: Thread, text: string): void;
+    /** The reply box's text when the card mounts (a draft its caller kept); empty by default. Told to no one. */
+    draft?: string;
     /** `onResolve` resolves an open thread and reopens a resolved one. */
-    onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
+    /** `onReply` may answer a promise: the box empties once it settles well, and keeps the text, saying why, when it rejects. */
+    onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void | Promise<unknown>; onHover?(t: Thread | null): void;
   };
-  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, readOnly: ro = false, noReply = false, noSend = false, writers, onReplyText, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, readOnly: ro = false, noReply = false, noSend = false, writers, onReplyText, draft = "", onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   // A thread whose link ended is history here: read-only.
   const readOnly = $derived(ro || !!t.linked?.unlinked);
   const tag = $derived(linkTag(t));
@@ -89,7 +95,9 @@
   };
   // A thread about the whole artifact (anchor kind `artifact`) has no spot to name.
   const anchorLabel = (a: Thread["anchor"]) => (a.kind === "artifact" ? "The whole artifact" : pickLabel(a));
-  let reply = $state("");
+  // Read once: the box is the viewer's from then on.
+  // svelte-ignore state_referenced_locally
+  let reply = $state(draft);
   // Send, Resolve and Reply are consequential: on a tainted keyboard trail
   // they take only a pointer's click (`guardedAction`), and `hint` says so
   // until the trail clears.
@@ -97,10 +105,30 @@
   $effect(() => keyboardTrail.onClear(() => { hint = null; }));
   let card: HTMLElement | undefined = $state();
   let head: HTMLButtonElement | undefined = $state();
-  const send = () => { if (reply.trim()) { onReply(t, reply); reply = ""; onReplyText?.(t, ""); } };
+  // A reply leaves the box once it is posted: when `onReply` answers a
+  // promise, only once that settles well. A failed post keeps the text, and
+  // why it failed shows beside the box until the next try.
+  let replyErr: string | null = $state(null);
+  let replying = false;
+  const send = () => {
+    const body = reply;
+    if (!body.trim() || replying) return;
+    replyErr = null;
+    const posted = () => { if (reply === body) { reply = ""; onReplyText?.(t, ""); } };
+    const r = onReply(t, body);
+    if (!(r instanceof Promise)) { posted(); return; }
+    replying = true;
+    r.then(posted, e => { replyErr = failureText(POST_FAILED, e); }).finally(() => { replying = false; });
+  };
   // A reply left unsent goes with the card (the thread resolved, filtered
   // out, or on another page): others stop seeing it as a draft.
   $effect(() => () => { if (reply.trim()) onReplyText?.(t, ""); });
+  // While the box holds text, the connection notice says what was written is kept.
+  const uid = $props.id();
+  $effect(() => {
+    connKept(uid, !!reply.trim());
+    return () => connKept(uid, false);
+  });
   // Enter or the submit shortcut in Reply, and any activation of the Reply button.
   const replyKey = (e: KeyboardEvent) => {
     if (!isSubmitKey(e) && !(e.key === "Enter" && !e.isComposing && !e.shiftKey)) return;
@@ -210,8 +238,8 @@
     </form>
     {/if}
     {#if fold}{@render actions()}{/if}
-    <!-- Said when a key asked for an action on a trail the page may have steered (`keyboardTrail`). -->
-    <p class="act-hint" role="status">{hint ?? ""}</p>
+    <!-- Said when a key asked for an action on a trail the page may have steered (`keyboardTrail`), else why a reply did not post. -->
+    <p class="act-hint" class:act-failed={!hint && !!replyErr} role="status">{hint ?? replyErr ?? ""}</p>
     </div>
   {/if}
   {#if !open && tools}

@@ -20,13 +20,16 @@
 //    creating and deleting a probe repository, which also proves the
 //    account has Artifacts);
 // 4. generates `SETUP_SECRET` and `CLAX_TOKEN` when the Worker has neither,
-//    and `CLAX_KEK` (ClaxBot's key-encryption key) when it has none, taking
-//    the record's when it has one: never rotated, not even by
-//    --rotate-secrets, since a new one opens no key the old one sealed;
-//    uploads them with the deploy (`wrangler deploy --secrets-file`, so the
-//    first version already has them), prints them once and keeps them in
+//    prints them once and keeps them in
 //    `~/.config/clax/deploy/<public host>.json` (0600; $CLAX_DEPLOY_HOME or $XDG_CONFIG_HOME/clax/deploy when set) for
-//    `smoke-remote.mjs`;
+//    `smoke-remote.mjs`; keeps the Worker's `CLAX_KEK` (ClaxBot's
+//    key-encryption key), never rotated, not even by --rotate-secrets, since
+//    a new one opens no key the old one sealed, and gives a Worker without
+//    one the key in the environment's CLAX_KEK, from its backup (a
+//    preview's alone may get a new one; deploy-lib.mjs kekPlan, docs/prod.md
+//    "CLAX_KEK"); uploads them with the deploy (`wrangler deploy
+//    --secrets-file`, so the first version already has them). A failed
+//    listing of the Worker's secrets fails the deploy;
 // 5. writes `target/deploy/wrangler.deploy.jsonc` (or `--out <path>`):
 //    `wrangler.jsonc` with `HOSTED=1`, the public origin, `SITE_DOMAIN`, the
 //    store, the public host as a custom domain and the route
@@ -58,11 +61,33 @@
 // `--config-only` stops after step 5 and runs neither wrangler nor a build:
 // it needs no login and changes nothing but the config file.
 //
+// --env <name>: the environment (docs/environments.md, deploy-lib.mjs
+// envOf), which names the Worker and the resources of step 3: prod (the
+// default: the Worker clax, the bucket clax-assets, the queue
+// clax-artifacts-events, the namespace clax), dev (clax-dev, clax-assets-dev,
+// clax-artifacts-events-dev, clax-dev), or a preview's name such as pr-12
+// (the Worker clax-pr-12, the queue clax-artifacts-events-pr-12, the
+// namespace clax-pr-12, and the shared bucket clax-assets-preview, whose
+// objects expire after 30 days; teardown.mjs deletes the rest). A preview
+// deployed with --ci is given no SETUP_SECRET or CLAX_TOKEN: its owner signs
+// in with GitHub, so --ci needs --github-client-id for it.
+//
+// --site-zone <zone>: the zone the site domain is on, when the site domain
+// is under it (a preview's pr-12.<zone>; default: the site domain itself).
+// The wildcard route is on that zone, and with CLOUDFLARE_API_TOKEN set the
+// deploy makes the proxied DNS record *.<site domain> in it
+// (cloudflare-api.mjs); its certificate takes Total TLS on the zone.
+//
 // Options: --public <host>, --site-domain <domain>, --zone <zone>, --store
-// artifacts|memory (default artifacts), --name <worker> (default clax),
+// artifacts|memory (default artifacts), --name <worker> (default: the
+// environment's),
 // --account <ID> (else CLOUDFLARE_ACCOUNT_ID, else the login's one account),
 // --rotate-secrets, --diag (--no-diag, the default, keeps them off),
-// --no-build, --wait <s> (default 600), --out <path>, --config-only,
+// --no-build, --unless-live (upload nothing when the public host's /healthz
+// already reports this commit and the deploy has no secret to upload: the
+// record is written for the build that runs, and the health and site checks
+// are made of it, so a run again of a deploy that failed after its upload
+// restarts no instance), --wait <s> (default 600), --out <path>, --config-only,
 // --dry-run, --yes (no questions; fails on what it would ask),
 // --retired-content-origin <https origin> (the content host an instance
 // served assets on before site hosts; else the record's), --reel-url
@@ -78,8 +103,15 @@
 // or CLOUDFLARE_ACCOUNT_ID; --owner-github with --github-client-id); it
 // refuses --rotate-secrets, --diag and a Worker without SETUP_SECRET,
 // CLAX_TOKEN or CLAX_KEK (first-time setup runs from a laptop), keeps the
-// Worker's secrets, notes that it keeps no CLAX_KEK backup, and fails when
-// the health wait or the site host check does.
+// Worker's secrets, and fails when the health wait, the instance's
+// CLAX_KEK (/healthz's `kek`) or the site host check does.
+//
+// --staging: a release pull request's instance (--env pr-<N>, with --ci;
+// docs/prod.md, "Staging"), configured as production is but never the
+// production instance: an ephemeral one, as a preview, whose every deploy
+// uploads a new CLAX_TOKEN, kept in the record and never shown, so that
+// smoke-remote.mjs --mint-agent-token can sign in as the owner and run as
+// an agent token, as the production smoke does.
 //
 // --production: this is the production instance. A deploy refuses unless
 // the checkout is clean and its HEAD is origin's prod tip (`git ls-remote
@@ -113,7 +145,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
-import { buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate, reelVars, versionIdOf } from "./deploy-lib.mjs";
+import { cloudflare, expiryRule, hasRule } from "./cloudflare-api.mjs";
+import { PREVIEW_ASSET_DAYS, buildId, builtCommitOf, builtFromRefusal, checkCiOptions, checkStaging, ciSecretsRefusal, doneText, envOf, healthOf, kekPlan, liveBuildOf, partialTriggerUpdate, prodTipOf, productionGate, reelVars, secretsToMake, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
 import { BUILD, BUILT_FROM, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -138,15 +171,12 @@ function moveOldRecords() {
     // left: files already in RECORDS under the same name
   }
 }
-const BUCKET = "clax-assets";
-const QUEUE = "clax-artifacts-events";
-const NAMESPACE = "clax";
 // Workers Paid: 10 MB after compression; Free: 3 MB.
 const PAID_LIMIT_KIB = 10 * 1024;
 
 export function parseArgs(argv) {
-  const o = { store: "artifacts", storeGiven: false, name: "clax", wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false, ci: false, production: false, fromLaptop: false };
-  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version", "--retired-content-origin", "--reel-url", "--reel-poster-url"]);
+  const o = { store: "artifacts", storeGiven: false, wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false, ci: false, production: false, staging: false, fromLaptop: false };
+  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version", "--retired-content-origin", "--reel-url", "--reel-poster-url", "--env", "--site-zone"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const [flag, inline] = a.includes("=") ? a.split(/=(.*)/s) : [a, undefined];
@@ -162,17 +192,26 @@ export function parseArgs(argv) {
     } else if (flag === "--dry-run") o.dryRun = true;
     else if (flag === "--ci") o.ci = o.yes = true;
     else if (flag === "--production") o.production = true;
+    else if (flag === "--staging") o.staging = true;
     else if (flag === "--from-laptop") o.fromLaptop = true;
     else if (flag === "--yes" || flag === "-y") o.yes = true;
     else if (flag === "--diag") o.diag = true;
     else if (flag === "--no-diag") o.diag = false;
     else if (flag === "--no-build") o.build = false;
+    else if (flag === "--unless-live") o.unlessLive = true;
     else if (flag === "--config-only") o.configOnly = true;
     else if (flag === "--rotate-secrets") o.rotate = true;
     else if (flag === "--help" || flag === "-h") o.help = true;
     else throw new Error(`unknown option ${a} (see the top of deploy.mjs)`);
   }
   if (!["artifacts", "memory"].includes(o.store)) throw new Error(`--store is artifacts or memory, not ${o.store}`);
+  // The environment's Cloudflare resources (deploy-lib.mjs envOf); --name
+  // still names another Worker.
+  o.res = envOf(o.env);
+  o.ephemeral = o.res.ephemeral;
+  o.name ??= o.res.worker;
+  if (o.production && o.res.env !== "prod") throw new Error(`--production is the prod environment's: it takes no --env ${o.res.env}`);
+  checkStaging({ staging: o.staging, production: o.production, env: o.env, ci: o.ci });
   if (o["retired-content-origin"] !== undefined && !retiredContentOrigin({ retired_content_origin: o["retired-content-origin"] })) {
     throw new Error(`--retired-content-origin takes an https:// origin (e.g. https://content.example.com), not ${o["retired-content-origin"]}`);
   }
@@ -270,10 +309,6 @@ function run(cmd, args, env = {}) {
 }
 
 const firstLine = (s) => s.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("⛅️") && !/^─+$/.test(l)) ?? "";
-const lastError = (r) => {
-  const lines = `${r.err}\n${r.out}`.split("\n").map((l) => l.trim()).filter(Boolean);
-  return lines.find((l) => /^✘|ERROR|error/i.test(l)) ?? lines.at(-1) ?? `exit ${r.code}`;
-};
 
 /** The JSON value wrangler printed after any banner. */
 function jsonIn(text) {
@@ -348,7 +383,10 @@ async function hostnames(o) {
       (await ask(o, "Site domain (a zone of its own on this account; each artifact is served at <ID>.<site domain>), e.g. example.run")),
     pub,
   );
-  return { pub, site };
+  // The zone the site route is on: the site domain itself, unless it is
+  // under one (a preview's pr-<N>.<zone>).
+  const siteZone = siteZoneOf(site, o["site-zone"] ?? readRecord(pub).site_zone);
+  return { pub, site, zone: siteZone };
 }
 
 /** The login and the account to use; `null` when not logged in. */
@@ -379,14 +417,14 @@ async function ensure(what, args, exists, account) {
   const text = `${r.out}\n${r.err}`;
   if (r.code === 0) return info(`${what}: created`);
   if (exists.test(text)) return info(`${what}: exists`);
-  throw new Error(`${what}: ${lastError(r)}\n   (wrangler ${args.join(" ")})`);
+  throw new Error(`${what}: ${wranglerError(r)}\n   (wrangler ${args.join(" ")})`);
 }
 
-async function artifactsNamespace(account, dryRun) {
+async function artifactsNamespace(account, dryRun, NAMESPACE) {
   const list = await wrangler(["artifacts", "namespaces", "list", "--json"], { account });
   if (list.code !== 0) {
     throw new Error(
-      `Artifacts is not reachable on this account: ${lastError(list)}\n` +
+      `Artifacts is not reachable on this account: ${wranglerError(list)}\n` +
         "   Is the Artifacts beta enabled for it (dashboard > Storage & databases > Artifacts)? " +
         "Deploy with --store memory to run without it.",
     );
@@ -404,75 +442,34 @@ async function artifactsNamespace(account, dryRun) {
   // A namespace is made by its first repository.
   const probe = `clax-deploy-probe-${Date.now()}`;
   const made = await wrangler(["artifacts", "repos", "create", probe, "--namespace", NAMESPACE, "--default-branch", "main", "--json"], { account });
-  if (made.code !== 0) throw new Error(`creating the namespace's probe repository failed: ${lastError(made)}`);
+  if (made.code !== 0) throw new Error(`creating the namespace's probe repository failed: ${wranglerError(made)}`);
   const gone = await wrangler(["artifacts", "repos", "delete", probe, "--namespace", NAMESPACE, "--force"], { account });
-  info(`Artifacts namespace ${NAMESPACE}: created${gone.code === 0 ? "" : ` (deleting the probe repository ${probe} failed: ${lastError(gone)})`}`);
+  info(`Artifacts namespace ${NAMESPACE}: created${gone.code === 0 ? "" : ` (deleting the probe repository ${probe} failed: ${wranglerError(gone)})`}`);
 }
 
-const KEK_HEX = /^[0-9a-f]{64}$/i;
-
-/** What the deploy does about `CLAX_KEK`, given `have`, the secret names
- * the Worker has (`null` without a login), `saved`, the backup this
- * machine keeps, if any, and `savedIn`, where it was found: "file" (its own,
- * `kekPath`) or "record" (a `kek` an earlier deploy kept in the record):
- * `upload`, the key to upload (the backup when there is one, else 64 new
- * hex digits) or none; `save`, a key to write to the backup file first (a
- * new one, or one found only in the record, so the record, which may be
- * deleted, is never its only copy); `warn`, when the Worker has a key this
- * machine keeps no backup of; and `say`, the line it prints (never the
- * key). */
-export function kekPlan({ have, saved, savedIn, dryRun }) {
-  const kept = typeof saved === "string" && KEK_HEX.test(saved);
-  const save = kept && savedIn === "record" && !dryRun ? saved : null;
-  const moved = save ? "; its backup moved from the record to its own file" : "";
-  if (have === null) return { upload: null, save, warn: null, say: `skipped (no login): a deploy uploads CLAX_KEK when the Worker has none${moved}` };
-  if (have.includes("CLAX_KEK")) {
-    const warn = kept
-      ? null
-      : "the Worker has CLAX_KEK but this machine keeps no backup of it: losing the Worker's secret loses every stored model key; " +
-        "if you have the key, write it to the backup file named below (0600)";
-    return { upload: null, save, warn, say: `the Worker has CLAX_KEK; kept (never rotated)${moved}` };
-  }
-  if (dryRun) return { upload: null, save: null, warn: null, say: `would upload CLAX_KEK ${kept ? "from its backup" : "(new)"} with the deploy` };
-  if (kept) return { upload: saved, save, warn: null, say: `CLAX_KEK from its backup; uploaded with the deploy${moved}` };
-  const fresh = randomBytes(32).toString("hex");
-  return { upload: fresh, save: fresh, warn: null, say: "generated CLAX_KEK; backed up, then uploaded with the deploy" };
+/** Where deploys before its operator kept CLAX_KEK's backup kept it: a
+ * file beside the record, or the record's `kek`. Only looked for, so the
+ * deploy can say to move it (docs/prod.md, "CLAX_KEK"); never read. */
+function oldKekBackup(pub, record) {
+  const file = join(RECORDS, `${pub}.kek`);
+  if (existsSync(file)) return file;
+  return typeof record.kek === "string" ? `${recordPath(pub)} (its "kek")` : null;
 }
 
-/** Where the deploy keeps CLAX_KEK's backup: a file of its own beside the
- * record (0600), which, unlike the record, is never to be deleted. */
-export function kekPath(pub) {
-  return join(RECORDS, `${pub}.kek`);
-}
-
-/** The backup of CLAX_KEK kept for `pub`, `{saved, savedIn}`: its own file
- * ("file"), else a `kek` an earlier deploy kept in the record ("record"),
- * else none. */
-function readKek(pub, record) {
-  try {
-    const k = readFileSync(kekPath(pub), "utf8").trim();
-    if (KEK_HEX.test(k)) return { saved: k, savedIn: "file" };
-  } catch {
-    // none yet
-  }
-  if (typeof record.kek === "string" && KEK_HEX.test(record.kek)) return { saved: record.kek, savedIn: "record" };
-  return { saved: null, savedIn: null };
-}
-
-function writeKek(pub, kek) {
-  mkdirSync(RECORDS, { recursive: true, mode: 0o700 });
-  writeFileSync(kekPath(pub), kek + "\n", { mode: 0o600 });
-  chmodSync(kekPath(pub), 0o600);
-}
-
-/** The secret names the Worker has; empty when it does not exist yet. */
-async function secretNames(account, configPath) {
+/** The secret names the Worker has; empty when it does not exist yet.
+ * Throws when they cannot be listed: a failed listing taken for none
+ * would have the deploy make secrets over the Worker's own. */
+async function secretNames(account, configPath, worker) {
   const r = await wrangler(["secret", "list", "--config", configPath, "--format", "json"], { account });
-  if (r.code !== 0) return [];
+  if (r.code !== 0) {
+    // wrangler 4.149.0: `Worker "<name>" not found.`
+    if (/Worker "[^"]*" not found/.test(`${r.err}\n${r.out}`)) return [];
+    throw new Error(`listing ${worker}'s secrets failed: ${wranglerError(r)}`);
+  }
   try {
     return jsonIn(r.out).map((s) => s.name);
   } catch {
-    return [];
+    throw new Error(`listing ${worker}'s secrets answered no JSON list: ${r.out.slice(0, 200)}`);
   }
 }
 
@@ -489,7 +486,7 @@ export function retiredContentOrigin(record) {
   }
 }
 
-function deployConfig(o, pub, site, account, github, legal, out, retired, build, commit) {
+function deployConfig(o, pub, site, zone, account, github, legal, out, retired, build, commit) {
   const c = baseConfig();
   delete c.$schema;
   // The config lives in target/deploy/, so its paths name the crate's files.
@@ -506,7 +503,7 @@ function deployConfig(o, pub, site, account, github, legal, out, retired, build,
   // `*.<site>` (README.md, "DNS for the public host and the site domain").
   c.routes = [
     { pattern: pub, custom_domain: true },
-    { pattern: `*.${site}/*`, zone_name: site },
+    { pattern: `*.${site}/*`, zone_name: zone },
   ];
   // The retired content host stays a custom domain of the Worker, which
   // answers its old asset addresses with a redirect to their sites.
@@ -525,6 +522,7 @@ function deployConfig(o, pub, site, account, github, legal, out, retired, build,
     GIT_SMART_HTTP: o.store === "memory" ? "1" : "0",
     CLAX_TEST_ROUTES: "0",
     CLAX_TEST_LOOPBACK_PROVIDER: "0",
+    CLAX_TEST_WEB: "0",
     REPO_DEV_ROUTES: "0",
     CLAX_DIAG_ROUTES: o.diag ? "1" : "0",
     CLAX_BUILD: build,
@@ -537,10 +535,15 @@ function deployConfig(o, pub, site, account, github, legal, out, retired, build,
     ...(legal.terms_url ? { TERMS_URL: legal.terms_url, PRIVACY_URL: legal.privacy_url, LEGAL_VERSION: legal.legal_version } : {}),
     ...reelVars(o),
   };
+  // The environment's own bucket, namespace and queue (deploy-lib.mjs envOf).
+  for (const b of c.r2_buckets ?? []) if (b.binding === "ASSETS") b.bucket_name = o.res.bucket;
   if (o.store === "memory") {
     // No Artifacts: neither its binding nor its events' queue.
     delete c.artifacts;
     delete c.queues;
+  } else {
+    for (const a of c.artifacts ?? []) a.namespace = o.res.namespace;
+    for (const q of c.queues?.consumers ?? []) q.queue = o.res.queue;
   }
   const header =
     "// Generated by deploy.mjs from wrangler.jsonc; edit that, or deploy.mjs's\n" +
@@ -692,7 +695,7 @@ export function siteHealthy(res, body) {
 
 /** Checks a random site host's health; failing, prints each manual step
  * with what it found. Answers whether the site host is healthy. */
-async function checkSiteHost(site, account, seconds) {
+async function checkSiteHost(site, zone, account, seconds) {
   const host = `${randomSiteId()}.${site}`;
   const url = `https://${host}/_clax/healthz`;
   step(`Checking a site host: ${url}`);
@@ -702,25 +705,65 @@ async function checkSiteHost(site, account, seconds) {
   // Worker without site hosts, Cloudflare's error pages, a redirect, a
   // parking page) is not the Worker serving sites.
   if (await waitHealthy(url, seconds, siteHealthy)) return true;
-  const [zone, wildcard, cert] = await Promise.all([zoneFound(site), wildcardFound(host), certificateFound(host)]);
+  const [zoneNs, wildcard, cert] = await Promise.all([zoneFound(zone), wildcardFound(host), certificateFound(host)]);
   const mark = (r) => (r.ok ? "done" : "TO DO");
+  // The record's name within the zone: `*`, or `*.pr-12` below it.
+  const name = site === zone ? "*" : `*.${site.slice(0, -zone.length - 1)}`;
   info(`the site domain's hosts are not served yet. What a wildcard needs, that deploy.mjs cannot do through wrangler:`);
-  info(`1. [${mark(zone)}] the zone ${site} on account ${account ?? "(this one)"} (dashboard > Add a domain), its registrar pointing at Cloudflare's name servers`);
-  info(`   found: ${zone.found}`);
-  info(`2. [${mark(wildcard)}] a proxied DNS record for * in ${site} (dashboard > ${site} > DNS > Records: type AAAA, name *, content 100::, Proxied)`);
+  info(`1. [${mark(zoneNs)}] the zone ${zone} on account ${account ?? "(this one)"} (dashboard > Add a domain), its registrar pointing at Cloudflare's name servers`);
+  info(`   found: ${zoneNs.found}`);
+  info(`2. [${mark(wildcard)}] a proxied DNS record for ${name} in ${zone} (dashboard > ${zone} > DNS > Records: type AAAA, name ${name}, content 100::, Proxied${site === zone ? "" : "; deploy.mjs makes it when given CLOUDFLARE_API_TOKEN"})`);
   info(`   found: ${wildcard.found}`);
-  info(`3. [${mark(cert)}] a certificate whose hosts include *.${site} (if Universal SSL's does not: Advanced Certificate Manager or Total TLS)`);
+  info(`3. [${mark(cert)}] a certificate whose hosts include *.${site} (${site === zone ? "if Universal SSL's does not: Advanced Certificate Manager or Total TLS" : `Universal SSL covers one level only: Total TLS, with Advanced Certificate Manager, on ${zone}`})`);
   info(`   found: ${cert.found}`);
   info(`then run deploy.mjs again (it checks ${url.replace(host, `<ID>.${site}`)} again)`);
   return false;
 }
 
+/** What wrangler cannot make, through the Cloudflare API with
+ * CLOUDFLARE_API_TOKEN (cloudflare-api.mjs): the proxied wildcard record of
+ * a site domain below its zone (`*.pr-12.<zone>`), and the rule that
+ * expires the preview bucket's objects after PREVIEW_ASSET_DAYS days.
+ * Without a token, or in a dry run, it says what it would make; a
+ * missing record shows again in the site host check's steps. */
+async function previewResources(o, { who, account, site, zone, BUCKET }) {
+  const record = wildcardRecordOf(site, zone);
+  const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!record && !o.ephemeral) return;
+  const api = token && who && !o.dryRun ? cloudflare(token) : null;
+  if (record) {
+    if (!api) info(`${o.dryRun ? "would make" : "skipped (no CLOUDFLARE_API_TOKEN)"}, if missing: the proxied DNS record ${record} (AAAA 100::) in the zone ${zone}`);
+    else {
+      const zoneId = await api.zoneId(zone);
+      const have = await api.dnsRecords(zoneId, record);
+      if (have.length) info(`DNS record ${record}: exists`);
+      else {
+        await api.createProxiedRecord(zoneId, record, `clax: the site hosts of the Worker ${o.name}`);
+        info(`DNS record ${record}: created (proxied AAAA 100::)`);
+      }
+    }
+  }
+  if (o.ephemeral) {
+    const rule = expiryRule(PREVIEW_ASSET_DAYS);
+    if (!api) info(`${o.dryRun ? "would set" : "skipped (no CLOUDFLARE_API_TOKEN)"}: the R2 bucket ${BUCKET}'s rule deleting objects after ${PREVIEW_ASSET_DAYS} days`);
+    else {
+      const rules = (await api.lifecycle(account, BUCKET))?.rules ?? [];
+      if (hasRule(rules, rule)) info(`R2 bucket ${BUCKET}: objects expire after ${PREVIEW_ASSET_DAYS} days`);
+      else {
+        await api.putLifecycle(account, BUCKET, [...rules.filter((r) => r.id !== rule.id), rule]);
+        info(`R2 bucket ${BUCKET}: set its objects to expire after ${PREVIEW_ASSET_DAYS} days`);
+      }
+    }
+  }
+}
+
 /** Takes the hostnames and writes the deploy config (steps 2 and 5). */
 async function writeDeployConfig(o, account) {
   step("Hostnames");
-  const { pub, site } = await hostnames(o);
+  const { pub, site, zone } = await hostnames(o);
+  info(`env    ${o.res.env} (worker ${o.name}, bucket ${o.res.bucket}${o.store === "artifacts" ? `, queue ${o.res.queue}, Artifacts namespace ${o.res.namespace}` : ""})`);
   info(`public https://${pub}`);
-  info(`sites  https://<artifact ID>.${site}`);
+  info(`sites  https://<artifact ID>.${site}${zone === site ? "" : ` (on the zone ${zone})`}`);
 
   step("Deploy config");
   const early = readRecord(pub);
@@ -737,9 +780,9 @@ async function writeDeployConfig(o, account) {
   const configPath = o.out ? resolve(o.out) : DEPLOY_CONFIG;
   const commit = await sourceCommit();
   const build = buildId(commit, new Date(), randomBytes(4).toString("hex"));
-  const config = deployConfig(o, pub, site, account, github, legal, configPath, retired, build, commit);
+  const config = deployConfig(o, pub, site, zone, account, github, legal, configPath, retired, build, commit);
   info(`wrote ${configPath} (worker ${config.name}, REPO_STORE=${o.store}, SITE_DOMAIN=${site}, diagnostics ${o.diag ? "on" : "off"}, build ${build})`);
-  return { pub, site, github, legal, config, configPath, retired, commit, build };
+  return { pub, site, zone, github, legal, config, configPath, retired, commit, build };
 }
 
 async function main() {
@@ -772,10 +815,11 @@ async function main() {
   }
   const account = who?.account.id;
 
-  const { pub, site, github, legal, config, configPath, retired, commit, build } = await writeDeployConfig(o, account);
+  const { pub, site, zone, github, legal, config, configPath, retired, commit, build } = await writeDeployConfig(o, account);
   if (o.diag) diagReminder(pub);
 
   step("Resources");
+  const { bucket: BUCKET, queue: QUEUE, namespace: NAMESPACE } = o.res;
   if (!who) {
     info(`skipped (no login): wrangler r2 bucket create ${BUCKET}`);
     if (o.store === "artifacts") {
@@ -784,12 +828,12 @@ async function main() {
     }
   } else if (o.dryRun) {
     info(`would make, if missing: R2 bucket ${BUCKET}${o.store === "artifacts" ? `, queue ${QUEUE}` : ""}`);
-    if (o.store === "artifacts") await artifactsNamespace(account, true);
+    if (o.store === "artifacts") await artifactsNamespace(account, true, NAMESPACE);
   } else {
     await ensure(`R2 bucket ${BUCKET}`, ["r2", "bucket", "create", BUCKET], /already exists|10004/i, account);
     if (o.store === "artifacts") {
       await ensure(`Queue ${QUEUE}`, ["queues", "create", QUEUE], /already (exists|taken)|11009/i, account);
-      await artifactsNamespace(account, false);
+      await artifactsNamespace(account, false, NAMESPACE);
       info(
         "Artifacts sends `pushed` events only to a subscription per repository (source artifacts.repo); " +
           "none is made here, so a git push becomes a version at the artifact's next publish " +
@@ -797,20 +841,27 @@ async function main() {
       );
     }
   }
+  await previewResources(o, { who, account, site, zone, BUCKET });
 
   step("Secrets");
   const record = readRecord(pub);
-  const have = who ? await secretNames(account, configPath) : [];
+  const have = who ? await secretNames(account, configPath, o.name) : [];
   let secrets = null;
-  const needed = ["SETUP_SECRET", "CLAX_TOKEN"].filter((n) => o.rotate || !have.includes(n));
+  // A preview deployed by CI gets neither: setup stays closed, the instance
+  // makes its own owner token, and the owner signs in with GitHub. Staging
+  // gets a new owner token on every deploy, for its smoke alone
+  // (deploy-lib.mjs secretsToMake).
+  const needed = secretsToMake({ have, ci: o.ci, ephemeral: o.ephemeral, staging: o.staging, rotate: o.rotate });
   if (o.ci && who) {
     // First-time setup stays on a laptop: a --ci deploy changes no secret
-    // but the GitHub client secret it is given.
-    const refusal = ciSecretsRefusal(have, { githubClientId: github.client_id, githubSecretGiven: Boolean(process.env.GITHUB_CLIENT_SECRET?.trim()) });
+    // but the GitHub client secret it is given (and a preview's CLAX_KEK).
+    const refusal = ciSecretsRefusal(have, { githubClientId: github.client_id, githubSecretGiven: Boolean(process.env.GITHUB_CLIENT_SECRET?.trim()), ephemeral: o.ephemeral });
     if (refusal && !o.dryRun) throw new Error(refusal);
     if (refusal) info(`a deploy would refuse: ${refusal}`);
   }
   if (!who) info("skipped (no login): wrangler secret list; a deploy generates SETUP_SECRET and CLAX_TOKEN when the Worker has neither");
+  else if (o.ci && o.ephemeral && !o.staging) info("a preview: no SETUP_SECRET (setup stays closed) and no CLAX_TOKEN (the instance makes its own); the owner signs in with GitHub");
+  else if (o.staging && o.dryRun) info("staging: would make a new CLAX_TOKEN for the smoke (kept in the record, never shown); no SETUP_SECRET: the owner signs in with GitHub");
   else if (needed.length === 0) {
     info(`the Worker has SETUP_SECRET and CLAX_TOKEN; kept${record.setup_secret ? ` (in ${recordPath(pub)})` : " (not shown: --rotate-secrets makes new ones)"}`);
   } else if (o.dryRun) info(`would generate ${needed.join(" and ")} and upload them with the deploy`);
@@ -818,18 +869,17 @@ async function main() {
     secrets = {};
     if (needed.includes("SETUP_SECRET")) secrets.SETUP_SECRET = randomBytes(24).toString("base64url");
     if (needed.includes("CLAX_TOKEN")) secrets.CLAX_TOKEN = randomBytes(32).toString("hex");
-    info(`generated ${needed.join(" and ")}; uploaded with the deploy`);
+    info(`generated ${needed.join(" and ")}; uploaded with the deploy${o.staging ? " (staging: a new CLAX_TOKEN each deploy, for the smoke; kept in the record, never shown)" : ""}`);
   }
   // CLAX_KEK seals the model keys ClaxBot stores (README.md, "ClaxBot"):
-  // made once, backed up in a file of its own before anything is uploaded,
-  // and never rotated, since a new one opens nothing the old one sealed. A
-  // Worker without it gets the backup's, else a new one.
-  const kek = kekPlan({ have: who ? have : null, ...readKek(pub, record), dryRun: o.dryRun });
-  info(kek.say);
-  // A --ci deploy keeps no backup: the one made by the instance's first
-  // deploy is on the machine that ran it.
-  if (kek.warn) info(o.ci ? "notice: the Worker has CLAX_KEK and this run keeps no backup of it (--ci: the backup is kept where the instance was first deployed)" : `WARNING: ${kek.warn}: ${kekPath(pub)}`);
-  if (kek.save) writeKek(pub, kek.save);
+  // the Worker's is kept, never rotated; one without gets the key given in
+  // CLAX_KEK, whose backup its operator keeps, never the deploy
+  // (deploy-lib.mjs kekPlan, docs/prod.md "CLAX_KEK").
+  const kek = kekPlan({ have: who ? have : null, given: process.env.CLAX_KEK, ephemeral: o.ephemeral, dryRun: o.dryRun });
+  if (kek.error && !o.dryRun) throw new Error(kek.error);
+  info(kek.error ? `a deploy would refuse: ${kek.error}` : kek.say);
+  const oldBackup = oldKekBackup(pub, record);
+  if (oldBackup) info(`notice: an old CLAX_KEK backup is at ${oldBackup}: keep it with the instance's backups, check its fingerprint in Admin, Provider, then delete it here (docs/prod.md, "CLAX_KEK")`);
   if (kek.upload) secrets = { ...(secrets ?? {}), CLAX_KEK: kek.upload };
   if (github.client_id) {
     let gh = process.env.GITHUB_CLIENT_SECRET?.trim();
@@ -853,12 +903,22 @@ async function main() {
     await buildWorker();
   } else {
     step("Build: skipped (--no-build)");
-    // What an earlier run built, from this commit (deploy-lib.mjs
-    // builtFromRefusal): never a stale build, nor one from another commit.
+    // What an earlier run built, from this commit or one with its tree
+    // (deploy-lib.mjs builtFromRefusal): never a stale build, nor one from
+    // another tree.
     const wasm = join(BUILD, "index_bg.wasm");
-    const refusal = builtFromRefusal(existsSync(wasm) ? readFileSync(wasm) : null, existsSync(BUILT_FROM) ? readFileSync(BUILT_FROM, "utf8") : null, commit);
+    const record = existsSync(BUILT_FROM) ? readFileSync(BUILT_FROM, "utf8") : null;
+    const built = builtCommitOf(record);
+    const trees = {};
+    for (const c of commit && built ? new Set([commit, built]) : []) {
+      const t = await git(["rev-parse", "--verify", "--quiet", `${c}^{tree}`]);
+      if (t.code === 0) trees[c] = t.out.trim();
+    }
+    const refusal = builtFromRefusal(existsSync(wasm) ? readFileSync(wasm) : null, record, commit, trees);
     if (refusal) throw new Error(`${BUILD}: ${refusal}`);
-    info(commit ? `the Worker in ${BUILD} was built from HEAD ${commit.slice(0, 12)}` : `the Worker in ${BUILD} is deployed as it is (no commit to check it against)`);
+    if (!commit) info(`the Worker in ${BUILD} is deployed as it is (no commit to check it against)`);
+    else if (built === commit) info(`the Worker in ${BUILD} was built from HEAD ${commit.slice(0, 12)}`);
+    else info(`the Worker in ${BUILD} was built from ${built.slice(0, 12)}, whose tree is HEAD ${commit.slice(0, 12)}'s`);
   }
   if (!existsSync(config.main)) throw new Error(`no ${config.main}: build first (drop --no-build)`);
   // The Worker embeds web/dist when clax-worker compiles (rust-embed,
@@ -881,6 +941,14 @@ async function main() {
   // Only prod's tip at the time of the upload goes to production: prod
   // may have moved while this deploy built.
   if (o.production && !o.dryRun) await checkProduction(o);
+  // --unless-live: what answers on the public host now, when it was
+  // uploaded from this commit and this deploy has no secret to give it.
+  let live = null;
+  if (o.unlessLive && !o.dryRun) {
+    if (secrets) info("--unless-live: this deploy uploads secrets, so it uploads the Worker too");
+    else live = liveBuildOf(await healthBody(`https://${pub}/healthz`), commit);
+  }
+  if (live) return await deployed({ r: { out: "", err: "" }, running: live.build });
   step(o.dryRun ? "wrangler deploy --dry-run" : "wrangler deploy");
   const args = ["deploy", "--config", configPath];
   let secretsFile;
@@ -906,7 +974,7 @@ async function main() {
     if (secretsFile) rmSync(secretsFile, { force: true });
   }
   const size = uploadSize(r.out + r.err);
-  if (r.code !== 0) throw new Error(`wrangler deploy failed${retried ? " again, after its one retry" : ""}: ${lastError(r)}`);
+  if (r.code !== 0) throw new Error(`wrangler deploy failed${retried ? " again, after its one retry" : ""}: ${wranglerError(r)}`);
   if (size) {
     const pct = Math.round((size.gzip / PAID_LIMIT_KIB) * 100);
     info(`upload ${(size.total / 1024).toFixed(2)} MiB, ${(size.gzip / 1024).toFixed(2)} MiB gzipped: ${pct}% of Workers Paid's 10 MiB`);
@@ -919,55 +987,93 @@ async function main() {
     return;
   }
 
-  // An older record's content_origin is kept as the retired one; its
-  // version_id was an earlier deploy's.
-  const { content_origin: _old, retired_content_origin: _kept, version_id: _was, ...kept } = record;
-  const versionId = versionIdOf(r.out + r.err);
-  const next = {
-    ...kept,
-    ...(retired ? { retired_content_origin: retired } : {}),
-    public_origin: `https://${pub}`,
-    site_domain: site,
-    worker: o.name,
-    account,
-    store: o.store,
-    diag: o.diag,
-    deployed_at: new Date().toISOString(),
-    build,
-    // The Cloudflare Worker version this deploy made (`wrangler rollback
-    // <version ID>` returns to it), when wrangler named it.
-    ...(versionId ? { version_id: versionId } : {}),
-    ...(github.client_id ? { github_client_id: github.client_id } : {}),
-    ...(github.owner ? { owner_github: github.owner } : {}),
-    ...legal,
-    ...(secrets?.SETUP_SECRET ? { setup_secret: secrets.SETUP_SECRET, setup_done: false } : {}),
-    ...(secrets?.CLAX_TOKEN ? { owner_token: secrets.CLAX_TOKEN } : {}),
-    ...(secrets?.CLAX_KEK ? { kek_backup: kekPath(pub) } : {}),
-  };
-  writeRecord(pub, next);
+  return await deployed({ r, running: build });
 
-  step(`Waiting for https://${pub}/healthz to report build ${build} (custom domains take a few minutes the first time)`);
-  const healthy = await waitHealthy(`https://${pub}/healthz`, o.wait, (res, body) => {
-    if (!res.ok) return false;
-    const h = healthOf(body, build);
-    return h.done ? true : h.waiting;
-  });
-  if (!healthy) {
-    info(`not healthy within ${o.wait} s. Check: the zone of ${pub} is on account ${account}; ` +
-      `Workers > ${o.name} > Settings > Domains & Routes lists ${pub} and *.${site}/*; \`npx wrangler tail ${o.name}\``);
+  /** Writes the record of the build that runs on the public host (`running`:
+   * the one `wrangler deploy` just uploaded, printing `r`, or with
+   * --unless-live the one found there), then waits for it to answer and
+   * checks a site host. */
+  async function deployed({ r, running }) {
+    if (running !== build) {
+      step(`wrangler deploy: skipped (--unless-live)`);
+      info(`https://${pub}/healthz reports build ${running}, uploaded from this commit ${commit.slice(0, 12)}: nothing is uploaded and the instance is not restarted`);
+    }
+    // An older record's content_origin is kept as the retired one; its
+    // version_id was an earlier deploy's.
+    const { content_origin: _old, retired_content_origin: _kept, version_id: _was, site_zone: _zone, queue: _queue, namespace: _namespace, ...kept } = record;
+    const versionId = versionIdOf(r.out + r.err);
+    const next = {
+      ...kept,
+      ...(retired ? { retired_content_origin: retired } : {}),
+      public_origin: `https://${pub}`,
+      site_domain: site,
+      ...(zone !== site ? { site_zone: zone } : {}),
+      env: o.res.env,
+      worker: o.name,
+      // What smoke-remote.mjs and teardown.mjs act on (deploy-lib.mjs envOf).
+      bucket: o.res.bucket,
+      ...(o.store === "artifacts" ? { queue: o.res.queue, namespace: o.res.namespace } : {}),
+      account,
+      store: o.store,
+      diag: o.diag,
+      deployed_at: new Date().toISOString(),
+      build: running,
+      // The Cloudflare Worker version this deploy made (`wrangler rollback
+      // <version ID>` returns to it), when wrangler named it.
+      ...(versionId ? { version_id: versionId } : {}),
+      ...(github.client_id ? { github_client_id: github.client_id } : {}),
+      ...(github.owner ? { owner_github: github.owner } : {}),
+      ...legal,
+      ...(secrets?.SETUP_SECRET ? { setup_secret: secrets.SETUP_SECRET, setup_done: false } : {}),
+      ...(secrets?.CLAX_TOKEN ? { owner_token: secrets.CLAX_TOKEN } : {}),
+    };
+    writeRecord(pub, next);
+
+    step(`Waiting for https://${pub}/healthz to report build ${running} (custom domains take a few minutes the first time)`);
+    let kekReported;
+    const healthy = await waitHealthy(`https://${pub}/healthz`, o.wait, (res, body) => {
+      if (!res.ok) return false;
+      const h = healthOf(body, running);
+      if (h.done) kekReported = h.kek;
+      return h.done ? true : h.waiting;
+    });
+    // ClaxBot's stored keys open only under CLAX_KEK: an instance that
+    // reports none has lost it, or was never given one.
+    const kekLost = healthy && kekReported === false;
+    if (kekLost) info(`WARNING: https://${pub}/healthz reports no CLAX_KEK: put the instance's key back from its backup (docs/prod.md, "CLAX_KEK")`);
+    if (!healthy) {
+      info(`not healthy within ${o.wait} s. Check: the zone of ${pub} is on account ${account}; ` +
+        `Workers > ${o.name} > Settings > Domains & Routes lists ${pub} and *.${site}/*; \`npx wrangler tail ${o.name}\``);
+    }
+    // The wildcard's DNS record and certificate are the account's, not the
+    // deploy's: a shorter wait, then the steps that are left. A site domain
+    // below its zone (a preview's) has a record this deploy may just have
+    // made, whose certificate Total TLS issues only then: the full wait.
+    const siteOk = await checkSiteHost(site, zone, account, zone === site ? Math.min(o.wait, 120) : o.wait);
+
+    step("Done");
+    // The first-time setup text only when this deploy generated the secrets.
+    console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}`, ci: o.ci }));
+    if (o.diag) diagReminder(pub);
+    // A --ci deploy passes only when the instance answers as this build on
+    // the public host, with its CLAX_KEK, and on a site host.
+    const failed = [
+      ...(healthy ? [] : [`https://${pub}/healthz did not report build ${running} within ${o.wait} s`]),
+      ...(kekLost ? [`https://${pub}/healthz reports no CLAX_KEK`] : []),
+      ...(siteOk ? [] : [`a site host of ${site} is not served`]),
+    ];
+    if (o.ci && failed.length) throw new Error(failed.join("; "));
   }
-  // The wildcard's DNS record and certificate are the account's, not the
-  // deploy's: a shorter wait, then the steps that are left.
-  const siteOk = await checkSiteHost(site, account, Math.min(o.wait, 120));
+}
 
-  step("Done");
-  // The first-time setup text only when this deploy generated the secrets.
-  console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), kek: o.ci ? null : kekPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}` }));
-  if (o.diag) diagReminder(pub);
-  // A --ci deploy passes only when the instance answers as this build on
-  // the public host and on a site host.
-  const failed = [...(healthy ? [] : [`https://${pub}/healthz did not report build ${build} within ${o.wait} s`]), ...(siteOk ? [] : [`a site host of ${site} is not served`])];
-  if (o.ci && failed.length) throw new Error(failed.join("; "));
+/** What `url` answers to one GET, or "" when it does not answer 200. */
+async function healthBody(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "manual" });
+    return res.ok ? await res.text() : "";
+  } catch {
+    return "";
+  }
 }
 
 /** The reminder a deploy with the diagnostics routes on prints. */
@@ -983,7 +1089,7 @@ ${bar}`);
 }
 
 // Run as a program; imported (test-deploy-config.mjs checks the generated
-// config, test-bot.mjs checks kekPlan), it deploys nothing.
+// config), it deploys nothing.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((e) => {
     console.error(`\ndeploy failed: ${e instanceof Error ? e.message : e}`);

@@ -51,7 +51,8 @@ trap 'rm -rf "$work"' EXIT
 fetch() {
   local crate="$work/$1-$VERSION.crate" got
   curl -fsSL -o "$crate" "https://static.crates.io/crates/$1/$1-$VERSION.crate"
-  got="$(shasum -a 256 "$crate" | cut -d' ' -f1)"
+  if command -v sha256sum >/dev/null 2>&1; then got="$(sha256sum "$crate" | cut -d' ' -f1)"
+  else got="$(shasum -a 256 "$crate" | cut -d' ' -f1)"; fi
   if [ "$got" != "$2" ]; then
     echo "vendor-rquickjs: $1 $VERSION has SHA-256 $got, expected $2" >&2
     exit 1

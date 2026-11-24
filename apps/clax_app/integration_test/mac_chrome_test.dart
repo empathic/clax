@@ -48,6 +48,11 @@ final _golden = Platform.environment['CLAX_MENU_GOLDEN'];
 
 const _themes = {'light': 'aqua', 'dark': 'darkAqua'};
 
+/// The frames an animated capture (of a state that never holds still)
+/// draws after its appearance is in, each [_frame] (one at 60 Hz) long.
+const _animatedFrames = 5;
+const _frame = Duration(milliseconds: 16);
+
 /// The app's page: a heading to pick, a field to copy from and paste into,
 /// and room to draw an area.
 const _page = '''<!doctype html>
@@ -182,8 +187,9 @@ void main() {
               (theme == 'dark' ? Brightness.dark : Brightness.light),
         );
         if (animated) {
-          for (var i = 0; i < 5; i++) {
-            await tester.pump(const Duration(milliseconds: 16));
+          for (var i = 0; i < _animatedFrames; i++) {
+            // ignore: timing_pump -- an animated capture's frames: the state never holds still, so no condition ends them
+            await tester.pump(_frame);
           }
           expect(
             await MacChrome.captureWindow(
@@ -205,9 +211,9 @@ void main() {
 
     // --- Home selected, under the toolbar's search and Refresh, once the
     // home app is installed and shown.
-    final homeApp = await _within(
+    await rig.until<bool>(
       tester,
-      rig,
+      'the home app shown at Home',
       () =>
           find.byKey(const ValueKey('home-fallback')).evaluate().isEmpty &&
           find
@@ -218,9 +224,7 @@ void main() {
               )
               .evaluate()
               .isNotEmpty,
-      wait: const Duration(seconds: 45),
     );
-    note('the home app shows at Home: $homeApp');
     await shoot('home');
     final homeBar = await MacChrome.toolbar();
     note('home toolbar: $homeBar');
@@ -335,14 +339,12 @@ void main() {
           ),
         );
       }
-      Map<String, Object?>? shot;
-      final shown = await _within(tester, rig, () async {
-        shot = await MacChrome.menuCaptured();
-        return shot != null;
-      });
-      note('the sidebar\'s context menu opens ($theme): $shown');
-      expect(shown, isTrue, reason: 'the app row\'s menu never opened');
-      if (shot?['blank'] == true) menusBlank = true;
+      final shot = await rig.until<Map<String, Object?>>(
+        tester,
+        'the app row\'s menu ($theme)',
+        MacChrome.menuCaptured,
+      );
+      if (shot['blank'] == true) menusBlank = true;
     }
     await MacChrome.setAppearance(null);
 
@@ -358,23 +360,23 @@ void main() {
     Offset inPage(double x, double y) =>
         web.topLeft + frame.topLeft + Offset(x, y);
 
-    // A real pick: the pointer arrives on the heading and clicks it, with
-    // nothing attested by the app.
+    // A real pick, while the app is active: the pointer arrives on the
+    // heading and clicks it, with nothing attested by the app. An inactive
+    // app's page sees no pointer arrive, so there the app attests the
+    // press.
     final heading = inPage(60, 48);
-    await MacChrome.post([
-      for (final t in ['move', 'down', 'up'])
-        {'type': t, 'x': heading.dx, 'y': heading.dy},
-    ]);
-    final picked = await _within(
-      tester,
-      rig,
-      () => rig.messages.whereType<StateMsg>().lastOrNull?.draft != null,
-    );
-    note('a real click on the heading picks it: $picked (app active: $active)');
     if (active) {
-      expect(picked, isTrue, reason: 'a real click in the page picked nothing');
-    }
-    if (!picked) {
+      await MacChrome.post([
+        for (final t in ['move', 'down', 'up'])
+          {'type': t, 'x': heading.dx, 'y': heading.dy},
+      ]);
+      await rig.untilState(
+        tester,
+        'a real click on the heading to pick it',
+        (s) => s.draft != null,
+      );
+    } else {
+      note('a real click on the heading: not tried, the app is not active');
       // The app's attestation, as the integration rig's comment does.
       await rig.surface!.call(
         AttestPointer(
@@ -399,14 +401,17 @@ void main() {
     await shoot('comment');
 
     // Escape with the page focused closes the composer.
-    final escaped = await _key(tester, rig, '\u{1b}', 53, () {
-      final s = rig.messages.whereType<StateMsg>().lastOrNull;
-      return s?.draft == null;
-    });
-    note('Escape in the page closes the composer: $escaped');
     if (active) {
-      expect(escaped, isTrue, reason: 'Escape in the page left the composer up');
-    } else if (!escaped) {
+      await _key(
+        tester,
+        rig,
+        '\u{1b}',
+        53,
+        what: 'Escape in the page to close the composer',
+        then: () => rig.messages.whereType<StateMsg>().lastOrNull?.draft == null,
+      );
+    } else {
+      note('Escape in the page: not tried, the app is not active');
       await rig.surface!.call(const CancelDraft());
     }
     await rig.untilState(tester, 'the composer closed', (s) => s.draft == null);
@@ -415,38 +420,34 @@ void main() {
       await rig.untilState(tester, 'comment mode again', (s) => s.commenting);
     }
 
-    // An area drawn in the page and let go over the sidebar.
-    final from = inPage(40, 220);
-    final to = inPage(200, 380);
-    final outside = Offset(sidebar.center.dx, to.dy);
-    final how = await MacChrome.post([
-      {'type': 'down', 'x': from.dx, 'y': from.dy},
-      for (var i = 1; i <= 6; i++)
-        {
-          'type': 'drag',
-          'x': from.dx + (to.dx - from.dx) * i / 6,
-          'y': from.dy + (to.dy - from.dy) * i / 6,
-        },
-      {'type': 'drag', 'x': outside.dx, 'y': outside.dy},
-      {'type': 'up', 'x': outside.dx, 'y': outside.dy},
-    ]);
-    final area = await _within(
-      tester,
-      rig,
-      () => rig.messages.whereType<StateMsg>().lastOrNull?.draft?.kind == 'area',
-    );
-    await MacChrome.captureSettled(tester, '$_shots/area-release-light.png');
-    note('an area let go over the sidebar is picked: $area (events $how)');
-    if (how == 'queued') {
-      expect(
-        area,
-        isTrue,
-        reason: 'the release over the sidebar never reached the page',
+    // An area drawn in the page and let go over the sidebar, while the app
+    // is active: then the events go through AppKit's queue, as a person's
+    // do.
+    if (active) {
+      final from = inPage(40, 220);
+      final to = inPage(200, 380);
+      final outside = Offset(sidebar.center.dx, to.dy);
+      await MacChrome.post([
+        {'type': 'down', 'x': from.dx, 'y': from.dy},
+        for (var i = 1; i <= 6; i++)
+          {
+            'type': 'drag',
+            'x': from.dx + (to.dx - from.dx) * i / 6,
+            'y': from.dy + (to.dy - from.dy) * i / 6,
+          },
+        {'type': 'drag', 'x': outside.dx, 'y': outside.dy},
+        {'type': 'up', 'x': outside.dx, 'y': outside.dy},
+      ]);
+      await rig.untilState(
+        tester,
+        'the area let go over the sidebar picked in the page',
+        (s) => s.draft?.kind == 'area',
       );
-    }
-    if (area) {
+      await MacChrome.captureSettled(tester, '$_shots/area-release-light.png');
       await rig.surface!.call(const CancelDraft());
       await rig.untilState(tester, 'the area closed', (s) => s.draft == null);
+    } else {
+      note('an area let go over the sidebar: not tried, the app is not active');
     }
     await rig.surface!.call(const ExitCommentMode());
     await rig.untilState(tester, 'comment mode off', (s) => !s.commenting);
@@ -471,29 +472,29 @@ void main() {
     if (active) {
       final field = inPage(120, 128);
       await MacChrome.click(field);
-      await _key(tester, rig, 'a', 0, () => true, modifiers: const ['cmd']);
-      final pageCopy = await _key(
+      await _key(tester, rig, 'a', 0, modifiers: const ['cmd']);
+      await _key(
         tester,
         rig,
         'c',
         8,
-        () async => await MacChrome.pasteboard() == 'page words',
         modifiers: const ['cmd'],
+        what: '⌘A ⌘C in the page\'s field',
+        then: () async => await MacChrome.pasteboard() == 'page words',
       );
-      expect(pageCopy, isTrue, reason: '⌘A ⌘C in the page\'s field');
       await MacChrome.pasteboard('pasted words');
-      await _key(tester, rig, 'v', 9, () => true, modifiers: const ['cmd']);
-      await _key(tester, rig, 'a', 0, () => true, modifiers: const ['cmd']);
+      await _key(tester, rig, 'v', 9, modifiers: const ['cmd']);
+      await _key(tester, rig, 'a', 0, modifiers: const ['cmd']);
       await MacChrome.pasteboard('');
-      final pasted = await _key(
+      await _key(
         tester,
         rig,
         'c',
         8,
-        () async => await MacChrome.pasteboard() == 'pasted words',
         modifiers: const ['cmd'],
+        what: '⌘V in the page\'s field',
+        then: () async => await MacChrome.pasteboard() == 'pasted words',
       );
-      expect(pasted, isTrue, reason: '⌘V in the page\'s field');
       final filter = find.descendant(
         of: find.byKey(const ValueKey('sidebar-filter')),
         matching: find.byType(EditableText),
@@ -501,26 +502,26 @@ void main() {
       await MacChrome.click(tester.getCenter(filter));
       await tester.enterText(filter, 'Chrome');
       await tester.pump();
-      await _key(tester, rig, 'a', 0, () => true, modifiers: const ['cmd']);
-      final flutterCopy = await _key(
+      await _key(tester, rig, 'a', 0, modifiers: const ['cmd']);
+      await _key(
         tester,
         rig,
         'c',
         8,
-        () async => await MacChrome.pasteboard() == 'Chrome',
         modifiers: const ['cmd'],
+        what: '⌘A ⌘C in the sidebar\'s filter',
+        then: () async => await MacChrome.pasteboard() == 'Chrome',
       );
-      expect(flutterCopy, isTrue, reason: '⌘A ⌘C in the sidebar\'s filter');
       await MacChrome.pasteboard('check');
-      final flutterPaste = await _key(
+      await _key(
         tester,
         rig,
         'v',
         9,
-        () => tester.widget<EditableText>(filter).controller.text == 'check',
         modifiers: const ['cmd'],
+        what: '⌘V in the sidebar\'s filter',
+        then: () => tester.widget<EditableText>(filter).controller.text == 'check',
       );
-      expect(flutterPaste, isTrue, reason: '⌘V in the sidebar\'s filter');
       await tester.enterText(filter, '');
       await tester.pump();
     } else {
@@ -580,10 +581,14 @@ void main() {
     if (active) {
       // A held Return does nothing; a fresh one presses Allow.
       await MacChrome.key('\r', 36, isRepeat: true);
-      final answered = await _key(tester, rig, '\r', 36, () async {
-        return (await MacChrome.window())['sheet'] == false;
-      });
-      expect(answered, isTrue, reason: 'Return left the armed alert up');
+      await _key(
+        tester,
+        rig,
+        '\r',
+        36,
+        what: 'Return to answer the armed alert',
+        then: () async => (await MacChrome.window())['sheet'] == false,
+      );
       expect(await armed, AskAnswerValue.allow);
     } else {
       note('the armed alert\'s keys: not tried, the app is not active');
@@ -737,31 +742,21 @@ Future<Rect> _frameRect(Rig rig) async {
   return Rect.fromLTWH(n('left'), n('top'), n('width'), n('height'));
 }
 
-/// Pumps until [probe] holds, for at most [wait]; whether it did.
-Future<bool> _within(
-  WidgetTester tester,
-  Rig rig,
-  FutureOr<bool> Function() probe, {
-  Duration wait = const Duration(seconds: 10),
-}) async {
-  final end = DateTime.now().add(wait);
-  while (DateTime.now().isBefore(end)) {
-    await tester.pump();
-    if (await probe()) return true;
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-  }
-  return false;
-}
-
-/// Sends a key and waits for [then]; whether it held.
-Future<bool> _key(
+/// Sends a key, then pumps a frame, or with [then] waits until it holds
+/// ([what], under the rig's hang guard).
+Future<void> _key(
   WidgetTester tester,
   Rig rig,
   String chars,
-  int code,
-  FutureOr<bool> Function() then, {
+  int code, {
   List<String> modifiers = const [],
+  String? what,
+  FutureOr<bool> Function()? then,
 }) async {
   await MacChrome.key(chars, code, modifiers: modifiers);
-  return _within(tester, rig, then);
+  if (then == null) {
+    await tester.pump();
+  } else {
+    await rig.until<bool>(tester, what ?? 'the key $chars', then);
+  }
 }

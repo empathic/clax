@@ -6,8 +6,7 @@
   // dot between. The viewer is nearest the centre and underlined. A person
   // present (`presence`, by public ID) carries a here dot, or is dimmed when
   // away or gone (spec §10, "Presence"). Props are
-  // read off `p` and every class is static, so the gallery's lazy working
-  // module shares no prop or class runtime with the artifact entry.
+  // read off `p` and every class is static, so neither entry needs a prop or class runtime for it.
   import type { Participants } from "../api";
   import type { Working } from "../view/working-model";
   import { agentMark, shownName } from "../view/agent-display";

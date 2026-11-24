@@ -369,6 +369,7 @@ fn is_path_prefix(p: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{
         Added, added, declaration_sha256, describe, in_force, narrow, net_hosts, pending, validate,

@@ -7,9 +7,8 @@ use clax_store::roles::OWNER;
 
 async fn all(mut sub: Subscription) -> Vec<RunEvent> {
     let mut out = Vec::new();
-    while let Some(e) = tokio::time::timeout(PROMPTLY, sub.next())
+    while let Some(e) = within("the run's events end", sub.next())
         .await
-        .expect("the run's events end")
         .expect("not lagged")
     {
         out.push(e);

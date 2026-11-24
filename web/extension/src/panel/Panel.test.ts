@@ -6,6 +6,8 @@ import * as fixtures from "../../../shell/src/q/fixtures";
 import type { InboxReq as InboxReqLike } from "./link.svelte";
 import Panel from "./Panel.svelte";
 import { PanelQuestions } from "./questions";
+import { CONFIRM_PAIRING } from "../sw/tabs";
+import { settled } from "../../../shell/src/test/settled";
 
 const thread = {
   id: "01J9AAAAAAAAAAAAAAAAAAAAAA", artifact_id: "7q3k9mzx2b4t", version_n: 1, status: "open", sent_to_agent: false, has_clip: false,
@@ -67,6 +69,15 @@ describe("Panel", () => {
       expect(l.sent).toContainEqual({ t: "retry" });
       cleanup();
     }
+  });
+
+  it("asks for the pairing's confirmation with a button that opens it in Clax", async () => {
+    const l = link(state({ error: { code: "confirm_pairing", message: CONFIRM_PAIRING } }));
+    render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    expect(screen.getByRole("alert").textContent).toContain("An agent is running");
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Confirm in Clax" }));
+    expect(l.sent).toContainEqual({ t: "confirm-pairing" });
   });
 
   it("opens Open in Clax through the worker's login link, with no plain address to follow past it", async () => {
@@ -301,7 +312,7 @@ describe("Panel: the site's other pages", () => {
     return l;
   }
   const NOW = new Date("2026-10-05T10:01:00.000Z");
-  const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  const settle = settled;
 
   it("lists the other pages' threads under each page, newest activity first, with their counts, as text", () => {
     const { container } = render(Panel, { props: { link: siteLink() as never, now: NOW, store: area() } });
@@ -660,7 +671,7 @@ describe("Panel: the site's other pages", () => {
 describe("Panel: joined sites", () => {
   const O = "http://localhost:5173";
   const A = "http://localhost:7702";
-  const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  const settle = settled;
   const NOW = new Date("2026-10-05T10:01:00.000Z");
   const lone = (): SiteView => ({ origin: O, site: { key: O, name: O, joined: false, origins: [{ origin: O, joined_at: null, last_used_at: null }] }, rules: [], pages: [] });
   const both = (): SiteView => ({ origin: O, site: { key: A, name: O, joined: true, origins: [{ origin: O, joined_at: "t", last_used_at: "t2" }, { origin: A, joined_at: "t", last_used_at: "t1" }] }, rules: [], pages: [] });
@@ -731,7 +742,7 @@ describe("Panel: joined sites", () => {
 describe("Panel: a join not finished", () => {
   const O = "http://localhost:5173";
   const A = "http://localhost:7702";
-  const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  const settle = settled;
   it("says how many threads are left and continues the join, asking Chrome for the site's origins", async () => {
     const site: SiteView = { origin: O, site: { key: A, name: O, joined: true, joining: 3, origins: [{ origin: O, joined_at: "t", last_used_at: "t2" }, { origin: A, joined_at: "t", last_used_at: "t1" }] }, rules: [], pages: [] };
     const asked: unknown[] = [];

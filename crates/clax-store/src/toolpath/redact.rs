@@ -333,7 +333,13 @@ fn body_class(kind: &str, field: &str) -> Class {
         // ClaxBot (spec 2026-10-21-claxbot-design §9.1): script code is kept
         // by hash, never in the body; a script's title and error are the
         // model's text.
-        ("bot.run_start", "run" | "request" | "thread_ids" | "model" | "key_source") => Safe,
+        // A run's kind is `<surface>.<kind>`, names of a definition; who
+        // started it and from which run are IDs.
+        (
+            "bot.run_start",
+            "run" | "request" | "thread_ids" | "model" | "key_source" | "kind" | "started_by"
+            | "parent_run",
+        ) => Safe,
         (
             "bot.turn",
             "run" | "step" | "model" | "input_tokens" | "cached_tokens" | "output_tokens"
@@ -349,11 +355,29 @@ fn body_class(kind: &str, field: &str) -> Class {
         // (`give_up`): both are text.
         ("bot.call", "run" | "step" | "op" | "ok") => Safe,
         ("bot.call", "target") => Text,
+        // A web call (spec 2026-11-02-claxbot-web-tools §8): its query and
+        // URL are the model's or a page's text, and so is the provider's
+        // whole answer to a search; the source that allowed a fetch is a
+        // code (`comment`, `search #<n>`, `page #<n>`), and whether the
+        // call was answered, its error code and whether it came from the
+        // page store are codes too.
+        (
+            "bot.web",
+            "run" | "step" | "op" | "source" | "provider" | "request_id" | "credits_milli" | "ok"
+            | "code" | "stored",
+        ) => Safe,
+        ("bot.web", "query" | "url" | "response") => Text,
         ("bot.run_end", "run" | "outcome" | "credits_milli") => Safe,
         ("bot.run_end", "reason") => Text,
         ("bot.cancel", "run" | "by") => Safe,
         // A refusal before any model call: who, why (a code) and where.
         ("bot.refused", "person" | "reason" | "artifact") => Safe,
+        // A registered surface: its name is one word of the host's, its
+        // definition is named by hash, and the rest are IDs.
+        (
+            "bot.surface.registered",
+            "registration" | "name" | "def_hash" | "registered_by" | "replaces",
+        ) => Safe,
         ("view.run", "run") => Safe,
         ("view.admin", "page" | "subject_person") => Safe,
         // A search's words are the reader's text.
@@ -372,6 +396,8 @@ fn body_class(kind: &str, field: &str) -> Class {
         // The keys of the local daemon's settings written to config.toml
         // (`serve.port`), never their values.
         ("admin.settings", "fields") => Safe,
+        // A person's own choice of the web tools: their key and a flag.
+        ("me.web", "person" | "value") => Safe,
         // External artifacts and report queues (spec
         // 2026-10-27-clax-sdk-design §6.6): an app's opaque IDs, titles,
         // revisions and metadata are its users' text; a page URL can carry
@@ -429,9 +455,14 @@ fn anchor_class(field: &str) -> Class {
 
 fn fields_class(field: &str) -> Class {
     match field {
-        "icon" | "pinned" | "link_access" | "link_listed" | "db_read_grants" | "colour" => {
-            Class::Safe
-        }
+        "icon"
+        | "pinned"
+        | "link_access"
+        | "link_listed"
+        | "db_read_grants"
+        | "colour"
+        | "content_security_policy"
+        | "analytics" => Class::Safe,
         // A cost line's figures (`admin.cost_line`).
         "unit"
         | "cost_micro_usd"
@@ -506,6 +537,7 @@ pub(crate) fn is_local_remote(url: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

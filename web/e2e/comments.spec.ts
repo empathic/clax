@@ -1,17 +1,11 @@
 import { type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, commentModeIn, publish, publishAs, registerSession, setName } from "./fixtures";
+import { test, expect, type Daemon, api, bridgeFence, commentModeIn, contentFrame, publish, publishAs, publishNext, registerSession, setName } from "./fixtures";
 import { settle } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
 
 const PAGE = `<main><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat this quarter.</p></main>`;
-
-async function contentFrame(page: Page, id: string, n: number) {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)$`);
-  await expect.poll(() => page.frame({ url }) !== null).toBe(true);
-  return page.frame({ url })!;
-}
 
 async function pickHeading(page: Page, id: string, n: number) {
   const frame = await contentFrame(page, id, n);
@@ -157,7 +151,7 @@ test("a failed send shows in the banner and clears on the next success", async (
   const card = page.locator(".section-open .thread-card").filter({ hasText: "send me" });
   await page.route("**/threads/*/send", route => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "internal", message: "boom" } }) }));
   await card.getByRole("button", { name: /^Send to / }).click();
-  await expect(page.locator(".banner.notice")).toHaveText(/Could not send to the agent: 500 boom/);
+  await expect(page.locator(".banner.notice")).toHaveText(/Could not send to the agent: boom/);
   await page.unroute("**/threads/*/send");
   await card.getByRole("button", { name: /^Send to / }).click();
   await expect(card.locator(".waiting")).toContainText("sent, waiting for the agent");
@@ -173,6 +167,29 @@ test("the thread panel fits a phone", async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
 });
 
+test("a thread list longer than the viewer scrolls in the sidebar alone, never the window", async ({ page }) => {
+  const { artifact } = await publish(d.base, d.token, "Long threads", { "index.html": PAGE });
+  const ids: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: "Quarterly goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
+    form.set("body", `thread ${i}: ${"a longer comment that wraps over several lines ".repeat(4)}`);
+    form.set("version", "1");
+    const res = await fetch(`${d.base}/api/artifacts/${artifact.id}/threads`, { method: "POST", body: form, headers: { origin: d.base } });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    ids.push((await res.json()).thread.id);
+  }
+  // Each card then lists "vN agent addressed it" for v2 to v4, whose
+  // visually hidden separators lie far down the list.
+  const sid = (await registerSession(d.base, d.token)).id;
+  for (const v of [1, 2, 3]) await publishNext(d.base, d.token, sid, artifact.id, v, { note: "addressed", addresses: ids });
+  await page.setViewportSize({ width: 1280, height: 700 });
+  await page.goto(`${d.base}/a/${artifact.id}`);
+  await expect(page.locator(".thread-card .hist .nl .sep").first()).toBeAttached();
+  await expect.poll(() => page.locator("aside.sidebar").evaluate(s => s.scrollHeight > s.clientHeight)).toBe(true);
+  expect(await page.evaluate(() => document.scrollingElement!.scrollHeight)).toBe(700);
+});
+
 test("Escape in the shell cancels comment mode", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Escape", { "index.html": PAGE });
   await page.goto(`${d.base}/a/${artifact.id}`);
@@ -184,7 +201,9 @@ test("Escape in the shell cancels comment mode", async ({ page }) => {
   await page.keyboard.press("Escape");
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   // The bridge left comment mode too: a click in the frame picks nothing.
+  await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).not.toBe("crosshair");
   await frame.locator("h2").click();
+  await bridgeFence(page);
   await settle(page);
   await expect(page.locator(".composer")).toHaveCount(0);
 });

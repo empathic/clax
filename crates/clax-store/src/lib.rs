@@ -92,6 +92,7 @@
 //! [`Store::stray_asset_temp_files`], [`assets::AssetRow::path`]); on a
 //! home with no files they find nothing.
 
+pub mod analytics;
 pub mod app_bundles;
 pub mod app_data;
 pub mod approvals;
@@ -103,8 +104,14 @@ pub mod audit_query;
 pub mod backfill;
 pub mod backup;
 pub mod batches;
+pub mod bot_content;
+pub mod bot_joins;
+pub mod bot_messages;
+pub mod bot_pending;
 pub mod bot_runs;
 pub mod bot_settings;
+pub mod bot_surfaces;
+pub mod bot_web;
 pub mod briefs;
 pub mod browser_login;
 pub mod capability_approvals;
@@ -137,8 +144,10 @@ pub mod net_grants;
 pub mod passkeys;
 pub mod people;
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod plans;
 pub mod price_catalog;
+pub mod provider_failures;
 pub mod pushes;
 pub mod questions;
 pub mod queues;
@@ -276,6 +285,9 @@ pub struct Store {
     /// Fails a journaled write after the write and before its journal row
     /// ([`Store::set_journal_fault`]), for crash tests.
     journal_fault: RwLock<Option<bot_runs::JournalFault>>,
+    /// Fails a journal row the core writes ([`Store::set_record_fault`]),
+    /// for tests of a store that cannot write.
+    record_fault: RwLock<Option<bot_runs::JournalFault>>,
     /// The hidden artifacts (drafts), for event routing.
     hidden: drafts::HiddenIds,
     /// The jobs the write transaction under way changed, recorded by the
@@ -461,6 +473,7 @@ impl Store {
             #[cfg(test)]
             test_points: Mutex::new(Vec::new()),
             journal_fault: RwLock::new(None),
+            record_fault: RwLock::new(None),
             clock,
             hidden,
             jobs,
@@ -760,6 +773,7 @@ impl Store {
     /// named `name` ([`Store::point`]), once: a test steps another write
     /// in there, where a concurrent caller's could land.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(crate) fn at_point(&self, name: &'static str, hook: impl FnOnce(&Store) + Send + 'static) {
         self.test_points
             .lock()
@@ -771,6 +785,7 @@ impl Store {
     /// if any. Called outside any transaction or lock a hook's own write
     /// would wait on.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(crate) fn point(&self, name: &'static str) {
         let hook = {
             let mut points = self.test_points.lock().unwrap();
@@ -839,6 +854,7 @@ pub fn schema_version(home: &Home) -> Result<Option<u32>> {
 /// (except a busy or locked database, reported as itself, since it may
 /// pass on a retry).
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 fn migrate(conn: &mut Connection) -> Result<()> {
     migrate_with(conn, &migrations::NUMBERING)
 }
@@ -846,6 +862,7 @@ fn migrate(conn: &mut Connection) -> Result<()> {
 /// [`migrate`] to the migrations of `numbering`, which is
 /// [`migrations::NUMBERING`] but in tests of a later numbering.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) fn migrate_with(
     conn: &mut Connection,
     numbering: &migrations::Numbering<'_>,
@@ -927,6 +944,17 @@ fn migrate_steps(
     }
     {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some((from, to)) = migrations::adopt_wip_queues(&tx)? {
+            tx.commit()?;
+            tracing::warn!(
+                from,
+                to,
+                "renumbered a database from a wip/bdelanghe build (queue migrations at 63 to 66)"
+            );
+        }
+    }
+    {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if let Some((from, to)) = migrations::adopt_earlier_flutter_app(&tx, numbering)? {
             tx.commit()?;
             tracing::warn!(
@@ -960,9 +988,11 @@ fn migrate_steps(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod job_moves_fixture;
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) mod test_util {
     /// The audit context of changes a test makes: Clax itself.
     pub const DAEMON: &clax_core::audit::AuditCtx = &clax_core::audit::AuditCtx::DAEMON;
@@ -981,6 +1011,85 @@ pub(crate) mod test_util {
     /// (`//crates/clax-store:clax_store_one_connection_test`, which runs
     /// that test alone), so the target of every other test leaves it out.
     pub const ONE_CONNECTION_RUN_VAR: &str = "CLAX_TEST_STORE_ONE_CONNECTION";
+
+    /// How long a test's wait on something that will happen may take
+    /// before the test calls it a hang and fails, naming what it waited
+    /// for: `clax_testkit::HANG`, which the store's own tests cannot reach.
+    /// A hang guard only: it never decides whether a test passes.
+    pub const HANG: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// `fut`'s output, bounded by the [`HANG`] guard.
+    ///
+    /// # Panics
+    /// Past the [`HANG`] guard, naming `what`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "within is the HANG guard on a wait"
+    )]
+    pub async fn within<F: std::future::IntoFuture>(what: &str, fut: F) -> F::Output {
+        tokio::time::timeout(HANG, fut)
+            .await
+            .unwrap_or_else(|_| panic!("{what}: not after {HANG:?} (hang guard)"))
+    }
+
+    /// The next value on `rx`, bounded by the [`HANG`] guard.
+    ///
+    /// # Panics
+    /// Past the [`HANG`] guard, or when every sender is gone first, naming
+    /// `what`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "recv_within is the HANG guard on a wait"
+    )]
+    pub fn recv_within<T>(what: &str, rx: &std::sync::mpsc::Receiver<T>) -> T {
+        rx.recv_timeout(HANG)
+            .unwrap_or_else(|e| panic!("{what}: {e} (hang guard {HANG:?})"))
+    }
+
+    /// Returns once `holds` is true, checking it again every millisecond:
+    /// the wait on a state another thread reaches without a signal of its
+    /// own.
+    ///
+    /// # Panics
+    /// Past the [`HANG`] guard, naming `what`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "wait_until polls its condition under the HANG guard; nothing is decided by how long it takes"
+    )]
+    pub fn wait_until(what: &str, holds: impl Fn() -> bool) {
+        let started = std::time::Instant::now();
+        while !holds() {
+            let waited = started.elapsed();
+            assert!(waited < HANG, "{what}: not after {waited:?} (hang guard)");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// [`wait_until`] on a task, which yields its thread between checks.
+    ///
+    /// # Panics
+    /// Past the [`HANG`] guard, naming `what`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "until polls its condition under the HANG guard; nothing is decided by how long it takes"
+    )]
+    pub async fn until(what: &str, holds: impl Fn() -> bool) {
+        within(what, async {
+            while !holds() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+    }
+
+    /// Makes `st`'s write connection wait up to [`HANG`] for a lock another
+    /// process holds, in place of
+    /// [`BUSY_TIMEOUT`](crate::exec::BUSY_TIMEOUT): for a test that holds
+    /// such a lock while it checks what happens meanwhile, so the write
+    /// does not fail first on a loaded machine.
+    pub fn patient_writer(st: &Store) {
+        st.exec.write(|c| Ok(c.busy_timeout(HANG)?)).unwrap();
+    }
 
     /// Whether this run's [`store`]s are on one connection.
     pub fn on_one_connection() -> bool {
@@ -1217,6 +1326,7 @@ pub(crate) mod test_util {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::test_util::{Gated, anchor, artifact};
     use super::threads::NewThread;
@@ -1477,10 +1587,7 @@ mod tests {
             // This thread's own synchronous publish would never get it.
             would_block(st.publish_version(&AuditCtx::DAEMON, &aid, next_version(1, "<p>x"), None));
             drop(held);
-            let n = rx
-                .recv_timeout(std::time::Duration::from_secs(30))
-                .unwrap()
-                .unwrap();
+            let n = super::test_util::recv_within("the publish's version", &rx).unwrap();
             assert_eq!(n, 2);
         });
     }

@@ -275,6 +275,10 @@ perf *ARGS:
 perf-native:
     CLAX_BUILD=native ./scripts/run.sh perf
 
+# Run the ClaxBot surfaces protocol on demand (no check runs it) between a real `clax serve` and fake_host processes, across a restart of the daemon, with a scripted model (scripts/smoke-bot-surfaces.sh; about a minute)
+smoke-bot-surfaces:
+    ./scripts/smoke-bot-surfaces.sh
+
 # Regenerate what Bazel derives from Cargo (after any Cargo.toml or Cargo.lock change); commit the result
 bazel-sync:
     ./scripts/bazel-sync.sh
@@ -314,10 +318,27 @@ hosted-deploy *ARGS:
 clax-dev-deploy *ARGS:
     ./scripts/cloudflare-setup.sh --legal bundled --production "$@"
 
-# Release Clax VERSION and every plugin: Claude Code, Codex and Grok through the repo's marketplaces, Pi through npm (scripts/release.sh); a dry run unless --i-know-what-i-am-doing
-release VERSION *ARGS:
+# Deploy the environment NAME other than clax.dev (docs/environments.md): dev, which GitHub Actions deploys from every green push to main, or a preview such as pr-12, which it deploys for each pull request; each is a Worker with resources of its own, its settings kept in ~/.config/clax/deploy/setup.NAME.env (scripts/cloudflare-setup.sh --env NAME --legal bundled). A dry run unless given --i-know-what-i-am-doing; dev's first deploy, which makes its secrets, runs from here. prod is just clax-dev-deploy
+env-deploy NAME *ARGS:
+    if [ "$1" = prod ]; then echo "just env-deploy deploys dev or a preview; clax.dev is just clax-dev-deploy" >&2; exit 2; fi
+    ./scripts/cloudflare-setup.sh --legal bundled --env "$@"
+
+# Run the Worker's locked wrangler from any directory (Bazel's //crates/clax-worker:wrangler; natively the stamped install in crates/clax-worker), e.g. just wrangler whoami (the accounts the login sees, with their IDs), just wrangler login, just wrangler tail clax-dev
+wrangler *ARGS:
+    ./scripts/run.sh wrangler "$@"
+
+# Run the Worker's locked wrangler with the native tools: its stamped pnpm install in crates/clax-worker
+wrangler-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh wrangler "$@"
+
+# Tear down the preview NAME: its Worker with every artifact and person in it, its custom domain, route and DNS record (crates/clax-worker/teardown.mjs; needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID; args: --site-zone <zone>, required, and --dry-run). Never dev or prod
+env-teardown NAME *ARGS:
+    cd crates/clax-worker && node teardown.mjs "$@"
+
+# Cut the pull request that releases Clax VERSION into prod (scripts/release.sh); a dry run unless --i-know-what-i-am-doing. With no VERSION, the current release and the next ones
+release *ARGS:
     ./scripts/release.sh "$@"
 
-# Publish the SDK package, @empathic/clax-client-sdk, at VERSION, its own version (web/sdk/package.json's), from origin's prod once prod carries it (scripts/release-sdk.sh); a dry run unless --i-know-what-i-am-doing
+# Publish the SDK package, @empathic/clax-client-sdk, at VERSION, its own version (web/sdk/package.json's), from origin's main (scripts/release-sdk.sh); a dry run unless --i-know-what-i-am-doing
 release-sdk VERSION *ARGS:
     ./scripts/release-sdk.sh "$@"

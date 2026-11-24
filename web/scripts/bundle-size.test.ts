@@ -15,11 +15,14 @@ afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root
 /** A scratch web/ with a copy of the script, a minimal build and `budget` as the budget file. */
 const ENTRY = "<head><script id=\"clax-early\"></script><!--clax:boot--></head><body><!--clax:frame--><h1>Clax</h1></body>";
 
+/** The gallery entry as the build writes it: the daemon injects its bootstrap at the marker. */
+const GALLERY = "<!--clax:boot--><p>gallery</p>";
+
 /** The extension's release manifest as the build writes it. */
 const EXT_MANIFEST = { manifest_version: 3, name: "Clax", version: "1.0.0", optional_host_permissions: ["http://*/*", "https://*/*"] };
 
 /** `fonts` are font files put in dist (none by default); `index` is the gallery entry; `overlayMjs` is the overlay's ES module; `extFiles` are extra files put in dist-extension; `extBodies` are files written there with the given content. */
-function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = "<p>gallery</p>", extManifest = EXT_MANIFEST as Record<string, unknown>, extFiles = [] as string[], extBodies = {} as Record<string, string>, overlayMjs = "var o=1;export{o as overlay};" } = {}) {
+function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = GALLERY, extManifest = EXT_MANIFEST as Record<string, unknown>, extFiles = [] as string[], extBodies = {} as Record<string, string>, overlayMjs = "var o=1;export{o as overlay};" } = {}) {
   root = mkdtempSync(join(tmpdir(), "clax-bundle-size-"));
   const web = join(root, "web");
   mkdirSync(join(web, "scripts"), { recursive: true });
@@ -46,9 +49,12 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   for (const f of ["w.js", "as.js", "s.js", "q.js", "qd.js", "h.js", "hd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
   // The People and Queues pages import the gallery's lazy module's import too, and one file of their own.
   for (const f of ["p.js", "pd.js", "u.js", "ud.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
+  // The Analytics panel imports the artifact entry, the more menu's chunk and one file of its own.
+  for (const f of ["an.js", "and.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
   dist(".vite/manifest.json", JSON.stringify({
     "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js", dynamicImports: ["src/app/host.ts"] },
-    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["_index-q.js", "src/people/People.svelte", "src/queues/Queues.svelte"] },
+    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["_index-q.js", "src/settings/Settings.svelte", "src/queues/Queues.svelte"] },
+    "src/settings/Settings.svelte": { file: "_clax/shell/p.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["src/people/People.svelte"] },
     "src/people/People.svelte": { file: "_clax/shell/p.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_pd.js"] },
     "_pd.js": { file: "_clax/shell/pd.js" },
     "src/queues/Queues.svelte": { file: "_clax/shell/u.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_ud.js"] },
@@ -56,6 +62,8 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
     "src/view/artifact-stream.ts": { file: "_clax/shell/as.js", isDynamicEntry: true, imports: ["artifact.html"], dynamicImports: ["_index-q.js"] },
     "src/ui/MoreMenu.svelte": { file: "_clax/shell/as.js", isDynamicEntry: true },
     "src/ui/Who.svelte": { file: "_clax/shell/as.js", isDynamicEntry: true },
+    "src/ui/AnalyticsPanel.svelte": { file: "_clax/shell/an.js", isDynamicEntry: true, imports: ["artifact.html", "src/ui/MoreMenu.svelte", "_and.js"] },
+    "_and.js": { file: "_clax/shell/and.js" },
     "_s.js": { file: "_clax/shell/s.js" },
     "_index-q.js": { file: "_clax/shell/q.js", name: "index", isDynamicEntry: true, imports: ["index.html", "_s.js", "_qd.js"] },
     "_qd.js": { file: "_clax/shell/qd.js" },
@@ -99,7 +107,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
 }
 
 describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, transport: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partOrigin: 10_000, partRoom: 10_000, partSample: 10_000, partLive: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000, queues: 10_000, host: 10_000, overlay: 10_000, sdkOverlay: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, transport: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partOrigin: 10_000, partRoom: 10_000, partSample: 10_000, partLive: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000, queues: 10_000, analytics: 10_000, host: 10_000, overlay: 10_000, sdkOverlay: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -118,6 +126,12 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
       expect(r.stderr).toContain("artifact.html");
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("fails when the gallery entry lost its bootstrap marker", () => {
+    const r = run(full, ENTRY, [], { index: "<p>gallery</p>" });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("index.html lost <!--clax:boot-->");
   });
 
   it("fails when a size is over its budget", () => {
@@ -162,7 +176,7 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
   });
 
   it("fails when an entry preloads a font", () => {
-    const r = run(full, ENTRY, [], { index: `<link rel="preload" href="/_clax/fonts/x.woff2" as="font"><p>gallery</p>` });
+    const r = run(full, ENTRY, [], { index: `<link rel="preload" href="/_clax/fonts/x.woff2" as="font">${GALLERY}` });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("preloads a font");
   });
@@ -174,12 +188,12 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
       `<link as=font href=/_clax/fonts/x.woff2 rel=preload crossorigin>`,
       `<link rel="preload" href="/f" as="font" type="font/woff2">`,
     ]) {
-      const r = run(full, ENTRY, [], { index: `${link}<p>gallery</p>` });
+      const r = run(full, ENTRY, [], { index: `${link}${GALLERY}` });
       expect(r.status, link).toBe(1);
       expect(r.stderr).toContain("preloads a font");
       rmSync(root, { recursive: true, force: true });
     }
-    expect(run(full, ENTRY, [], { index: `<link rel="modulepreload" href="/_clax/shell/a.js"><link rel="icon" href="/_clax/mark.svg"><p>gallery</p>` }).status).toBe(0);
+    expect(run(full, ENTRY, [], { index: `<link rel="modulepreload" href="/_clax/shell/a.js"><link rel="icon" href="/_clax/mark.svg">${GALLERY}` }).status).toBe(0);
   });
 
   it("fails when an @font-face fetches a font, swap or not, and passes a local-only face", () => {
@@ -303,6 +317,17 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     expect(r.stderr).toContain("queues");
   });
 
+  it("counts the Analytics panel with what it imports beyond the artifact entry and the more menu", () => {
+    const size = (r: ReturnType<typeof run>) => Number(/analytics (\d+)/.exec(r.stdout)?.[1]);
+    const a = size(run(full));
+    const one = (f: string) => pako.gzip(f.repeat(100), { level: 9 }).length;
+    expect(a).toBe(one("an.js") + one("and.js"));
+    rmSync(root, { recursive: true, force: true });
+    const r = run({ ...full, analytics: a - 1 });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("analytics");
+  });
+
   it("counts the SDK package's overlay entry with the files it imports, against its own budget", () => {
     const r0 = run(full);
     const size = Number(/\bsdk package: overlay entry (\d+)/.exec(r0.stdout)?.[1]);
@@ -317,7 +342,7 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
   it("never records the extension's ceilings or the question module's, nor adds a missing one", () => {
     expect(run(full, ENTRY, ["--record"]).status).toBe(0);
     const recorded = JSON.parse(readFileSync(join(root, "web/perf/bundle-budget.json"), "utf8"));
-    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues", "sdkOverlay"]) expect(recorded[k], k).toBe(10_000);
+    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues", "analytics", "sdkOverlay"]) expect(recorded[k], k).toBe(10_000);
     expect(recorded.gallery).toBeLessThan(10_000);
     rmSync(root, { recursive: true, force: true });
     const { extPanel: _, ...noPanel } = full;

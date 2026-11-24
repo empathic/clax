@@ -200,8 +200,8 @@
           <p>Another Clax asks to publish here as you. Sign in first: open a sign-in link from a device that is signed in, then come back to this page.</p>
         {/if}
       {:else if decided === "approved"}
-        <p><strong>{device ? device.client_name : "That Clax"}</strong> is signed in as you. It shows on People among your {isApp ? "devices" : "agent tokens"}, where you can revoke it.{back ? " Going back to it…" : " You can close this tab."}</p>
-        <div class="acts"><a class="go" href="/people">Open People</a></div>
+        <p><strong>{device ? device.client_name : "That Clax"}</strong> is signed in as you. It shows in Settings under {isApp ? "Account, Devices" : "Agents & machines, Agent tokens"}, where you can revoke it.{back ? " Going back to it…" : " You can close this tab."}</p>
+        <div class="acts"><a class="go" href={isApp ? "/settings/account#hd-h" : "/settings/agents#ht-h"}>Open Settings</a></div>
       {:else if decided === "denied"}
         <p>Denied: that Clax is not signed in.{back ? " Going back to it…" : " You can close this tab."}</p>
       {:else if device}

@@ -20,6 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_core.dart';
 import '../support/fake_scheme_native.dart';
+import '../support/settle.dart';
 
 const _aid = '7q3k9mzx2b4t';
 final _origins = AppOrigins.forPlatform(android: true);
@@ -231,19 +232,17 @@ void main() {
       _core(guarded: false),
       runJs: (js) async => ran.add(js),
     ).handle(call);
-    await pumpEventQueue();
+    await waitUntil(() => ran.isNotEmpty, what: 'the relay here to answer');
     expect(native.evals, ran);
     expect(native.evals.single, startsWith('window.claxTransport.callResult('));
-    await pumpEventQueue();
+    await waitUntil(() => pins.isNotEmpty, what: 'the pin from the worker');
     expect(pins, [nonce]);
     expect(link.nonce, nonce);
     // The non-relay message reaches this isolate; the call does not.
     expect(messages.map((m) => m.runtimeType), [Ready]);
     // A commit clears the mirrored nonce until the next pin.
     native.emit('committed', {'webViewId': 7, 'url': _shellUrl});
-    for (var i = 0; i < 100 && link.nonce != null; i++) {
-      await pumpEventQueue();
-    }
+    await waitUntil(() => link.nonce == null, what: 'the nonce cleared');
     expect(link.nonce, isNull);
   });
 
@@ -352,7 +351,7 @@ void main() {
       final raw = await apiWorker.transport().send(
         'GET',
         '/api/artifacts',
-        timeout: const Duration(seconds: 10),
+        timeout: stuckAfter,
       );
       expect(raw.status, 200);
       expect(raw.json, jsonDecode(utf8.decode(raw.body)));
@@ -368,7 +367,7 @@ void main() {
       Future<Object?> asOf({required bool person}) async => (await t.send(
         'GET',
         '/api/as',
-        timeout: const Duration(seconds: 10),
+        timeout: stuckAfter,
         person: person,
       )).json?['as'];
       expect(await asOf(person: true), 'owner-browser');
@@ -377,29 +376,24 @@ void main() {
 
     test('streams the core\'s events through the worker', () async {
       final stream = apiWorker.transport().sse();
-      final first = await stream.first.timeout(const Duration(seconds: 10));
+      final first = await stream.first.timeout(stuckAfter);
       expect(first.event, 'ready');
     });
 
     test('a call in flight when the worker closes fails as a closed '
         'transport\'s, and later ones too', () async {
       final t = apiWorker.transport();
-      final held = t.send(
-        'GET',
-        '/api/held',
-        timeout: const Duration(minutes: 1),
-      );
-      // Let the call reach the worker before it closes.
-      for (var i = 0; i < 20; i++) {
-        await pumpEventQueue();
-      }
+      // A call answered: the worker is up, so the next is posted to it
+      // and reaches it before its close.
+      await t.send('GET', '/api/artifacts', timeout: stuckAfter);
+      final held = t.send('GET', '/api/held', timeout: stuckAfter);
       apiWorker.close();
       Matcher closed() => throwsA(
         isA<ClaxApiError>().having((e) => e.body['reason'], 'reason', 'closed'),
       );
       await expectLater(held, closed());
       await expectLater(
-        t.send('GET', '/api/artifacts', timeout: const Duration(seconds: 1)),
+        t.send('GET', '/api/artifacts', timeout: stuckAfter),
         closed(),
       );
     });

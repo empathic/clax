@@ -231,6 +231,10 @@ fn pointed(pointer: &Path) -> Option<PathBuf> {
 
 /// Marks the kept copy's directory used, as `stable-bin.sh` does, so its
 /// pruning keeps a copy runs still take.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a directory's modification time is the real time, as stable-bin.sh's pruning reads it"
+)]
 fn touch(kept: &Path) {
     if let Some(dir) = kept.parent()
         && let Ok(d) = std::fs::File::open(dir)
@@ -240,6 +244,7 @@ fn touch(kept: &Path) {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

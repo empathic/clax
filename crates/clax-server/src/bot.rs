@@ -1137,14 +1137,43 @@ impl clax_http::bot::Runs for DriverRuns {
     fn cancelled(&self, run: &str) {
         self.0.cancel(run);
     }
+
+    fn messaged(&self, run: &str) {
+        self.0.messaged(run);
+    }
 }
 
 /// The driver of a daemon on `state` (native): its deps over the server's
-/// host, this build's sandbox, the state's settings and keys, and the
-/// store's clock; the routes' events hub. Installs it as the state's run
-/// seam and returns it, not yet started.
+/// host, this build's sandbox, the state's settings and keys, the store's
+/// clock and the daemon's web source ([`crate::web_source::for_daemon`],
+/// its fetches naming a hosted daemon's public origin, a local one's
+/// nothing, and never reaching a hosted daemon's own hosts); the routes'
+/// events hub.
+/// Installs it as the state's run seam and returns it, not yet started.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
+    let hosted = state.hosted.as_ref();
+    let (web, unavailable) = crate::web_source::daemon_web(
+        state.store.clone(),
+        state.bot.kek.clone(),
+        hosted.map(|h| h.origin.as_str()),
+        hosted.and_then(|h| h.sites.as_ref()).map(|s| s.domain()),
+    );
+    if let Some(why) = unavailable {
+        state
+            .bot
+            .web_check
+            .set(clax_bot::web::WebCheck::Unusable(why));
+    }
+    driver_with_web(state, web)
+}
+
+/// [`driver`], with `web` as the runs' web source.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn driver_with_web(
+    state: &mut AppState,
+    web: Arc<dyn clax_bot::web::WebSource>,
+) -> Arc<clax_bot::Driver> {
     let bot = state.bot.clone();
     let host = ServerHost::new(state.clone());
     let wake = host.wake.clone();
@@ -1157,10 +1186,27 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
         Arc::new(clax_http::bot::Settings {
             store: state.store.clone(),
             enabled: bot.enabled,
+            model_takes_images: state
+                .settings
+                .running
+                .as_ref()
+                .and_then(|cfg| cfg.bot().ok())
+                .is_some_and(|b| b.model_takes_images),
         }),
         bot.keys(),
         Arc::new(StoreClock(state.store.clone())),
-    );
+    )
+    .with_web(web);
+    // A run bound to a surface a host registered calls its host through
+    // the daemon's broker, which the host's routes serve
+    // (`clax_http::bot_surfaces`).
+    let mut deps = deps;
+    let broker: Arc<dyn clax_bot::broker::CallBroker> = state.bot_surfaces.broker().clone();
+    deps.providers
+        .set_resolver(Arc::new(clax_bot::outside::Registrations::new(
+            broker,
+            deps.policy.clone(),
+        )));
     let driver = Arc::new(clax_bot::Driver::new(
         clax_store::bot_runs::DriverId::mint(),
         Arc::new(deps),
@@ -1180,8 +1226,74 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
         events: bot.events.clone(),
         catalog_url: bot.catalog_url.clone(),
         catalog_flight: bot.catalog_flight.clone(),
+        // The runs have a source now: the daemon's own fetches at least,
+        // unless the host said its source does more (the test fixtures).
+        web_configured: if bot.web_configured.any() {
+            bot.web_configured
+        } else {
+            clax_bot::web::WebShape {
+                search: false,
+                fetch: true,
+            }
+        },
+        web_check: bot.web_check.clone(),
+        admin_web_check: bot.admin_web_check.clone(),
+        // The runs it drives bind the surfaces whose hosts joined their
+        // artifact and are connected (`crate::routes::bot_joins`). A
+        // hosted daemon has no host route, so it keeps no join and reads
+        // none.
+        joins: state.hosted.is_none().then(|| {
+            let hub: Arc<dyn clax_http::bot_joins::JoinedSurfaces> = state.bot_surfaces.clone();
+            hub
+        }),
     });
     driver
+}
+
+/// Which of ClaxBot's web operations are configured on this host now:
+/// neither once the host knows its source cannot be used (its origin or
+/// site domain names no host, or the source cannot run where it runs:
+/// [`clax_http::bot::Bot::web_check`]); else those the host's source
+/// performs ([`clax_http::bot::Bot::web_configured`]: both for the
+/// Worker's AI binding and the daemon's test fixtures, fetch for the
+/// daemon's own source), and, for a native host whose source fetches but
+/// does not search on its own (the daemon's), search once the instance
+/// holds a key-encryption key, a Cloudflare account ID and a sealed token
+/// ([`crate::web_source::has_credentials`]), read at each call so an
+/// admin's change takes effect without a restart.
+///
+/// # Errors
+/// The store's.
+pub fn web_configured(
+    st: &Store,
+    bot: &clax_http::bot::Bot,
+) -> clax_core::Result<clax_bot::web::WebShape> {
+    use clax_bot::web::WebShape;
+    if bot.web_check.why().is_some() {
+        return Ok(WebShape::default());
+    }
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut shape = bot.web_configured;
+    // Every decision on web use (a run's start, the person's and the
+    // admin's views) comes here: with web use on, the host is asked to
+    // check its source, which it does after the request (the Worker; the
+    // daemon checks nothing).
+    if shape.any() && web_on(st)? {
+        bot.web_check.want();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if shape.fetch && !shape.search {
+        shape.search = crate::web_source::has_credentials(st, bot.kek.as_ref())?;
+    }
+    Ok(shape)
+}
+
+/// Whether an admin turned web search or web fetch on.
+fn web_on(st: &Store) -> clax_core::Result<bool> {
+    use clax_store::bot_settings::Setting;
+    let on =
+        |s: Setting| -> clax_core::Result<bool> { Ok(st.bot_setting(s)?.as_bool() == Some(true)) };
+    Ok(on(Setting::WebSearchEnabled)? || on(Setting::WebFetchEnabled)?)
 }
 
 /// A clock reading the store's, owned.

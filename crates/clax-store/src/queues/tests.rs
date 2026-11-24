@@ -595,6 +595,171 @@ fn mint_refuses_origin_not_in_queue() {
 }
 
 #[test]
+fn a_pattern_mints_a_token_bound_to_the_exact_origin_it_matched() {
+    let (_d, st) = store();
+    let q = st
+        .create_queue(
+            DAEMON,
+            None,
+            NewQueue {
+                name: "Previews".into(),
+                origins: vec![ORIGIN.into(), "https://PathBase-PR-*.fly.dev/".into()],
+                reporters_see: ReportersSee::Own,
+            },
+        )
+        .unwrap();
+    assert_eq!(q.origins, [ORIGIN, "https://pathbase-pr-*.fly.dev"]);
+    let (grant, _, _) = st.create_service_grant(DAEMON, &q.id, "backend").unwrap();
+    let key = clax_core::sig::encode_public(&clax_core::sig::KeyPair::generate().public());
+    let (rt, _) = st
+        .mint_reporter_token(
+            &grant,
+            "emp-1",
+            "https://pathbase-pr-538.fly.dev",
+            &key,
+            None,
+        )
+        .unwrap();
+    let t = st.reporter_by_token(&rt.sha256_hex()).unwrap().unwrap();
+    assert_eq!(t.origin, "https://pathbase-pr-538.fly.dev");
+    st.mint_reporter_token(&grant, "emp-1", ORIGIN, &key, None)
+        .unwrap();
+    for not in [
+        "https://pathbase-pr-1.evil.fly.dev",
+        "http://pathbase-pr-1.fly.dev",
+        "https://pathbase-pr-.fly.dev",
+        "https://pathbase-pr-1.fly.dev:8443",
+    ] {
+        assert!(
+            matches!(
+                st.mint_reporter_token(&grant, "emp-1", not, &key, None),
+                Err(CoreError::WrongOrigin)
+            ),
+            "{not}"
+        );
+    }
+    assert!(matches!(
+        st.mint_reporter_token(&grant, "emp-1", "https://pathbase-pr-*.fly.dev", &key, None),
+        Err(CoreError::Invalid {
+            code: "invalid_origin",
+            ..
+        })
+    ));
+    // A `*` label covers whole labels, and the token is still bound to
+    // the one origin minted for.
+    let wide = st
+        .create_queue(
+            DAEMON,
+            None,
+            NewQueue {
+                name: "Every fly.dev app".into(),
+                origins: vec!["https://*.fly.dev".into()],
+                reporters_see: ReportersSee::Own,
+            },
+        )
+        .unwrap();
+    assert_eq!(wide.origins, ["https://*.fly.dev"]);
+    let (wide_grant, _, _) = st
+        .create_service_grant(DAEMON, &wide.id, "backend")
+        .unwrap();
+    let (rt, _) = st
+        .mint_reporter_token(&wide_grant, "emp-1", "https://a.b.fly.dev", &key, None)
+        .unwrap();
+    let t = st.reporter_by_token(&rt.sha256_hex()).unwrap().unwrap();
+    assert_eq!(t.origin, "https://a.b.fly.dev");
+    assert!(matches!(
+        st.mint_reporter_token(&wide_grant, "emp-1", "https://fly.dev", &key, None),
+        Err(CoreError::WrongOrigin)
+    ));
+    // A pattern may be as broad as its writer wants, made or changed, and
+    // a token from it is still bound to the one origin minted for.
+    for (broad, inside, outside) in [
+        ("https://*", "https://a.example.com", "http://a.example.com"),
+        ("https://*.dev", "https://a.dev", "https://dev"),
+        ("https://pr-*.com", "https://pr-1.com", "https://pr-1.a.com"),
+    ] {
+        let made = st
+            .create_queue(
+                DAEMON,
+                None,
+                NewQueue {
+                    name: "Broad".into(),
+                    origins: vec![broad.into()],
+                    reporters_see: ReportersSee::Own,
+                },
+            )
+            .unwrap();
+        assert_eq!(made.origins, [broad]);
+        let (grant, _, _) = st
+            .create_service_grant(DAEMON, &made.id, "backend")
+            .unwrap();
+        let (rt, _) = st
+            .mint_reporter_token(&grant, "emp-1", inside, &key, None)
+            .unwrap();
+        let t = st.reporter_by_token(&rt.sha256_hex()).unwrap().unwrap();
+        assert_eq!(t.origin, inside, "{broad}");
+        assert!(
+            matches!(
+                st.mint_reporter_token(&grant, "emp-1", outside, &key, None),
+                Err(CoreError::WrongOrigin)
+            ),
+            "{broad} {outside}"
+        );
+        let changed = st
+            .update_queue(
+                DAEMON,
+                &q.id,
+                super::QueuePatch {
+                    origins: Some(vec![broad.into()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(changed.origins, [broad]);
+    }
+    // A malformed pattern is refused, made or changed.
+    for bad in ["https://**.example.com", "https://*.example.com:*"] {
+        let made = st.create_queue(
+            DAEMON,
+            None,
+            NewQueue {
+                name: "Malformed".into(),
+                origins: vec![bad.into()],
+                reporters_see: ReportersSee::Own,
+            },
+        );
+        assert!(
+            matches!(
+                made,
+                Err(CoreError::Invalid {
+                    code: "invalid_origin",
+                    ..
+                })
+            ),
+            "{bad}"
+        );
+        let changed = st.update_queue(
+            DAEMON,
+            &q.id,
+            super::QueuePatch {
+                origins: Some(vec![bad.into()]),
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(
+                changed,
+                Err(CoreError::Invalid {
+                    code: "invalid_origin",
+                    ..
+                })
+            ),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn members_and_roles() {
     let (_d, st) = store();
     let qid = st

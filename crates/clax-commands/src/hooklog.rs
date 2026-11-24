@@ -82,6 +82,7 @@ pub fn tail_for(home: &Home, agent: &str, n: usize) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

@@ -3,6 +3,7 @@
 //! a handler's signature must show.
 
 pub mod admin;
+pub mod analytics;
 pub mod app_bundles;
 pub mod app_drafts;
 pub mod approvals;
@@ -10,11 +11,19 @@ pub mod artifacts;
 pub mod assets;
 pub mod audit_trail;
 pub mod bot;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bot_content;
+pub mod bot_joins;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bot_messages;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bot_surfaces;
 pub mod client_imports;
 pub mod confirmations;
 pub mod connect;
 pub mod containers;
 pub mod content;
+pub mod content_security_policy;
 pub mod discovery;
 pub mod docs;
 pub mod drafts;
@@ -53,6 +62,7 @@ pub mod resolve;
 pub mod room;
 pub mod sample;
 pub mod sessions;
+pub mod setting_change;
 pub mod settings;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod sign;
@@ -76,4 +86,5 @@ pub mod working;
 pub mod world;
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod guards;

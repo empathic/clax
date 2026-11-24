@@ -1,0 +1,32 @@
+load("@rules_dart//dart:defs.bzl", "dart_library", "dart_test")
+
+# The timing rules for the app's Dart tests (lib/timing_lint.dart): no
+# sleeps, real delays or wall-clock reads in place of a condition, no
+# timeouts below the hang guard, no counted event-loop turns.
+
+exports_files(["pubspec.lock"])
+
+dart_library(
+    name = "timing_lint",
+    package_name = "clax_timing_lint",
+    srcs = ["lib/timing_lint.dart"],
+    deps = ["@clax_timing_lint_pub//:analyzer"],
+)
+
+dart_test(
+    name = "timing_lint_test",
+    size = "small",
+    main = "test/timing_lint_test.dart",
+    deps = [":timing_lint"],
+)
+
+# The rules over apps/clax_app/test and integration_test: it fails on a
+# finding, naming each.
+dart_test(
+    name = "test_timing",
+    size = "small",
+    args = ["apps/clax_app"],
+    data = ["//apps/clax_app:test_sources"],
+    main = "bin/test_timing.dart",
+    deps = [":timing_lint"],
+)

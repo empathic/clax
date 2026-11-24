@@ -38,7 +38,8 @@ changes), then
 - `node e2e-hosted.mjs`: the instance as a hosted Clax: setup, an invite, a
   sign-in link, an agent token on `/mcp`, a guest, each artifact's site
   on its own host (`SITE_DOMAIN=localhost`), app data in each artifact's
-  object, live pointers, a spectator, and seats across a simulated wake;
+  object, live pointers, a spectator, seats across a simulated wake, and
+  a site visit counted with its country and written by the alarm;
 - `node smoke-remote.mjs --local`: the deployed instance's smoke (below)
   against a fresh hosted `wrangler dev --local` with `REPO_STORE=memory`.
 
@@ -59,6 +60,22 @@ whose client ID, secret and owner are kept in
 `~/.config/clax/local/github.env` for every worktree. `--fresh` starts
 over and `--setup` leaves setup open to try it. `just hosted-demo` is the
 other local instance: seeded people and artifacts, and demo agents.
+
+### Site analytics
+
+A hosted instance counts its sites' page views
+(`docs/superpowers/specs/2026-11-19-site-analytics-design.md`): a counted
+page's bridge reports each load to its own site, `POST
+/_clax/api/analytics`, which the Worker sends to the instance with
+`CF-IPCountry` set from `request.cf.country`, replacing any the client
+sent (the object's request has no `cf` of its own); `request.cf.country`
+needs no zone setting. The instance keeps the views not yet written in
+memory and writes them a minute after the first, from the alarm when no
+request does (an eviction loses at most that minute), rolls the UTC day
+over at the first sweep after midnight, and deletes daily totals past 13
+months in the alarm's prune. With `CLAX_TEST_ROUTES`,
+`CLAX_TEST_ANALYTICS_BATCH_MS` writes a batch that many milliseconds old
+instead, so `e2e-hosted.mjs` sees the alarm write one.
 
 ### ClaxBot's sandbox
 
@@ -117,13 +134,45 @@ the model request; and a send refused `credits_exhausted`. Its scripted
 provider listens on 127.0.0.1, which the test vars
 `CLAX_TEST_ROUTES` and `CLAX_TEST_LOOPBACK_PROVIDER` together allow.
 
+ClaxBot's web tools (`clax.web.search` and `clax.web.fetch`, spec
+`docs/superpowers/specs/2026-11-02-claxbot-web-tools-design.md`) go
+through the Workers AI binding `AI` (`src/web_source.rs`,
+`BindingSource`): a search is `env.AI.websearch()` through the AI Gateway
+the admin names (`search.gateway`), and a fetch is the Worker's own `fetch`
+(redirects followed by hand, each target checked, at most 5; 5 MB and 30 s,
+conversion included; `User-Agent: Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko;
+compatible; ClaxBot/1.0; +<PUBLIC_ORIGIN>)`, without the `; +<PUBLIC_ORIGIN>`
+when it has none), with HTML, PDF and Office documents
+converted by `env.AI.toMarkdown()` by the rules every source shares
+(`clax_bot::web::page::handling`). With the binding the instance's web use is
+configured; the admin still turns each tool on. Searches are billed to the
+account through its AI Gateway credits, or to a provider key stored on the
+gateway (`search.byok_alias`), so a deploy with search on needs one of
+them; conversions are free for these formats. Web search on the binding
+needs workerd 1.20260924.1 or later (Wrangler 4.141.0; the repository pins
+4.149.0): on an older runtime every search answers `web_unavailable`. The
+binding has no local simulator: under `wrangler dev --local` it exists and
+every call on it throws, so a web call answers `web_unavailable`.
+
+With `CLAX_TEST_ROUTES` and `CLAX_TEST_WEB` both `1`, the instance uses a
+scripted source instead (`FixtureWeb`, over `clax_bot::FakeWebSource`):
+`POST /_worker/web-fixtures {searches: {<query>: [hit]}, pages: {<url>:
+{status, content_type, text, links} | {redirect}}}` loads it (kept in the
+object's storage across restarts), and `GET /_worker/web-fixtures` lists
+the calls it answered. `test-bot.mjs` runs a script that searches and
+fetches through it, across the restart, and a fetch of a page that
+redirects to itself; `smoke-remote.mjs` makes one real search and one real
+fetch when the deployed instance has web search on.
+
 ## Deploy to Cloudflare
 
 clax.dev, Empathic's instance, is deployed from GitHub Actions on every
 push to `prod`, never from a laptop: [docs/prod.md](../../docs/prod.md) has
-the workflow and its GitHub setup. What follows sets up an instance (its
-first deploy, which generates its secrets, always runs from a laptop) and
-deploys any other.
+the workflow and its GitHub setup. Beside it, a `dev` environment deploys
+from every green push to `main`, and each pull request gets a preview
+(`deploy.mjs --env`, `teardown.mjs`): [docs/environments.md](../../docs/environments.md).
+What follows sets up an instance (its first deploy, which generates its
+secrets, runs from a laptop; a preview's from CI) and deploys any other.
 
 ### In one command
 
@@ -184,9 +233,9 @@ deploy record in `$CLAX_DEPLOY_HOME`. It changes no secret but the GitHub
 client secret it is given (`GITHUB_CLIENT_SECRET`): it refuses a Worker
 without `SETUP_SECRET`, `CLAX_TOKEN` or `CLAX_KEK` (a first deploy), one
 whose GitHub sign-in it would turn off or leave without its secret,
-`--rotate-secrets` and `--diag`; that it keeps no `CLAX_KEK` backup is a
-notice. It prints no first-time setup text, and exits 0 only when the
-deploy, the health wait, the site host check and the smoke all pass. Its
+`--rotate-secrets` and `--diag`. It prints no first-time setup text, and
+exits 0 only when the deploy, the health wait, the instance's `CLAX_KEK`
+(`/healthz` reports one), the site host check and the smoke all pass. Its
 smoke runs as the agent token in `CLAX_SMOKE_TOKEN`, with no diagnostics
 deploy.
 
@@ -298,6 +347,7 @@ account.
 | `ARTIFACTS` | Cloudflare Artifacts, namespace `clax` | Artifact versions as git repositories, when `REPO_STORE=artifacts` |
 | `WEB` | Workers Static Assets, `../../web/dist` | The web UI (`run_worker_first`) |
 | `LOADER` | Worker Loader (`worker_loaders`) | ClaxBot's code-mode sandbox: a dynamic Worker per script (`src/sandbox/`) |
+| `AI` | Workers AI (`ai`, `remote: true`) | ClaxBot's web tools: `websearch()` through the account's AI Gateway, `toMarkdown()` of fetched pages (`src/web_source.rs`) |
 
 `deploy.mjs` creates the bucket (`npx wrangler r2 bucket create
 clax-assets`), the queue (`npx wrangler queues create
@@ -330,7 +380,8 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `GIT_SMART_HTTP` | `0` with `artifacts` | `1` serves the stand-in over git smart HTTP at `/git/*` |
 | `CLAX_INSTANCE` | empty | The instance object's name (`default`) |
 | `CLAX_LIVE_PEOPLE_SEATS`, `CLAX_LIVE_GUEST_SEATS`, `CLAX_LIVE_AGENT_SEATS`, `CLAX_LIVE_SEAT_IDLE_S` | empty | Live seats per artifact and the idle release; empty takes 100, 20, 20 and 180 s |
-| `CLAX_TEST_ROUTES`, `REPO_DEV_ROUTES` | `0` | Test-only routes; never `1` on a deploy |
+| `CLAX_TEST_ROUTES`, `CLAX_TEST_WEB`, `REPO_DEV_ROUTES` | `0` | Test-only routes, and ClaxBot's scripted web source; never `1` on a deploy |
+| `CLAX_TEST_RESUME_AFTER_MS`, `CLAX_TEST_ANALYTICS_BATCH_MS` | empty | Tests only, with `CLAX_TEST_ROUTES`: how far ahead ClaxBot keeps the alarm, and how old a batch of page views is written |
 | `CLAX_DIAG_ROUTES` | `0`; `1` (`deploy.mjs --diag`) only until the smoke is green | `/_diag/` for the owner token (`src/diag.rs`): what the platform's bindings answer |
 | `GITHUB_CLIENT_ID` | the OAuth App's client ID (`deploy.mjs --github-client-id`) | GitHub sign-in; off without it or without `GITHUB_CLIENT_SECRET` |
 | `OWNER_GITHUB` | the owner's GitHub login (`deploy.mjs --owner-github`) | Whoever signs in as that account (case-insensitive) is the owner |
@@ -360,17 +411,20 @@ npx wrangler secret put CLAX_TOKEN     # the owner's bearer token for the CLI (o
 npx wrangler secret put CLAX_KEK       # ClaxBot's key-encryption key: 64 hex digits (openssl rand -hex 32)
 ```
 
-`deploy.mjs` generates and uploads both on the first deploy, and
-`CLAX_KEK`, ClaxBot's key-encryption key (64 hex digits), when the Worker
-has none: its backup when this machine keeps one, else a new one, written
-to the backup first, `~/.config/clax/deploy/<public host>.kek` (0600).
-Keep that file: the record may be deleted once set up, but without the
-backup and the Worker's secret every stored model key is lost. A deploy
-warns when the Worker has `CLAX_KEK` and this machine keeps no backup.
-`CLAX_KEK` is read from the Worker's secrets alone (a plain var of the
-name is ignored). It is never rotated, `--rotate-secrets`
-included: a new one opens none of the model keys the old one sealed (to
-replace it, clear the stored keys first and set them again after). Without
+`deploy.mjs` generates and uploads both on the first deploy. `CLAX_KEK`,
+ClaxBot's key-encryption key (64 hex digits), it never makes (but for a
+preview, whose stored keys go with it) and never keeps: its operator makes
+it and keeps its backup, outside any machine, and a deploy to a Worker
+without one uploads the key given in the environment's `CLAX_KEK`, refusing
+when none is given ([docs/prod.md](../../docs/prod.md), "CLAX_KEK").
+Without the backup and the Worker's secret every stored model key is lost.
+`/healthz` says whether the instance has a key (`kek`), and every deploy
+checks it; Admin, Provider shows which, by fingerprint, to check the
+backup against. `CLAX_KEK` is read from the Worker's secrets alone
+(a plain var of the name is ignored). It is never rotated,
+`--rotate-secrets` included: a new one opens none of the model keys the old
+one sealed (to replace it, clear the stored keys first and set them again
+after). Without
 `SETUP_SECRET`, `/setup` stays closed. Without `CLAX_TOKEN` the
 instance makes a token and keeps it in its storage, where nothing hands it
 out: set one if you mean to use the CLI against the instance. Use a long
@@ -510,7 +564,9 @@ its steps. Not yet run against a deployed Worker:
   in-flight requests and the isolate's memory, which the instance rebuilds
   from storage in the same way.
 - The custom domains, certificates and `CF-Connecting-IP` from Cloudflare's
-  edge (under `wrangler dev` every client is one address).
+  edge (under `wrangler dev` every client is one address), and the country
+  in `request.cf` a page view is counted with (workerd's local `cf` stands
+  in for it).
 - The Bazel build on Linux (CI): the bundle has been built on macOS only
   (the NDK's Linux LLVM compiles its C there).
 - ClaxBot's sandbox on real dynamic Workers: the `cpuMs` limit and the

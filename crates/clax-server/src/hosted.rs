@@ -203,7 +203,7 @@ async fn legal_page(
 /// [`Hosted::with_reel`]: clax_http::hosted::Hosted::with_reel
 async fn landing(
     State(s): State<AppState>,
-    d: clax_http::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     uri: axum::http::Uri,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -215,7 +215,7 @@ async fn landing(
     }
     let file = uri.path().strip_prefix(LANDING).unwrap_or("");
     if file.is_empty() {
-        return crate::shell::gallery_page(State(s), d, req).await;
+        return crate::shell::bare_gallery(&s, &req);
     }
     if let Some(to) = reel_elsewhere(&s, file) {
         return Ok(axum::response::Redirect::temporary(&to).into_response());
@@ -941,11 +941,13 @@ fn share_view(sh: &clax_store::shares::Share) -> Value {
 /// their own device, [`browser_or_device`]) → for
 /// whoever may share it ([`may_share`]) `{artifact_id, can_share: true,
 /// comments, general, link_access, url, people: [{id, access, github_login,
-/// person, name, pending}], suggestions, site_access, site_url}`, `comments`
-/// its Comments switch, the suggestions (people here, with their GitHub
-/// logins) for the owner alone, and whether its site (at `site_url`) is
-/// open to the world (`world` or `private`, `PATCH /api/artifacts/<aid>`
-/// changes it); for another member who may
+/// person, name, pending}], suggestions, site_access,
+/// content_security_policy, site_url}`, `comments` its Comments switch,
+/// the suggestions (people here, with their GitHub logins) for the owner
+/// alone, whether its site (at `site_url`) is open to the world (`world`
+/// or `private`) and the `Content-Security-Policy` Clax sends on its own
+/// content (`self` or `unrestricted`), each of which `PATCH
+/// /api/artifacts/<aid>` changes; for another member who may
 /// read it, `{artifact_id, can_share: false}`. 404 for an artifact the
 /// caller may not read, and for the owner one out of the owner's reach but
 /// for its link ([`owner_reaches`]); 401 without a session, 403 for a
@@ -1002,6 +1004,7 @@ async fn get_sharing(
                 "people": people,
                 "suggestions": suggestions,
                 "site_access": crate::routes::artifacts::site_access_of(st, &aid)?,
+                "content_security_policy": crate::routes::content_security_policy::of(st, &aid)?,
                 "site_url": site_url,
             }))
         })
@@ -1236,10 +1239,10 @@ async fn public_list(State(s): State<AppState>) -> Result<Response, ApiError> {
 /// code).
 async fn signin_page(
     State(s): State<AppState>,
-    d: clax_http::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let mut res = crate::shell::gallery_page(State(s), d, req).await?;
+    let mut res = crate::shell::bare_gallery(&s, &req)?;
     res.headers_mut().insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
@@ -1546,6 +1549,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     /// Every route [`super::router`] mounts is one the gate takes as hosted
     /// mode's own (`clax_http::hosted::own_route`), so none is sent through

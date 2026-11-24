@@ -87,6 +87,12 @@ pub enum Event {
         /// How long the call took, in milliseconds (0 for one answered
         /// from the journal).
         ms: u64,
+        /// What a web call charged, in millicredits; `None` for any other
+        /// call and for one answered from the journal.
+        cost_milli: Option<i64>,
+        /// A web call's `{query}` or `{url, source}`; `None` for any other
+        /// call.
+        web: Option<Value>,
     },
     /// The step committed. `summary` is [`step_summary`] of its payload.
     StepDone {
@@ -102,7 +108,44 @@ pub enum Event {
     },
 }
 
+/// Adds a call's web fields to its JSON object `v` (a step's `calls`, a
+/// `call` event, the run panel's views of either), each only when
+/// present: `cost_milli`, what a web call charged, and `web`, its
+/// `{query}` or `{url, source}`.
+pub fn with_web_fields(v: &mut Value, cost_milli: Option<i64>, web: Option<&Value>) {
+    if let Some(cost) = cost_milli {
+        v["cost_milli"] = json!(cost);
+    }
+    if let Some(w) = web.filter(|w| !w.is_null()) {
+        v["web"] = w.clone();
+    }
+}
+
 impl Event {
+    /// The `call` event of a script's call to `op` that ended `ok` (with
+    /// `code` when it failed) after `ms` milliseconds, with what its
+    /// surface's provider says of it: its target, what it charged, and
+    /// the provider's field named `web`
+    /// ([`crate::surface::CallNote::extra`]).
+    #[must_use]
+    pub fn call(
+        op: &str,
+        ok: bool,
+        code: Option<String>,
+        ms: u64,
+        note: &crate::surface::CallNote,
+    ) -> Event {
+        Event::Call {
+            op: op.to_string(),
+            target: note.target().map(str::to_string),
+            ok,
+            code,
+            ms,
+            cost_milli: note.cost_milli(),
+            web: note.extra().get("web").cloned(),
+        }
+    }
+
     /// The SSE event name.
     #[must_use]
     pub fn name(&self) -> &'static str {
@@ -127,7 +170,13 @@ impl Event {
                 ok,
                 code,
                 ms,
-            } => json!({"op": op, "target": target, "ok": ok, "code": code, "ms": ms}),
+                cost_milli,
+                web,
+            } => {
+                let mut v = json!({"op": op, "target": target, "ok": ok, "code": code, "ms": ms});
+                with_web_fields(&mut v, *cost_milli, web.as_ref());
+                v
+            }
             Event::StepDone {
                 kind,
                 credits_milli,
@@ -267,7 +316,8 @@ fn prune(runs: &mut HashMap<String, Channel>) {
 }
 
 /// A committed step's content, as `step_done` carries it: a turn's text
-/// and tool call, a script's result, a terminal step's summary or reason.
+/// and tool call, a script's result, a terminal step's summary (with the
+/// `result` of a run that finished with one) or reason.
 #[must_use]
 pub fn step_summary(kind: StepKind, payload: &Value) -> Value {
     match kind {
@@ -295,7 +345,12 @@ pub fn step_summary(kind: StepKind, payload: &Value) -> Value {
             "changed": payload["changed"],
             "published": payload["published"],
         }),
-        StepKind::Finish => json!({"summary": payload["summary"]}),
+        // A kind of a surface other than `clax` finishes with its
+        // `result` (`crate::finish`).
+        StepKind::Finish => match payload.get("result") {
+            Some(result) => json!({"summary": payload["summary"], "result": result}),
+            None => json!({"summary": payload["summary"]}),
+        },
         StepKind::GiveUp | StepKind::Stopped | StepKind::Failed => {
             json!({"reason": payload["reason"], "notice": payload["notice"]})
         }
@@ -348,6 +403,8 @@ fn canonical(
                     ok: c["ok"].as_bool().unwrap_or(false),
                     code: c["code"].as_str().map(str::to_string),
                     ms: c["ms"].as_u64().unwrap_or(0),
+                    cost_milli: c["cost_milli"].as_i64(),
+                    web: c.get("web").filter(|w| !w.is_null()).cloned(),
                 },
             );
         }
@@ -458,8 +515,10 @@ impl EventHub {
         after: Option<EventId>,
     ) -> Result<Subscription> {
         let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
-        let (r, steps) = store
-            .run_with_steps(run)?
+        // A step whose row does not read is left out of the replay,
+        // logged: the run ends `failed` for it.
+        let (r, steps, _) = store
+            .run_with_readable_steps(run)?
             .ok_or(clax_core::CoreError::NotFound)?;
         let mut replay = Vec::new();
         for s in steps.iter().filter(|s| s.committed_at.is_some()) {
@@ -498,8 +557,49 @@ impl EventHub {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    /// A call's event is made of what its provider's note says: the
+    /// target, the charge, and the field named `web` alone.
+    #[test]
+    fn a_calls_event_carries_its_notes_target_charge_and_web() {
+        use crate::surface::{Answer, Fields};
+        let shown = serde_json::json!({"url": "https://example.com/a"});
+        let answer = Answer::written(Ok(Value::Null))
+            .naming(Some("a.css".into()))
+            .charged(100)
+            .showing(Fields::from_iter([
+                ("web".to_string(), shown.clone()),
+                ("other".to_string(), serde_json::json!(1)),
+            ]));
+        assert_eq!(
+            Event::call("web.fetch", false, Some("web_cap".into()), 3, answer.note()),
+            Event::Call {
+                op: "web.fetch".into(),
+                target: Some("a.css".into()),
+                ok: false,
+                code: Some("web_cap".into()),
+                ms: 3,
+                cost_milli: Some(100),
+                web: Some(shown),
+            }
+        );
+        let plain = Answer::of(Ok(Value::Null));
+        assert_eq!(
+            Event::call("files.list", true, None, 0, plain.note()),
+            Event::Call {
+                op: "files.list".into(),
+                target: None,
+                ok: true,
+                code: None,
+                ms: 0,
+                cost_milli: None,
+                web: None,
+            }
+        );
+    }
 
     #[test]
     fn ids_print_parse_and_order() {

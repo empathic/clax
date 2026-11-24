@@ -1,22 +1,27 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // `/me` (spec 2026-10-21-claxbot D11, §7, §11.7): this person's ClaxBot
+  // Settings, Your ClaxBot (spec 2026-10-21-claxbot D11, §7, §11.7): this person's ClaxBot
   // this week (credits against their allowance, by cost line), the model key
   // their runs use (their own Anthropic key, set, replaced or removed here,
-  // write-only, and the switch to use it; off, the instance's), and their
+  // write-only, and the switch to use it; off, the instance's; under it,
+  // its last failed request and what the provider said, until one goes
+  // through or the key is set again), and their
   // runs, each linking to its artifact with its run panel open. Shown to
   // anyone the daemon answers `GET /api/me/bot` for; elsewhere it says
   // ClaxBot is not on this Clax.
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
-  import { type MeBot, type MeUsage, clearOwnKey, meUsage, setOwnKey, useOwnKey } from "./api";
+  import { type MeBot, type MeUsage, clearOwnKey, meUsage, setOwnKey, setWebChoice, useOwnKey } from "./api";
   import { refresh } from "./me";
+  import { relativeTime } from "../format";
   import { UNITS, credits, meter, resetDay, runStatus, tokens } from "./model";
   import BotPage from "./BotPage.svelte";
   import KeyField from "./KeyField.svelte";
   import Meter from "./Meter.svelte";
+  import ModelError from "./ModelError.svelte";
   import Switch from "./Switch.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   let { now }: { now?: () => Date } = $props();
   let me = $state<MeBot | null>(null);
@@ -24,6 +29,23 @@
   let usage = $state<MeUsage | null>(null);
   let err = $state<string | null>(null);
   let busy = $state(false);
+  // Shown in Settings, the screen waits for the person's ClaxBot and their week's use.
+  const bot = holdReveal();
+  const used = holdReveal();
+  const WHY: Record<string, string> = { admin_off: "Off on this instance", not_configured: "Not configured" };
+  const web = $derived(me?.web ?? null);
+  const instanceWhy = $derived(web?.why_off && web.why_off !== "person_off" ? WHY[web.why_off] ?? null : null);
+  // Which operations are offered: both while web use is off on this instance, as the switch then shows what it would turn on.
+  const ops = $derived(web?.offered ? web.operations : { search: true, fetch: true });
+  // What a request of each offered operation costs them, per thousand as the Pricing page words it (the daemon sends one request's milli-credits).
+  const cost = $derived.by(() => {
+    const p = web?.prices;
+    const search = ops.search && p?.search_milli != null ? p.search_milli : null;
+    const fetch = ops.fetch && p?.fetch_milli != null ? p.fetch_milli : null;
+    const parts = [search != null ? `Searches cost ${credits(search * 1000)} credits` : null, fetch != null ? `${search != null ? "reading" : "Reading"} a page ${credits(fetch * 1000)} credits` : null].filter(Boolean);
+    return parts.length ? `${parts.join(" and ")}, per ${UNITS.kreq}.` : "";
+  });
+  const what = $derived(ops.search && ops.fetch ? "search the web and read pages" : ops.search ? "search the web" : "read web pages");
   const m = $derived(me ? meter(me.week) : null);
   const at = (iso: string) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   const take = (x: MeBot | null) => { if (x) me = x; else none = true; };
@@ -32,13 +54,13 @@
     try { await fn(); take(await refresh()); } catch (e) { err = refusal(e); } finally { busy = false; }
   }
   onMount(() => {
-    document.title = "You · Clax";
-    void refresh().then(take, e => { err = refusal(e); });
-    void meUsage().then(u => { usage = u; }, () => {});
+    document.title = "Your ClaxBot · Settings · Clax";
+    void refresh().then(take, e => { err = refusal(e); }).finally(bot);
+    void meUsage().then(u => { usage = u; }, () => {}).finally(used);
   });
 </script>
 
-<BotPage title="You" lede="Your ClaxBot this week and the key it uses for you. A credit is one unit of spend: script compute always, and model tokens on the instance's key.">
+<BotPage title="Your ClaxBot" lede="Your ClaxBot this week and the key it uses for you. A credit is one unit of spend: script compute always, and model tokens on the instance's key.">
   {#if err}<p class="err" role="alert">{err}</p>{/if}
   {#if none}
     <p class="note">ClaxBot is not on this Clax.</p>
@@ -65,9 +87,19 @@
         {#if !me.key.own?.set}<small id="me-k-why" class="note">Set a key first.</small>{/if}
         {#if me.key.own?.problem}<p class="note mek-problem" role="alert">{me.key.own.problem}</p>{/if}
         <KeyField info={me.key.own} label="Your Anthropic key" clearLabel="Remove" {now} onSave={k => change(() => setOwnKey(k))} onClear={() => change(clearOwnKey)} />
+        {#if me.key.own?.last_problem}<div class="mek-last"><ModelError detail={me.key.own.last_problem} keySource="own" before={`The last request with this key failed ${relativeTime(me.key.own.last_problem.at, now?.() ?? new Date())}:`} next={false} /></div>{/if}
         <small class="note mek-host">Stored encrypted; ClaxBot sends it only to {#if me.provider_host}<b>{me.provider_host}</b>, the provider a key set now is bound to{:else}the provider's configured address{/if}.</small>
       </div>
     </section>
+    {#if web}
+      <section class="bcard" aria-labelledby="me-web">
+        <h3 id="me-web">Web</h3>
+        <div class="mek mew-web">
+          <Switch checked={web.why_off === null} label={`Let ClaxBot ${ops.search && ops.fetch ? "search and read the web" : what}`} disabled={!!instanceWhy} busy={busy} describedby="me-web-why" onchange={on => change(() => setWebChoice(on))} />
+          <small id="me-web-why" class="note">{instanceWhy ? `${instanceWhy}.` : `ClaxBot may ${what} for you; ${ops.search && ops.fetch ? "what a run searches for and the pages it reads" : ops.search ? "what a run searches for" : "the pages a run reads"} can carry data out.`}{#if cost}{` ${cost}`}{/if}</small>
+        </div>
+      </section>
+    {/if}
     <section class="bcard" aria-labelledby="me-r">
       <h3 id="me-r">Runs</h3>
       <div class="scroll">
@@ -89,7 +121,7 @@
           </tbody>
         </table>
       </div>
-      <p class="note"><a href="/audit?actor=claxbot">Everything ClaxBot did for you</a>, in the audit log.</p>
+      <p class="note"><a href="/settings/audit?actor=claxbot">Everything ClaxBot did for you</a>, in the audit log.</p>
     </section>
   {:else if !err}
     <p class="note" role="status">Loading…</p>
@@ -101,6 +133,8 @@
     .mew { display: grid; gap: 6px; max-width: 520px; margin-bottom: 12px; }
     .mew b { font-size: 20px; font-variant-numeric: tabular-nums; }
     .mek { display: grid; gap: 10px; max-width: 560px; }
+    .mek-last { font-size: 13px; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--card); min-width: 0; }
+    .mek-last .merr-lead { color: var(--danger); }
     .mer { min-width: 640px; }
     .bpg .mer a { text-decoration: underline; text-underline-offset: 2px; }
   }

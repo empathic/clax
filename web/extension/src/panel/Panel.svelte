@@ -196,8 +196,7 @@
     ["host_missing", { before: "Clax is not set up for Chrome yet. Run", command: "clax init", after: "(or /clax:extension in Claude Code), then click Retry." }],
     ["daemon_unavailable", { before: "Clax could not start. See ~/.clax/logs/daemon.log, then click Retry." }],
     ["pairing_declined", { before: "Pairing was declined in your browser. Click Retry to ask again." }],
-    ["pairing_expired", { before: "The pairing confirmation expired. Click Retry to try again." }],
-    ["no_capture_permission", { before: panelHint(keys) }],
+    ["pairing_expired", { before: "The pairing confirmation expired. Click Retry to try again." }],    ["no_capture_permission", { before: panelHint(keys) }],
   ]));
   const shownHelp = $derived(s?.error ? (help.get(s.error.code) ?? { before: s.error.message }) : null);
   /** The failure the person dismissed, by code, message and how many
@@ -276,7 +275,9 @@
           {@const command = shownHelp.command}
           <button type="button" class="ghost" onclick={() => copy(command)}>{copied ? "Copied" : "Copy"}</button>
         {/if}
-        {#if RETRYABLE.has(s.error.code)}
+        {#if s.error.code === "confirm_pairing"}
+          <button type="button" onclick={() => link.post({ t: "confirm-pairing" })}>Confirm in Clax</button>
+        {:else if RETRYABLE.has(s.error.code)}
           <button type="button" onclick={() => link.post({ t: "retry" })}>Retry</button>
         {:else}
           <button type="button" class="ghost" onclick={() => (dismissed = errorKey)}>Dismiss</button>

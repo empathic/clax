@@ -7,7 +7,9 @@
 #
 # `shards` is the StatefulSet's replica count, and each instance names its
 # `shard`: the pod (clax-<shard>) whose volume keeps it; `create = true`
-# lets that pod make the instance's home, for a new instance only. Never
+# lets that pod make the instance's home, for a new instance's first start
+# only: remove it once the instance has started, so a shard that finds no
+# home (a wrong `shard`, a move) never makes an empty one. Never
 # give a removed instance's name to another tenant: its data is kept under
 # the name.
 
@@ -16,6 +18,7 @@ shards = 2
 [[instance]]
 name = "example"
 shard = 0
+# Remove once it has started.
 create = true
 # No `default = true`: with more than one tenant, a host no instance names
 # would be answered by the default's instance (docs/kubernetes.md, The

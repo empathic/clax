@@ -939,6 +939,7 @@ async fn trusted_frame_access(s: &AppState, mut req: Request<Body>, next: Next) 
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

@@ -39,12 +39,18 @@ export const POLL_MS = 15_000;
 /** How often the badge is asked for while the page is visible. */
 export const BADGE_POLL_MS = 60_000;
 
+/** How many times its wait the poll waits at most after failed loads. */
+export const POLL_BACKOFF_MAX = 8;
+
 /** Calls `load` at once and then `ms` after each call settles, until
  * `stop`: never two at once, and none after `stop`. A failed load is
- * `onError`'s and the poll keeps going. */
+ * `onError`'s and the poll keeps going, the wait doubling after each
+ * failure in a row (to `POLL_BACKOFF_MAX` times `ms`) and back to `ms`
+ * after a load that succeeds. */
 export class Poll {
   private timer: unknown = null;
   private live = false;
+  private failures = 0;
 
   constructor(private readonly load: () => Promise<void>, private readonly timers: Timers = realTimers, private readonly ms = POLL_MS, private readonly onError: (e: unknown) => void = () => {}) {}
 
@@ -76,14 +82,16 @@ export class Poll {
     this.running = true;
     try {
       await this.load();
+      this.failures = 0;
     } catch (e) {
+      this.failures++;
       if (this.live) this.onError(e);
     } finally {
       this.running = false;
     }
     if (!this.live) return;
     if (this.again) { this.again = false; void this.tick(); return; }
-    this.timer = this.timers.set(() => { this.timer = null; void this.tick(); }, this.ms);
+    this.timer = this.timers.set(() => { this.timer = null; void this.tick(); }, this.ms * Math.min(2 ** this.failures, POLL_BACKOFF_MAX));
   }
 }
 

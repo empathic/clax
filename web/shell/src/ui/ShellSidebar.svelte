@@ -1,3 +1,8 @@
+<script lang="ts" module>
+  // The strip the sidebar leaves when it is closed (ShellRail.svelte) comes in this chunk (`loadSidebar`, sidebar-chunk.ts).
+  export { default as ShellRail } from "./ShellRail.svelte";
+</script>
+
 <script lang="ts">
   // The artifact view's thread sidebar: the controller's state and intents
   // wired to the sidebar. It loads with the sidebar's chunk, after the first
@@ -23,8 +28,10 @@
   // list explains); Resolve and Reopen stay, and Send for a viewer who may
   // resolve its threads (`may_resolve`), as the daemon allows them.
   // A spectator's sidebar is read-only.
+  // The sidebar shows the timeline or the thread list, as this browser last
+  // chose (`sidebarView`), the timeline's band on the drawer's outer edge.
   // The drawer's controls (DrawerChrome) go around it; the extension's side
-  // panel mounts Sidebar alone, without them.
+  // panel mounts Sidebar alone, without them or the views.
   import { COMMENTS_OFF } from "../failure";
   import type { Thread } from "../threads";
   import { ownTarget, sendsFor } from "../view/send-menu";
@@ -33,8 +40,13 @@
   import { type ArtifactController, type Loaded, type ViewState, commentsOff } from "../view/artifact-controller";
   import { emptyLayer, writersIn } from "../view/live-layers";
   import DrawerChrome from "./DrawerChrome.svelte";
+  import { drawer } from "./drawer.svelte";
+  import { sidebarView } from "./sidebar-view.svelte";
   import LiveWriters from "./LiveWriters.svelte";
   import Sidebar from "./Sidebar.svelte";
+  // Sidebar.svelte imports its views when it mounts (the extension's panel
+  // has none); imported here too, they come with this chunk, not a fetch later.
+  import "./SidebarViews.svelte";
 
   let { ctl, s }: { ctl: ArtifactController; s: ViewState & { data: Loaded } } = $props();
   // Who writes where now (the live layers), named as the view knows them.
@@ -94,6 +106,7 @@
   onToggle={(t, shift, order) => ctl.toggleSelect(t, shift, order)} onClear={() => ctl.clearSelection()} onNote={v => ctl.setBatchNote(v)}
   compose={s.spectator || commentsOff(s) ? undefined : { version: ctl.shown(s), host: ctl }} readOnly={!!s.spectator} noReply={commentsOff(s) ? `${COMMENTS_OFF}.` : undefined}
   noSend={commentsOff(s) && s.data.artifact.may_resolve === false} live={s.spectator ? undefined : live}
-  onSendSelection={() => go(() => s.selection.ids, () => ctl.sendSelection())} onSendUnsent={() => go(() => unsent(s.threads, botView.claimed).map(t => t.id), () => ctl.sendUnsent(botView.claimed))} claimed={botView.claimed} onChoose={choose}
-  autoSend={s.autoSend} onAutoSend={on => ctl.setAutoSend(on)} {above} />
+  autoSend={s.autoSend} onAutoSend={on => ctl.setAutoSend(on)}
+  onSendSelection={() => go(() => s.selection.ids, () => ctl.sendSelection())} onSendUnsent={() => go(() => unsent(s.threads, botView.claimed).map(t => t.id), () => ctl.sendUnsent(botView.claimed))} claimed={botView.claimed} onChoose={choose} {above}
+  view={{ now: sidebarView.now, onChange: v => sidebarView.set(v), side: drawer.prefs.layout === "left" ? "left" : "right" }} />
 </DrawerChrome>

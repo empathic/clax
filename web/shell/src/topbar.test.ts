@@ -5,8 +5,76 @@ import { flush, mount } from "./test/svelte";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import MoreMenu from "./ui/MoreMenu.svelte";
 import PhoneTabs from "./ui/PhoneTabs.svelte";
+import VersionMenu from "./ui/VersionMenu.svelte";
 import { InboxFeed } from "./q/feed.svelte";
 import InboxLink from "./q/InboxLink.svelte";
+
+describe("the version control", () => {
+  const props = (over: Record<string, unknown> = {}) => {
+    const onToggle = vi.fn(), onLatest = vi.fn();
+    return { onToggle, onLatest, p: { shown: 46, latest: 46, newer: null, dot: false, open: false, onToggle, onLatest, input: () => ({}) as never, hrefFor: () => "", onChoose() {}, ...over } };
+  };
+  const parts = (root: HTMLElement) => ({ main: root.querySelector<HTMLButtonElement>("button.vmain"), menu: root.querySelector<HTMLButtonElement>("button.vbtn")! });
+
+  it("on the latest version is one menu button reading Latest, the number in its name", () => {
+    const { p, onToggle, onLatest } = props();
+    const m = mount(VersionMenu, p);
+    const { main, menu } = parts(m.root);
+    expect(main).toBeNull();
+    expect(m.root.querySelector(".version-menu.split")).toBeNull();
+    expect(menu.textContent).toContain("Latest");
+    expect(menu.getAttribute("aria-label")).toBe("Latest, version 46");
+    expect(menu.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(menu.getAttribute("aria-expanded")).toBe("false");
+    flush(() => menu.click());
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(onLatest).not.toHaveBeenCalled();
+    m.unmount();
+  });
+
+  it("once a newer version is out, splits into Reload for latest, which loads it, and the menu", () => {
+    const { p, onToggle, onLatest } = props({ newer: 47, dot: true });
+    const m = mount(VersionMenu, p);
+    const { main, menu } = parts(m.root);
+    expect(m.root.querySelector(".version-menu.split")).not.toBeNull();
+    expect(main!.textContent).toBe("Reload for latest");
+    expect(main!.matches(".primary.reload:not(.hide-sm)")).toBe(true);
+    expect(main!.getAttribute("aria-label")).toBe("Reload for latest, version 47");
+    expect(main!.hasAttribute("aria-haspopup")).toBe(false);
+    expect(menu.getAttribute("aria-label")).toBe("Versions, a newer version you have not seen");
+    expect(menu.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(menu.dataset.shellControl).toBe("versions");
+    flush(() => main!.click());
+    expect(onLatest).toHaveBeenCalledTimes(1);
+    expect(onToggle).not.toHaveBeenCalled();
+    flush(() => menu.click());
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    m.unmount();
+  });
+
+  it("on an older version the viewer chose, reads v12 of 46 and goes back to the latest", () => {
+    const { p, onToggle, onLatest } = props({ shown: 12, newer: 47 });
+    const m = mount(VersionMenu, p);
+    const { main, menu } = parts(m.root);
+    expect(main!.textContent).toBe("v12of 47");
+    expect(main!.classList.contains("hide-sm")).toBe(true);
+    expect(main!.getAttribute("aria-label")).toBe("v12 of 47, back to the latest");
+    flush(() => main!.click());
+    expect(onLatest).toHaveBeenCalledTimes(1);
+    expect(onToggle).not.toHaveBeenCalled();
+    expect(menu.getAttribute("aria-label")).toBe("Versions");
+    m.unmount();
+  });
+
+  it("with no way to the latest (a deleted artifact), keeps one menu button naming the version shown", () => {
+    const { p } = props({ shown: 12, onLatest: undefined });
+    const m = mount(VersionMenu, p);
+    const { main, menu } = parts(m.root);
+    expect(main).toBeNull();
+    expect(menu.getAttribute("aria-label")).toBe("v12 of 46");
+    m.unmount();
+  });
+});
 
 describe("Echo top bar parts", () => {
   it("Inbox links to /inbox with the unread count, hidden at 0, and shows to the owner only", async () => {
@@ -47,6 +115,55 @@ describe("Echo top bar parts", () => {
     expect(m.root.querySelector("[role=menu]")).toBeNull();
     expect(document.activeElement).toBe(b);
     m.unmount();
+  });
+
+  it("the more menu lists Usage, the week's ClaxBot credits, linking to their page", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    const usage = { href: "/settings/claxbot", text: "310 / 2,000", label: "ClaxBot: 310 of 2,000 credits used this week", title: "Your ClaxBot credits this week", warn: true, out: false };
+    const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), usage });
+    const b = m.root.querySelector("button.icon") as HTMLButtonElement;
+    flush(() => b.click());
+    const item = [...m.root.querySelectorAll<HTMLAnchorElement>("[role=menuitem]")].at(-1)!;
+    expect(item.textContent!.replace(/\s+/g, " ")).toBe("Usage 310 / 2,000");
+    expect(item.getAttribute("href")).toBe("/settings/claxbot");
+    expect(item.getAttribute("aria-label")).toBe("Usage: ClaxBot: 310 of 2,000 credits used this week");
+    expect(item.title).toBe("Your ClaxBot credits this week");
+    expect(item.classList.contains("warn")).toBe(true);
+    item.addEventListener("click", e => e.preventDefault());
+    flush(() => item.click());
+    expect(m.root.querySelector("[role=menu]")).toBeNull();
+    m.unmount();
+    // Without ClaxBot there is no Usage item.
+    const bare = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn() });
+    flush(() => (bare.root.querySelector("button.icon") as HTMLButtonElement).click());
+    expect([...bare.root.querySelectorAll("[role=menuitem]")].map(i => i.textContent)).toEqual(["Open raw", "Copy link"]);
+    bare.unmount();
+    vi.unstubAllGlobals();
+  });
+
+  it("the more menu stands in at phone width for the roster and the ClaxBot button, and at full width does not", () => {
+    const onPeople = vi.fn();
+    const onBot = { label: "ClaxBot, working", open: vi.fn() };
+    const names = (phone: boolean) => {
+      vi.stubGlobal("matchMedia", (q: string) => ({ matches: phone && q === "(max-width: 700px)" }));
+      const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), onPeople, onBot });
+      flush(() => (m.root.querySelector("button.icon") as HTMLButtonElement).click());
+      const items = [...m.root.querySelectorAll<HTMLElement>("[role=menuitem]")];
+      return { m, items, text: items.map(i => i.textContent) };
+    };
+    const wide = names(false);
+    expect(wide.text).toEqual(["Open raw", "Copy link"]);
+    wide.m.unmount();
+    const phone = names(true);
+    expect(phone.text).toEqual(["Versions", "People and agents", "ClaxBot, working", "Open raw", "Copy link"]);
+    flush(() => phone.items[1].click());
+    expect(onPeople).toHaveBeenCalledTimes(1);
+    expect(phone.m.root.querySelector("[role=menu]")).toBeNull();
+    flush(() => (phone.m.root.querySelector("button.icon") as HTMLButtonElement).click());
+    flush(() => phone.m.root.querySelectorAll<HTMLElement>("[role=menuitem]")[2].click());
+    expect(onBot.open).toHaveBeenCalledTimes(1);
+    phone.m.unmount();
+    vi.unstubAllGlobals();
   });
 
   it("the more menu keeps a disabled, focusable open raw for a deleted artifact", async () => {
@@ -120,6 +237,16 @@ describe("Echo top bar parts", () => {
     Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: Object.freeze({ transport: "host", shell: "clax://app", content: "clax://{id}.c" }) }) });
     try {
       expect(await items()).toEqual({ items: ["Versions"], phoneOnly: true });
+      // Clone with git and Usage have no other home in the app's bar: the menu then shows at every width, with them alone at full width.
+      vi.stubGlobal("matchMedia", () => ({ matches: false }));
+      const usage = { href: "/settings/claxbot", text: "310 / 2,000", label: "ClaxBot: 310 of 2,000 credits used this week", title: "Your ClaxBot credits this week", warn: false, out: false };
+      for (const extra of [{ onClone: vi.fn() }, { usage }, { onClone: vi.fn(), usage }]) {
+        const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), onFork: vi.fn(), ...extra });
+        expect(m.root.querySelector(".more")!.classList.contains("phone-only")).toBe(false);
+        flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
+        expect(Array.from(m.root.querySelectorAll("[role=menuitem]")).map(i => i.textContent!.replace(/\s+/g, " "))).toEqual([...("onClone" in extra ? ["Clone with git…"] : []), ...("usage" in extra ? ["Usage 310 / 2,000"] : [])]);
+        m.unmount();
+      }
     } finally {
       delete (window as { claxTransport?: unknown }).claxTransport;
       vi.unstubAllGlobals();
@@ -252,7 +379,8 @@ describe("the top bar on a live page", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("calls the versions snapshots in the version menu", async () => {
     const view = await mountView(async () => new Response(JSON.stringify(liveArtifact())));
     const vbtn = await waitFor(() => view.root.querySelector<HTMLButtonElement>("button.vbtn"), "the version button");
-    expect(vbtn.getAttribute("aria-label")).toBe("Snapshot 2 of 2");
+    expect(vbtn.getAttribute("aria-label")).toBe("Latest, snapshot 2");
+    expect(vbtn.textContent).toContain("Latest");
     flush(() => vbtn.click());
     const rows = await waitFor(() => { const r = view.root.querySelectorAll(".vrow"); return r.length === 2 && r; }, "the version rows");
     expect(rows[0].querySelector(".h")?.textContent).toContain("snapshot");
@@ -278,6 +406,39 @@ describe("the top bar and the sidebar with the Comments switch, and an app's hea
   const APP = { version: 8, bundle_version: 3, installs: 12, published_by: { name: "Jun", login: "junp" }, owner: { name: "Alex", login: "akesling" } };
   const withFields = (extra: Record<string, unknown>) => { const a = artifact(8); return { ...a, artifact: { ...a.artifact, ...extra } }; };
   const answer = (extra: Record<string, unknown>) => async () => new Response(JSON.stringify(withFields(extra)));
+
+  it("mounts the Analytics panel, which gives the more menu its Analytics…, only when the artifact carries analytics", async () => {
+    const { analyticsOpen } = await import("./ui/more-menu.svelte");
+    const plain = await mountView(answer({}));
+    await waitFor(() => plain.root.querySelector("button.comment"), "the top bar");
+    // Every chunk the bar asked for has loaded: an Analytics panel would be mounted by now.
+    await vi.dynamicImportSettled();
+    flush();
+    expect(analyticsOpen.current).toBeNull();
+    plain.unmount();
+    const empty = { analytics: "on", from: "2026-10-21", to: "2026-11-19", totals: { visitors: 0, views: 0, framed: 0, load_ms_median: null, lcp_ms_median: null }, days: [], versions: [], pages: [], referrers: [], countries: [], devices: [], versions_viewed: [] };
+    await mountView(async (url: string) => new Response(JSON.stringify(url.includes("/analytics") ? empty : withFields({ analytics: "on" }))));
+    const open = await waitFor(() => analyticsOpen.current, "the Analytics panel, mounted");
+    flush(() => open());
+    await waitFor(() => document.querySelector("[data-testid=analytics-empty]"), "the panel's empty state");
+    expect(document.querySelector("[data-testid=analytics-panel] h2")!.textContent).toBe("Analytics for “T”");
+  });
+
+  it("the more menu lists Analytics… where it is given an opener, which closes it and opens the panel", async () => {
+    const onAnalytics = vi.fn();
+    const without = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn() });
+    flush(() => without.root.querySelector<HTMLButtonElement>("button.icon")!.click());
+    expect(Array.from(without.root.querySelectorAll("[role=menuitem]")).map(i => i.textContent)).not.toContain("Analytics…");
+    without.unmount();
+    const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onAnalytics });
+    flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
+    const item = Array.from(m.root.querySelectorAll<HTMLElement>("[role=menuitem]")).find(i => i.textContent === "Analytics…");
+    expect(item).toBeDefined();
+    flush(() => item!.click());
+    expect(onAnalytics).toHaveBeenCalledTimes(1);
+    expect(m.root.querySelector("[role=menu]")).toBeNull();
+    m.unmount();
+  });
 
   it("comment button disabled when comments off", async () => {
     const view = await mountView(answer({ comments: false }));
@@ -356,7 +517,8 @@ describe("the top bar and the sidebar with the Comments switch, and an app's hea
     const comment = await waitFor(() => view.root.querySelector<HTMLButtonElement>("button.comment"), "the Comment button");
     await waitFor(() => view.root.querySelector('[data-thread="tA"]'), "the thread's card");
     expect(comment.disabled).toBe(false);
-    view.controller().reply(thread as never, "one more");
+    // The reply box goes with comments, so the stage says why.
+    void view.controller().reply(thread as never, "one more").catch(() => {});
     await waitFor(() => comment.disabled, "Comment turned off");
     expect(comment.title).toBe("Comments are off for this page");
     expect(writes.some(u => u.endsWith("/threads/tA/comments"))).toBe(true);

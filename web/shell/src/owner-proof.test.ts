@@ -96,6 +96,35 @@ describe("the owner browser session's proof", () => {
     expect(other).not.toHaveBeenCalled();
   });
 
+  it("tells why an API request found no Clax, and when Clax answered, leaving the answer to its caller", async () => {
+    const heard: (string | null)[] = [];
+    let pending = 0, settled = 0;
+    const reach = { heard: (t: string | null) => { heard.push(t); }, pending: () => { pending++; return () => { settled++; }; } };
+    let next: () => Response = () => new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } });
+    const w = proofFetch(async () => next(), ORIGIN, () => null, () => {}, reach);
+    const res = await w("/api/artifacts/7q3k9mzx2b4t/threads", { method: "POST" });
+    expect(await res.text()).toBe("error code: 1016");
+    next = () => { throw new TypeError("Failed to fetch"); };
+    await expect(w("/api/artifacts")).rejects.toThrow(TypeError);
+    next = () => new Response("<!doctype html>", { status: 200, headers: { "content-type": "text/html" } });
+    await w("/api/artifacts");
+    next = () => new Response(JSON.stringify({ error: { code: "forbidden", message: "no" } }), { status: 403 });
+    await w("/api/artifacts");
+    next = () => new Response("{}", { headers: { "content-type": "application/json" } });
+    await w("/healthz");
+    // A page's file, and a request its caller aborted, tell nothing.
+    next = () => new Response("x", { status: 530 });
+    await w("/a/7q3k9mzx2b4t/index.html");
+    next = () => { throw new DOMException("aborted", "AbortError"); };
+    await expect(w("/api/artifacts")).rejects.toThrow();
+    // A local daemon's empty 404 for a route it does not have (/api/hosted/me) is Clax refusing.
+    next = () => new Response(null, { status: 404 });
+    await w("/api/hosted/me");
+    expect(heard).toEqual(["not_clax", "unreachable", "not_clax", null, null, null]);
+    // Only the write is watched for hanging.
+    expect([pending, settled]).toEqual([1, 1]);
+  });
+
   it("is added to a realtime route's address", () => {
     expect(withProof("ws://localhost:7480/api/stream", "cxp_a+b")).toBe("ws://localhost:7480/api/stream?owner_proof=cxp_a%2Bb");
     expect(withProof("/api/stream?last_event_id=s%3A1", "cxp_a")).toBe("/api/stream?last_event_id=s%3A1&owner_proof=cxp_a");

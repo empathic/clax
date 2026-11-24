@@ -7,8 +7,9 @@ import AdminPeople from "./AdminPeople.svelte";
 import AdminPricing from "./AdminPricing.svelte";
 import AdminProvider from "./AdminProvider.svelte";
 import AdminUsage from "./AdminUsage.svelte";
+import AdminWeb from "./AdminWeb.svelte";
 import type { ModelPricing } from "./api";
-import { adminPerson, defaultPriced, listing, meBot, modelPricing, pricing, provider, unitPricing, usage } from "./fixtures";
+import { adminPerson, defaultPriced, errorDetail, listing, meBot, modelPricing, pricing, provider, providerFailure, unitPricing, usage, webSettings, WEB_LINES } from "./fixtures";
 import { forget } from "./me";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
@@ -21,7 +22,7 @@ const ALEX = adminPerson({ person: "p_alex", name: "Alex", role: "owner", key_so
 const SAM = adminPerson();
 const MIA = adminPerson({ person: "p_mia", name: "Mia", role: "admin", flags: { claxbot: false, claxbot_unenforced: true }, key_source: "instance" });
 
-beforeEach(() => { forget(); history.replaceState(null, "", "/admin"); });
+beforeEach(() => { forget(); history.replaceState(null, "", "/settings/roles"); });
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 describe("Admin", () => {
@@ -29,17 +30,17 @@ describe("Admin", () => {
     const calls = stubFetch({ "GET /api/me/bot": meBot({ role: "member" }) });
     const m = mount(AdminPage, {});
     await settle();
-    expect(m.root.textContent).toContain("Admin is for the owner and the admins they name");
+    expect(m.root.textContent).toContain("This screen is for the owner and the admins they name");
     expect(calls.some(c => c.url.startsWith("/api/admin"))).toBe(false);
   });
 
-  it("opens the tab the address names, among links to the audit log and, locally, Settings", async () => {
-    history.replaceState(null, "", "/admin?tab=usage");
+  it("shows the screen its tab names, under that screen's name", async () => {
     stubFetch({ "GET /api/me/bot": meBot({ role: "admin" }), "GET /api/admin/usage": usage() });
-    const m = mount(AdminPage, {});
+    const m = mount(AdminPage, { tab: "usage" });
     await vi.waitFor(() => expect(m.root.textContent).toContain("Credits spent (paid)"));
-    const tabs = [...m.root.querySelectorAll(".bpg-tabs a")].map(a => [a.textContent, a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["People & flags", null], ["Provider", null], ["Pricing", null], ["Usage", "page"], ["Audit", null], ["Settings", null]]);
+    expect(m.root.querySelector("h2")!.textContent).toBe("Usage");
+    expect(document.title).toBe("Usage · Settings · Clax");
+    expect(m.root.querySelector(".bpg-tabs")).toBeNull();
   });
 });
 
@@ -170,6 +171,112 @@ describe("Admin › Provider", () => {
     expect(calls.filter(c => c.url === "/api/admin/provider/models")).toHaveLength(2);
   });
 
+  it("shows how the test call and the key's last request failed, and why the models could not be listed", async () => {
+    const auth = errorDetail({ class: "auth", status: 401, type: "authentication_error", message: "invalid x-api-key", request_id: "req_011Auth" });
+    stubFetch({
+      "GET /api/admin/provider": provider({ key: { ...provider().key, problem: "The last request with this key failed: the provider refused it.", last_problem: { ...auth, at: "2026-10-21T11:55:00Z" } } }),
+      "GET /api/admin/provider/models": [502, { error: { code: "provider_error", message: "the provider refused the key", detail: auth } }],
+      "POST /api/admin/provider/test": { ok: false, latency_ms: 180, error: "the provider refused the request", detail: errorDetail() },
+    });
+    const m = mount(AdminProvider, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    const key = m.root.querySelector(".field .pv-problem")!;
+    expect(key.querySelector(".merr-lead")!.textContent).toBe("The last request with this key failed 5 min ago: the model provider refused the key.");
+    expect(key.querySelector(".merr-said")!.textContent).toBe("The provider said: “invalid x-api-key”");
+    expect(key.querySelector(".merr-meta")!.textContent).toBe("HTTP 401 · authentication_error · request req_011Auth");
+    expect(key.querySelector(".merr-next")).toBeNull();
+    const models = m.root.querySelector('[aria-labelledby="pv-m"] .pv-problem')!;
+    expect(models.querySelector(".merr-lead")!.textContent).toBe("The model provider refused the key.");
+    click(button(m.root, "Test connection"));
+    await settle();
+    expect(m.root.querySelector('[role="status"] .err')!.textContent).toBe("The call failed: the provider refused the request");
+    const t = m.root.querySelector(".pv-test")!;
+    expect(t.querySelector(".merr-lead")!.textContent).toBe("The model provider refused the request as invalid.");
+    expect(t.querySelector(".merr-said")!.textContent).toContain("Your credit balance is too low");
+    expect(t.querySelector(".merr-meta")!.textContent).toBe("HTTP 400 · invalid_request_error · request req_011CXyz");
+  });
+
+  it("lists the instance key's failed requests newest first, narrows them to a person, and pages on", async () => {
+    const MODELS = { models: [{ id: "claude-sonnet-5-5", display_name: "Claude Sonnet 5.5" }], fetched_at: "x" };
+    const sam = providerFailure({ message: "<img src=x onerror=alert(1)><b>bold</b>" });
+    const test = providerFailure({ id: "f2", at: "2026-10-20T09:00:00Z", person: { id: "*owner", name: null }, run_id: null, request: "provider.test", model: null, class: "auth", status: 401, type: "authentication_error", message: "invalid x-api-key", request_id: "req_011Auth", since_key_change: false });
+    const older = providerFailure({ id: "f3", at: "2026-10-19T09:00:00Z", run_id: "r0", class: "overloaded", status: 529, type: "overloaded_error", message: "Overloaded", request_id: null });
+    const calls = stubFetch({
+      "GET /api/admin/provider": provider(), "GET /api/admin/provider/models": MODELS,
+      "GET /api/admin/provider/failures": { failures: [sam, test], next: "c2" },
+      "GET /api/admin/provider/failures?before=c2": { failures: [older], next: null },
+      "GET /api/admin/provider/failures?person=p_sam": { failures: [sam], next: "c9" },
+      "GET /api/admin/provider/failures?person=p_sam&before=c9": { failures: [older], next: null },
+      "POST /api/admin/provider/test": { ok: true, latency_ms: 90 },
+    });
+    const m = mount(AdminProvider, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    const card = m.root.querySelector('section[aria-labelledby="pv-f"]')!;
+    expect(card.querySelector("h3")!.textContent).toBe("Failures");
+    expect(card.textContent).toContain("Clax keeps the last 100 per person and 1,000 in all, for 30 days.");
+    let rows = [...card.querySelectorAll(".pv-fails > li")];
+    expect(rows).toHaveLength(2);
+    const [a, b] = rows;
+    const time = a.querySelector("time")!;
+    expect(time.textContent).toBe("5 min ago");
+    expect(time.getAttribute("title")).toContain("2026");
+    expect(a.querySelector(".pv-fperson")!.textContent).toBe("Sam");
+    expect(a.querySelector<HTMLAnchorElement>(".pv-fhead a")!.getAttribute("href")).toBe("/settings/audit?q=r1");
+    expect(a.querySelector(".pv-fhead a")!.textContent).toBe("run r1");
+    expect(a.querySelector(".pv-fhead")!.textContent).toContain("claude-sonnet-5-5");
+    expect(a.querySelector(".merr-lead")!.textContent).toBe("The model provider refused the request as invalid.");
+    expect(a.querySelector(".merr-meta")!.textContent).toBe("HTTP 400 · invalid_request_error · request req_011CXyz");
+    // The provider's words are text, never markup.
+    const said = a.querySelector("blockquote.merr-said")!;
+    expect(said.textContent).toBe("The provider said: “<img src=x onerror=alert(1)><b>bold</b>”");
+    expect(said.children).toHaveLength(0);
+    expect(card.querySelector("img, b")).toBeNull();
+    expect(a.querySelector(".pv-fold")).toBeNull();
+    // An admin action, by a person with no name, before the key was last set.
+    expect(b.querySelector(".pv-fperson")!.textContent).toBe("*owner");
+    expect(b.querySelector(".pv-fhead")!.textContent).toContain("Test connection");
+    expect(b.querySelector(".pv-fold")!.textContent).toBe("before the key was last set");
+    expect(b.querySelector(".merr-lead")!.textContent).toBe("The model provider refused the key.");
+    expect(b.querySelector(".merr-next")).toBeNull();
+
+    click(button(card, "Show more"));
+    await settle();
+    expect([...card.querySelectorAll(".pv-fails > li")]).toHaveLength(3);
+    expect(card.querySelector(".pv-fails > li:last-child .merr-lead")!.textContent).toBe("The model provider is overloaded.");
+    expect(button(card, "Show more")).toBeUndefined();
+
+    click(a.querySelector(".pv-fperson")!);
+    await settle();
+    expect(calls.at(-1)!.url).toBe("/api/admin/provider/failures?person=p_sam");
+    rows = [...card.querySelectorAll(".pv-fails > li")];
+    expect(rows).toHaveLength(1);
+    expect(card.querySelector(".pv-fwho")!.textContent).toContain("Showing only Sam's.");
+    click(button(card, "Show more"));
+    await settle();
+    expect(calls.at(-1)!.url).toBe("/api/admin/provider/failures?person=p_sam&before=c9");
+    expect([...card.querySelectorAll(".pv-fails > li")]).toHaveLength(2);
+    click(button(card, "Show everyone"));
+    await settle();
+    expect(calls.at(-1)!.url).toBe("/api/admin/provider/failures");
+    expect([...card.querySelectorAll(".pv-fails > li")]).toHaveLength(2);
+    expect(card.querySelector(".pv-fwho")).toBeNull();
+
+    // Test connection lists them again.
+    const before = calls.filter(c => c.url.startsWith("/api/admin/provider/failures")).length;
+    click(button(m.root, "Test connection"));
+    await settle();
+    expect(calls.filter(c => c.url.startsWith("/api/admin/provider/failures")).length).toBe(before + 1);
+  });
+
+  it("says when the instance key has no failed requests", async () => {
+    stubFetch({ "GET /api/admin/provider": provider(), "GET /api/admin/provider/models": { models: [], fetched_at: "x" }, "GET /api/admin/provider/failures": { failures: [], next: null } });
+    const m = mount(AdminProvider, {});
+    await settle();
+    const card = m.root.querySelector('section[aria-labelledby="pv-f"]')!;
+    expect(card.querySelector(".pv-fails")).toBeNull();
+    expect(card.textContent).toContain("No failed requests with the instance key.");
+  });
+
   it("takes a custom model ID the provider does not list", async () => {
     const calls = stubFetch({ "GET /api/admin/provider": provider(), "GET /api/admin/provider/models": { models: [{ id: "claude-sonnet-5-5", display_name: "Claude Sonnet 5.5" }], fetched_at: "x" }, "PUT /api/admin/provider": provider() });
     const m = mount(AdminProvider, {});
@@ -249,6 +356,171 @@ describe("Admin › Provider", () => {
     const api = m.root.querySelector<HTMLSelectElement>("#pv-api")!;
     expect(api.value).toBe("gemini");
     expect(api.disabled).toBe(true);
+  });
+});
+
+describe("Admin › Web", () => {
+  const WEB_PRICING = pricing({ lines: [...pricing().lines, ...WEB_LINES] });
+
+  it("the_web_tab_saves_the_rule", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings({ sources: { "fetch.max_per_run": "file" } }),
+      "GET /api/admin/pricing": WEB_PRICING,
+      "PUT /api/admin/web": (b: unknown) => webSettings({ configured: { search: true, fetch: true }, search: { ...webSettings().search, enabled: true, provider: "exa" }, fetch: { ...webSettings().fetch, enabled: true, url_rule: "allowlist", allowlist: (b as { fetch: { allowlist: string[] } }).fetch.allowlist } }),
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    // The risk, beside the switches.
+    expect(m.root.textContent).toContain("Web content can try to steer ClaxBot. It fetches only URLs from the sender's words, searches and pages it read, but which links it follows and what it searches for can still carry data out.");
+    const search = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Web search"]')!;
+    const fetchSw = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Web fetch"]')!;
+    expect([search.getAttribute("aria-checked"), fetchSw.getAttribute("aria-checked")]).toEqual(["false", "false"]);
+    // Each provider with its price from the Pricing lines.
+    const prov = m.root.querySelector<HTMLSelectElement>("#aw-provider")!;
+    expect([...prov.options].map(o => o.textContent)).toEqual(["Ceramic · 25 credits per thousand requests", "Exa · 700 credits per thousand requests", "Linkup · 500 credits per thousand requests"]);
+    expect(m.root.querySelector<HTMLInputElement>("#aw-max-fetch")!.readOnly).toBe(true);
+    const rule = m.root.querySelector<HTMLSelectElement>("#aw-rule")!;
+    expect([...rule.options].map(o => [o.value, o.textContent])).toEqual([["sourced", "Only URLs from the sender, searches and fetched pages"], ["any_public", "Any public URL"], ["allowlist", "Allowlist"]]);
+    expect(m.root.querySelector("#aw-allow")).toBeNull();
+    expect(m.root.textContent).not.toContain("Any URL ClaxBot writes may be fetched");
+    choose(rule, "any_public");
+    expect(m.root.textContent).toContain("Any URL ClaxBot writes may be fetched, so a page can make it send data out.");
+    choose(rule, "allowlist");
+    expect(m.root.textContent).not.toContain("Any URL ClaxBot writes may be fetched");
+    type(m.root.querySelector<HTMLTextAreaElement>("#aw-allow") as unknown as HTMLInputElement, "docs.example.com\n*.rust-lang.org\n");
+    click(search);
+    click(fetchSw);
+    choose(prov, "exa");
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")).toEqual({ url: "/api/admin/web", method: "PUT", body: { search: { enabled: true, provider: "exa" }, fetch: { enabled: true, url_rule: "allowlist", allowlist: ["docs.example.com", "*.rust-lang.org"] } } });
+    expect(m.root.querySelector('[role="status"]')!.textContent).toContain("Saved.");
+  });
+
+  it("shows why web is unavailable, in place of the credentials hint", async () => {
+    const why = 'the site domain "https://sites.example/x" is not a bare host name';
+    stubFetch({ "GET /api/admin/web": webSettings({ unavailable: why }), "GET /api/admin/pricing": WEB_PRICING });
+    const m = mount(AdminWeb, {});
+    await settle();
+    expect(m.root.textContent).toContain(`Web access is off: ${why}`);
+    expect(m.root.textContent).not.toContain("Search needs the Cloudflare");
+  });
+
+  it("a_source_that_cannot_run_here_says_why", async () => {
+    stubFetch({
+      "GET /api/admin/web": webSettings({ unavailable: "Workers AI cannot run where this Worker runs." }),
+      "GET /api/admin/pricing": WEB_PRICING,
+    });
+    const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    expect(m.root.textContent).toContain("Web access is off: Workers AI cannot run where this Worker runs.");
+    expect(m.root.textContent).not.toContain("Search needs the Cloudflare");
+  });
+
+  it("a_check_still_running_says_so", async () => {
+    stubFetch({
+      "GET /api/admin/web": webSettings({ configured: { search: true, fetch: true }, checking: true }),
+      "GET /api/admin/pricing": WEB_PRICING,
+    });
+    const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    expect(m.root.textContent).toContain("Checking whether web access can run here.");
+  });
+
+  it("the_token_is_write_only", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings(),
+      "GET /api/admin/pricing": WEB_PRICING,
+      "PUT /api/admin/web/token": webSettings({ configured: { search: true, fetch: true }, cloudflare: { account_id: "", token: { set: true, last4: "9f3a", set_at: "2026-10-21T09:00:00Z", set_by: { id: "*owner", name: "Alex" }, last_ok_at: null } } }),
+    });
+    const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    expect(m.root.textContent).toContain("Search needs the Cloudflare account ID and API token below. Fetch works without them, except for PDF and Office documents.");
+    click(button(m.root, /^Set/));
+    const input = m.root.querySelector<HTMLInputElement>('.bkey input[type="password"]')!;
+    type(input, "cf-secret-9f3a");
+    flush(() => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await settle();
+    expect(calls.find(c => c.url === "/api/admin/web/token")).toEqual({ url: "/api/admin/web/token", method: "PUT", body: { token: "cf-secret-9f3a" } });
+    expect(m.root.querySelector('.bkey input[type="password"]')).toBeNull();
+    expect(m.root.querySelector(".bkey-s")!.textContent).toContain("ending 9f3a");
+    expect(m.root.textContent).not.toContain("cf-secret");
+    // With the token, search is configured too: no hint.
+    expect(m.root.textContent).not.toContain("Search needs the Cloudflare");
+  });
+
+  it("saves the gateway, the provider key alias and the results per search, and refuses a limit outside 1 to 10", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings({ sources: { "search.limit": "default" } }),
+      "PUT /api/admin/web": (b: unknown) => { const x = (b as { search: { gateway: string; byok_alias: string; limit: number } }).search; return webSettings({ search: { ...webSettings().search, ...x } }); },
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    expect(m.root.textContent).toContain("With an alias, searches bill the provider key stored on the gateway instead of Cloudflare credits.");
+    type(m.root.querySelector("#aw-limit")!, "11");
+    click(button(m.root, "Save"));
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Results per search is a whole number from 1 to 10.");
+    expect(calls.some(c => c.method === "PUT")).toBe(false);
+    type(m.root.querySelector("#aw-limit")!, "7");
+    type(m.root.querySelector("#aw-gateway")!, " edge ");
+    type(m.root.querySelector("#aw-byok")!, "exa-key");
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ search: { gateway: "edge", byok_alias: "exa-key", limit: 7 } });
+    expect(m.root.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("never sends a field the configuration sets, says Nothing changed, and refuses a cap that is not a whole number", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings({ sources: { "search.provider": "file", "fetch.max_per_run": "env:CLAX_BOT__WEB", "search.limit": "file", "search.gateway": "file", "search.byok_alias": "file" } }),
+      "PUT /api/admin/web": webSettings(),
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    click(button(m.root, "Save"));
+    expect(m.root.querySelector('[role="status"]')!.textContent).toBe("Nothing changed.");
+    expect(calls.some(c => c.method === "PUT")).toBe(false);
+    choose(m.root.querySelector("#aw-provider")!, "exa");
+    type(m.root.querySelector("#aw-max-fetch")!, "99");
+    type(m.root.querySelector("#aw-limit")!, "9");
+    type(m.root.querySelector("#aw-gateway")!, "other");
+    type(m.root.querySelector("#aw-byok")!, "other");
+    type(m.root.querySelector("#aw-max-search")!, "0");
+    click(button(m.root, "Save"));
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Searches per run is a whole number, 1 or more.");
+    type(m.root.querySelector("#aw-max-search")!, "12");
+    click(button(m.root, "Save"));
+    await settle();
+    // Only the one field the configuration leaves editable is sent.
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ search: { max_per_run: 12 } });
+  });
+
+  it("keeps unsaved edits when the token is set", async () => {
+    stubFetch({
+      "GET /api/admin/web": webSettings(),
+      "PUT /api/admin/web/token": webSettings({ search: { ...webSettings().search, enabled: true }, cloudflare: { account_id: "", token: { set: true, last4: "9f3a", set_at: "2026-10-21T09:00:00Z", last_ok_at: null } } }),
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    type(m.root.querySelector("#aw-max-search")!, "4");
+    choose(m.root.querySelector("#aw-rule")!, "any_public");
+    click(button(m.root, /^Set/));
+    const input = m.root.querySelector<HTMLInputElement>('.bkey input[type="password"]')!;
+    type(input, "cf-secret-9f3a");
+    flush(() => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await settle();
+    expect(m.root.querySelector(".bkey-s")!.textContent).toContain("ending 9f3a");
+    expect(m.root.querySelector<HTMLInputElement>("#aw-max-search")!.value).toBe("4");
+    expect(m.root.querySelector<HTMLSelectElement>("#aw-rule")!.value).toBe("any_public");
+    expect(m.root.querySelector('[role="switch"][aria-label="Web search"]')!.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("is not asked for the daemon's account on a hosted Clax", async () => {
+    stubFetch({ "GET /api/admin/web": webSettings(), "GET /api/hosted/me": { name: "x" } });
+    const m = mount(AdminWeb, {});
+    await settle();
+    expect(m.root.querySelector("#aw-account")).toBeNull();
+    expect(m.root.querySelector(".bkey")).toBeNull();
   });
 });
 

@@ -17,6 +17,7 @@
 import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { addSheet } from "../../bridge/src/sheet";
+import { checkInstance } from "../../sdk/src/client";
 import { TOKEN_NAME } from "../../sdk/src/config";
 import { type Recorder, installDiagnostics } from "../../sdk/src/diagnostics";
 import { forgetReporter as forgetKept } from "../../sdk/src/keystore";
@@ -92,7 +93,9 @@ export interface ReporterRef {
  * neither. Call it on sign-out; it needs no running overlay. */
 export async function forgetReporter(r: ReporterRef): Promise<void> {
   for (const k of ["instance", "queue", "user"] as const) if (typeof r?.[k] !== "string" || !r[k]) throw new TypeError(`Clax.forgetReporter: ${k} must be a non-empty string`);
-  await forgetKept(r.instance.replace(/\/+$/, ""), r.queue, r.user);
+  const instance = r.instance.replace(/\/+$/, "");
+  checkInstance(instance, "Clax.forgetReporter");
+  await forgetKept(instance, r.queue, r.user);
 }
 
 /** The overlay's mounted component: what `Overlay.svelte` exports. */
@@ -107,10 +110,6 @@ interface Mounted {
  * both builds). Run from source, the overlay keeps this placeholder, which
  * styles nothing. */
 const COMPONENT_CSS: string = "__CLAX_OVERLAY_COMPONENT_CSS__";
-
-/** Inline style of the host: fixed, sized to nothing and passing every
- * pointer event, so the page's rules can neither hide nor move it. */
-const HOST_CSS = "all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;display:block!important;pointer-events:none!important;visibility:visible!important;opacity:1!important;z-index:2147483647!important;";
 
 /** Starts recording the page's recent errors (spec 2026-10-29-feedback-loop
  * §4.4) before the overlay starts, so errors from the page's own start are
@@ -151,12 +150,16 @@ function themeOf(theme: Record<string, string> | undefined): Record<string, stri
  * the page's bottom right corner unless `opts.launcher` is false. */
 export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlugin[], doc: Document = document): OverlayHandle {
   if (typeof opts?.instance !== "string" || !opts.instance) throw new TypeError("Clax.overlay: instance must be a non-empty string");
+  const instance = opts.instance.replace(/\/+$/, "");
+  checkInstance(instance, "Clax.overlay");
   const installId = installIdOf(doc, opts.install);
   if (opts.queue !== undefined || !installId) if (typeof opts.queue !== "string" || !opts.queue) throw new TypeError("Clax.overlay: queue must be a non-empty string");
   if (typeof opts.auth !== "function") throw new TypeError("Clax.overlay: auth must be a function");
   if (opts.launcher !== undefined && opts.launcher !== "corner" && opts.launcher !== false) throw new TypeError('Clax.overlay: launcher must be "corner" or false');
   if (opts.nonce !== undefined && (typeof opts.nonce !== "string" || !opts.nonce)) throw new TypeError("Clax.overlay: nonce must be a non-empty string");
-  const instance = opts.instance.replace(/\/+$/, "");
+  const onShowReports = opts.onShowReports;
+  if (onShowReports !== undefined && typeof onShowReports !== "function") throw new TypeError("Clax.overlay: onShowReports must be a function");
+  if (opts.reportsLabel !== undefined && (typeof opts.reportsLabel !== "string" || !opts.reportsLabel.trim())) throw new TypeError("Clax.overlay: reportsLabel must be a non-empty string");
   const win = doc.defaultView ?? window;
   if (opts.user !== undefined && (typeof opts.user !== "string" || !opts.user)) throw new TypeError("Clax.overlay: user must be a non-empty string");
   // Without an install the page's own options start it at once (a bad
@@ -192,8 +195,8 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
   for (const r of plugins.refused) console.warn(`Clax.overlay: plugin ${r.name} refused: ${r.reason}`);
 
   const host = doc.createElement(OVERLAY_TAG);
-  host.style.cssText = HOST_CSS;
-  // The site's look: --clax-* custom properties on the host reach into its shadow root (tokens.css).
+  // The host's own rules are `:host`'s in tokens.css (the root's adopted sheet): it has no `style` but
+  // the site's look, --clax-* custom properties, which reach into its shadow root (tokens.css).
   for (const [k, v] of Object.entries({ ...plugins.theme(), ...themeOf(opts.theme) })) host.style.setProperty(k, v);
   const root = host.attachShadow({ mode: "open" });
   const css = [TOKENS, COMPONENT_CSS].join("\n");
@@ -229,6 +232,10 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
         queueInfo: s.queueInfo,
         onBadge: (n: number) => { lastBadge = n; emit("badge", n); },
         onFiled: (r: Report) => emit("filed", r),
+        onShowReports: onShowReports && ((r?: Report) => {
+          try { onShowReports(r); } catch (e) { console.error("Clax.overlay: onShowReports threw", e); }
+        }),
+        reportsLabel: opts.reportsLabel,
         onActive: (on: boolean) => { if (on === lastActive) return; lastActive = on; emit("active", on); },
         plugins, presentation: opts.presentation, css, defaults: opts.defaults ?? {}, copy: opts.copy ?? {},
       },

@@ -1,5 +1,8 @@
 import { causedFetch } from "./events";
 import type { Working } from "./view/working-model";
+import { readJson as json } from "./trouble";
+
+export { ApiError } from "./trouble";
 
 export type Artifact = {
   id: string; title: string; description: string | null; icon: string | null;
@@ -55,7 +58,17 @@ export type Artifact = {
   may_approve?: boolean;
   /** From the same: what the current version declares that waits for approval, null for nothing. */
   pending_capabilities?: PendingCapabilities | null;
+  /** From `GET /api/artifacts/<id>` and the bootstrap: the Content-Security-Policy Clax sends on its own
+   * content, `self` or `unrestricted`. */
+  content_security_policy?: ContentSecurityPolicy;
+  /** From `GET /api/artifacts/<id>` on a hosted Clax, for whoever administers it (never a draft's): whether Clax
+   * counts visits to its site, `on` or `off`. Absent elsewhere. */
+  analytics?: "on" | "off";
 };
+/** The Content-Security-Policy Clax sends on an artifact's own content: one that holds its pages to their own
+ * site (`self`, every artifact's at first), or no source restrictions (`unrestricted`): its pages then load code
+ * from, and send what they read to, any site. */
+export type ContentSecurityPolicy = "self" | "unrestricted";
 /** What a version declares that waits for approval: gated capability names,
  * hosts `net` has not approved, and the digest of the declaration shown,
  * which an approval must name. */
@@ -100,24 +113,6 @@ export type Version = {
   note?: string | null; addresses?: string[];
 };
 
-/** A non-OK API response; `status` is the HTTP status code, `code` the
- * daemon's error code when the response named one. */
-export class ApiError extends Error {
-  constructor(public status: number, message: string, public code: string | null = null) {
-    super(`${status} ${message}`);
-    this.name = "ApiError";
-  }
-}
-
-async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).error?.message ?? msg; } catch { /* not json */ }
-    throw new ApiError(res.status, msg);
-  }
-  return res.json() as Promise<T>;
-}
-
 /** Every live artifact; with `only`, that artifact alone, or none when it is not live. */
 export async function listArtifacts(only?: string, init?: RequestInit): Promise<Artifact[]> {
   return (await json<{ artifacts: Artifact[] }>(await (init ? fetch(only ? `/api/artifacts?artifact=${only}` : "/api/artifacts", init) : fetch(only ? `/api/artifacts?artifact=${only}` : "/api/artifacts")))).artifacts;
@@ -135,6 +130,9 @@ export async function getAttention(only?: string): Promise<Record<string, Attent
 let tokenPromise: Promise<string | null> | null = null;
 const tokenHeard = new Set<() => void>();
 let tokenFailed = false;
+/** Whether the last token request failed rather than answered (a null
+ * from `getToken` then says nothing of whether the browser is the owner's). */
+export const tokenUnsure = () => tokenFailed;
 /** Calls `fn` each time a token request answers with the token after an
  * earlier one failed: only then did this page gain the events cookie. */
 export const onToken = (fn: () => void) => { tokenHeard.add(fn); };

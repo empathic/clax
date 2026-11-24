@@ -30,6 +30,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use super::setting_change::{Admission, SettingChange};
+
 /// The JSON body of a route with axum's default body limit; see [`body_within`].
 pub(crate) fn body<T>(r: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
     body_within(r, "the request body limit")
@@ -1033,6 +1035,14 @@ pub async fn get(
             // Whether the caller may resolve its threads, so also send them
             // while its Comments switch is off (the shell's Send).
             artifact["may_resolve"] = json!(may_resolve);
+            // The Content-Security-Policy Clax sends on its own content.
+            artifact["content_security_policy"] =
+                json!(super::content_security_policy::of(st, &id)?);
+            // Whether a hosted Clax counts visits to its site, for who
+            // administers it (the shell's Analytics panel).
+            if let Some(on) = super::analytics::field(st, &caller, &id, hosted)? {
+                artifact["analytics"] = json!(on);
+            }
             // Whether the caller may edit it (the shell's Edit control).
             artifact["may_edit"] = json!(browser_edits(
                 st,
@@ -1174,16 +1184,23 @@ pub struct PatchBody {
     capabilities: Option<Value>,
     /// `private` or `world` ([`super::world`]).
     site_access: Option<String>,
-    /// The approval question an agent's earlier `site_access: "world"`
-    /// returned.
+    /// `self` or `unrestricted` ([`super::content_security_policy`]).
+    content_security_policy: Option<String>,
+    /// `on` or `off` ([`super::analytics`]).
+    analytics: Option<String>,
+    /// The approval question an agent's earlier `site_access: "world"` or
+    /// `content_security_policy: "unrestricted"` returned.
     question_id: Option<String>,
 }
 
 impl PatchBody {
-    /// It changes the site's access alone, which the owner's or the page's
-    /// maker's browser may do without the token.
-    fn site_access_only(&self) -> bool {
-        self.site_access.is_some()
+    /// It changes the site's access, its Content Security Policy or its
+    /// analytics alone, which the owner's or the page's maker's browser
+    /// may do without the token.
+    fn site_only(&self) -> bool {
+        (self.site_access.is_some()
+            || self.content_security_policy.is_some()
+            || self.analytics.is_some())
             && self.title.is_none()
             && self.description.is_none()
             && self.icon.is_none()
@@ -1219,16 +1236,24 @@ pub async fn presence(
     Ok(Json(json!({"people": people, "viewing": viewing})))
 }
 
-/// Pins or edits an artifact's metadata, or opens its site to the world or
-/// closes it (`site_access`, [`super::world`]: a browser of the owner's or
-/// of the page's maker may change it alone without the token). A person's
-/// agent edits from a session, never as a page (spec §6.7); the answer is
-/// filtered for an agent channel's reader, and carries `site_access`. An
-/// agent's opening to the world that waits on its person answers 202
-/// `{status: "approval_pending", question_id, inbox_url}` and changes
-/// nothing. The owner's opening to the world made with the token alone
-/// while an agent session is live waits for a click in their browser: 202
-/// `confirmation_pending` ([`clax_http::confirm`]), and changes nothing.
+/// Pins or edits an artifact's metadata, opens its site to the world or
+/// closes it (`site_access`, [`super::world`]), or sets the
+/// `Content-Security-Policy` Clax sends on its own content
+/// (`content_security_policy`, [`super::content_security_policy`]), or
+/// turns the counting of its site's visits on a hosted Clax on or off
+/// (`analytics`, [`super::analytics`]; 400 `invalid_argument` on a local
+/// Clax): a browser of the owner's or of the page's maker may change each
+/// alone without the token, one of them per request, and never a page (403
+/// `not_for_pages`). A person's agent edits from a session, never as a
+/// page (spec §6.7); the answer is filtered for an agent channel's reader,
+/// and carries `site_access` and `content_security_policy`, and
+/// `analytics` as `GET /api/artifacts/<id>` does. An agent's
+/// opening to the world or `unrestricted` that waits on its person answers
+/// 202 `{status: "approval_pending", question_id, inbox_url}` and changes
+/// nothing. The owner's opening to the world or `unrestricted` made with
+/// the token alone while an agent session is live waits for a click in
+/// their browser: 202 `confirmation_pending` ([`clax_http::confirm`]), and
+/// changes nothing.
 pub async fn patch(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ArtifactsPatch>,
@@ -1241,7 +1266,7 @@ pub async fn patch(
 ) -> Result<Response, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let mut b = body(req)?;
-    if !b.site_access_only() {
+    if !b.site_only() {
         a.require_credential()?;
     }
     person_agent_session(&a.caller)?;
@@ -1251,11 +1276,34 @@ pub async fn patch(
         .take()
         .map(|v| super::world::parse(&v))
         .transpose()?;
+    let csp = b
+        .content_security_policy
+        .take()
+        .map(|v| super::content_security_policy::parse(&v))
+        .transpose()?;
+    let analytics = b
+        .analytics
+        .take()
+        .map(|v| super::analytics::parse(&v))
+        .transpose()?;
+    // At most one setting's change per request.
+    let change = match (world, csp, analytics) {
+        (Some(a), None, None) => Some(SettingChange::SiteAccess(a)),
+        (None, Some(p), None) => Some(SettingChange::ContentSecurityPolicy(p)),
+        (None, None, Some(on)) => Some(SettingChange::Analytics(on)),
+        (None, None, None) => None,
+        _ => {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                "site_access, content_security_policy and analytics are changed one at a time",
+            ));
+        }
+    };
     let qid = b.question_id.take();
-    if world.is_none() && qid.is_some() {
+    if change.is_none() && qid.is_some() {
         return Err(ApiError::bad_request(
             "invalid_args",
-            "question_id goes with site_access",
+            "question_id goes with site_access or content_security_policy",
         ));
     }
     // Who sets the text fields (spec §8.2): a person's agent's person, else
@@ -1267,6 +1315,28 @@ pub async fn patch(
         _ => clax_core::visibility::Author::Owner,
     };
     let via_page = page_marker(&a.caller, &headers)?;
+    if via_page && change.is_some() {
+        return Err(ApiError::forbidden(
+            "not_for_pages",
+            "who may open a page's site, its Content Security Policy and its analytics are set in Clax, never by the page",
+        ));
+    }
+    if matches!(change, Some(SettingChange::Analytics(_))) && s.hosted.is_none() {
+        return Err(super::analytics::local());
+    }
+    if matches!(change, Some(SettingChange::ContentSecurityPolicy(_)))
+        && s.store.is_hidden(id.as_str())
+    {
+        // A draft follows its live app's setting
+        // (`Store::content_security_policy`), so it takes none of its own.
+        return Err(crate::routes::app_drafts::refused(
+            "Content Security Policy",
+        ));
+    }
+    if matches!(change, Some(SettingChange::Analytics(_))) && s.store.is_hidden(id.as_str()) {
+        // A draft is never counted, so it takes no setting of its own.
+        return Err(crate::routes::app_drafts::refused("analytics"));
+    }
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
@@ -1276,29 +1346,24 @@ pub async fn patch(
         b.description.as_deref(),
         b.icon.as_deref(),
     )?;
-    if world == Some(true) {
-        let i2 = id.clone();
-        let open = s.store_call(move |st| st.site_open_to_world(&i2)).await?;
-        if !open {
-            let decision = clax_http::confirm::Decision::Widen {
-                artifact_id: id.as_str().to_string(),
-                to: "world".into(),
-                remote_id: None,
-                body: None,
-            };
-            clax_http::confirm::require_confirmation(&s, &a.caller, &confirming, decision).await?;
-        }
+    // A change that needs approval is a confirmed decision.
+    if let Some(change) = change {
+        super::setting_change::confirm(&s, &a.caller, &confirming, &id, change).await?;
     }
     if let Some(caps) = b.capabilities.clone() {
         manifest_owned(&s, &id, caps).await?;
     }
     admin_change(&s, &a.caller, &id, b.pinned, b.capabilities.clone()).await?;
-    if let Some(world) = world
-        && let super::world::Change::Pending(body) =
-            super::world::change(&s, &a.caller, deferred, &id, world, qid).await?
-    {
-        // Waiting on the person: nothing of the patch is applied.
-        return Ok((StatusCode::ACCEPTED, Json(body)).into_response());
+    if let Some(change) = change {
+        match super::setting_change::admit(&s, &a.caller, deferred, &id, change, qid).await? {
+            // Waiting on the person: nothing of the patch is applied.
+            Admission::Pending(body) => {
+                return Ok((StatusCode::ACCEPTED, Json(body)).into_response());
+            }
+            Admission::Admitted(admitted) => {
+                super::setting_change::apply(&s, audit.clone(), admitted).await?;
+            }
+        }
     }
     let vf = VisFor::of(&a.caller, &s);
     let host = headers
@@ -1307,6 +1372,7 @@ pub async fn patch(
         .unwrap_or_default();
     let site_url = format!("{}/", clax_http::site_access::site_origin(&s, &id, host));
     let events = s.events.clone();
+    let (caller, hosted) = (a.caller.clone(), s.hosted.is_some());
     let artifact = s
         .store_call(move |st| {
             let approved = st.capability_approval(&id)?;
@@ -1328,6 +1394,10 @@ pub async fn patch(
             let vis = vf.build(st)?;
             vis.filter_artifact(st, &a, &[], &mut view)?;
             view["site_access"] = json!(site_access_of(st, &id)?);
+            view["content_security_policy"] = json!(super::content_security_policy::of(st, &id)?);
+            if let Some(on) = super::analytics::field(st, &caller, &id, hosted)? {
+                view["analytics"] = json!(on);
+            }
             Ok(view)
         })
         .await?;
@@ -2011,6 +2081,7 @@ pub async fn fork(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::pending_of;
     use clax_core::capabilities::Added;

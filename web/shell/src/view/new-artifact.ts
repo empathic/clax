@@ -5,6 +5,7 @@
 // agent its watch). With no live agent, a prompt to paste into one. Loaded
 // with the dialog, on the first press of New.
 import { getToken } from "../api";
+import { readError, reasonText } from "../trouble";
 
 /** The longest title the daemon takes, in characters. */
 export const MAX_TITLE = 200;
@@ -87,10 +88,10 @@ export class Refused extends Error {
   constructor(message: string, public code: string | null) { super(message); }
 }
 
-/** The daemon's refusal as a [`Refused`]: its reason, else the status. */
+/** The daemon's refusal as a [`Refused`]: its reason (`reasonText`) and code. */
 async function refused(res: Response): Promise<Refused> {
-  const b = await res.json().catch(() => null) as { error?: { message?: string; code?: string } } | null;
-  return new Refused(b?.error?.message ?? (res.statusText || `HTTP ${res.status}`), b?.error?.code ?? null);
+  const e = await readError(res);
+  return new Refused(reasonText(e), e.code);
 }
 
 /** A key for one form's Create: a retry with it (the answer was lost, or

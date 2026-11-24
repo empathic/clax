@@ -207,6 +207,13 @@ pub struct PublishPublicArgs {
     /// once the person approves; `private` closes it again at once. Takes
     /// no `remote` or `mode`.
     pub site_access: Option<String>,
+    /// Instead of publishing on a public Clax: `unrestricted` serves this
+    /// artifact's own site without Clax's Content Security Policy (its
+    /// pages may load code from and connect to any site, and register a
+    /// service worker) once the person approves; `self` holds its pages to
+    /// their own site again at once. Takes no `remote`, `mode` or
+    /// `site_access`.
+    pub content_security_policy: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -2287,6 +2294,16 @@ impl ClaxTools {
                 ));
             }
         }
+        if let Some(v) = &a.content_security_policy {
+            if !["self", "unrestricted"].contains(&v.as_str()) {
+                return Err(invalid("content_security_policy is self or unrestricted"));
+            }
+            if a.remote.is_some() || a.mode.is_some() || a.site_access.is_some() {
+                return Err(invalid(
+                    "content_security_policy sets this artifact's own site's policy: it takes no remote, mode or site_access",
+                ));
+            }
+        }
         let session = self.require_session().await?;
         let id = self.resolve_id(&a.url_or_id).await?;
         let wait = a
@@ -2294,7 +2311,14 @@ impl ClaxTools {
             .unwrap_or_else(|| default_ask_wait(&session.harness))
             .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
         if let Some(v) = &a.site_access {
-            return self.set_site_access(&id, v, a.question_id, wait).await;
+            return self
+                .set_site(&id, "site_access", v, a.question_id, wait)
+                .await;
+        }
+        if let Some(v) = &a.content_security_policy {
+            return self
+                .set_site(&id, "content_security_policy", v, a.question_id, wait)
+                .await;
         }
         // A push after the person answers starts only while `wait` has
         // time left (under Codex, so the call ends inside its tool
@@ -2356,13 +2380,18 @@ impl ClaxTools {
         }
     }
 
-    /// `publish_public`'s `site_access`: `PATCH /api/artifacts/<id>
-    /// {site_access}`, waiting up to `wait` seconds on the person's answer
-    /// when the daemon asks them (opening to the world).
-    async fn set_site_access(
+    /// `publish_public`'s `site_access` or `content_security_policy`
+    /// (`field`): `PATCH /api/artifacts/<id> {<field>}`, waiting up to
+    /// `wait` seconds on the person's answer when the daemon asks them
+    /// (opening to the world, or serving the site unrestricted). The
+    /// result's `status` is `open` or `private` for `site_access`, and the
+    /// policy itself (`self` or `unrestricted`) for
+    /// `content_security_policy`.
+    async fn set_site(
         &self,
         id: &str,
-        access: &str,
+        field: &str,
+        value: &str,
         question_id: Option<String>,
         wait: u64,
     ) -> Outcome {
@@ -2371,7 +2400,7 @@ impl ClaxTools {
             let spent = (self.clock.now() - started).num_seconds().max(0) as u64;
             wait.saturating_sub(spent)
         };
-        let mut body = json!({"site_access": access, "question_id": question_id});
+        let mut body = json!({ field: value, "question_id": question_id });
         loop {
             let res = self
                 .client
@@ -2379,9 +2408,15 @@ impl ClaxTools {
                 .await
                 .map_err(|e| self.fail(e))?;
             if res["status"] != "approval_pending" {
+                let now = &res["artifact"][field];
+                let status = match field {
+                    "site_access" if now == "world" => json!("open"),
+                    "site_access" => json!("private"),
+                    _ => now.clone(),
+                };
                 return Ok(json!({
-                    "status": if res["artifact"]["site_access"] == "world" { "open" } else { "private" },
-                    "site_access": res["artifact"]["site_access"],
+                    "status": status,
+                    field: now,
                     "site_url": res["site_url"],
                 }));
             }
@@ -2391,7 +2426,7 @@ impl ClaxTools {
                 "question_id": qid,
                 "url": res["inbox_url"],
                 "call_again": true,
-                "note": "The person has not answered yet: call publish_public again with this site_access and question_id to keep waiting.",
+                "note": format!("The person has not answered yet: call publish_public again with this {field} and question_id to keep waiting."),
             });
             let wait_s = left();
             if wait_s == 0 {
@@ -4924,6 +4959,7 @@ impl ServerHandler for ClaxTools {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

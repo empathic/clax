@@ -45,8 +45,8 @@ circle, zoomed to show it. The watch ends on a second tap or when the map
 unmounts; a `stopped` end leaves the button to tap again, and a refusal
 shows a short message.
 
-Clax's own kit files are under the Zero-Clause BSD licence (0BSD,
-`LICENSES/0BSD.txt` at the repository's root), unlike the rest of the
+Clax's own kit files are under the Zero-Clause BSD licence (0BSD, whose
+text is in `LICENSES.txt` beside this file), unlike the rest of the
 app (GPL-2.0-only), so the apps the kit is copied into carry no
 obligation from it. Each vendored file opens with a comment naming its
 packages, versions, licences and copyright holders; `LICENSES.txt` holds

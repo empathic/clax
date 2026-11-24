@@ -5,12 +5,12 @@
 //! combination of the Claude Code copy and clax-grok, and that a monitor
 //! running `clax feedback follow` is told about a comment once.
 
+use clax_testkit::recv_within;
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{RecvTimeoutError, channel};
-use std::time::{Duration, Instant};
+use std::sync::mpsc::channel;
 
 /// A viewer cookie of a browser of this machine's with no name, its viewer
 /// minted in the store of the home at `home` (reaching the daemon's port
@@ -508,22 +508,23 @@ fn with_both_enabled_a_comment_is_announced_once_and_handed_over_once() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    // Its stdout's lines, then `None` once it closes.
     let out = monitor.stdout.take().unwrap();
     let (tx, lines) = channel();
     std::thread::spawn(move || {
         for line in BufReader::new(out).lines() {
             let Ok(line) = line else { break };
-            if tx.send(line).is_err() {
-                break;
+            if tx.send(Some(line)).is_err() {
+                return;
             }
         }
+        let _ = tx.send(None);
     });
 
     // A viewer comments and sends it to the agent.
     let tid = w.sent_thread(&aid, "make it bigger");
-    let line = lines
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the monitor announces the comment");
+    let line = recv_within("the monitor to announce the comment", &lines)
+        .expect("the announcement, not the end of the monitor's output");
     assert!(line.starts_with("[clax] New comment on "), "{line}");
     assert!(line.contains(&tid), "{line}");
 
@@ -543,7 +544,8 @@ fn with_both_enabled_a_comment_is_announced_once_and_handed_over_once() {
     assert_eq!(blocks[0].0, grok_copy());
     assert!(blocks[0].1.contains(&tid), "{}", blocks[0].1);
 
-    // The next Stop (stopHookActive) blocks nothing; the monitor stays quiet.
+    // The next Stop (stopHookActive) blocks nothing; the monitor stays quiet
+    // (its whole output is read once it has exited, below).
     let again = run_hooks(
         &w,
         &both,
@@ -552,10 +554,6 @@ fn with_both_enabled_a_comment_is_announced_once_and_handed_over_once() {
         json!({"reason": "end_turn", "stopHookActive": true}),
     );
     assert!(again.iter().all(|(_, o)| o.is_empty()), "{again:?}");
-    match lines.recv_timeout(Duration::from_secs(4)) {
-        Err(RecvTimeoutError::Timeout) => {}
-        other => panic!("the monitor printed more: {other:?}"),
-    }
 
     // The session-end Stop does nothing either.
     let shutdown = run_hooks(
@@ -570,18 +568,20 @@ fn with_both_enabled_a_comment_is_announced_once_and_handed_over_once() {
     // SessionEnd ends the row; the monitor then exits 0 and wrote nothing to stderr.
     run_hooks(&w, &both, "SessionEnd", "019a-loop", json!({}));
     assert!(w.live_sessions().is_empty());
-    let started = Instant::now();
-    let status = loop {
-        if let Some(st) = monitor.try_wait().unwrap() {
-            break st;
-        }
-        if started.elapsed() > Duration::from_secs(5) {
-            let _ = monitor.kill();
-            panic!("the monitor did not exit within 5 s of SessionEnd");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let exited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::common::wait_until("the monitor to exit after SessionEnd", || {
+            monitor.try_wait().unwrap()
+        })
+    }));
+    let status = exited.unwrap_or_else(|hung| {
+        let _ = monitor.kill();
+        std::panic::resume_unwind(hung)
+    });
     assert_eq!(status.code(), Some(0));
+    // Nothing more after the announcement: its output ends with no line.
+    if let Some(line) = recv_within("the end of the monitor's output", &lines) {
+        panic!("the monitor printed more: {line}");
+    }
     let mut err = String::new();
     monitor
         .stderr

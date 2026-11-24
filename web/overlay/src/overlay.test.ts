@@ -13,6 +13,7 @@ import Overlay from "./Overlay.svelte";
 import { PluginHost } from "../../sdk/src/plugin";
 import { browser, classic, logs, presentations } from "./plugins";
 import type { Picked, Picker } from "./picker";
+import { settled } from "../../shell/src/test/settled";
 
 const anchor: Anchor = { kind: "element", selector: "#total", quote: "Total: $12", prefix: "Items: 3", suffix: null, html_hash: "h:4f2a", rect: { x: 10, y: 20, w: 100, h: 20, scrollX: 0, scrollY: 40, viewportW: 1024 }, custom_name: null, file: "index.html", label: "Total: $12", name: "Total" };
 /** An element pick at `anchor` whose clip `render` draws, leaving nothing out. */
@@ -45,7 +46,7 @@ function manualTimers() {
     pending: () => due.map(d => d.ms),
   } satisfies Timers & Record<string, unknown>;
 }
-const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); flushSync(); };
+const settle = settled;
 
 /** Flattening as a canvas would, without one: the marks' count is the PNG. */
 let drawn: number[];
@@ -510,6 +511,7 @@ describe("the overlay", () => {
     click(button("Send"));
     await settle();
     expect(heard.map(r => r.id)).toEqual(["t9"]);
+    expect(q(".filed p")?.textContent).toBe("Filed. Replies and fixes show in Your reports.");
     pages.push({ reports: [report("t9", ["Wrong"])], next: null });
     click(button("View in Your reports"));
     await settle();
@@ -694,6 +696,84 @@ describe("the overlay", () => {
     click(button("Cancel"));
     await settle();
     expect(told).toEqual([false, true, false]);
+  });
+
+  /** Files a report "Wrong" from an element pick, started by `start` (the launcher's Report by default). */
+  const fileOne = async (start = () => click(button("Report"))) => {
+    start();
+    onPick(picked(async () => new Uint8Array([1]).buffer));
+    await settle();
+    type("Wrong");
+    click(button("Send"));
+    await settle();
+  };
+
+  it("given onShowReports, the Filed notice names reportsLabel and hands the host the report filed, with focus on Report", async () => {
+    view.unmount();
+    const asked: { id?: string; focus: Element | null }[] = [];
+    view = mount(Overlay as never, props({ reportsLabel: "Feedback", onShowReports: (r?: Report) => asked.push({ id: r?.id, focus: document.activeElement }) }), host);
+    await fileOne();
+    expect(q(".filed p")?.textContent).toBe("Filed. Replies and fixes show in Feedback.");
+    expect(document.activeElement).toBe(button("View in Feedback"));
+    click(button("View in Feedback"));
+    await settle();
+    expect(asked).toEqual([{ id: "t9", focus: q(".report-btn") }]);
+    expect(q(".filed")).toBeNull();
+    expect(q(".panel")).toBeNull();
+    expect(listed).toBe(0);
+    expect(document.activeElement).toBe(q(".report-btn"));
+  });
+
+  it("given onShowReports and no launcher, the Filed notice gives focus back to the page, where the host may move it", async () => {
+    view.unmount();
+    const field = document.createElement("input");
+    document.body.append(field);
+    const asked: (Element | null)[] = [];
+    const r = renderComponent(Overlay as never, { props: props({ launcher: false, onShowReports: () => { asked.push(document.activeElement); field.focus(); } }) as never, target: host });
+    flushSync();
+    try {
+      await fileOne(() => { (r.component as unknown as { report(): void }).report(); flushSync(); });
+      expect(document.activeElement).toBe(button("View in Your reports"));
+      click(button("View in Your reports"));
+      await settle();
+      expect(asked).toEqual([document.body]);
+      expect(document.activeElement).toBe(field);
+      expect(q(".filed")).toBeNull();
+      expect(q(".panel")).toBeNull();
+    } finally {
+      field.remove();
+      r.unmount();
+      view = mount(Overlay as never, props(), host);
+    }
+  });
+
+  it("given onShowReports, the launcher's Your reports calls it with no report and closes the mode bar; showReports() still opens the panel", async () => {
+    view.unmount();
+    const asked: (Report | undefined)[][] = [];
+    const r = renderComponent(Overlay as never, { props: props({ onShowReports: (...a: (Report | undefined)[]) => asked.push(a) }) as never, target: host });
+    flushSync();
+    const at = <E extends HTMLElement = HTMLElement>(s: string) => host.querySelector<E>(s);
+    try {
+      click(at(".report-btn"));
+      expect(at(".modebar")).not.toBeNull();
+      click(at(".reports-btn"));
+      await settle();
+      expect(asked).toEqual([[undefined]]);
+      expect(at(".modebar")).toBeNull();
+      expect(modes.at(-1)).toBe(false);
+      expect(at(".panel")).toBeNull();
+      expect(listed).toBe(0);
+      (r.component as unknown as { showReports(): void }).showReports();
+      await settle();
+      expect(at(".panel")).not.toBeNull();
+      // Open, the launcher's button closes the panel, as without the hook.
+      click(at(".reports-btn"));
+      expect(at(".panel")).toBeNull();
+      expect(asked).toHaveLength(1);
+    } finally {
+      r.unmount();
+      view = mount(Overlay as never, props(), host);
+    }
   });
 
   it("launcher false mounts no launcher and report() opens the mode bar", async () => {

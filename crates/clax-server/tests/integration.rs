@@ -6,6 +6,7 @@
 //! `bazel/cargo.bzl`), so an edit recompiles, relinks and reruns each module
 //! on its own, in parallel; `clax_split = "root"` holds this file's own tests.
 //! Gate every new test module the same way.
+#![warn(clippy::disallowed_methods)]
 
 // In every test target: it reruns, on deferred content, the content
 // modules the target holds.
@@ -13,6 +14,8 @@
 mod api_agent_auth;
 #[cfg(any(not(clax_split), clax_split = "api_agents"))]
 mod api_agents;
+#[cfg(any(not(clax_split), clax_split = "api_analytics"))]
+mod api_analytics;
 #[cfg(any(not(clax_split), clax_split = "api_app_bundles"))]
 mod api_app_bundles;
 #[cfg(any(not(clax_split), clax_split = "api_app_drafts"))]
@@ -31,6 +34,16 @@ mod api_attention;
 mod api_auth;
 #[cfg(any(not(clax_split), clax_split = "api_batch"))]
 mod api_batch;
+#[cfg(any(not(clax_split), clax_split = "api_bot_content"))]
+mod api_bot_content;
+#[cfg(any(not(clax_split), clax_split = "api_bot_joins"))]
+mod api_bot_joins;
+#[cfg(any(not(clax_split), clax_split = "api_bot_messages"))]
+mod api_bot_messages;
+#[cfg(any(not(clax_split), clax_split = "api_bot_surfaces"))]
+mod api_bot_surfaces;
+#[cfg(any(not(clax_split), clax_split = "api_bot_surfaces_bounds"))]
+mod api_bot_surfaces_bounds;
 #[cfg(any(not(clax_split), clax_split = "api_briefs"))]
 mod api_briefs;
 #[cfg(any(not(clax_split), clax_split = "api_caching"))]
@@ -51,6 +64,8 @@ mod api_confirm_chitin;
 mod api_confirmations;
 #[cfg(any(not(clax_split), clax_split = "api_content"))]
 mod api_content;
+#[cfg(any(not(clax_split), clax_split = "api_content_security_policy"))]
+mod api_content_security_policy;
 #[cfg(any(not(clax_split), clax_split = "api_db_read"))]
 mod api_db_read;
 #[cfg(any(not(clax_split), clax_split = "api_discovery"))]
@@ -169,6 +184,8 @@ mod api_sign;
 mod api_site;
 #[cfg(any(not(clax_split), clax_split = "api_site_access"))]
 mod api_site_access;
+#[cfg(any(not(clax_split), clax_split = "api_site_analytics"))]
+mod api_site_analytics;
 #[cfg(any(not(clax_split), clax_split = "api_site_api"))]
 mod api_site_api;
 #[cfg(any(not(clax_split), clax_split = "api_stream"))]
@@ -209,6 +226,8 @@ mod core_start;
 #[cfg(any(not(clax_split), clax_split = "daemon"))]
 mod daemon;
 mod deferred;
+#[cfg(any(not(clax_split), clax_split = "gallery_boot"))]
+mod gallery_boot;
 #[cfg(any(not(clax_split), clax_split = "get_page"))]
 mod get_page;
 #[cfg(any(not(clax_split), clax_split = "golden_single_owner"))]
@@ -234,7 +253,7 @@ mod shell_entries;
 #[test]
 fn every_test_file_is_a_module() {
     let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let roots = ["integration"];
+    let roots = ["integration", "daemon_sources"];
     let declared: Vec<String> = roots
         .iter()
         .map(|r| std::fs::read_to_string(tests.join(format!("{r}.rs"))).unwrap())

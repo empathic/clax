@@ -813,6 +813,7 @@ fn set_url(cli: &crate::Cli, home: &Home, raw: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::browser_link;
 

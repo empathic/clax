@@ -4,7 +4,7 @@
 // types, and nothing of the bridge or of the overlay's model.
 import type { ClaxPlugin } from "../../sdk/src/plugin";
 import type { ReporterAuth } from "../../sdk/src/reporter";
-import type { ReportContext } from "../../sdk/src/types";
+import type { Report, ReportContext } from "../../sdk/src/types";
 
 /** What the reporter captures: a pick, a drawn area, or the visible viewport. */
 export type Mode = "element" | "area" | "screen";
@@ -47,7 +47,9 @@ export type ReportsMode = "button" | "off";
  * `queue`, whether the person may file as `canFile`, and the context as
  * `context`, its commit as `release.commit`. */
 export interface OverlayOptions {
-  /** The instance's base URL, such as `https://clax.corp.example`. */
+  /** The instance's origin, such as `https://clax.corp.example`: Clax is
+   * served at the root of its own host, so a URL with a path, query or
+   * fragment is refused with a `TypeError`. */
   instance: string;
   /** The queue's ID. Optional with an install (`install`, or the page's
    * `<meta name="clax-install">`), whose config names its queue; given,
@@ -125,4 +127,21 @@ export interface OverlayOptions {
   copy?: DialogCopy;
   /** Filters and attachments turned on or off (by id), over each plugin's own default. */
   defaults?: Record<string, boolean>;
+  /** The host's own page of the reporter's reports. Given it, the overlay
+   * calls it where the reporter would open "Your reports": the Filed
+   * notice's "View in …" button, with the report just filed, and the
+   * corner launcher's "Your reports" button, with no report (that button
+   * still closes "Your reports" when it is open). The notice closes, and
+   * focus leaves its button, for Report in the corner, else the page's
+   * body, before the call, so the host may move focus in it. A call that
+   * throws is logged. `showReports()` still opens "Your reports", as do a
+   * "Still broken" note's Cancel and Send, which go back to it. Without
+   * it, those buttons open "Your reports". */
+  onShowReports?: (report?: Report) => void;
+  /** What the Filed notice calls the place the reporter's replies show
+   * (default `"Your reports"`): "Replies and fixes show in <label>." and
+   * its button "View in <label>". Give it with `onShowReports`, as your
+   * page's name. A string that is empty or only spaces is refused with a
+   * `TypeError`. */
+  reportsLabel?: string;
 }

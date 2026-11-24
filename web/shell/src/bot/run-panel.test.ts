@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { settle } from "../people/fixtures";
 import { flush, mount } from "../test/svelte";
-import { meBot, run } from "./fixtures";
+import { errorDetail, instanceProblemRun, meBot, run, stoppedRun, week } from "./fixtures";
 import { forget } from "./me";
 import { RunFeed } from "./run-feed.svelte";
 import RunPanel from "./RunPanel.svelte";
@@ -11,6 +11,7 @@ import { writable } from "svelte/store";
 import type { ArtifactController } from "../view/artifact-controller";
 import ArtifactBot from "./ArtifactBot.svelte";
 import { nav } from "../nav";
+import { usage } from "../ui/more-menu.svelte";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
 const button = (root: Element, text: string) => [...root.querySelectorAll("button")].find(b => b.textContent?.trim() === text)!;
@@ -73,7 +74,7 @@ describe("the run panel", () => {
     expect(panel.querySelector('pre[aria-label="Output"]')!.textContent).toContain("8312");
     expect(panel.querySelector(".cost")!.textContent).toBe("This run: 3 credits · 38k tokens on your key");
     expect(panel.querySelector(".wk")!.textContent).toContain("310 / 2,000");
-    expect(panel.querySelector<HTMLAnchorElement>(".wk a")!.getAttribute("href")).toBe("/audit?artifact=7q3k9mzx2b4t&q=r1");
+    expect(panel.querySelector<HTMLAnchorElement>(".wk a")!.getAttribute("href")).toBe("/settings/audit?artifact=7q3k9mzx2b4t&q=r1");
     click(button(panel, "Stop"));
     await settle();
     expect(calls.find(c => c.method === "POST")!.url).toBe("/api/bot/runs/r1/cancel");
@@ -118,6 +119,54 @@ describe("the run panel", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("a_web_call_shows_its_source_and_cost", async () => {
+    const stream = sse();
+    daemon({
+      "GET /api/bot/runs/r3": json(run({ id: "r3", steps: [{ n: 1, kind: "script", status: "running", started_at: "x", credits_milli: 0, title: "Look it up", calls: [
+        { op: "web.search", ok: true, ms: 640, cost_milli: 25_000, web: { query: "svelte 5 runes release notes" } },
+        { op: "web.fetch", target: "https://svelte.dev/blog", ok: true, ms: 300, cost_milli: 50_000, web: { url: "https://svelte.dev/blog", source: "search #2" } },
+        { op: "web.fetch", target: "https://svelte.dev/blog", ok: true, ms: 2, cost_milli: 0, web: { url: "https://svelte.dev/blog", source: "page #3" } },
+        { op: "web.fetch", ok: false, ms: 1, error: "url_not_allowed", web: { url: "https://example.org/x", source: "comment" } },
+      ] }] })),
+      "GET /api/bot/runs/r3/events": () => new Response(stream.body, { headers: { "content-type": "text/event-stream" } }),
+    });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r3");
+    flush();
+    await settle();
+    const rows = [...document.querySelectorAll("#bot-run-panel .calls li")].map(li => li.textContent);
+    expect(rows[0]).toContain("web.search");
+    expect(rows[0]).toContain("svelte 5 runes release notes");
+    expect(rows[0]).toContain("25 credits");
+    expect(rows[1]).toContain("https://svelte.dev/blog");
+    expect(rows[1]).toContain("from search #2");
+    expect(rows[1]).toContain("50 credits");
+    expect(rows[2]).toContain("from page #3");
+    expect(rows[2]).not.toMatch(/credit|free/);
+    expect(rows[3]).toContain("https://example.org/x");
+    expect(rows[3]).toContain("from the sender's comment");
+    expect(rows[3]).not.toContain("credit");
+    // A live call event shows the same.
+    stream.send("call", { step: 1, call: { op: "web.search", ok: true, ms: 10, cost_milli: 700_000, web: { query: "later" } } });
+    await settle();
+    expect(document.querySelector("#bot-run-panel .calls li:last-child")!.textContent).toContain("700 credits");
+    m.unmount();
+  });
+
+  it("finish_lists_sources", async () => {
+    daemon({ "GET /api/bot/runs/r4": json(run({ id: "r4", status: "finished", steps: [
+      { n: 1, kind: "finish", status: "done", started_at: "x", credits_milli: 0, summary: "Added the release notes.", sources: [{ title: "Svelte blog", url: "https://svelte.dev/blog" }, { title: "javascript:alert(1)", url: "javascript:alert(1)" }, { title: "Again", url: "https://svelte.dev/blog" }] },
+    ] })) });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r4");
+    flush();
+    await settle();
+    const links = [...document.querySelectorAll<HTMLAnchorElement>("#bot-run-panel .finish .sources a")];
+    expect(links.map(a => [a.textContent, a.getAttribute("href"), a.rel])).toEqual([["Svelte blog", "https://svelte.dev/blog", "noopener noreferrer"], ["Again", "https://svelte.dev/blog", "noopener noreferrer"]]);
+    expect(document.querySelector("#bot-run-panel .finish .sources")!.getAttribute("aria-label")).toBe("Sources");
+    m.unmount();
   });
 
   it("collapses a finished script, opens one that failed, and closes on Escape", async () => {
@@ -266,6 +315,23 @@ describe("ClaxBot in the artifact view", () => {
     m.unmount();
   });
 
+  it("gives the more menu the week's meter as its Usage item, not the top bar, marked 'your key' on the person's own key", async () => {
+    history.replaceState(null, "", "/a/7q3k9mzx2b4t");
+    const ownKey = { own: { set: true, last4: "4f2c", set_at: null, last_ok_at: null }, use_own: true };
+    daemon({ "GET /api/me/bot": json(meBot({ key: ownKey, week: week({ weekly_milli: 3_000_000, spent_milli: 21_000 }) })), "GET /api/bot/runs?artifact=7q3k9mzx2b4t": json({ runs: [] }) });
+    const m = mount(ArtifactBot, { ctl: view() });
+    await settle();
+    expect(m.root.querySelector("a"), "no credits link in the top bar").toBeNull();
+    expect(usage.current).toMatchObject({ href: "/settings/claxbot", text: "your key · 21 / 3,000", warn: false, out: false });
+    expect(usage.current!.title).toContain("Credits pay only for run fees, script compute, storage and web calls.");
+    botView.me = meBot();
+    flush();
+    expect(usage.current).toMatchObject({ text: "310 / 2,000", label: "ClaxBot: 310 of 2,000 credits used this week", title: "Your ClaxBot credits this week" });
+    m.unmount();
+    expect(usage.current, "unmounting clears the item").toBeNull();
+    history.replaceState(null, "", "/");
+  });
+
   it("names the threads a run answers, and shows one when chosen", async () => {
     history.replaceState(null, "", "/a/7q3k9mzx2b4t#run=r1");
     const thread = { id: "t1", comments: [{ body: "The totals row should round to cents.\nAnd the arrows." }] };
@@ -347,5 +413,96 @@ describe("a Send to ClaxBot", () => {
     // Unavailable, it is listed but never the choice.
     botView.list("7q3k9mzx2b4t", false, "no_flag", meBot());
     expect(botView.chosen).toBe(false);
+  });
+});
+
+describe("a run stopped by a failed model call", () => {
+  const open = async (r: ReturnType<typeof run>, role: "member" | "admin" = "member") => {
+    daemon({ "GET /api/bot/runs/r1": json(r) });
+    botView.me = meBot({ role });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r1");
+    flush();
+    await settle();
+    return { m, panel: document.querySelector<HTMLElement>("#bot-run-panel")! };
+  };
+
+  it("says why in words, what the provider said, quoted, its status, type and request, and where an admin looks", async () => {
+    const { m, panel } = await open(stoppedRun(errorDetail(), "model_error", { key_source: "instance" }), "admin");
+    expect(panel.querySelector(".st")!.textContent).toBe("Stopped: ClaxBot could not use this Clax's model provider");
+    const row = panel.querySelector("li.stopped")!;
+    expect(row.querySelector(".who")!.textContent).toBe("Stopped");
+    expect(row.querySelector(".merr-lead")!.textContent).toBe("The model provider refused the request as invalid.");
+    expect(row.querySelector("blockquote.merr-said")!.textContent).toBe("The provider said: “Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.”");
+    expect(row.querySelector(".merr-meta")!.textContent).toBe("HTTP 400 · invalid_request_error · request req_011CXyz");
+    const next = row.querySelector<HTMLAnchorElement>(".merr-next a")!;
+    expect(next.textContent).toBe("Check the key and the model under Settings → Model provider.");
+    expect(next.getAttribute("href")).toBe("/settings/provider");
+    expect(panel.textContent).not.toContain("model_error");
+    m.unmount();
+  });
+
+  it("sends the run's own person, admin or not, to check their own key under Settings → Your ClaxBot", async () => {
+    for (const role of ["member", "admin"] as const) {
+      const { m, panel } = await open(stoppedRun(), role);
+      const row = panel.querySelector("li.stopped")!;
+      expect(panel.querySelector(".st")!.textContent).toBe("Stopped: the model provider answered with an error");
+      expect(row.querySelector(".merr-said")!.textContent).toContain("Your credit balance is too low");
+      const next = row.querySelector<HTMLAnchorElement>(".merr-next a")!;
+      expect([next.textContent, next.getAttribute("href")]).toEqual(["Check your key under Settings → Your ClaxBot.", "/settings/claxbot#me-k"]);
+      m.unmount();
+      document.body.replaceChildren();
+    }
+  });
+
+  it("tells anyone but an admin about a failure on the instance's key in Clax's words, never the provider's", async () => {
+    // A planted detail beside `instance_problem`: the Clax message wins and none of it shows.
+    const r = instanceProblemRun();
+    r.steps[0].error_detail = errorDetail();
+    const { m, panel } = await open(r);
+    expect(panel.querySelector(".st")!.textContent).toBe("Stopped: ClaxBot could not use this Clax's model provider");
+    const row = panel.querySelector("li.stopped")!;
+    expect([...row.querySelectorAll(".merr p")].map(p => p.textContent)).toEqual([
+      "ClaxBot could not use this Clax's model provider.",
+      "This is a problem with how this Clax is set up, not with your request. It has been recorded for the people who run this Clax; try again later.",
+      "If you ask an admin about it, quote run r1.",
+    ]);
+    for (const planted of ["credit balance", "req_011CXyz", "HTTP 400", "invalid_request_error", "The provider said", "Settings → Model provider", "model_error"]) expect(panel.textContent, planted).not.toContain(planted);
+    expect(row.querySelector("a, blockquote")).toBeNull();
+    m.unmount();
+  });
+
+  it("says a busy provider on the instance's key in Clax's words", async () => {
+    const { m, panel } = await open(instanceProblemRun(true));
+    const row = panel.querySelector("li.stopped")!;
+    expect([...row.querySelectorAll(".merr p")].map(p => p.textContent)).toEqual(["This Clax's model provider is busy.", "Try again in a little while.", "If you ask an admin about it, quote run r1."]);
+    m.unmount();
+  });
+
+  it("shows a reader, who gets no detail, the words in the header and the row bare", async () => {
+    const { m, panel } = await open(stoppedRun(null));
+    expect(panel.querySelector(".st")!.textContent).toBe("Stopped: the model provider answered with an error");
+    const row = panel.querySelector("li.stopped")!;
+    expect(row.textContent!.trim()).toBe("Stopped");
+    expect(panel.textContent).not.toContain("model_error");
+    expect(panel.textContent).not.toContain("credit balance");
+    m.unmount();
+  });
+
+  it("shows the provider's message as text, never as markup", async () => {
+    const { m, panel } = await open(stoppedRun(errorDetail({ message: "<img src=x onerror=alert(1)><b>bold</b>" })));
+    const said = panel.querySelector("blockquote.merr-said")!;
+    expect(said.textContent).toBe("The provider said: “<img src=x onerror=alert(1)><b>bold</b>”");
+    expect(said.children).toHaveLength(0);
+    expect(panel.querySelector("li.stopped img, li.stopped b")).toBeNull();
+    m.unmount();
+  });
+
+  it("never shows a stop code it has no words for, nor an old run's step without detail", async () => {
+    const { m, panel } = await open(stoppedRun(null, "some_new_code"));
+    expect(panel.querySelector(".st")!.textContent).toBe("Stopped");
+    expect(panel.querySelector("li.stopped")!.textContent!.trim()).toBe("Stopped");
+    expect(panel.textContent).not.toContain("some_new_code");
+    m.unmount();
   });
 });

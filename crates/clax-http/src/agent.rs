@@ -2418,6 +2418,7 @@ pub async fn test_caller(_d: DeniedToGrants, caller: Caller) -> axum::Json<serde
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -2513,7 +2514,7 @@ mod tests {
         let waiting = tokio::spawn(async move { g.reserve(1).await.err().map(|e| e.code) });
         gate.wait_until(
             |s| s.queued == 1 && s.budget_waiting == 1,
-            Duration::from_secs(5),
+            crate::test_util::HANG,
         )
         .await
         .expect("both waiting");
@@ -2556,16 +2557,18 @@ mod tests {
                 .err()
                 .map(|e| e.code)
         });
-        gate.wait_until(|s| s.queued == 1, Duration::from_secs(5))
+        gate.wait_until(|s| s.queued == 1, crate::test_util::HANG)
             .await
             .expect("queued for the key's permit");
         timer.advance(read_deadline(limit) - Duration::from_secs(1));
         tokio::task::yield_now().await;
         assert!(!read.is_finished());
         timer.advance(Duration::from_secs(1));
-        let got = tokio::time::timeout(Duration::from_secs(5), read)
-            .await
-            .expect("the read ends at its deadline, not after the queue's 30 s");
+        let got = crate::test_util::within(
+            "the read's end at its deadline, not after the queue's 30 s",
+            read,
+        )
+        .await;
         assert_eq!(got.unwrap(), Some("timeout"));
         drop(held);
         gate.wait_until(
@@ -2575,7 +2578,7 @@ mod tests {
                     ..GateState::default()
                 }
             },
-            Duration::from_secs(5),
+            crate::test_util::HANG,
         )
         .await
         .expect("everything released");

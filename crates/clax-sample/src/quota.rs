@@ -92,6 +92,7 @@ impl ViewerQueues {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use futures::FutureExt as _;

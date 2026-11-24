@@ -85,6 +85,13 @@ common --@rules_dart//dart:analysis_config=//apps/clax_app:analysis_config
 build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build:clippy --output_groups=+clippy_checks
 build:clippy --@rules_rust//rust/settings:clippy_flag=-Dwarnings
+# clippy.toml's timing rules are for test code only: the lint is allowed
+# here, so product code is never flagged, and test code turns it back on
+# by attribute (scripts/check-rust-test-timing.sh). A crate linted alone
+# with a clippy.toml of its own (clax-commands) turns it back on with
+# --@rules_rust//rust/settings:clippy_flag=-Wclippy::disallowed_methods,
+# so its own disallowed methods stay errors everywhere in it.
+build:clippy --@rules_rust//rust/settings:clippy_flag=-Aclippy::disallowed_methods
 
 # --config=fmt: check formatting, as `cargo fmt --all -- --check` does.
 build:fmt --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect

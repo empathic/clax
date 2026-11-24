@@ -68,9 +68,8 @@ impl EventReader {
                     .and_then(|c| c.as_str().map(str::to_owned));
                 return (name, data);
             }
-            let chunk = tokio::time::timeout(crate::HANG, self.stream.next())
+            let chunk = crate::within("the next SSE chunk", self.stream.next())
                 .await
-                .unwrap_or_else(|_| panic!("no SSE chunk within {:?} (hang guard)", crate::HANG))
                 .expect("stream still open")
                 .expect("chunk readable");
             self.buf
@@ -81,6 +80,10 @@ impl EventReader {
     /// The names of the events (keep-alive comments aside) until the body
     /// ends; panics when it has not ended within the [`HANG`](crate::HANG)
     /// guard.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the stream's end is waited for under one HANG guard across reads"
+    )]
     pub async fn rest(&mut self) -> Vec<String> {
         use futures::StreamExt;
         let mut names = vec![];

@@ -1,7 +1,8 @@
 // The Share dialog's model (crates/clax-server/src/hosted.rs, the sharing
 // routes): the words for each access, a GitHub login as the daemon checks
 // it, the suggestions the add field offers, and the link request each
-// general access makes. Pure: the dialog renders it.
+// general access makes. Pure: the dialog renders it. The Content Security
+// Policy setting's words are content-security-policy-model.ts's.
 import type { GeneralAccess, LinkAccess, Share, ShareAccess, ShareCandidate, SiteAccess } from "../hosted/api";
 
 export const ACCESS_LABEL: Record<ShareAccess, string> = { viewer: "Can view", commenter: "Can comment", editor: "Can edit" };

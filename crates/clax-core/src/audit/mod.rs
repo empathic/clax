@@ -116,9 +116,11 @@ kinds! {
     BotTurn = "bot.turn",
     BotScript = "bot.script",
     BotCall = "bot.call",
+    BotWeb = "bot.web",
     BotRunEnd = "bot.run_end",
     BotCancel = "bot.cancel",
     BotRefused = "bot.refused",
+    BotSurfaceRegistered = "bot.surface.registered",
     ViewRun = "view.run",
     ViewAdmin = "view.admin",
     ViewAudit = "view.audit",
@@ -130,6 +132,7 @@ kinds! {
     AdminKey = "admin.key",
     AdminCostLine = "admin.cost_line",
     AdminSettings = "admin.settings",
+    MeWeb = "me.web",
     ExternalCreate = "external.create",
     ExternalUpdate = "external.update",
     ExternalDelete = "external.delete",
@@ -273,7 +276,7 @@ pub enum KindGroup {
     /// Every kind outside `view.*`, `bot.*` and `admin.*`: changes to
     /// artifacts, threads, people and their agents.
     Changes,
-    /// `bot.*`: ClaxBot runs.
+    /// `bot.*`: ClaxBot runs, and the surfaces registered for them.
     Bot,
     /// `admin.credits` and `admin.cost_line`: credits and limits.
     Credits,
@@ -711,6 +714,7 @@ pub fn content_manifest_sha256(files: &BTreeMap<String, crate::model::FileMeta>)
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::gitctx::MAX_HEADER_BYTES;
@@ -833,9 +837,11 @@ mod tests {
             "bot.turn",
             "bot.script",
             "bot.call",
+            "bot.web",
             "bot.run_end",
             "bot.cancel",
             "bot.refused",
+            "bot.surface.registered",
             "view.run",
             "view.admin",
             "view.audit",
@@ -847,6 +853,7 @@ mod tests {
             "admin.key",
             "admin.cost_line",
             "admin.settings",
+            "me.web",
             "external.create",
             "external.update",
             "external.delete",
@@ -1027,7 +1034,7 @@ mod tests {
             in_group(KindGroup::Views),
             ["view.run", "view.admin", "view.audit", "view.usage"]
         );
-        assert_eq!(in_group(KindGroup::Bot).len(), 7);
+        assert_eq!(in_group(KindGroup::Bot).len(), 9);
         assert_eq!(in_group(KindGroup::Admin).len(), 7);
         assert_eq!(
             in_group(KindGroup::Credits),

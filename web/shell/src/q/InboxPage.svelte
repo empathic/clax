@@ -50,6 +50,7 @@
   import { onMount } from "svelte";
   import { type InboxFilter, type InboxItem, type InboxKind, type StripAgent, type TagRef, getToken, listArtifacts } from "../api";
   import TagPicker from "../ui/TagPicker.svelte";
+  import { failureText } from "../trouble";
   import { filterLabel } from "../view/tag-picker-model";
   import { listTags } from "../view/tags-api";
   import { canonical, holds, refsForUrl, same, toggle as toggleTag } from "../view/tags-model";
@@ -63,7 +64,7 @@
   import { GROUP_PAGE, GROUP_ROWS, type Group, MAX_GROUP_PAGE, MORE_ROWS, appendGroups, appendRows, fromWire, groupKey, mergeGroups, takeItem } from "./inbox-groups";
   import ApprovalCard from "../people/ApprovalCard.svelte";
   import ConfirmationCard from "./ConfirmationCard.svelte";
-  import { confirmations } from "./confirm.svelte";
+  import { cardsOf, confirmations } from "./confirm.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
   import RemoteRequestCard from "./RemoteRequestCard.svelte";
   import InboxGroup from "./InboxGroup.svelte";
@@ -84,10 +85,15 @@
     now?: Date;
     /** What the push controls use of the browser (default: the real one). */
     pushEnv?: PushEnv;
+    /** Called once the page shows its first data: its cards, groups and
+     * agent strip, its filters' artifacts and tags, and whether the owner's. */
+    onready?: () => void;
   };
   const p: Props = $props();
   const inbox = $derived(p.inbox ?? shared().inbox);
   const confirming = confirmations();
+  // The open ones as cards: a passkey registration rides on another's setup line.
+  const confirms = $derived(cardsOf(confirming.open));
   // `?confirm=<id>`: that confirmation's card takes focus once it is listed.
   let confirmTarget = $state(new URLSearchParams(location.search).get("confirm"));
   $effect(() => {
@@ -117,7 +123,7 @@
   const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes", remote_request: "Connect a Clax" };
   const fmt = (n: number | "10000+") => (n === "10000+" ? "10,000+" : n.toLocaleString("en-US"));
   /** Says what failed: `what` ("load the inbox"), and why. */
-  const oops = (what: string) => (e: unknown) => { error = `Could not ${what}: ${e instanceof Error ? e.message : String(e)}`; };
+  const oops = (what: string) => (e: unknown) => { error = failureText(`Could not ${what}`, e); };
   const loadFailed = oops("load the inbox");
 
   /** The list's groups and the cursor of its next page of groups. */
@@ -222,8 +228,13 @@
     asCard = [...asCard, ...items.filter(i => i.kind === "question" && i.question && qview(i).status === "open" && !asCard.includes(i.id)).map(i => i.id)];
   };
 
-  // Each fetch is for the search at its start: an answer for an older one is dropped.
+  // Each fetch is for the search at its start: an answer for an older one is
+  // dropped. `gen` counts the loads (each a new list), `refreshes` the
+  // refreshes of one list, which leave a Show more on its way alone;
+  // `loading` is the load on its way, with whether it keeps the cards closed.
   let gen = 0;
+  let refreshes = 0;
+  let loading: { keep: boolean } | null = null;
   /** The unread items shown as cards: open questions and decisions. */
   const fetchCards = async (): Promise<InboxItem[]> => {
     const kind = filter.kind?.length ? CARD_KINDS.filter(k => filter.kind!.includes(k)) : CARD_KINDS;
@@ -253,11 +264,15 @@
     return [...kept, ...c];
   };
 
+  // The first load's end, with its strip's (`onready`).
+  let loadedOnce: (() => void) | null = null;
+  const firstLoad = new Promise<void>(r => { loadedOnce = r; });
   /** Fetches the cards and the first page of groups, replacing the list;
    * `keep` keeps the cards closed here, for the same search. */
   async function load(keep = true): Promise<void> {
     const g = ++gen;
-    void loadStrip();
+    loading = { keep };
+    const stripped = loadStrip();
     try {
       const [c, l, w] = await Promise.all([fetchCards(), fetchGroups(), fetchReplies()]);
       if (g !== gen) return;
@@ -272,6 +287,9 @@
       if (t) queueMicrotask(() => { if (toCard(t.id, t.kind)) target = null; });
     } catch (e) {
       if (g === gen) loadFailed(e);
+    } finally {
+      if (g === gen) loading = null;
+      void stripped.then(() => { loadedOnce?.(); loadedOnce = null; });
     }
   }
 
@@ -281,12 +299,16 @@
    * and a live change refresh; a new search loads. */
   async function refresh(): Promise<void> {
     if (!list) return load();
-    const g = ++gen;
+    // A load still on its way replaces the list: merging into the list it
+    // replaces would keep the groups the new search leaves out.
+    if (loading) return load(loading.keep);
+    const g = gen;
+    const r = ++refreshes;
     void loadStrip();
     try {
       const shown = list.groups.length;
       const [c, l, w] = await Promise.all([fetchCards(), fetchGroups(null, Math.min(MAX_GROUP_PAGE, Math.max(GROUP_PAGE, shown))), fetchReplies()]);
-      if (g !== gen || !list) return;
+      if (g !== gen || r !== refreshes || !list) return;
       error = null;
       cardItems = keepCards(c, true);
       replies = w;
@@ -296,7 +318,7 @@
       list = { groups: mergeGroups(list.groups, l.groups, gone), next: list.next ?? l.next };
       opening(l.groups, false);
     } catch (e) {
-      if (g === gen) loadFailed(e);
+      if (g === gen && r === refreshes) loadFailed(e);
     }
   }
 
@@ -469,13 +491,17 @@
 
   onMount(() => {
     document.title = "Inbox · Clax";
-    void getToken().then(t => {
-      owner = !!t;
-      if (owner) void pushState(p.pushEnv).then(s => { push = s; }, () => { push = "unsupported"; });
-    });
-    void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
-    void loadTags();
-    void confirming.refresh();
+    const firsts = [
+      getToken().then(t => {
+        owner = !!t;
+        if (owner) void pushState(p.pushEnv).then(s => { push = s; }, () => { push = "unsupported"; });
+      }),
+      listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {}),
+      loadTags(),
+      confirming.refresh(),
+      firstLoad,
+    ];
+    void Promise.all(firsts.map(f => Promise.resolve(f).catch(() => {}))).then(() => p.onready?.());
     // The tags themselves changed (made, renamed, recoloured, deleted).
     const offTags = p.stream?.watch(["gallery"], e => { if (e.type === "tags" && e.artifact_id == null) void loadTags(); });
     // An agent started, ended or was renamed, with no inbox item for it.
@@ -568,10 +594,10 @@
 
   {#if error}<p class="err" role="alert">{error}</p>{/if}
 
-  {#if confirming.open.length}
+  {#if confirms.length}
     <section class="sec" aria-label="Waiting for your confirmation">
-      <h3 class="pinned-h">Confirm in your browser<span class="c">{fmt(confirming.open.length)}</span></h3>
-      <div class="dlist">{#each confirming.open as c (c.id)}<ConfirmationCard {c} now={p.now} />{/each}</div>
+      <h3 class="pinned-h">Confirm in your browser<span class="c">{fmt(confirms.length)}</span></h3>
+      <div class="dlist" {@attach () => confirming.listHere()}>{#each confirms as c (c.id)}<ConfirmationCard {c} now={p.now} />{/each}</div>
     </section>
   {/if}
 

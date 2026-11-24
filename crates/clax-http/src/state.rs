@@ -19,6 +19,19 @@ use std::time::Duration;
 /// public client's longer deadline (`clax_server::public`).
 pub const REMOTE_DEADLINE: Duration = Duration::from_secs(20);
 
+/// How long a gallery page's load waits for the routes its bootstrap block
+/// asks (`clax_server::shell::gallery`), all of them together
+/// ([`AppState::gallery_boot_budget`]): 300 ms. The routes answer in
+/// process and at once, from the store, in a few milliseconds each when it
+/// is not busy, so a healthy daemon fills every field well inside it; a
+/// route that is stuck (a busy store, a large gallery's list, a hosted
+/// instance's first feedback configuration) holds the page no longer than
+/// a pause a person barely notices on a navigation, and the shell asks it
+/// itself, one round trip later. Longer would hold the page's static frame
+/// back for a field the shell can fetch; shorter would drop fields a
+/// loaded but healthy store still answers.
+pub const GALLERY_BOOT_BUDGET: Duration = Duration::from_millis(300);
+
 /// The visibility generation (spec 2026-10-08-multi-agent-multi-person
 /// M17): the store's counter, bumped by every committed change to what an
 /// agent may see, and a notification of each bump for waking the waiters
@@ -180,6 +193,11 @@ pub struct AppState {
     pub request_timeout: Duration,
     /// Deadline for the publish routes and asset upload.
     pub publish_timeout: Duration,
+    /// How long a gallery page's load waits for its bootstrap block's
+    /// routes, all together, before it is sent with what answered
+    /// ([`GALLERY_BOOT_BUDGET`] by default); never longer than
+    /// [`AppState::request_timeout`].
+    pub gallery_boot_budget: Duration,
     /// Deadline for each request an agent's call makes to a connected
     /// remote through this daemon ([`REMOTE_DEADLINE`] in the daemon):
     /// reads, comments, watches and sign-ins.
@@ -355,10 +373,19 @@ pub struct AppState {
     /// ClaxBot's keys and run driver seam ([`crate::bot`]); the daemon
     /// and the Worker install theirs after [`AppState::assemble`].
     pub bot: Arc<crate::bot::Bot>,
+    /// The surfaces hosts registered with this daemon, and the broker
+    /// their calls go through ([`crate::bot_surfaces`]): no registration
+    /// at any start. The native daemon's alone: a Worker has none.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub bot_surfaces: Arc<crate::bot_surfaces::Surfaces>,
     /// Where the instance's own feedback integration comes from
     /// ([`InstanceFeedback`]), which the host sets after
     /// [`AppState::assemble`]; [`InstanceFeedback::Own`] by default.
     pub feedback: InstanceFeedback,
+    /// The page views not yet written and the day's seen set
+    /// ([`crate::analytics`]); it counts, sweeps and is due only while
+    /// [`AppState::hosted`] is set.
+    pub analytics: Arc<crate::analytics::Analytics>,
 }
 
 /// [`AppState::sites`] without a site domain.
@@ -494,7 +521,19 @@ impl AppState {
         Ok(AppState {
             settings,
             bot: Arc::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            // A daemon whose store keeps blobs keeps runs' content, and
+            // withholds no operation for holding one.
+            bot_surfaces: Arc::new(crate::bot_surfaces::Surfaces::new(
+                p.store.clone(),
+                p.question_sleeper.clone(),
+                clax_bot::bot_surfaces::HubLimits {
+                    content: p.store.keeps_bot_content(),
+                    ..clax_bot::bot_surfaces::HubLimits::default()
+                },
+            )),
             feedback: InstanceFeedback::Own,
+            analytics: Arc::default(),
             home: p.home,
             token: p.token,
             require_credential: p.require_credential,
@@ -507,6 +546,7 @@ impl AppState {
             net: Arc::new(crate::net::Net::default()),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
+            gallery_boot_budget: GALLERY_BOOT_BUDGET,
             remote_deadline: REMOTE_DEADLINE,
             sse_keep_alive: Duration::from_secs(15),
             self_base: p.self_base,
@@ -585,9 +625,22 @@ impl AppState {
     /// The in-memory sweeps, due every [`clax_realtime::working::SWEEP_INTERVAL`]:
     /// stale working records, presence and idle drafts (announced), streams
     /// detached past their grace, and live seats gone idle. Live layers
-    /// need none: each flush is a timer its own edit starts. The daemon runs
-    /// it on a loop; a Durable Object from its alarm.
+    /// need none: each flush is a timer its own edit starts. On a hosted
+    /// Clax, the page views' batch and the day's rollover when due
+    /// ([`crate::analytics::Analytics::sweep`]). The daemon runs it on a
+    /// loop; a Durable Object from its alarm.
     pub async fn sweep(&self) {
+        if self.hosted.is_some()
+            && self
+                .analytics
+                .next_due_in(self.question_clock.now())
+                .is_some_and(|d| d.is_zero())
+        {
+            let a = self.analytics.clone();
+            if let Err(e) = self.store.call(move |st| a.sweep(st)).await {
+                tracing::warn!(error = %e, "writing the page views failed");
+            }
+        }
         clax_realtime::working::sweep_and_announce(&self.store, &self.working, &self.events).await;
         clax_realtime::presence::sweep_and_announce(&self.presence, &self.events);
         clax_realtime::drafts::sweep_and_announce(&self.drafts, &self.events);
@@ -640,7 +693,9 @@ impl AppState {
     /// detached stream's grace ending, a live seat going idle, and a
     /// question's swept grace ending
     /// ([`clax_realtime::questions::Sleeper::times_graces`]), and a git token
-    /// revocation the host failed ([`crate::git_remotes::RETRY_AFTER`]).
+    /// revocation the host failed ([`crate::git_remotes::RETRY_AFTER`]), and
+    /// on a hosted Clax the page views' batch or the day's rollover
+    /// ([`crate::analytics::Analytics::next_due_in`]).
     /// `None` when none of them holds
     /// anything that will need it. A host whose sweeps run from a timer it
     /// sets itself (a Durable Object's alarm) sets it for then.
@@ -658,6 +713,9 @@ impl AppState {
             self.git_remotes
                 .due()
                 .then_some(crate::git_remotes::RETRY_AFTER),
+            self.hosted
+                .as_ref()
+                .and_then(|_| self.analytics.next_due_in(now)),
         ]
         .into_iter()
         .flatten()
@@ -697,6 +755,7 @@ impl AppState {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::VisGen;
     use clax_core::Home;
@@ -716,10 +775,14 @@ mod tests {
         let id = st.live_approvals(None).unwrap()[0].id.clone();
         st.revoke_approval(&AuditCtx::DAEMON, &id, None).unwrap();
         assert_eq!(g.wait_after(seen).await, 1);
-        // Not yet: a bump from elsewhere wakes it.
-        let (g2, st2) = (g.clone(), st.clone());
-        let waiter = tokio::spawn(async move { g2.wait_after(1).await });
-        tokio::task::yield_now().await;
+        // Not yet: polled once, it waits, and a bump from elsewhere wakes it.
+        let st2 = st.clone();
+        let mut waiter = Box::pin(g.wait_after(1));
+        assert_eq!(
+            futures::FutureExt::now_or_never(&mut waiter),
+            None,
+            "waits for the next bump"
+        );
         tokio::task::spawn_blocking(move || {
             st2.approve(
                 &AuditCtx::DAEMON,
@@ -732,6 +795,6 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(waiter.await.unwrap(), 2);
+        assert_eq!(crate::test_util::within("the bump's wake", waiter).await, 2);
     }
 }

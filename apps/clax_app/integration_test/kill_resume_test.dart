@@ -26,6 +26,10 @@ import 'package:integration_test/integration_test.dart';
 
 import 'rig.dart';
 
+/// The hang guard on one core call or event: it ends only one that never
+/// comes, well under the test's own `Timeout`.
+const _hang = Duration(minutes: 3);
+
 const _page = '<!doctype html><title>Goals</title><main><h2>Quarterly goals</h2></main>';
 const _green =
     '<!doctype html><title>Goals</title>'
@@ -241,7 +245,7 @@ Future<String> _thread(CoreTransport t, String aid, String body) async {
     '/api/artifacts/${Uri.encodeComponent(aid)}/threads',
     headers: {'content-type': 'multipart/form-data; boundary=$boundary'},
     body: Uint8List.fromList(utf8.encode(parts.toString())),
-    timeout: const Duration(seconds: 30),
+    timeout: _hang,
   );
   final json = jsonDecode(utf8.decode(a.body));
   expect(a.status, 201, reason: '$json');
@@ -257,7 +261,7 @@ Future<void> _createJob(CoreTransport t, Map<String, Object?> body) async {
     if (jsonDecode(m.data) case {'stream': final String s}) ready.complete(s);
   });
   try {
-    final stream = await ready.future.timeout(const Duration(seconds: 30));
+    final stream = await ready.future.timeout(_hang);
     Future<Map<String, Object?>> call(
       String method,
       String path,
@@ -272,7 +276,7 @@ Future<void> _createJob(CoreTransport t, Map<String, Object?> body) async {
           EffectRunner.ownerHeader: ?owner,
         },
         body: json == null ? null : Uint8List.fromList(utf8.encode(jsonEncode(json))),
-        timeout: const Duration(seconds: 30),
+        timeout: _hang,
       );
       final out = a.body.isEmpty
           ? <String, Object?>{}
@@ -298,7 +302,7 @@ Future<Map<String, Object?>> _job(CoreHost core, String id) async {
   final a = await CoreTransport(core.calls).send(
     'GET',
     '/api/jobs/${Uri.encodeComponent(id)}',
-    timeout: const Duration(seconds: 30),
+    timeout: _hang,
   );
   final json = (jsonDecode(utf8.decode(a.body)) as Map).cast<String, Object?>();
   expect(a.status, 200, reason: '$json');

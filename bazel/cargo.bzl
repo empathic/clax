@@ -11,6 +11,7 @@ and Bazel must be told: which files outside `src/` a target reads.
 
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@bazel_skylib//rules:native_binary.bzl", "native_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_shared_library", "rust_static_library", "rust_test")
 load(":workspace.bzl", "CRATES", "WORKSPACE_RUSTC_FLAGS")
 
@@ -22,10 +23,12 @@ def cargo_package(
         compile_data = [],
         test_compile_data = [],
         test_data = [],
+        test_data_of = {},
         tests_use_clax = [],
         test_env = {},
         shard_counts = {},
         split_tests = {},
+        split_lib_test = {},
         build_script_env = {},
         build_script_data = [],
         staticlib = False,
@@ -40,7 +43,8 @@ def cargo_package(
     Targets, with <lib> the library's crate name:
       <lib>                 the library (tests link it too: no crate turns on
                             another's features for tests)
-      <lib>_lib_test        its unit tests
+      <lib>_lib_test        its unit tests (with `split_lib_test`, those no
+                            group takes, beside `<lib>_lib_test__<g>`)
       <bin>                 each binary, under Cargo's name for it
       <bin>_bin_test        each binary's unit tests
       <test>                each [[test]] target, under its name
@@ -61,6 +65,9 @@ def cargo_package(
       test_compile_data: the same, for the tests only.
       test_data: files the tests read while they run. Paths built from
         CARGO_MANIFEST_DIR resolve as they do under Cargo.
+      test_data_of: {test name (as tests_use_clax names it): files}: what
+        that test target alone reads while it runs, beside test_data, so
+        an edit to them reruns it and no other.
       tests_use_clax: the test targets (by name, including `<lib>_lib_test`
         and `<bin>_bin_test`) that run the `clax` binary: they get it, its
         warm-up stamp and CLAX_TEST_BIN.
@@ -76,6 +83,15 @@ def cargo_package(
         parallel, and an edit to one test file rebuilds one target. N trades
         that against what every test binary repeats: codegen of the shared
         dependencies' generics, and a link.
+      split_lib_test: {"groups": [[<filter>, …], …], "reruns": {<run>:
+        {"env": {…}, "args": […]}}}: the library's unit tests run as one
+        test binary in several targets, each given its share by libtest's
+        filters. The g-th group (from 2) is `<lib>_lib_test__<g>`: the tests
+        whose names hold one of its filters (a module's `<m>::`) and none
+        of an earlier group's. `<lib>_lib_test` runs the rest, so every
+        test runs in exactly one target, and a new module runs there until
+        a group names it. Each rerun runs the same shares again, with `env`
+        added and `args` after the filters, as `<lib>_<run>_test__1` … .
       build_script_env: environment for the build script ($(execpath) works).
       build_script_data: files the build script reads.
       staticlib: also declare `<lib>_static`, a rust_static_library of the
@@ -214,7 +230,7 @@ def cargo_package(
     ) + ["Cargo.toml"]
 
     def test_kwargs(name, integration = False, uses_clax = None):
-        data = own_files + test_data
+        data = own_files + test_data + test_data_of.get(name, [])
         # The daemons the tests start keep their homes unseeded.
         env = {"CLAX_GALLERY__QUICKSTART": "false"} | test_env
         if name in tests_use_clax or uses_clax in tests_use_clax:
@@ -290,13 +306,36 @@ def cargo_package(
             rust_library(name = lib + "_wasm", disable_pipelining = disable_pipelining, **wasm)
             if cdylib:
                 rust_shared_library(name = lib + "_wasm_shared", **wasm)
+        lib_test = lib + "_lib_test"
+        lib_test_kwargs = test_kwargs(lib_test)
+        groups = _lib_test_groups(split_lib_test.get("groups", []))
+        if len(groups) > 1 and lib_test in tests_use_clax:
+            fail("split_lib_test: %s runs the clax binary, whose path its shards' env cannot name" % lib_test)
         _test(
-            name = lib + "_lib_test",
+            name = lib_test,
+            args = groups[0],
             crate = ":" + lib,
             proc_macro_deps = dev_macros,
             deps = unit_dev_deps,
-            **test_kwargs(lib + "_lib_test")
+            **lib_test_kwargs
         )
+        runs = {"lib": ({}, [])} | {
+            run: (spec.get("env", {}), spec.get("args", []))
+            for run, spec in split_lib_test.get("reruns", {}).items()
+        }
+        for run, (env, args) in runs.items():
+            for g, filters in enumerate(groups):
+                if run == "lib" and g == 0:
+                    continue
+                native_test(
+                    name = "%s_%s_test__%d" % (lib, run, g + 1),
+                    src = ":" + lib_test,
+                    out = "%s_%s_test__%d" % (lib, run, g + 1),
+                    args = filters + args,
+                    env = lib_test_kwargs["env"] | env,
+                    timeout = "long",
+                    tags = ["cpu:4"],
+                )
 
     for bin, root in crate["bins"].items():
         rust_binary(
@@ -357,6 +396,15 @@ def cargo_package(
             deps = ([":" + lib] if lib else []) + normal_deps + dev_deps,
             **test_kwargs(name, integration = True)
         )
+
+def _lib_test_groups(groups):
+    """libtest's arguments for each share of a package's unit tests, the
+    rest first (split_lib_test in cargo_package)."""
+    rest = [a for group in groups for f in group for a in ("--skip", f)]
+    return [rest] + [
+        group + [a for earlier in groups[:g] for f in earlier for a in ("--skip", f)]
+        for g, group in enumerate(groups)
+    ]
 
 def _uniq(labels):
     """`labels` without repeats, in order: a label may be both a crate's

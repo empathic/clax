@@ -548,13 +548,12 @@ async fn shell_routes_serve_ui_or_explain_missing_build() {
                     .unwrap()
                     .starts_with("text/html")
             );
-            // The artifact page carries one viewer's data: no shared cache.
-            let want = if path == "/" {
-                "no-cache"
-            } else {
-                "private, no-cache"
-            };
-            assert_eq!(res.headers()["cache-control"], want, "{path}");
+            // Both entries carry one viewer's data: no shared cache.
+            assert_eq!(
+                res.headers()["cache-control"],
+                "private, no-cache",
+                "{path}"
+            );
         } else {
             assert_eq!(
                 res.json::<serde_json::Value>().await.unwrap()["error"]["code"],
@@ -797,7 +796,7 @@ async fn every_html_page_is_revalidated_and_answers_not_modified() {
     );
     let shell = ts.get("/").await;
     if shell.status() == 200 {
-        assert_eq!(shell.headers()["cache-control"], "no-cache");
+        assert_eq!(shell.headers()["cache-control"], "private, no-cache");
         let etag = shell.headers()["etag"].to_str().unwrap().to_string();
         assert_eq!(get_on(&ts, None, "/", Some(&etag)).await.status(), 304);
     }

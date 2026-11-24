@@ -459,7 +459,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "clax-bot"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -469,6 +469,8 @@ dependencies = [
  "clax-rt",
  "clax-sample",
  "clax-store",
+ "clax-surface",
+ "encoding_rs",
  "futures",
  "html5ever",
  "rusqlite",
@@ -477,11 +479,12 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
 name = "clax-bot-js"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "async-trait",
  "clax-bot-sandbox",
@@ -495,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "clax-bot-sandbox"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "async-trait",
  "oxc_allocator",
@@ -508,11 +511,12 @@ dependencies = [
 
 [[package]]
 name = "clax-cli"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "chrono",
+ "clax-bot",
  "clax-commands",
  "clax-core",
  "clax-embedded",
@@ -536,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "clax-commands"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -547,6 +551,7 @@ dependencies = [
  "clax-hooks",
  "clax-mcp",
  "clax-store",
+ "clax-surface",
  "http",
  "nix",
  "reqwest 0.12.28",
@@ -566,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "clax-content-git"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -581,7 +586,7 @@ dependencies = [
 
 [[package]]
 name = "clax-core"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -629,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "clax-embed"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -655,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "clax-embedded"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "rust-embed",
  "sha2",
@@ -663,14 +668,14 @@ dependencies = [
 
 [[package]]
 name = "clax-fake-exe"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "clax-fleet"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -703,7 +708,7 @@ dependencies = [
 
 [[package]]
 name = "clax-git"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "axum",
  "miniz_oxide",
@@ -717,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "clax-hooks"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "clax-core",
@@ -730,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "clax-http"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -743,6 +748,7 @@ dependencies = [
  "clax-rt",
  "clax-sample",
  "clax-store",
+ "clax-surface",
  "futures",
  "http",
  "nix",
@@ -770,7 +776,7 @@ dependencies = [
 
 [[package]]
 name = "clax-mcp"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -799,7 +805,7 @@ dependencies = [
 
 [[package]]
 name = "clax-realtime"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "bytes",
  "chrono",
@@ -833,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "clax-rt"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -846,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "clax-sample"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -869,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "clax-server"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -891,6 +897,7 @@ dependencies = [
  "clax-rt",
  "clax-sample",
  "clax-store",
+ "clax-surface",
  "clax-testkit",
  "futures",
  "mime_guess",
@@ -900,6 +907,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rmcp",
  "rusqlite",
+ "rustls",
  "send_wrapper",
  "serde",
  "serde_json",
@@ -917,11 +925,12 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "web-time",
+ "webpki-roots",
 ]
 
 [[package]]
 name = "clax-store"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -947,11 +956,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "clax-surface"
+version = "0.7.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "clax-testkit"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "async-trait",
  "axum",
+ "clax-bot",
  "clax-core",
  "clax-fake-exe",
  "clax-http",
@@ -960,10 +978,12 @@ dependencies = [
  "clax-sample",
  "clax-server",
  "clax-store",
+ "clax-surface",
  "futures",
  "reqwest 0.12.28",
  "ring",
  "rusqlite",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
@@ -1003,6 +1023,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower-service",
+ "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-streams 0.7.0",

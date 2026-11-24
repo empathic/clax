@@ -303,8 +303,27 @@ export type BridgeToShell =
    * too: the shell takes it only for the request it has open and checks its
    * shape. */
   | ({ type: "clax:migration"; requestId: string } & MigrationResult)
+  /** Clax's lockdown refused the page something from another origin
+   * (`blocked.ts`): the violated directive and the blocked URL's origin
+   * alone, never its path or query. Once per directive and origin, at most
+   * `BLOCKED_MAX` per document, all sent again after every welcome. The
+   * page can post this too: the shell checks its shape, shows the origin as
+   * text and does nothing because of it. */
+  | { type: "clax:blocked"; directive: string; origin: string }
   | UseRequest
   | CallRequest;
 
+/** The directives a `clax:blocked` names: those by which the lockdown
+ * (`crates/clax-http/src/content_policy.rs`, `lockdown`) refuses a page
+ * something from another origin: `script-src`, `script-src-elem`,
+ * `style-src`, `style-src-elem`, `img-src`, `font-src`, `media-src`,
+ * `frame-src`, `child-src`, `worker-src`, `manifest-src`, `object-src`,
+ * `connect-src`, `default-src` and `form-action`. */
+export const BLOCKED_DIRECTIVE = /^((script|style)-src(-elem)?|(img|font|media|frame|child|worker|manifest|object|connect|default)-src|form-action)$/;
+/** The most `clax:blocked` reports a document sends, and the shell keeps. */
+export const BLOCKED_MAX = 20;
+/** The longest origin a `clax:blocked` carries. */
+export const BLOCKED_ORIGIN_MAX = 300;
+
 export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:theme", "clax:comment-mode", "clax:hash", "clax:greet", "clax:back", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:peers", "clax:storage-access", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:shortcut", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:no-cookie", "clax:storage-access", "clax:scroll", "clax:route", "clax:chrome", "clax:wait", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:shortcut", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:no-cookie", "clax:storage-access", "clax:scroll", "clax:route", "clax:chrome", "clax:wait", "clax:inspection", "clax:tests", "clax:migration", "clax:blocked", "clax:use", "clax:call"]);

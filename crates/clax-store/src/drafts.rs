@@ -471,6 +471,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::app_data::shim::Docs;
@@ -738,7 +739,7 @@ mod tests {
         for e in walk(&trash) {
             std::fs::set_permissions(&e, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let at = chrono::Utc::now();
+        let at = st.now_utc();
         assert!(
             st.sweep_drafts(DAEMON, at, DRAFT_MAX_AGE)
                 .unwrap()

@@ -3,7 +3,7 @@
 // New comment box writes them. Only NewComment.svelte imports this module,
 // so it loads in that box's own chunk.
 import type { Anchor } from "../../../bridge/src/protocol";
-import { POST_FAILED, failureText, scopedNotice } from "../failure";
+import { ApiError, POST_FAILED, failureText, scopedNotice } from "../failure";
 import { type Thread, createThread, upsert } from "../threads";
 import type { Draft } from "./composer-model";
 import type { ThreadChange } from "./thread-sync";
@@ -40,9 +40,10 @@ export type WholeHost = {
 };
 
 /** Posts `body` as a new thread about the whole artifact on `version`, adds
- * it to the view and selects it. A failure shows in the notice banner (as
- * any failed post's does, and a later success clears it) and is rethrown,
- * so the composer keeps the text. */
+ * it to the view and selects it; a success clears a failed post's notice
+ * banner. A failure is rethrown, so the composer keeps the text and says
+ * why beside it; only a `comments_off` refusal, which closes the box,
+ * shows in the banner. */
 export async function postWhole(host: WholeHost, version: number, body: string): Promise<Thread> {
   const notice = scopedNotice(u => host.setNotice(u), POST_FAILED);
   try {
@@ -53,7 +54,7 @@ export async function postWhole(host: WholeHost, version: number, body: string):
     host.threadCreated?.(thread);
     return thread;
   } catch (e) {
-    notice(failureText(POST_FAILED, e));
+    if (e instanceof ApiError && e.code === "comments_off") notice(failureText(POST_FAILED, e));
     if (host.refused) host.refused(e);
     throw e;
   }

@@ -1,9 +1,13 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createRawSnippet } from "svelte";
 import { describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../bridge/test/trusted";
 import Sidebar from "./ui/Sidebar.svelte";
 import { flush, mount } from "./test/svelte";
 import type { Thread } from "./threads";
+import { settled } from "./test/settled";
+import { ApiError } from "./api";
 
 const base = { artifact_id: "7q3k9mzx2b4t", version_n: 1, has_clip: false, clip_url: null, created_at: "2026-09-29T10:00:00.000Z", resolved_at: null, resolved_by: null, feedback_state: null };
 const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
@@ -234,6 +238,33 @@ describe("Sidebar", () => {
     view.unmount();
   });
 
+  it("keeps a reply's text when it fails to post, says why beside the box, and empties the box once it posts", async () => {
+    let fail = true;
+    const onReply = vi.fn(async () => { if (fail) throw new ApiError(530, ""); });
+    const onText = vi.fn();
+    const writers = createRawSnippet(() => ({ render: () => "<span></span>" }));
+    const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply, live: { writers, onText } });
+    const card = view.root.querySelector(".thread-card")!;
+    const input = card.querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    const status = () => card.querySelector(".reply ~ .act-hint")!;
+    flush(() => input.click());
+    flush(() => { input.value = "looks good"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+    await vi.waitFor(() => { flush(); expect(status().textContent).toBe("Could not post: this Clax is not answering. It may have been taken down or moved."); });
+    expect(status().getAttribute("role")).toBe("status");
+    expect(input.value).toBe("looks good");
+    // Others still see it being written.
+    expect(onText).toHaveBeenLastCalledWith("a", "looks good");
+    fail = false;
+    flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+    await vi.waitFor(() => { flush(); expect(input.value).toBe(""); });
+    expect(status().textContent).toBe("");
+    expect(onText).toHaveBeenLastCalledWith("a", "");
+    expect(onReply).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
   it("tells the live layers a reply's text as it is typed, and that it is gone when posted or when its card goes", () => {
     const onText = vi.fn();
     const writers = createRawSnippet(() => ({ render: () => "<span></span>" }));
@@ -458,8 +489,7 @@ describe("Sidebar", () => {
       const card = root.querySelector('.thread-card[data-thread="a"]')!;
       expect(card.querySelector(".send .primary")!.textContent).toBe("Send to claude");
       flush(() => card.querySelector<HTMLButtonElement>('[aria-label="Choose the agent"]')!.click());
-      for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
-      flush();
+      await settled();
       const items = Array.from(card.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));
       expect(items.map(i => [i.textContent, i.getAttribute("aria-checked")])).toEqual([["codex", "false"], ["claude", "true"]]);
       flush(() => items[0].click());
@@ -683,5 +713,29 @@ describe("Sidebar: threads on other pages", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// The extension's side panel (web/extension/src/panel/Panel.svelte) mounts
+// the sidebar without a view, with props of these kinds: its markup is the
+// thread list's alone, as it was before the sidebar had views, pinned in
+// test/panel-sidebar.html (without the comments Svelte places; a comment's
+// local time stands there as {time}).
+describe("Sidebar as the extension's side panel mounts it", () => {
+  it("renders the markup it rendered before the views", async () => {
+    const threads: Thread[] = [
+      { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("a1", "viewer", "Alex", "two columns")] },
+      { ...base, id: "b", anchor: { ...anchor, file: "about.html" }, status: "open", sent_to_agent: true, comments: [comment("b1", "viewer", "Mia", "warmer"), comment("b2", "agent", "claude", "Done")] },
+      { ...base, id: "c", anchor, status: "resolved", resolved_at: base.created_at, resolved_by: "viewer:p_me", sent_to_agent: false, comments: [comment("c1", "viewer", "Alex", "old")] },
+      { ...base, id: "d", anchor: { ...anchor, file: "gone.html" }, status: "open", sent_to_agent: false, comments: [comment("d1", "viewer", "Alex", "lost")] },
+    ];
+    const m = mount(Sidebar, { threads, numbers: new Map([["a", 1]]), resolved: { a: { id: "a", found: true, method: "exact" as const, rect: null } }, selected: "a", file: "index.html",
+      holds: (f: string) => f !== "gone.html", now: new Date(base.created_at), versions: [], shown: 1, agent: "claude", me: { public_id: "p_me", display_name: "Alex", created_at: base.created_at },
+      working: [], agents: [], sendTo: null, commenting: false, onSelect: vi.fn(), onSend: vi.fn(), onSendUnsent: vi.fn(), onChoose: vi.fn(), onResolve: vi.fn(), onReply: vi.fn(),
+      clip: async () => null, onSeen: vi.fn() });
+    await vi.dynamicImportSettled();
+    const pinned = readFileSync(join(__dirname, "test/panel-sidebar.html"), "utf8").trim().replaceAll("{time}", new Date(base.created_at).toLocaleString());
+    expect(m.root.innerHTML.replace(/<!--[^]*?-->/g, "")).toBe(pinned);
+    m.unmount();
   });
 });

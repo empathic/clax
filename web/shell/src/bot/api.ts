@@ -11,6 +11,7 @@
 // margins integer basis points (§7.1).
 import { getToken } from "../api";
 import { Refused } from "../held";
+import { ApiError, reasonText } from "../trouble";
 
 export { Refused };
 
@@ -22,7 +23,17 @@ export type Source = "default" | "db" | "file" | `env:${string}`;
 /** A stored key's metadata (§8.1). `host` is the origin it was set for and
  * is only ever sent to; `problem`, when the provider in effect is another,
  * says so ("your key: it was set for <host>; set it again"). */
-export type KeyInfo = { set: boolean; last4: string | null; set_at: string | null; set_by?: { id: string; name: string | null } | null; last_ok_at: string | null; host?: string | null; problem?: string | null };
+export type KeyInfo = { set: boolean; last4: string | null; set_at: string | null; set_by?: { id: string; name: string | null } | null; last_ok_at: string | null; host?: string | null; problem?: string | null; last_problem?: KeyProblem | null };
+/** How a model call failed (the run's own person and admins only): its
+ * `class` (`invalid_request`, `auth`, `rate_limited`, `overloaded`, `api`,
+ * `redirected`, `bad_base_url`, `network`, `stream_cut`, `protocol`,
+ * `unknown_event`; any other reads as `api`), the HTTP status (null with
+ * none: mid-stream, or no answer), the provider's own error `type`, what it
+ * said (`message`: bounded, without control characters or the key, and
+ * untrusted: rendered as text only) and its request ID. */
+export type ErrorDetail = { class: string; status: number | null; type: string | null; message: string | null; request_id: string | null };
+/** A key's last failed request (`at`, RFC 3339), until a later one goes through or the key is set again. */
+export type KeyProblem = ErrorDetail & { at: string };
 /** One week of credits (§7.4): `start` and `end` are RFC 3339 (Monday 00:00 UTC to the next). */
 export type Week = { start: string; end: string; weekly_milli: number; lift_milli: number; spent_milli: number; warn: boolean; exhausted: boolean };
 /** Whose model key a run, a turn or a person's runs use: `instance` or `own`, never null. */
@@ -52,6 +63,16 @@ export type MeBot = {
   estimate_milli?: { low: number; high: number } | null;
   can_export?: boolean;
   provider_host?: string | null;
+  web?: MeWeb;
+};
+/** Whether ClaxBot may search and read the web for this person (`GET
+ * /api/me/bot`): `on` their own choice (on by default), `offered` whether
+ * the admin turned on a web operation the host's source can perform, and
+ * `operations` which, `why_off` why their runs have none now, else `null`. */
+export type MeWeb = {
+  on: boolean; offered: boolean; operations: { search: boolean; fetch: boolean }; why_off: "admin_off" | "person_off" | "not_configured" | null;
+  /** Milli-credits one request costs them: a search on the active provider's line, a fetch (null for a line that does not exist). */
+  prices: { search_milli: number | null; fetch_milli: number | null };
 };
 
 /** A line of usage: a cost line's ID, its label and unit, and the quantity and credits (§7.3). */
@@ -75,8 +96,14 @@ export type RunStatus = "queued" | "running" | "stopping" | "finished" | "gave_u
 /** Why a run stopped (§4.2, §7.4). */
 export type StopReason = "credits_exhausted" | "run_cap" | "max_steps" | "max_time" | "cancelled" | string;
 /** One `clax` API call a script made: its op, what it named, how it went and how long it took. */
-export type BotCall = { op: string; target?: string | null; ok: boolean; ms: number; error?: string | null };
-export type StepKind = "turn" | "script" | "finish" | "give_up" | "stopped";
+export type BotCall = {
+  op: string; target?: string | null; ok: boolean; ms: number; error?: string | null;
+  /** What a web call cost, in milli-credits (absent for any other call; 0 for a page served from the page store). */
+  cost_milli?: number;
+  /** A web call's query (search) or URL (fetch), and for a fetch the source that allowed it: `comment`, `search #<seq>` or `page #<seq>`. */
+  web?: { query?: string; url?: string; source?: string };
+};
+export type StepKind = "turn" | "script" | "finish" | "give_up" | "stopped" | "failed";
 /** One step of a run (§4.2). A `turn` carries the model's narration
  * (`text`) and tokens; a `script` its title, code, calls, logs, return
  * value and error; `finish`, `give_up` and `stopped` their summary or reason. */
@@ -86,6 +113,17 @@ export type BotStep = {
   text?: string; model?: string; input_tokens?: number; cached_tokens?: number; output_tokens?: number; key_source?: "instance" | "own";
   title?: string; code?: string; calls?: BotCall[]; logs?: string[]; value?: unknown; error?: string | null; cpu_ms?: number;
   summary?: string; reason?: string;
+  /** A `stopped` or `failed` step's failed model call, for admins, and for
+   * the run's own person on their own key (never a reader's, nor an older
+   * run's). */
+  error_detail?: ErrorDetail | null;
+  /** In its place, for anyone but an admin, a model call on the instance's
+   * key that failed (the step's `reason` then reads `model_error`): nothing
+   * the provider said, only whether it was busy (rate limiting or
+   * overloaded), so the step says so in Clax's own words. */
+  instance_problem?: { busy: boolean } | null;
+  /** A finish step's Sources: the pages the run fetched, built from its journal. */
+  sources?: { title: string; url: string }[];
   /** Live only, from a turn's `turn_delta`s: the reasoning summary as it
    * streams, and the tool call's input (JSON, partial) as it is written. */
   thinking?: string; input?: string;
@@ -154,10 +192,12 @@ export type ModelApi = "anthropic" | "openai" | "gemini";
  * (`max_steps`, `max_run_credits`, …); `sources` say where each field's
  * value comes from, by its dotted name (`api`, `base_url`, `models.default`,
  * `caps.max_steps`, `key`); a field from the file or the environment is
- * read-only here. */
+ * read-only here. `kek` says whether a key-encryption key seals the keys
+ * and which, by fingerprint, for checking a backup of it. */
 export type Provider = {
   api: ModelApi; base_url: string; models: Models; key: KeyInfo;
   caps: Record<string, number>; sources: Record<string, Source>;
+  kek?: { set: boolean; fingerprint: string | null };
 };
 /** What `PUT /api/admin/provider` changes: any of the editable fields. */
 export type ProviderPatch = { api?: ModelApi; base_url?: string; models?: Partial<Models>; caps?: Record<string, number> };
@@ -168,7 +208,7 @@ export type ProviderPatch = { api?: ModelApi; base_url?: string; models?: Partia
  * the credits `null` when it resolves to no price). */
 export type PriceSummary = { source: Exclude<RateSource, "provider"> | "mixed" | null; estimated: boolean; input_credits_milli_per_mtok: number | null; output_credits_milli_per_mtok: number | null };
 export type ProviderModels = { models: { id: string; display_name: string; pricing?: PriceSummary | null }[]; fetched_at: string };
-export type Unit = "mtok_input" | "mtok_cached_input" | "mtok_cache_write" | "mtok_output" | "cpu_gb_s" | "mreq" | "gb_month" | "run";
+export type Unit = "mtok_input" | "mtok_cached_input" | "mtok_cache_write" | "mtok_output" | "cpu_gb_s" | "mreq" | "gb_month" | "run" | "kreq";
 /** A cost line (§7.2). `fixed_credits_milli`: a line charged at fixed credits per
  * unit (the harness fee) rather than from its cost. */
 export type CostLine = {
@@ -290,10 +330,13 @@ async function call<T>(path: string, method = "GET", body?: unknown): Promise<T>
   if (body !== undefined) init.body = JSON.stringify(body);
   const res = await fetch(path, init);
   if (res.ok) return (res.status === 204 ? {} : await res.json()) as T;
-  let b: { error?: { code?: string; message?: string; run?: { id?: string } } } = {};
+  let b: { error?: { code?: string; message?: string; run?: { id?: string }; detail?: ErrorDetail } } = {};
   try { b = await res.json(); } catch { /* not json */ }
   if (res.status === 409 && b.error?.code === "run_active" && b.error.run?.id) throw new RunActive(b.error.run.id);
-  throw new Refused(res.status, b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
+  const message = b.error?.message ?? reasonText(new ApiError(res.status, "", b.error?.code ?? null));
+  const d = b.error?.detail;
+  if (d && typeof d === "object" && typeof d.class === "string") throw new ModelRefused(res.status, message, b.error?.code ?? null, d);
+  throw new Refused(res.status, message, b.error?.code ?? null);
 }
 const e = encodeURIComponent;
 const query = (q: Record<string, string | number | undefined>) => {
@@ -308,7 +351,14 @@ export async function meBot(): Promise<MeBot | null> {
 export const setOwnKey = (key: string) => call<MeBot>("/api/me/bot/key", "PUT", { key });
 export const clearOwnKey = () => call<MeBot>("/api/me/bot/key", "DELETE");
 export const useOwnKey = (use_own: boolean) => call<MeBot>("/api/me/bot", "PUT", { use_own });
+/** Lets ClaxBot's runs for this person search and read the web, or not. */
+export const setWebChoice = (web: boolean) => call<MeBot>("/api/me/bot", "PUT", { web });
 export const meUsage = (week?: string) => call<MeUsage>(`/api/me/usage${query({ week })}`);
+
+/** A refusal from a failed model call (502 `provider_error`), with how it failed. */
+export class ModelRefused extends Refused {
+  constructor(status: number, message: string, code: string | null, public detail: ErrorDetail) { super(status, message, code); this.name = "ModelRefused"; }
+}
 
 /** A send refused because run `run` already works on one of its threads (409 `run_active`). */
 export class RunActive extends Error {
@@ -345,7 +395,50 @@ export const provider = () => call<Provider>("/api/admin/provider");
 export const setProvider = (patch: ProviderPatch) => call<Provider>("/api/admin/provider", "PUT", patch);
 export const setInstanceKey = (key: string) => call<Provider>("/api/admin/provider/key", "PUT", { key });
 export const clearInstanceKey = () => call<Provider>("/api/admin/provider/key", "DELETE");
-export const testProvider = () => call<{ ok: boolean; latency_ms: number; error?: string | null }>("/api/admin/provider/test", "POST", {});
+/** `POST /api/admin/provider/test`: whether one call went through, and when it did not, why (`detail` once the provider answered, or the client saw how it failed). */
+export type ProviderTest = { ok: boolean; latency_ms: number; error?: string | null; detail?: ErrorDetail | null };
+export const testProvider = () => call<ProviderTest>("/api/admin/provider/test", "POST", {});
+/** One failed request with the instance key, as `GET
+ * /api/admin/provider/failures` lists it (admins only): when (`at`, RFC
+ * 3339), whose (`person`), the run (`run_id`) and its request kind
+ * (`thread`, `brief`, `other`) or the admin action (`provider.test`,
+ * `provider.models`, with no run), the model, API and host called, and how
+ * it failed (`ErrorDetail`'s fields; `message` is the provider's words,
+ * untrusted: rendered as text only). `since_key_change` is false when it
+ * happened before the instance key was last set. */
+export type ProviderFailure = ErrorDetail & {
+  id: string; at: string; person: { id: string; name: string | null } | null; run_id: string | null; request: string;
+  model: string | null; api: string; host: string | null; key_source: "instance"; since_key_change: boolean;
+};
+/** The failure log's filters, all optional: a person key, a run ID, a model, an `ErrorDetail` class, an HTTP status, a time range (RFC 3339), the `next` cursor of a previous page (`before`), and the page's size (1 to 200, 50 by default). */
+export type FailureQuery = { person?: string; run?: string; model?: string; class?: string; status?: number; since?: string; until?: string; before?: string; limit?: number };
+/** `GET /api/admin/provider/failures`: the instance key's failed requests, newest first, and the cursor of the next page (null on the last). The log keeps at most 100 per person and 1,000 in all, for 30 days. */
+export const providerFailures = (q: FailureQuery = {}) => call<{ failures: ProviderFailure[]; next: string | null }>(`/api/admin/provider/failures${query(q)}`);
+/** The web providers search can use. */
+export type WebProvider = "ceramic" | "exa" | "linkup";
+/** Which URLs a fetch may take: those from the sender's words, searches and pages read; any public one; the allowlist's hosts. */
+export type UrlRule = "sourced" | "any_public" | "allowlist";
+/** `GET /api/admin/web`: the web tools' settings, `configured` which operations the host's source can perform now (a daemon fetches always and searches with the Cloudflare account ID and token), `unavailable` why web use is off whatever the credentials (else null), `checking` whether the host is still checking that its source can run where it runs, and where each value comes from by its dotted name (`search.provider`). The token is write-only: only its `KeyInfo`. */
+export type WebSettings = {
+  configured: { search: boolean; fetch: boolean };
+  /** Why web use is off whatever the credentials: the instance's configured public origin or site domain names no host, or the host's own source cannot run where it runs (a Worker under `wrangler dev --local`). Null otherwise. */
+  unavailable: string | null;
+  checking: boolean;
+  search: { enabled: boolean; provider: WebProvider; gateway: string; byok_alias: string; limit: number; max_per_run: number };
+  fetch: { enabled: boolean; url_rule: UrlRule; allowlist: string[]; max_per_run: number };
+  cloudflare: { account_id: string; token: KeyInfo };
+  sources: Record<string, Source>;
+};
+/** What `PUT /api/admin/web` changes: any of the editable fields. */
+export type WebPatch = {
+  search?: Partial<Pick<WebSettings["search"], "enabled" | "provider" | "gateway" | "byok_alias" | "limit" | "max_per_run">>;
+  fetch?: Partial<WebSettings["fetch"]>;
+  cloudflare?: { account_id?: string };
+};
+export const getAdminWeb = () => call<WebSettings>("/api/admin/web");
+export const putAdminWeb = (patch: WebPatch) => call<WebSettings>("/api/admin/web", "PUT", patch);
+export const putWebToken = (token: string) => call<WebSettings>("/api/admin/web/token", "PUT", { token });
+export const deleteWebToken = () => call<WebSettings>("/api/admin/web/token", "DELETE");
 export const providerModels = () => call<ProviderModels>("/api/admin/provider/models");
 /** `POST /api/admin/pricing/tokenulator`: refreshes the price catalog, then
  * prices `model`'s token lines from it, as `providerId` (its tokenulator.dev
@@ -377,7 +470,7 @@ export async function exportToolpath(f: Pick<AuditFilter, "artifact" | "from" | 
   if (!res.ok) {
     let b: { error?: { code?: string; message?: string } } = {};
     try { b = await res.json(); } catch { /* not json */ }
-    throw new Refused(res.status, b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
+    throw new Refused(res.status, b.error?.message ?? reasonText(new ApiError(res.status, "", b.error?.code ?? null)), b.error?.code ?? null);
   }
   return res.blob();
 }

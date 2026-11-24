@@ -226,6 +226,7 @@ pub fn client_error_with(e: ClientError, log: DaemonLog<'_>, extra: Value) -> Ca
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

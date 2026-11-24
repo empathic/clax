@@ -178,21 +178,22 @@ fn profile_of(v: Option<Value>) -> Result<Option<ReporterProfile>, CoreError> {
 
 /// `POST /api/queues/<qid>/reporter-tokens {reporter_id, reporter_name?,
 /// origin, public_key, profile?}`: a reporter token of the caller's service
-/// grant for `reporter_id`, bound to `origin` (one of the queue's) and the
-/// Ed25519 `public_key` (unpadded base64url). `reporter_name`, when given,
-/// is the name the queue's other reporters see for this one under
-/// `reporters_see: all` (a display name or handle, never an email).
-/// `profile` (`{name?, email?, github?, avatar_url?}`, each at most 256
-/// bytes, `avatar_url` an http(s) URL) is who the backend says the
-/// reporter is: each report filed under the token keeps it, shown to
+/// grant for `reporter_id`, bound to exact `origin` (one the queue lists,
+/// or one of its patterns matches) and the Ed25519 `public_key` (unpadded
+/// base64url). `reporter_name`, when given, is the name the queue's other
+/// reporters see for this one under `reporters_see: all` (a display name
+/// or handle, never an email). `profile` (`{name?, email?, github?,
+/// avatar_url?}`, each at most 256 bytes, `avatar_url` an http(s) URL) is
+/// who the backend says the reporter is: each report filed under the token
+/// keeps it, shown to
 /// triage members and never to reporters.
 /// Answers `{token, expires_at}`.
 ///
 /// # Errors
-/// [`ServiceCaller`]'s; 400 `invalid_args`, `invalid_origin`,
-/// `invalid_reporter_id`, `invalid_reporter_name`, `invalid_key` or
-/// `invalid_profile`; 403
-/// `wrong_origin` for an origin the queue does not list.
+/// [`ServiceCaller`]'s; 400 `invalid_args`, `invalid_origin` (a pattern
+/// among them), `invalid_reporter_id`, `invalid_reporter_name`,
+/// `invalid_key` or `invalid_profile`; 403 `wrong_origin` for an origin the
+/// queue does not allow.
 pub async fn mint_token(
     State(s): State<AppState>,
     c: ServiceCaller,
@@ -798,12 +799,13 @@ pub async fn view_link(
 }
 
 /// `OPTIONS` on each reporter route: the CORS preflight, `204`, whose
-/// headers [`reporter::cors`] adds for the queue's origins.
+/// headers [`reporter::cors`] adds for the origins the queue allows.
 pub async fn preflight() -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     /// These routes run before every credential layer of the daemon, so
     /// each handler but the preflight takes the credential extractor that
@@ -811,7 +813,7 @@ mod tests {
     #[test]
     fn every_handler_takes_its_credential() {
         let src = include_str!("queue_reporter.rs");
-        let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let src = &src[..src.find("\nmod tests {").unwrap()];
         let mut seen = 0;
         for part in src.split("\npub async fn ").skip(1) {
             let name = part.split('(').next().unwrap();

@@ -1,0 +1,72 @@
+[
+  {
+    "description": "Runs JavaScript against the clax API. `code` is the body of an async function; what it returns (JSON, at most 64 KiB) comes back with its console.log lines, the calls it made and any error.",
+    "eager_input_streaming": true,
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "The body of an async function.",
+          "type": "string"
+        },
+        "title": {
+          "description": "What the script does, in a few words.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "code"
+      ],
+      "type": "object"
+    },
+    "name": "run_script"
+  },
+  {
+    "description": "Ends the run: the work is done. The fake's verdict on the case.",
+    "eager_input_streaming": true,
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "description": "How sure the fake is, from 0 to 10.",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "upheld",
+            "dismissed",
+            "deferred"
+          ]
+        },
+        "title": {
+          "description": "What was decided, in a few words.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "status"
+      ],
+      "type": "object"
+    },
+    "name": "finish"
+  },
+  {
+    "description": "Ends the run without finishing, saying why.",
+    "eager_input_streaming": true,
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "give_up"
+  }
+]

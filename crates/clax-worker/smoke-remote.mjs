@@ -5,12 +5,17 @@
 //   node smoke-remote.mjs --url https://clax.example.com --setup-secret … --token …
 //   node smoke-remote.mjs --url … --session <the clax session cookie's value> --token …
 //   node smoke-remote.mjs --url … --site-domain example.run …   # the site domain (else the record's site_domain)
+//   node smoke-remote.mjs --url … --queue … --namespace …      # the environment's queue and Artifacts namespace
+//                                                # (else the record's queue and namespace, else prod's)
 //   CLAX_SMOKE_TOKEN=cxa_… node smoke-remote.mjs --deploy …    # as an agent token (or --agent-token cxa_…)
 //   node smoke-remote.mjs --local [--no-build]   # against a fresh `wrangler dev --local`, REPO_STORE=memory
 //   node smoke-remote.mjs --local --setup-done   # the same, its setup done beforehand, as after an earlier
 //                                                # deploy (--without-token: and no owner token: a FAIL)
 //   node smoke-remote.mjs --local --as-agent     # the same, with an agent token the earlier owner minted,
 //                                                # and nothing else: as the deploy workflow's smoke
+//   node smoke-remote.mjs --deploy … --mint-agent-token   # mints an agent token with the owner token, then acts as
+//                                                # that alone: as a staging deploy's smoke (deploy.mjs --staging)
+//   node smoke-remote.mjs --local --as-minted-agent   # the same against a fresh local Worker no one set up
 //   node smoke-remote.mjs --local --remote-artifacts   # the same Worker locally on the account's real
 //                                                      # Artifacts (binding `remote: true`; needs the login)
 //
@@ -44,9 +49,16 @@
 // wrangler login, a queue subscription for the artifact's repository;
 // `git push`, and the push becoming a version (on Artifacts through the
 // queue's `pushed` event; when none arrives, a direct reconcile tells the
-// event's absence from a reconcile failure); a comment arriving live on a
-// WebSocket stream. Then it cleans up (--keep keeps the artifacts) and,
-// when it made the owner, prints a sign-in link for the owner's browser.
+// event's absence from a reconcile failure, and the publish after it,
+// before which the instance records every commit still unrecorded, must
+// record the push: the event's absence is then a warning, `WARN` in the
+// summary and an annotation under GitHub Actions, not a failure); a comment arriving live on a
+// WebSocket stream; when the admin turned web search and fetch on
+// (`GET /api/admin/web`), a ClaxBot run whose script makes one real search
+// and one real fetch of https://developers.cloudflare.com/ through the AI
+// binding (it bills the account). Then it cleans up (--keep keeps the
+// artifacts) and, when it made the owner, prints a sign-in link for the
+// owner's browser.
 //
 // Every step prints `ok`/`FAIL`/`skip`, its time and what it saw; a step
 // whose inputs failed is skipped; when the site host's health answers 404
@@ -58,7 +70,8 @@
 // step failed. --json prints the whole report as JSON at the end; --probe
 // runs the Artifacts probe whatever the store (under `wrangler dev --local`
 // every call on the binding throws); --queue-wait <s> (default 120) bounds
-// the wait for the pushed event; --no-subscribe makes no subscription;
+// the wait for the pushed event; --require-event keeps a pushed event that
+// did not arrive a failure; --no-subscribe makes no subscription;
 // --store artifacts|memory names the store until the diagnostics say (else
 // the record's), which an agent token's smoke, without them, goes by.
 
@@ -66,7 +79,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SMOKE_CANNOT, smokeCannot, smokeCredential } from "./deploy-lib.mjs";
-import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HANG_MS, HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
@@ -77,7 +90,6 @@ const opt = (n) => {
 };
 
 const RUN = Math.random().toString(36).slice(2, 8);
-const STEP_LIMIT = 30_000;
 const results = [];
 const failed = new Set();
 /** Who the smoke acts as, once the credential step chose
@@ -135,7 +147,9 @@ const skip = (why) => {
   throw new Skip(why);
 };
 
-async function until(what, f, ms) {
+/** Polls `f` each second until it answers something truthy; fails past
+ * `ms` (the hang guard unless the caller bounds the wait itself). */
+async function until(what, f, ms = HANG_MS) {
   const end = Date.now() + ms;
   let last;
   for (;;) {
@@ -165,7 +179,7 @@ function run(cmd, argv, opts = {}) {
 /** Fetches `url` (any origin; redirects not followed unless `init.redirect`
  * says so): {res, status, text, json}. */
 async function at(url, init = {}) {
-  const res = await fetch(url, { redirect: "manual", ...init, signal: AbortSignal.timeout(STEP_LIMIT) });
+  const res = await fetch(url, { redirect: "manual", ...init, signal: AbortSignal.timeout(HANG_MS) });
   const text = await res.text();
   let json = null;
   try {
@@ -283,6 +297,32 @@ function sessionCookie(res) {
   return c ? c.split(";")[0] : "";
 }
 
+/** An agent token minted as the owner from the owner token alone, as a
+ * staging deploy's smoke does (deploy.mjs --staging gives it a new
+ * CLAX_TOKEN): an owner sign-in link (`POST
+ * /api/hosted/owner-signin-link`), redeemed for a browser session, which
+ * mints the token. Answers `{ token, revoke }`, `revoke` ending both; the
+ * caller prints neither the token nor the session. Throws naming the call
+ * that failed. */
+async function mintAsOwner(base, ownerToken) {
+  const origin = base.replace(/\/$/, "");
+  const link = await at(`${origin}/api/hosted/owner-signin-link`, { method: "POST", headers: { authorization: `Bearer ${ownerToken}` } });
+  const code = link.json?.url ? new URL(link.json.url).pathname.split("/").pop() : "";
+  if (link.status !== 200 || !code) throw new Error(`the owner sign-in link: ${link.status} ${short(link.json?.error ?? link.text, 160)}`);
+  const signin = await at(`${origin}/api/hosted/signin-links/${code}/accept`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: "{}" });
+  const cookie = sessionCookie(signin.res);
+  if (signin.status >= 300 || !cookie) throw new Error(`redeeming the owner sign-in link: ${signin.status} ${short(signin.json?.error ?? signin.text, 160)}`);
+  const minted = await at(`${origin}/api/hosted/agent-tokens`, { method: "POST", headers: { origin, cookie, "content-type": "application/json" }, body: JSON.stringify({ label: `smoke ${RUN}` }) });
+  const token = minted.json?.token ?? "";
+  if (minted.status >= 300 || !token.startsWith("cxa_")) throw new Error(`minting an agent token: ${minted.status} ${short(minted.json?.error ?? minted.text, 160)}`);
+  const revoke = async () => {
+    const gone = await at(`${origin}/api/hosted/agent-tokens/${minted.json.id}`, { method: "DELETE", headers: { origin, cookie } }).catch((e) => ({ status: e.message }));
+    await at(`${origin}/api/hosted/signout`, { method: "POST", headers: { origin, cookie } }).catch(() => null);
+    return gone.status === 204 || gone.status === 200 ? "revoked" : `left (${gone.status})`;
+  };
+  return { token, revoke };
+}
+
 /** A smart HTTP advertisement's service, refs and capabilities. */
 function advertisement(buf) {
   const out = { service: null, refs: [], capabilities: [] };
@@ -354,6 +394,13 @@ const PAGE = (marker) =>
  * secret while setup is open, else the owner token. With the owner token
  * the MCP steps act as the daemon token's sessionless agent. */
 const OWNER = "credential: a session, an agent token, setup or the owner token";
+/** The step that has ClaxBot search and fetch on the real platform. */
+const WEB_STEP = "claxbot: one web search and one fetch (AI binding)";
+/** The page that step fetches. */
+const WEB_PAGE = "https://developers.cloudflare.com/";
+/** How long that step waits for its run to end. */
+const WEB_RUN_LIMIT = 300_000;
+
 const CREDENTIAL_NAMES = { session: "the owner's session", agent: "an agent token", setup: "the owner made by setup", token: "the owner token" };
 
 async function smoke(c, o) {
@@ -362,8 +409,10 @@ async function smoke(c, o) {
   let aid = "";
   let fork = "";
   const dbIds = [];
+  let webAid = "";
   let agentTokenId = "";
   let subscription = "";
+  const queue = o.queue ?? "clax-artifacts-events";
   let madeOwner = false;
   // An agent token is chosen whatever setup's state (smokeCredential), so
   // the steps before the credential step already know it.
@@ -691,7 +740,7 @@ async function smoke(c, o) {
     for (const service of ["git-upload-pack", "git-receive-pack"]) {
       const res = await fetch(`${remote.replace(/\/$/, "")}/info/refs?service=${service}`, {
         headers: { authorization: `Bearer ${gitToken}`, "user-agent": "git/2.45.0 (smoke-remote)" },
-        signal: AbortSignal.timeout(STEP_LIMIT),
+        signal: AbortSignal.timeout(HANG_MS),
       });
       const buf = Buffer.from(await res.arrayBuffer());
       if (res.status !== 200) throw new Error(`${service}: ${res.status} ${short(buf.toString(), 200)}`);
@@ -756,9 +805,9 @@ async function smoke(c, o) {
     const wr = join(HERE, "node_modules/.bin/wrangler");
     const env = { ...process.env, WRANGLER_SEND_METRICS: "false", FORCE_COLOR: "0", ...(o.account ? { CLOUDFLARE_ACCOUNT_ID: o.account } : {}) };
     const name = `clax-smoke-${RUN}`;
-    const r = await run(wr, ["queues", "subscription", "create", "clax-artifacts-events", "--source", "artifacts.repo", "--events", "pushed", "--source-namespace", "clax", "--source-repo-name", `a-${aid}`, "--name", name], { cwd: HERE, env });
+    const r = await run(wr, ["queues", "subscription", "create", queue, "--source", "artifacts.repo", "--events", "pushed", "--source-namespace", o.namespace ?? "clax", "--source-repo-name", `a-${aid}`, "--name", name], { cwd: HERE, env });
     if (r.code !== 0) throw new Error(`wrangler queues subscription create: ${short((r.err || r.out).trim(), 500)} (logged in? \`npx wrangler login\`)`);
-    const list = await run(wr, ["queues", "subscription", "list", "clax-artifacts-events", "--json"], { cwd: HERE, env });
+    const list = await run(wr, ["queues", "subscription", "list", queue, "--json"], { cwd: HERE, env });
     try {
       const j = JSON.parse(list.out.slice(list.out.indexOf("[")));
       subscription = j.find((s) => s.name === name)?.id ?? "";
@@ -779,18 +828,60 @@ async function smoke(c, o) {
 
   await step("the push becomes a version", async () => {
     const queue = store.value === "artifacts";
-    const limit = queue ? Number(opt("--queue-wait") ?? 120) * 1000 : 20_000;
+    const limit = queue ? Number(opt("--queue-wait") ?? 120) * 1000 : HANG_MS;
     const version = async () => (await c.owner(`/api/artifacts/${aid}`)).json.artifact.current_version;
     try {
       const v = await until(queue ? "the pushed event's version" : "the pushed version", async () => ((await version()) >= 3 ? await version() : false), limit);
       return { detail: `version ${v}${queue ? ", through the queue's pushed event" : ", recorded as the stand-in took the push"}` };
     } catch (e) {
-      // Tell a lost event from a reconcile that fails.
-      const rec = await c.diag(`reconcile?artifact=${aid}`, "POST").catch((x) => ({ json: { error: x.message } }));
+      // Tell a lost event from a reconcile that fails: the reconcile asked
+      // directly (diagnostics, with the owner token), and the subscription
+      // and the queue as Cloudflare holds them.
+      let ran = true;
+      const rec = await c.diag(`reconcile?artifact=${aid}`, "POST").catch((x) => {
+        ran = false;
+        return { json: { error: x.message } };
+      });
       const after = await version().catch(() => "?");
-      throw new Error(`${e.message}; a direct reconcile answered ${short(rec.json)} and the artifact is then at version ${after}` +
-        (after >= 3 ? " (the reconcile works: the event never arrived; is the repository subscribed?)" : " (the reconcile itself does not record the push)"));
+      const why = !ran ? " (no reconcile ran)"
+        : after >= 3 ? " (the reconcile works: the event never arrived; is the repository subscribed?)"
+        : " (the reconcile itself does not record the push)";
+      let held = "";
+      if (queue && subscription) {
+        // This step's `queue` says whether there is one; its name is o.queue.
+        const queueName = o.queue ?? "clax-artifacts-events";
+        const wr = join(HERE, "node_modules/.bin/wrangler");
+        const env = { ...process.env, WRANGLER_SEND_METRICS: "false", FORCE_COLOR: "0", ...(o.account ? { CLOUDFLARE_ACCOUNT_ID: o.account } : {}) };
+        const sub = await run(wr, ["queues", "subscription", "get", queueName, "--id", subscription, "--json"], { cwd: HERE, env });
+        const info = await run(wr, ["queues", "info", queueName], { cwd: HERE, env });
+        held = `; the subscription as Cloudflare holds it: ${short((sub.out || sub.err).trim().replace(/\s+/g, " "), 600)}` +
+          `; the queue: ${short((info.out || info.err).trim().replace(/\s+/g, " "), 400)}`;
+      }
+      throw new Error(`${e.message}; a direct reconcile answered ${short(rec.json)} and the artifact is then at version ${after}${why}${held}`);
     }
+  }, ["git push"]);
+
+  // On Artifacts, a push whose event did not arrive in time: the path every
+  // repository has, subscribed or not, is the publish after it, before
+  // which the instance records every commit still unrecorded (src/lib.rs,
+  // Pushes). When that records the push, the step above is a warning, not
+  // a failure, and the steps that need it run.
+  await step("the push is recorded before the next publish", async () => {
+    const lost = results.find((r) => r.name === "the push becomes a version" && r.status === "fail");
+    if (!lost) skip("the push became a version already, or was not made");
+    if (store.value !== "artifacts") skip("the stand-in records a push as it takes it: the step above stays failed");
+    if (flag("--require-event")) skip("--require-event: the step above stays failed");
+    const version = async () => (await c.owner(`/api/artifacts/${aid}`)).json.artifact.current_version;
+    // A publish on version 2 is refused once the push is version 3, or
+    // lands after it; either way the push is recorded.
+    const published = await c.tool("publish", { id: aid, if_version: 2, html: PAGE(`after the push ${RUN}`) })
+      .then((r) => `answered ${short(r.text, 160)}`, (x) => `was refused: ${short(x.message, 160)}`);
+    const after = await version();
+    if (!(after >= 3)) throw new Error(`the publish after the push ${published}, leaving the artifact at version ${after}: the push is recorded neither by the event nor before a publish`);
+    lost.status = "warn";
+    failed.delete(lost.name);
+    if (process.env.GITHUB_ACTIONS === "true") console.log(`::warning title=No pushed event from Cloudflare::the smoke's push was recorded before the next publish instead: ${short(lost.detail, 300)}`);
+    return { detail: `version 3 (the artifact is at ${after}; the publish ${published}); the pushed event's absence above is a warning` };
   }, ["git push"]);
 
   await step("read the pushed version (mcp)", async () => {
@@ -808,8 +899,8 @@ async function smoke(c, o) {
     ws.onmessage = (m) => frames.push(String(m.data));
     ws.onclose = (e) => (closed = `${e.code} ${e.reason}`);
     try {
-      await until("the socket opens", () => opened || (closed && Promise.reject(new Error(`closed ${closed}`))), 15_000);
-      const ready = await until("the stream's ready", () => frames.find((f) => f.includes("event: ready")), 15_000);
+      await until("the socket opens", () => opened || (closed && Promise.reject(new Error(`closed ${closed}`))));
+      const ready = await until("the stream's ready", () => frames.find((f) => f.includes("event: ready")));
       const data = JSON.parse(ready.split("\n").find((l) => l.startsWith("data:")).slice(5));
       await c.owner(`/api/stream/${data.stream}`, { method: "POST", body: JSON.stringify({ subscribe: [`artifact:${aid}`] }) });
       const form = new FormData();
@@ -819,22 +910,58 @@ async function smoke(c, o) {
       const t0 = performance.now();
       const posted = await c.owner(`/api/artifacts/${aid}/threads`, { method: "POST", body: form });
       const tid = posted.json?.thread?.id ?? posted.json?.id;
-      await until("the comment's frame", () => frames.some((f) => (tid && f.includes(tid)) || f.includes(`smoke-remote ${RUN}`)), 15_000);
+      await until("the comment's frame", () => frames.some((f) => (tid && f.includes(tid)) || f.includes(`smoke-remote ${RUN}`)));
       return { detail: `thread ${tid} arrived ${Math.round(performance.now() - t0)} ms after it was posted (stream ${data.stream})` };
     } finally {
       ws.close();
     }
   }, ["publish v2 (mcp)", OWNER]);
 
+  await step(WEB_STEP, async () => {
+    // Only when the admin turned web search on: it bills the account.
+    const web = (await c.owner("/api/admin/web")).json;
+    if (!web?.configured) skip("the instance has no web source (no AI binding)");
+    if (web.search?.enabled !== true) skip("web search is off (GET /api/admin/web: search.enabled)");
+    if (web.fetch?.enabled !== true) skip("web fetch is off (GET /api/admin/web: fetch.enabled)");
+    const me = (await c.owner("/api/me/bot")).json;
+    if (me?.web?.why_off) skip(`web use is off for the owner (${me.web.why_off})`);
+    if (me?.unavailable_reason) skip(`ClaxBot is unavailable to the owner (${short(me.unavailable_reason, 120)})`);
+    const made = await c.owner("/api/artifacts", {
+      method: "POST",
+      body: JSON.stringify({ title: `Smoke web ${RUN}`, files: { "index.html": { content: PAGE(`web ${RUN}`), encoding: "utf8" } } }),
+    });
+    webAid = made.json.artifact.id;
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "element", selector: "main", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+    // The page's URL is in the sender's own words, so the run may fetch it.
+    form.set("body", `Smoke ${RUN}: in one script, call clax.web.search("Cloudflare Workers documentation") and then clax.web.fetch("${WEB_PAGE}"), return how many results and characters came back, then finish. Change nothing else.`);
+    form.set("version", "1");
+    const posted = await c.owner(`/api/artifacts/${webAid}/threads`, { method: "POST", body: form });
+    const tid = posted.json?.thread?.id;
+    const started = await c.owner("/api/bot/runs", { method: "POST", body: JSON.stringify({ thread_ids: [tid], artifact_id: webAid }) });
+    const rid = started.json.run.id;
+    const ended = await until("the run ends", async () => {
+      const r = (await c.owner(`/api/bot/runs/${rid}`)).json;
+      return ["finished", "failed", "gave_up", "stopped"].includes(r.status) ? r : undefined;
+    }, WEB_RUN_LIMIT);
+    const calls = ended.steps.filter((x) => x.kind === "script").flatMap((x) => x.calls ?? []);
+    const search = calls.find((x) => x.op === "web.search");
+    const fetched = calls.find((x) => x.op === "web.fetch");
+    if (!search?.ok) throw new Error(`run ${rid} (${ended.status}): no web.search answered: ${short(calls)}`);
+    if (!fetched?.ok) throw new Error(`run ${rid} (${ended.status}): no web.fetch of ${WEB_PAGE} answered: ${short(calls)}`);
+    if (ended.status !== "finished") throw new Error(`run ${rid} ended ${ended.status} (${short(ended.reason)})`);
+    return { detail: `run ${rid}: web.search in ${search.ms} ms, web.fetch of ${WEB_PAGE} in ${fetched.ms} ms` };
+  }, [OWNER]);
+
   // Cleanup: never fails the smoke, but says what it left.
   console.log("\n-- cleanup");
   if (subscription) {
     const wr = join(HERE, "node_modules/.bin/wrangler");
-    const r = await run(wr, ["queues", "subscription", "delete", "clax-artifacts-events", "--id", subscription, "--force"], { cwd: HERE, env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
+    const r = await run(wr, ["queues", "subscription", "delete", queue, "--id", subscription, "--force"], { cwd: HERE, env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
     console.log(`     subscription ${subscription}: ${r.code === 0 ? "deleted" : `left (${short(r.err || r.out, 200)})`}`);
   }
   if (!flag("--keep") && c.mcpBearer) {
-    for (const id of [...dbIds, fork, aid].filter(Boolean)) {
+    for (const id of [...dbIds, fork, aid, webAid].filter(Boolean)) {
       const r = await c.tool("delete", { url_or_id: id }).then(() => "deleted", (e) => `left: ${short(e.message, 160)}`);
       console.log(`     artifact ${id}: ${r}`);
     }
@@ -920,6 +1047,12 @@ async function local(o) {
     if (!agent.startsWith("cxa_")) await fail(`minting an agent token answered ${minted.status}`);
     console.log("local: setup done and an agent token minted beforehand (--as-agent); the smoke has only that token");
   }
+  if (flag("--as-minted-agent")) {
+    // As staging's first deploy: no one has set up, and the smoke has only
+    // the owner token, which mints the agent token it runs as (main).
+    console.log("local: no setup; the smoke mints its agent token with the owner token (--as-minted-agent)");
+    return { base, secret: undefined, token, agent: "", mint: true, stop: w.stop, work: dir };
+  }
   return { base, secret, token: flag("--without-token") || agent ? "" : token, agent, stop: w.stop, work: dir };
 }
 
@@ -932,6 +1065,10 @@ async function main() {
     siteDomain: opt("--site-domain"),
     // The store, until the diagnostics say (an agent token's smoke has none).
     store: opt("--store"),
+    // Where Artifacts sends pushed events, and the repositories' namespace
+    // (else the record's, else prod's).
+    queue: opt("--queue"),
+    namespace: opt("--namespace"),
   };
   let base = opt("--url");
   let token = opt("--token") ?? process.env.CLAX_TOKEN;
@@ -948,6 +1085,10 @@ async function main() {
     o.account ??= r.account;
     o.siteDomain ??= r.site_domain;
     o.store ??= r.store;
+    // The environment's queue and namespace (deploy-lib.mjs envOf); a
+    // record from before environments is prod's.
+    o.queue ??= r.queue;
+    o.namespace ??= r.namespace;
     o.onSetup = () => writeFileSync(record, JSON.stringify({ ...r, setup_done: true }, null, 2) + "\n", { mode: 0o600 });
   }
   if (o.local) {
@@ -955,7 +1096,7 @@ async function main() {
     base = l.base;
     token = l.token;
     agent = l.agent || agent;
-    o.secret = l.agent ? undefined : l.secret;
+    o.secret = l.agent || l.mint ? undefined : l.secret;
     o.work = l.work;
     o.siteDomain = "localhost";
     o.store = flag("--remote-artifacts") ? "artifacts" : "memory";
@@ -966,6 +1107,22 @@ async function main() {
     o.work = join(STATE, "smoke-remote");
     mkdirSync(o.work, { recursive: true });
   }
+  // As staging's smoke (deploy.mjs --staging): an agent token minted with
+  // the owner token, which the smoke then puts away, so it acts as the
+  // agent token alone, as the production smoke does.
+  let revokeMinted = null;
+  if (flag("--mint-agent-token") || flag("--as-minted-agent")) {
+    if (!token) throw new Error("--mint-agent-token needs the owner token: --deploy <deploy.mjs's record>, --token or CLAX_TOKEN");
+    try {
+      ({ token: agent, revoke: revokeMinted } = await mintAsOwner(base, token));
+    } catch (e) {
+      await stop();
+      throw new Error(`--mint-agent-token: ${e.message}`);
+    }
+    token = "";
+    o.secret = undefined;
+    console.log("minted an agent token with the owner token (--mint-agent-token); the smoke acts as it alone");
+  }
   const c = new Client(base);
   c.token = token ?? "";
   c.agent = agent ?? "";
@@ -975,11 +1132,13 @@ async function main() {
   try {
     await smoke(c, o);
   } finally {
+    if (revokeMinted) console.log(`     the minted agent token: ${await revokeMinted()}`);
     await stop();
   }
-  const counts = { ok: 0, fail: 0, skip: 0 };
+  const counts = { ok: 0, fail: 0, skip: 0, warn: 0 };
   for (const r of results) counts[r.status] += 1;
-  console.log(`\n${counts.ok} ok, ${counts.fail} failed, ${counts.skip} skipped in ${Math.round((performance.now() - t0) / 1000)} s`);
+  console.log(`\n${counts.ok} ok, ${counts.fail} failed, ${counts.skip} skipped${counts.warn ? `, ${counts.warn} warned` : ""} in ${Math.round((performance.now() - t0) / 1000)} s`);
+  for (const r of results.filter((r) => r.status === "warn")) console.log(`  WARN ${r.name}: ${short(r.detail, 400)}`);
   for (const r of results.filter((r) => r.status === "fail")) console.log(`  FAIL ${r.name}: ${short(r.detail, 400)}`);
   const cannot = results.filter((r) => r.cannot).map((r) => r.name);
   if (cannot.length) console.log(`  not as ${CREDENTIAL_NAMES[acting]} (skipped, each named above): ${cannot.join("; ")}`);

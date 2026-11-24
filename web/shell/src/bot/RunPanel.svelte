@@ -7,7 +7,13 @@
   // went and how long it took, and its output), collapsed except the live
   // one and any that failed; the credits the run has spent and the week's
   // meter; Stop while it runs; a link to its events in the audit log; and,
-  // once it stopped with an unpublished draft, Open the draft. Other runs of
+  // once it stopped with an unpublished draft, Open the draft. A step that
+  // stopped on a failed model call says how it failed: the provider's
+  // answer to admins, and to the run's own person on their own key, sent
+  // to check it under Settings → Your ClaxBot; on the instance's key, anyone but an admin gets
+  // Clax's own message instead (`instance_problem`: nothing the provider
+  // said, and the run's ID to quote to an admin), and the header says
+  // ClaxBot could not use this Clax's model provider. Other runs of
   // the artifact are a choice away. Its head names the threads the run
   // answers (each one's first line, which shows it in the view), and a
   // polite live line says each step as it finishes. Escape or Close closes
@@ -15,10 +21,12 @@
   import { onDestroy } from "svelte";
   import { refusal } from "../people/refusal";
   import { type BotRun, type BotStep, type RunEvent, type RunSummary, cancelRun } from "./api";
-  import { credits, ended, meter, openByDefault, runCost, runStatus, stepLine, tail, turnActivity } from "./model";
+  import { callCost, credits, ended, meter, openByDefault, runCost, runStatus, stepLine, tail, turnActivity, webSource } from "./model";
   import { RunFeed } from "./run-feed.svelte";
   import { botView } from "./send.svelte";
   import Meter from "./Meter.svelte";
+  import ModelError from "./ModelError.svelte";
+  import { isAdmin, myRole } from "./me";
 
   type Hear = (ev: RunEvent, r: BotRun) => void;
   let { aid, runs, quotes = () => [], onThread, onStep, mine = () => true, feedFor = (id: string, h: Hear) => new RunFeed(id, undefined, h) }: {
@@ -73,6 +81,10 @@
     return () => clearInterval(t);
   });
   const week = $derived(botView.me?.enabled ? meter(botView.me.week) : null);
+  // Whether the viewer is an admin, who is sent to Settings › Model provider when a
+  // model call on the instance's key failed.
+  let admin = $state(false);
+  $effect(() => { const me = botView.me; let gone = false; void myRole(me).then(r => { if (!gone) admin = isAdmin(r); }, () => {}); return () => { gone = true; }; });
   const choices = $derived([...new Set([...(botView.run ? [botView.run] : []), ...botView.started, ...runs.map(r => r.id)])]);
   const label = (id: string) => { const r = runs.find(x => x.id === id); return r ? `${new Date(r.started_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · ${runStatus(r)}` : "This run"; };
   const what = $derived(!run ? "" : run.request === "brief" ? "Building from the brief" : run.thread_ids.length === 1 ? "Answering one thread" : `Answering ${run.thread_ids.length} threads`);
@@ -127,7 +139,7 @@
               {#if s.code}<pre class="code" aria-label="Code"><code>{s.code}</code></pre>{/if}
               {#if s.calls?.length}
                 <ul class="calls" aria-label="Calls">
-                  {#each s.calls as c, i (i)}<li class:bad={!c.ok}><span aria-label={c.ok ? "ok" : "failed"}>{c.ok ? "✓" : "✗"}</span> <code>{c.op}</code>{#if c.target}{" "}<span class="tg">{c.target}</span>{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}</li>{/each}
+                  {#each s.calls as c, i (i)}<li class:bad={!c.ok}><span aria-label={c.ok ? "ok" : "failed"}>{c.ok ? "✓" : "✗"}</span> <code>{c.op}</code>{#if c.web?.query ?? c.web?.url ?? c.target}{" "}<span class="tg">{c.web?.query ?? c.web?.url ?? c.target}</span>{/if}{#if webSource(c.web?.source)}{" "}<span class="src">{webSource(c.web?.source)}</span>{/if}{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}</li>{/each}
                 </ul>
               {/if}
               {#if s.logs?.length}<pre class="out" aria-label="Logs">{s.logs.join("\n")}</pre>{/if}
@@ -136,10 +148,16 @@
             </details>
           {:else if s.kind === "finish"}
             <p class="who">Done</p>{#if s.summary}<p class="say">{s.summary}</p>{/if}
+            {#if s.sources?.length}
+              <ul class="sources" aria-label="Sources">
+                {#each s.sources.filter(x => /^https?:\/\//i.test(x.url)) as x, i (i)}<li><a href={x.url} target="_blank" rel="noopener noreferrer">{x.title || x.url}</a></li>{/each}
+              </ul>
+            {/if}
           {:else if s.kind === "give_up"}
             <p class="who">Gave up</p>{#if s.reason}<p class="say">{s.reason}</p>{/if}
           {:else}
-            <p class="who">Stopped</p>{#if s.reason}<p class="say">{s.reason}</p>{/if}
+            <!-- The header says why in words; a stop code is never shown as it is. -->
+            <p class="who">Stopped</p>{#if s.instance_problem}<ModelError problem={s.instance_problem} run={run?.id ?? ""} />{:else if s.error_detail}<ModelError detail={s.error_detail} {admin} keySource={run?.key_source} />{/if}
           {/if}
         </li>
       {:else}
@@ -153,7 +171,7 @@
       {#if run}<p class="cost">{runCost(run)}</p>{/if}
       <div class="wk">
         {#if week}<Meter m={week} small label="Your credits this week" /><span>{credits(week.spent)} / {credits(week.total)}</span>{/if}
-        <a href={`/audit?artifact=${encodeURIComponent(aid)}${botView.run ? `&q=${encodeURIComponent(botView.run)}` : ""}`}>Audit ↗</a>
+        <a href={`/settings/audit?artifact=${encodeURIComponent(aid)}${botView.run ? `&q=${encodeURIComponent(botView.run)}` : ""}`}>Audit ↗</a>
       </div>
     </footer>
   </aside>
@@ -199,10 +217,15 @@
     .runp .calls li.bad > span:first-child { color: var(--danger); }
     .runp .calls code { font: 12px var(--mono); }
     .runp .calls .tg { color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
+    .runp .calls .src, .runp .calls .cc { color: var(--muted); font-size: 12px; }
+    .runp .sources { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; overflow-wrap: anywhere; }
+    .runp .sources a { color: var(--accent-ink); text-decoration: underline; }
     .runp .calls .ms { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
     .runp .calls .ce { flex-basis: 100%; color: var(--danger); }
     .runp details .err { margin: 0 10px 8px; }
     .runp .err { margin: 0; color: var(--danger); font-size: 12.5px; }
+    .runp .merr { font-size: 13px; }
+    .runp .merr-next a { font-weight: 600; }
     .runp .draft { margin: 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--accent-tint); }
     .runp .draft a, .runp footer a { color: var(--accent-ink); font-weight: 600; text-decoration: underline; }
     .runp footer { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--border); display: grid; gap: 6px; }

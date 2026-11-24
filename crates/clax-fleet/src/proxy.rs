@@ -8,8 +8,10 @@
 //! The request keeps its `Host`, and carries its hop count
 //! ([`HOP_HEADER`], so no request circles: `crate::fleet::MAX_HOPS`), its
 //! instance's name ([`INSTANCE_HEADER`]) and the fleet's peer key
-//! ([`KEY_HEADER`]): a process believes the first two only beside the
-//! third, so no client can pass for another process. Hop-by-hop headers
+//! ([`KEY_HEADER`]): a process believes the instance's name only beside
+//! the key, so no client can pass for another process, and the hop count
+//! from anyone, as a floor (a client that sets it only keeps its own
+//! request from being forwarded). Hop-by-hop headers
 //! are dropped both ways, but for an upgrade's `Connection` and `Upgrade`.
 //!
 //! An owner whose node is lost (no reset, no close) is found out by the

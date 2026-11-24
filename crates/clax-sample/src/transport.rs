@@ -27,6 +27,9 @@ pub(crate) type Body = Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>>>>;
 pub(crate) struct Reply {
     pub status: u16,
     pub retry_after: Option<String>,
+    /// The provider's ID of the request: its `request-id` header, else
+    /// `x-request-id`, as it came.
+    pub request_id: Option<String>,
     pub body: Body,
 }
 
@@ -97,13 +100,25 @@ impl Transport {
 
     /// Sends `method url` with `headers` and, when given, `json` as the
     /// body. `Err` when no answer came (the message may name the URL).
-    #[cfg(not(target_arch = "wasm32"))]
     pub async fn send(
         &self,
         method: &str,
         url: &str,
         headers: &[(&str, String)],
         json: Option<&Value>,
+    ) -> Result<Reply, String> {
+        let text = json.map(Value::to_string);
+        self.send_text(method, url, headers, text.as_deref()).await
+    }
+
+    /// [`Transport::send`] with the body's JSON as text, sent as it is.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn send_text(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, String)],
+        json: Option<&str>,
     ) -> Result<Reply, String> {
         use futures::StreamExt;
         let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
@@ -122,9 +137,16 @@ impl Transport {
             .get("retry-after")
             .and_then(|h| h.to_str().ok())
             .map(str::to_string);
+        let request_id = ["request-id", "x-request-id"].iter().find_map(|k| {
+            res.headers()
+                .get(*k)
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_string)
+        });
         Ok(Reply {
             status: res.status().as_u16(),
             retry_after,
+            request_id,
             body: Box::pin(
                 res.bytes_stream()
                     .map(|c| c.map(|b| b.to_vec()).map_err(|e| e.to_string())),
@@ -133,12 +155,12 @@ impl Transport {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub async fn send(
+    pub async fn send_text(
         &self,
         method: &str,
         url: &str,
         headers: &[(&str, String)],
-        json: Option<&Value>,
+        json: Option<&str>,
     ) -> Result<Reply, String> {
         use futures::StreamExt;
         use wasm_bindgen::{JsCast, JsValue};
@@ -157,7 +179,7 @@ impl Transport {
         }
         if let Some(v) = json {
             h.append("content-type", "application/json").map_err(js)?;
-            init.set_body(&JsValue::from_str(&v.to_string()));
+            init.set_body(&JsValue::from_str(v));
         }
         init.set_headers(&h);
         let req = web_sys::Request::new_with_str_and_init(url, &init).map_err(js)?;
@@ -177,6 +199,9 @@ impl Transport {
             .dyn_into()
             .map_err(js)?;
         let retry_after = res.headers().get("retry-after").ok().flatten();
+        let request_id = ["request-id", "x-request-id"]
+            .iter()
+            .find_map(|k| res.headers().get(k).ok().flatten());
         let body: Body = match res.body() {
             Some(raw) => Box::pin(
                 wasm_streams::ReadableStream::from_raw(raw.unchecked_into())
@@ -192,6 +217,7 @@ impl Transport {
         Ok(Reply {
             status: res.status(),
             retry_after,
+            request_id,
             body,
         })
     }

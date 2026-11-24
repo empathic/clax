@@ -6,6 +6,7 @@ describe("Clax.forgetReporter", () => {
     for (const r of [{ queue: "q1", user: "u1" }, { instance: "https://clax.example", user: "u1" }, { instance: "https://clax.example", queue: "q1", user: "" }]) {
       await expect(forgetReporter(r as never)).rejects.toThrow(TypeError);
     }
+    await expect(forgetReporter({ instance: "https://apps.example.com/clax", queue: "q1", user: "u1" })).rejects.toThrow(/^Clax\.forgetReporter: instance must be an origin/);
   });
 
   it("forgets nothing, and fails nothing, where there is no IndexedDB", async () => {

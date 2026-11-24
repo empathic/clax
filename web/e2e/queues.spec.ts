@@ -21,7 +21,6 @@ import { agentOf, agentTokenOf, cspViolations, openReports, queueWithGrant, refo
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 test("a site's user files a report through the overlay; an agent claims, replies and resolves; only that reporter reads it", async ({ browser }, info) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
@@ -122,7 +121,8 @@ test("a site's user files a report through the overlay; an agent claims, replies
     const lease = await agent.ok<Lease>("POST", `/api/queues/${qid}/reports/${report.id}/claim`);
     expect(lease.lease_id).toBeTruthy();
     expect(typeof lease.fence).toBe("number");
-    expect(Date.parse(lease.expires_at)).toBeGreaterThan(Date.now());
+    // Its expiry is after the report was filed, both on the daemon's clock.
+    expect(Date.parse(lease.expires_at)).toBeGreaterThan(Date.parse(lease.report.created_at));
     expect(lease.report).toMatchObject({ id: report.id, state: "claimed" });
     expect(lease.report.claim).not.toBeNull();
     await expect(counts).toHaveText("0 open · 1 claimed · 0 fix proposed · 0 verified · 0 resolved");
@@ -196,8 +196,37 @@ test("a site's user files a report through the overlay; an agent claims, replies
   }
 });
 
+test("the overlay's host has no style attribute, and the page's !important rules neither hide nor move it", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  const site = await startDeployerSite(origin);
+  try {
+    const owner = await ownerOf(browser, origin);
+    await queueWithGrant(owner, origin, site);
+    const emp1 = await reporterOn(browser, site, "emp-1");
+    await expect(emp1.locator(".launcher")).toBeVisible();
+    // The page's own rules, through a constructed sheet its policy allows.
+    const host = await emp1.evaluate(() => {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(`clax-overlay { display: none !important; position: static !important; visibility: hidden !important; opacity: 0 !important; z-index: 0 !important; width: 50vw !important; }
+        * { letter-spacing: 0.5em !important; pointer-events: auto !important; }`);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      const el = [...document.querySelectorAll("clax-overlay")].find(h => h.shadowRoot?.querySelector(".launcher"))!;
+      const cs = getComputedStyle(el);
+      return {
+        style: el.getAttribute("style"),
+        computed: [cs.display, cs.position, cs.left, cs.top, cs.width, cs.height, cs.visibility, cs.opacity, cs.zIndex, cs.pointerEvents, cs.letterSpacing],
+      };
+    });
+    expect(host).toEqual({ style: null, computed: ["block", "fixed", "0px", "0px", "0px", "0px", "visible", "1", "2147483647", "none", "normal"] });
+    await expect(emp1.locator(".launcher")).toBeVisible();
+    expect(await cspViolations(emp1)).toEqual([]);
+  } finally {
+    await site.stop();
+    await d.stop();
+  }
+});
+
 test("a reporter files the visible page, says a fix is still broken with a new capture, then confirms the next fix", async ({ browser }) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
@@ -284,7 +313,6 @@ test("a reporter files the visible page, says a fix is still broken with a new c
 });
 
 test("a redaction drawn on a tall capture, scrolled in its stage, lands where it was drawn in the PNG sent", async ({ browser }) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
@@ -367,7 +395,6 @@ test("a redaction drawn on a tall capture, scrolled in its stage, lands where it
 });
 
 test("the triage views stay current: a filing, an agent's claim and a person's release show without a reload", async ({ browser }) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {

@@ -472,6 +472,7 @@ pub fn ffi_close(core: u64) -> i32 {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::sync::{Condvar, OnceLock};

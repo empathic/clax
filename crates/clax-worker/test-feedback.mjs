@@ -12,7 +12,8 @@
 // 2. POST /_app/feedback/token mints a reporter token for a fresh Ed25519
 //    key;
 // 3. a report is filed with the token, signed as the SDK signs
-//    (web/sdk/src/sign.ts) and carrying the page's `Origin`; the person's
+//    (web/sdk/src/sign.ts) and carrying the page's `Origin`; its answer
+//    names that origin and exposes `Retry-After` and `Date`; the person's
 //    event stream, subscribed to the queue's `queue:<qid>` topic as a
 //    member, hears its `report` event;
 // 4. the reporter badge and the reporter's report list, read as a
@@ -33,7 +34,7 @@
 import { mkdirSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
-import { STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HANG_MS, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 import { base64url, generateSigner, newNonce, signature } from "../../web/sdk/src/sign.ts";
 
 const ROOT = join(STATE, "feedback-test");
@@ -73,9 +74,6 @@ function send(port, method, path, headers, body) {
   });
 }
 
-/** How long a stream read waits for its event before the check fails: a
- * guard against a hang, not a budget (the event comes at once or never). */
-const STREAM_HANG_MS = 30_000;
 
 /** A WebSocket client over node:http, so the upgrade carries exactly
  * `headers` (the public `Host` included): it dispatches `message` (a text
@@ -199,7 +197,7 @@ function openStream(port, headers) {
     ended,
     next: (name) =>
       new Promise((resolve) => {
-        const w = { name, ok: resolve, timer: setTimeout(() => { waiters.splice(waiters.indexOf(w), 1); resolve(null); }, STREAM_HANG_MS) };
+        const w = { name, ok: resolve, timer: setTimeout(() => { waiters.splice(waiters.indexOf(w), 1); resolve(null); }, HANG_MS) };
         waiters.push(w);
         settle();
       }),
@@ -323,6 +321,11 @@ async function main() {
     const filed = await reporter("POST", `/api/queues/${qid}/reporter/reports`, { origin, "sec-fetch-site": "same-origin" }, report);
     const rid = filed.json?.report?.id;
     check(filed.status === 201 && rid && filed.json.report.reporter_id === publicId, "the reporter files a report with the token, as the person", { status: filed.status, text: filed.text.slice(0, 300) });
+    check(
+      filed.headers["access-control-allow-origin"] === origin && filed.headers["access-control-expose-headers"] === "retry-after, date",
+      "the filing's answer names the queue's origin and exposes Retry-After and Date to it",
+      { acao: filed.headers["access-control-allow-origin"], expose: filed.headers["access-control-expose-headers"] },
+    );
     const heard = await stream.next("report");
     stream.close();
     check(

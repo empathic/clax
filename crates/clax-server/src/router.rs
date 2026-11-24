@@ -5,16 +5,20 @@
 
 use crate::integrations::feedback as feedback_integration;
 use crate::routes::{
-    admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
-    confirmations, connect, content, discovery, docs, drafts, extension, feedback, git_token,
-    grants, health, inbox, installs, jobs, live, live_layers, login, mcp_http, passkeys, people,
+    admin, analytics, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot,
+    client_imports, confirmations, connect, content, discovery, docs, drafts, extension, feedback,
+    git_token, grants, health, inbox, installs, jobs, live, live_layers, login, mcp_http, passkeys,
+    people,
     perf, permissions, questions, queue_agent, queue_reporter, queues, remote_apps,
     remote_artifacts, remote_requests, remotes, resolve, room, sample, sessions, settings,
     site_signin, sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers,
     watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::routes::{containers, events, mcp, net, sign, web_push};
+use crate::routes::{
+    bot_content, bot_joins, bot_messages, bot_surfaces, containers, events, mcp, net, sign,
+    web_push,
+};
 use crate::shell;
 use crate::shell::get_page;
 use axum::{
@@ -431,6 +435,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/artifacts/{aid}/permissions",
             get(permissions::permissions),
         )
+        .route("/api/artifacts/{aid}/analytics", get(analytics::read))
         .route(
             "/api/artifacts/{aid}/capability-approval",
             put(permissions::approve),
@@ -575,8 +580,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let api_fast = api_fast.layer(axum::middleware::from_fn(clax_http::http_cache::api_etag));
     let api_fast =
         with_timeout(api_fast, state.request_timeout).layer(clax_http::http_cache::compression());
-    // The instance the feedback integration mints through, its whole
-    // router built at the first mint.
+    // The instance the feedback integration mints through and the gallery
+    // pages ask their first-load data of, its whole router built at the
+    // first use.
     let feedback_instance = crate::integrations::instance::Instance::new(state.clone());
     let api_slow = Router::new()
         .route(
@@ -604,7 +610,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route(
             "/_app/feedback/config",
-            get(feedback_integration::config).layer(axum::Extension(feedback_instance)),
+            get(feedback_integration::config).layer(axum::Extension(feedback_instance.clone())),
         )
         .route("/api/bot/runs", get(bot::list).post(bot::create))
         .route("/api/bot/runs/{id}", get(bot::get))
@@ -628,6 +634,12 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/admin/provider/test", post(admin::test))
         .route("/api/admin/provider/models", get(admin::models))
+        .route("/api/admin/provider/failures", get(admin::failures))
+        .route("/api/admin/web", get(admin::web).put(admin::set_web))
+        .route(
+            "/api/admin/web/token",
+            put(admin::set_web_token).delete(admin::clear_web_token),
+        )
         .route(
             "/api/admin/pricing",
             get(admin::pricing).put(admin::set_pricing),
@@ -823,6 +835,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/tags", get(shell::gallery_page))
         .route("/admin", get(shell::gallery_page))
         .route("/settings", get(shell::gallery_page))
+        .route("/settings/{screen}", get(shell::gallery_page))
         .route("/me", get(shell::gallery_page))
         .route("/audit", get(shell::gallery_page))
         .route("/a/{aid}", get(shell::artifact_page))
@@ -846,6 +859,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/_clax/containers/{id}/{file}", get(containers::config))
         .route("/_clax/{*path}", get(shell::static_file))
         .route("/sw.js", get(shell::service_worker))
+        // The gallery pages ask their routes for their first-load data
+        // through the instance's own router (`shell::gallery`).
+        .layer(axum::Extension(feedback_instance))
         .layer(clax_http::http_cache::compression());
     let r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
@@ -936,6 +952,56 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     // The tool set's JSON-RPC adapter: `/mcp` on a Durable Object, beside
     // rmcp's `/mcp` in the daemon.
     let r = r.merge(mcp_http::router(&state));
+    // The ClaxBot surfaces host protocol (`clax_http::bot_surfaces`): a
+    // host on this machine registers a surface with the daemon's token,
+    // starts runs of its kinds and long-polls for their calls. The native
+    // daemon's alone, and not a hosted one's: a Durable Object holds no
+    // request open, and a hosted daemon has no token a host holds. Each
+    // body is bounded by the hub's limit (an upload's by the room left for
+    // its item, which its route reads it against: `bot_content::upload`),
+    // and a `serve` by the longest it is held on top of the deadline every
+    // request has.
+    #[cfg(not(target_arch = "wasm32"))]
+    let r = if state.hosted.is_none() {
+        let limits = state.bot_surfaces.limits();
+        let body = DefaultBodyLimit::max(limits.request_bytes);
+        let host = Router::new()
+            .route("/api/bot/surfaces", get(bot_surfaces::list))
+            .route(
+                "/api/bot/surfaces/{name}",
+                put(bot_surfaces::register.layer(body)),
+            )
+            .route(
+                "/api/bot/surfaces/{name}/runs",
+                post(bot_surfaces::start.layer(body)),
+            )
+            .route("/api/bot/surfaces/{name}/content", put(bot_content::upload))
+            .route(
+                "/api/bot/surfaces/{name}/content/{id}",
+                get(bot_content::download),
+            )
+            .route(
+                "/api/bot/surfaces/{name}/runs/{id}",
+                get(bot_messages::state),
+            )
+            .route(
+                "/api/bot/surfaces/{name}/runs/{id}/messages",
+                post(bot_messages::send.layer(body)),
+            )
+            .route(
+                "/api/bot/surfaces/{name}/joins",
+                put(bot_joins::put.layer(body)),
+            );
+        let held = Router::new().route(
+            "/api/bot/surfaces/{name}/serve",
+            post(bot_surfaces::serve.layer(body)),
+        );
+        let held_for = state.request_timeout + Duration::from_millis(limits.serve_wait_ms);
+        r.merge(with_timeout(host, state.request_timeout))
+            .merge(with_timeout(held, held_for))
+    } else {
+        r
+    };
     // A ClaxBot run's events, for as long as the run and its reader last.
     let r = r.route("/api/bot/runs/{id}/events", get(bot::events));
     // A hosted server sends ClaxBot's instance key only to a public https
@@ -1003,7 +1069,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
 }
 
 /// Sleeps for the milliseconds in the `x-clax-test-delay-ms` request
-/// header, if any, before handling the request. It sits inside each route
+/// header, if any, before handling the request; with
+/// `x-clax-test-delay-path` too, only a request whose path is one of that
+/// header's values (a request that carries its headers into others, as a
+/// gallery page load does, can slow one of them). It sits inside each route
 /// group's timeout layer, so tests can make a real route slow. Debug
 /// builds add it only when [`AppState::test_daemon`] is set: the testkit's
 /// daemon, never one `serve` starts.
@@ -1012,12 +1081,14 @@ async fn test_delay(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let ms = req
-        .headers()
+    let h = req.headers();
+    let ms = h
         .get("x-clax-test-delay-ms")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
-    if let Some(ms) = ms {
+    let mut paths = h.get_all("x-clax-test-delay-path").iter().peekable();
+    let here = paths.peek().is_none() || paths.any(|p| p.as_bytes() == req.uri().path().as_bytes());
+    if let Some(ms) = ms.filter(|_| here) {
         clax_rt::time::sleep(Duration::from_millis(ms)).await;
     }
     next.run(req).await
@@ -1318,13 +1389,14 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     /// A Worker builds this router too, debug test routes included, and has
     /// no tokio timer: the routes sleep on `clax_rt::time` (crate docs).
     #[test]
     fn the_routes_sleep_on_clax_rt() {
         let src = include_str!("router.rs");
-        let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let src = &src[..src.find("\nmod tests {").unwrap()];
         assert!(!src.contains(concat!("tokio", "::time::")));
     }
 }

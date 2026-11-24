@@ -104,6 +104,7 @@ RUST_SOURCES = [
     "//crates/clax-sample:rust_sources",
     "//crates/clax-server:rust_sources",
     "//crates/clax-store:rust_sources",
+    "//crates/clax-surface:rust_sources",
     "//crates/clax-testkit:rust_sources",
     "//crates/clax-worker:rust_sources",
     "//crates/clax-worker/vfs:rust_sources",
@@ -131,6 +132,7 @@ CRATE_MANIFESTS = [
     "//crates/clax-sample:manifest",
     "//crates/clax-server:manifest",
     "//crates/clax-store:manifest",
+    "//crates/clax-surface:manifest",
     "//crates/clax-testkit:manifest",
     "//crates/clax-worker:manifest",
     "//crates/clax-worker/vfs:manifest",
@@ -161,6 +163,41 @@ sh_test(
     data = [":all"],
 )
 
+# scripts/check-release-head.sh (CI's `version` job on pull requests into
+# prod): the head branch a release pull request may come from.
+sh_test(
+    name = "check_release_head",
+    srcs = ["test-check-release-head.sh"],
+    data = [":all"],
+)
+
+# scripts/find-candidate.sh (Deploy prod's candidate job) in a scratch
+# repository with a fake gh: the merge's tested head, its staging run and
+# pull request, and every refusal.
+sh_test(
+    name = "find_candidate",
+    srcs = ["test-find-candidate.sh"],
+    data = [":all"],
+)
+
+# scripts/verify-candidate.sh (Deploy prod's candidate job) with a fake gh
+# attestation verify: each file tied to its workflow at the head commit.
+sh_test(
+    name = "verify_candidate",
+    srcs = ["test-verify-candidate.sh"],
+    data = [":all"],
+)
+
+# scripts/carry-release.sh (Deploy prod's carry job), with
+# scripts/wait-ci.sh, in a scratch repository with a fake gh that makes
+# GitHub's blobs, trees and commits with git: the carry's one commit on
+# main, its modes, the squash, a rerun, and every refusal.
+sh_test(
+    name = "carry_release",
+    srcs = ["test-carry-release.sh"],
+    data = [":all"],
+)
+
 # scripts/check-version-bump.sh (CI's `version` job on pull requests into
 # prod) in a scratch repository of the release files.
 sh_test(
@@ -174,6 +211,13 @@ sh_test(
 sh_test(
     name = "setup_prod_github",
     srcs = ["test-setup-prod-github.sh"],
+    data = [":all"],
+)
+
+# scripts/setup-env-github.sh against a fake gh: the preview environment, dry run, act and again.
+sh_test(
+    name = "setup_env_github",
+    srcs = ["test-setup-env-github.sh"],
     data = [":all"],
 )
 
@@ -320,6 +364,43 @@ sh_test(
     data = [":all"],
 )
 
+# The test scripts' timing rule (scripts/check-test-timing.sh): no sleep
+# standing in for a condition, no clock reading judged, in the scripts
+# this file's sh_tests run (it reads their srcs here) and the other test
+# and smoke scripts: a finding fails it. And its test.
+sh_test(
+    name = "test_timing",
+    srcs = ["check-test-timing.sh"],
+    data = [
+        "BUILD.bazel",
+        ":all",
+    ],
+)
+
+sh_test(
+    name = "test_timing_test",
+    srcs = ["test-check-test-timing.sh"],
+    data = [
+        "BUILD.bazel",
+        ":all",
+    ],
+)
+
+# Every piece of Rust test code turns clippy's timing lint back on
+# (scripts/check-rust-test-timing.sh): .bazelrc's build:clippy allows it
+# on the command line, so that product code is never flagged. And its test.
+sh_test(
+    name = "rust_test_timing",
+    srcs = ["check-rust-test-timing.sh"],
+    data = RUST_SOURCES + CRATE_MANIFESTS + ["check-rust-test-timing.py"],
+)
+
+sh_test(
+    name = "rust_test_timing_test",
+    srcs = ["test-check-rust-test-timing.sh"],
+    data = [":all"] + RUST_SOURCES + CRATE_MANIFESTS,
+)
+
 # The checks' own tests; the scans of every tracked file read git and run
 # outside Bazel (scripts/bazel-test.sh).
 sh_test(
@@ -401,7 +482,10 @@ sh_test(
 sh_test(
     name = "app_android_emulator_test",
     srcs = ["test-app-android-emulator.sh"],
-    data = ["app-android-emulator.sh"],
+    data = [
+        "app-android-emulator.sh",
+        "lib/wait.sh",
+    ],
 )
 
 # scripts/app-iphone.sh (just app-iphone) on a PATH of stub xcrun and

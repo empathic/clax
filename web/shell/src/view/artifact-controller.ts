@@ -3,16 +3,18 @@
 // gives it.
 import { type Anchor, type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
 import { approveCapabilities } from "../caps/approval";
-import { ApiError, type Artifact, type Attention, type PendingCapabilities, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
+import { ApiError, type Artifact, type Attention, type ContentSecurityPolicy, type PendingCapabilities, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, acceptSiteState, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
 import { pageAnchor } from "../caps/comments";
 import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostArrival, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
 import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
-import { REQUEST_STUCK, connTrouble } from "../conn-notice";
+import { REQUEST_STUCK, connKept, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
-import { APPROVE_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
+import { readJson, unreached } from "../trouble";
+import { loadWait, onBack } from "../reach";
+import { APPROVE_FAILED, ARTIFACT_FAILED, COPY_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, frameOrigin, isPathFrame, pageSrc, startSrc } from "../origin";
 import { appQuery, inspectQuery, parseShellPath, shellPath } from "../route";
@@ -21,6 +23,7 @@ import { after } from "../clock";
 import { afterPaint, nextFrame } from "./after-paint";
 import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
 import { AnchorHandles } from "./anchor-handles";
+import { BlockedSites } from "./blocked";
 import type { Decided } from "./changelog-model";
 import { rallyOnce } from "./rally";
 import type { Boot } from "./boot";
@@ -178,7 +181,22 @@ export type ViewState = {
    * says (`view/title-tags.ts` `tagsOf`). Kept apart from `data`, whose
    * replacement starts a new capability host. */
   tags: { tags: TagRef[]; may: boolean } | null;
+  /** The other sites Clax's lockdown blocked the greeted page from
+   * (`clax:blocked`, `blocked.ts`), first reported first: text the page
+   * sent, for the notice to name. Empty for a new document. */
+  blocked: string[];
+  /** The viewer dismissed the blocked notice for this document. */
+  blockedDismissed: boolean;
+  /** The artifact's Content Security Policy as the setting last set it here; null: as
+   * `data` says (`policyOf`). Kept apart from `data`, as `tags` is. */
+  policy: ContentSecurityPolicy | null;
 };
+
+/** The artifact's Content Security Policy: as the setting last set it in
+ * this view, else as the daemon said (`self` where it says nothing). */
+export function policyOf(s: ViewState): ContentSecurityPolicy {
+  return s.policy ?? s.data?.artifact.content_security_policy ?? "self";
+}
 
 /** The artifact's Comments switch is off (spec 2026-10-21-app-push-pull
  * §5.6): nobody comments on it, whatever their access, so the view opens no
@@ -310,6 +328,9 @@ export class ArtifactController {
    * version or origin, or a document that loaded without greeting) and at
    * the next greeting. */
   private failedParts = new Set<keyof typeof PART_FAILED>();
+  /** What the lockdown blocked the greeted page from (`clax:blocked`);
+   * forgotten with the document, as `failedParts` is. */
+  private blockedSites = new BlockedSites();
   // The pick ID of the open composer when a pick made in comment mode opened
   // it: comment mode, off while that composer is open, comes back on when it
   // closes.
@@ -433,7 +454,7 @@ export class ArtifactController {
       decided: null, rally: false, menu: null, askName: null, looked: {}, presence: [], shareWhere: readShareWhere(),
       agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null, autoSend: autoSendOn(id), sampleCalls: null,
       spectator: null, viewing: null,
-      drafts: [], showDraft: null, draftChanged: null, tags: null,
+      drafts: [], showDraft: null, draftChanged: null, tags: null, blocked: [], blockedDismissed: false, policy: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
@@ -715,9 +736,16 @@ export class ArtifactController {
     return this.frame?.el?.contentWindow ?? null;
   }
 
-  /** Posts `m` to the frame, at the site origin only.
+  /** Posts `m` to the frame, at the site origin only, and only once the
+   * frame's page greeted (the gate is open): before then the frame holds
+   * its first `about:blank` or the site's handshake, and the hello sends
+   * again what was held back (the welcome with comment mode, a pending
+   * fragment, the anchors, the focus, a pending scroll, the live layers).
+   * The handshake's own `clax:storage-access`, and `clax:greet`, which asks
+   * a page to greet again, go at once.
    * @internal */
   send(m: ShellToBridge): void {
+    if (!this.gate.open && m.type !== "clax:storage-access" && m.type !== "clax:greet") return;
     if (this.s.origin) sendToFrame(this.frameWin(), frameOrigin(this.s.origin), m);
   }
 
@@ -736,6 +764,7 @@ export class ArtifactController {
       this.gateFor = key;
       this.gate.reset();
       this.failedParts.clear();
+      this.forgetBlocked();
       if (s.openInTab) this.set({ openInTab: null });
     }
     // Made before the frame it serves is inserted: a hello and a capability
@@ -806,10 +835,14 @@ export class ArtifactController {
 
   /** The frame's site handed over its state: the shell asks its own API
    * for a code bound to it (`POST /api/artifacts/<id>/site-code`) and sends
-   * the frame to it; a code refused offers the page in a tab. */
+   * the frame to it; a code Clax refused offers the page in a tab. When
+   * Clax was not reached (no answer, an answer that is not Clax's), the
+   * frame stays as it is and the connection notice says why, and the
+   * handshake starts again at Clax's next answer (`reach.ts` `onBack`). */
   private async redeem(hs: NonNullable<ArtifactController["hs"]>, st: { state: string; next: string }): Promise<void> {
     hs.phase = "asking";
-    let src: string | null = null;
+    let src: unknown = null;
+    let away = false;
     try {
       const token = await getToken();
       const r = await fetch(`/api/artifacts/${encodeURIComponent(this.id)}/site-code`, {
@@ -817,9 +850,21 @@ export class ArtifactController {
         headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ next: st.next, partitioned: true, state: st.state }),
       });
-      if (r.ok) src = ((await r.json()) as { src?: unknown }).src as string;
-    } catch { /* refused below */ }
+      src = (await readJson<{ src?: unknown }>(r)).src;
+    } catch (e) { away = unreached(e); }
     if (this.disposed || this.hs !== hs || this.frame?.el !== hs.el) return;
+    if (away) {
+      // Clax was not reached: at its next answer the frame's site starts
+      // over, and posts its state again.
+      const off = onBack(() => {
+        off();
+        if (this.disposed || this.hs !== hs || this.frame?.el !== hs.el || hs.phase !== "asking") return;
+        hs.phase = "start";
+        this.frame.again();
+      });
+      this.life.defer(off);
+      return;
+    }
     if (typeof src !== "string" || !src.startsWith(`${this.s.origin}/`)) { this.offerInTab(); return; }
     hs.phase = "code";
     this.frame.go(src);
@@ -874,6 +919,7 @@ export class ArtifactController {
     if (this.gate.load()) {
       this.leaveDocument();
       this.failedParts.clear();
+      this.forgetBlocked();
       this.set({ file: null, resolved: {} });
       if (wasOpen) this.send({ type: "clax:greet" });
     }
@@ -914,6 +960,7 @@ export class ArtifactController {
     this.gate.close();
     this.leaveDocument();
     this.failedParts.clear();
+    this.forgetBlocked();
     this.set({ file: null, resolved: {} });
     const url = this.pageAt(target) + hash;
     if (replace && frame.contentWindow) {
@@ -959,9 +1006,10 @@ export class ArtifactController {
       this.set({ threads: boot.threads });
       this.loaded(boot.artifact, boot.attention ?? null);
     } else {
-      // A daemon that does not answer is retried (with a notice); an answer, even an error, is shown.
-      retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: e => !(e instanceof ApiError), trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
-        .then(d => this.loaded(d), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : String(e) }); });
+      // A daemon that does not answer, or an answer that is not Clax's, is
+      // retried (with a notice); Clax's own answer, even a refusal, is shown.
+      retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: unreached, wait: loadWait, trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
+        .then(d => this.loaded(d), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : failureText(ARTIFACT_FAILED, e) }); });
     }
     // Leaving the page ends the view: nothing it started outlives it, also
     // into the back/forward cache (`artifact-main` reloads a restored page).
@@ -1328,6 +1376,7 @@ export class ArtifactController {
     this.gate.bye();
     this.leaveDocument();
     this.failedParts.clear();
+    this.forgetBlocked();
     this.set({ file: null, resolved: {} });
   }
 
@@ -1364,6 +1413,9 @@ export class ArtifactController {
         if (this.hs?.phase === "code") this.hs.phase = "done";
         this.pendingPick = null;
         this.failedParts.clear();
+        // Another document's reports go with it; the same document greeting
+        // again (`again`) tells them again after its welcome.
+        if (m.again !== true || !this.gate.open) this.forgetBlocked();
         this.set({ resolved: {} });
         this.anchorIds.forget();
         if (!this.gate.open) { this.leaveDocument(); this.set({ file: null }); break; }
@@ -1543,6 +1595,14 @@ export class ArtifactController {
         if (m.part === "comment") this.set({ commenting: false });
         break;
       }
+      case "clax:blocked": {
+        // The lockdown blocked the greeted page from another site: the
+        // notice names it (StageIsland). The page could post this itself,
+        // so it is checked and kept as text, at most BLOCKED_MAX, and
+        // nothing is done because of it.
+        if (this.gate.open && this.blockedSites.add(m, this.s.origin ?? "")) this.set({ blocked: this.blockedSites.origins });
+        break;
+      }
       case "clax:hover": break;
       // The live layers: this viewer's pointer and selection in the greeted
       // page, and where it drew the others' pointers. The daemon checks the
@@ -1713,13 +1773,15 @@ export class ArtifactController {
   }
 
   private saveThread(p: Promise<Thread>, prefix: string): void {
-    void report(this.whileBusy(p.catch(e => this.refused(e))), prefix, this.noticeFor(prefix)).then(t => {
-      if (!t) return;
-      this.changeThreads(ts => upsert(ts, t));
-      // A linked thread's write is queued to go up beside this answer; the
-      // event saying so may have come first, so the thread is read again.
-      if (t.linked && !t.linked.unlinked) void fetchThread(this.id, t.id).then(now => this.changeThreads(ts => upsert(ts, now)), () => {});
-    });
+    void report(this.whileBusy(p.catch(e => this.refused(e))), prefix, this.noticeFor(prefix)).then(t => { if (t) this.saved(t); });
+  }
+
+  /** A write's answer, `t`, joins the view. */
+  private saved(t: Thread): void {
+    this.changeThreads(ts => upsert(ts, t));
+    // A linked thread's write is queued to go up beside this answer; the
+    // event saying so may have come first, so the thread is read again.
+    if (t.linked && !t.linked.unlinked) void fetchThread(this.id, t.id).then(now => this.changeThreads(ts => upsert(ts, now)), () => {});
   }
 
   // ---- intents ----
@@ -1818,7 +1880,11 @@ export class ArtifactController {
       this.lookTimer = undefined;
       const ids = [...this.pendingLook];
       this.pendingLook.clear();
-      void putLooked(this.id, ids).then(m => { if (m && !this.disposed) this.set(s => ({ looked: { ...s.looked, ...m } })); });
+      // A batch that failed goes back, for the next look's batch to carry.
+      void putLooked(this.id, ids).then(m => {
+        if (!m) for (const id of ids) this.pendingLook.add(id);
+        else if (!this.disposed) this.set(s => ({ looked: { ...s.looked, ...m } }));
+      });
     });
   }
 
@@ -1830,9 +1896,19 @@ export class ArtifactController {
 
   /** The version menu: the latest is the unpinned URL. */
   chooseVersion(n: number): void { nav.assign(this.here(n === this.latest() ? null : n)); }
-  copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => {}); }
+  /** Copies the view's link; a copy the browser refused says so. */
+  copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => this.noticeFor(COPY_FAILED)(`${COPY_FAILED}.`)); }
   reloadLatest(): void { nav.assign(this.here(null)); }
   dismissNotice(): void { this.set({ notice: null }); }
+  /** Hides the blocked notice until another document greets. */
+  dismissBlocked(): void { this.set({ blockedDismissed: true }); }
+  private forgetBlocked(): void {
+    this.blockedSites.clear();
+    if (this.s.blocked.length || this.s.blockedDismissed) this.set({ blocked: [], blockedDismissed: false });
+  }
+  /** The artifact's site now holds `policy` (the Content Security Policy setting's
+   * answer): the view says so from now on. */
+  policyChanged(policy: ContentSecurityPolicy): void { this.set({ policy }); }
 
   /** The declaration the approval bar shows: what the current version asks
    * for, once the daemon says this viewer may approve it and "Not now" has
@@ -2005,8 +2081,18 @@ export class ArtifactController {
       this.set({ menu: "people", askName: t.id });
     });
   }
-  reply(t: Thread, body: string): void { this.saveThread(addComment(this.id, t.id, body), POST_FAILED); }
-  composerInput(text: string): void { this.composerText = text; this.liveView?.text(null, text); }
+  /** Posts `body` as a reply on `t`. A failure rejects, for the reply box
+   * to say why beside it and keep the text; the stage says nothing, but
+   * for a `comments_off` refusal, which takes the reply box away. */
+  async reply(t: Thread, body: string): Promise<void> {
+    this.saved(await this.whileBusy(addComment(this.id, t.id, body).catch(e => {
+      if (e instanceof ApiError && e.code === "comments_off") this.noticeFor(POST_FAILED)(failureText(POST_FAILED, e));
+      return this.refused(e);
+    })));
+  }
+  /** The open composer's text: told to the live layers, and while it holds
+   * any, the connection notice says what was written is kept. */
+  composerInput(text: string): void { this.composerText = text; this.liveView?.text(null, text); connKept("composer", !!text.trim()); }
   /** The composer for `pickId` has focus: the bridge may render its clip now. */
   composerFocused(pickId: string): void { if (this.pendingPick?.pickId === pickId) this.send({ type: "clax:composer-ready", pickId }); }
   cancelDraft(): void { this.set({ draft: null }); }

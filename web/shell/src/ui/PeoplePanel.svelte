@@ -113,6 +113,10 @@
     return `${state} Addressed ${what} in v${v.n}.`;
   }
   const who = () => document.querySelector<HTMLElement>("button.who");
+  // Where focus goes back to on close: the roster, or where the bar hides it
+  // (at phone width while nobody works), the more menu's button, whose People
+  // and agents item opened the panel.
+  const opener = () => { const b = who(); return b && (b.checkVisibility?.() ?? true) ? b : document.querySelector<HTMLElement>(".topbar button[aria-label=More]") ?? b; };
   /** The card head of the thread the name is asked for (`s.askName`). */
   const askedHead = () => [...document.querySelectorAll<HTMLElement>(".thread-card")].find(c => c.dataset.thread === s.askName)?.querySelector<HTMLElement>(".card-head");
   // Asked for a name to reopen a thread: closed with none given, the reopen
@@ -121,7 +125,7 @@
     const back = s.askName ? askedHead() : null;
     if (s.askName && !s.me?.display_name && !panel?.querySelector<HTMLInputElement>(".viewer-name")?.value.trim()) ctl.forgetReopen();
     onClose();
-    (back ?? who())?.focus();
+    (back ?? opener())?.focus();
   }
   // Once the thread is open again (its name saved), the prompt has done its
   // work: it closes, and focus goes to the thread's card in Open.

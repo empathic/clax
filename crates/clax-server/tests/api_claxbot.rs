@@ -75,7 +75,22 @@ struct People {
 }
 
 async fn people() -> People {
-    let ts = TestServer::spawn().await;
+    people_on(TestServer::spawn().await).await
+}
+
+/// [`people`] on a daemon whose run driver is installed (not started), so
+/// its web source is the daemon's own.
+async fn people_with_driver() -> People {
+    people_on(
+        TestServer::spawn_with(|s| {
+            let _ = clax_server::bot::driver(s);
+        })
+        .await,
+    )
+    .await
+}
+
+async fn people_on(ts: TestServer) -> People {
     let ana = ts.person("Ana").await;
     let sam = ts.person("Sam").await;
     let lan = ts.viewer(Some("Lou")).await;
@@ -310,6 +325,16 @@ async fn keys_are_write_only_and_their_changes_recorded() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["key"]["set"], true);
     assert_eq!(v["sources"]["key"], "db");
+    // The key-encryption key that sealed it, by fingerprint, for admins.
+    assert_eq!(v["kek"]["set"], true, "{v}");
+    let fp = v["kek"]["fingerprint"].as_str().unwrap_or_default();
+    assert!(
+        fp.len() == 8
+            && fp
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "{v}"
+    );
     let (s, _) = call(
         ts,
         &Who::Person(p.sam.0.clone()),
@@ -1123,7 +1148,7 @@ async fn failing_provider(body: &'static str) -> String {
 }
 
 #[tokio::test]
-async fn provider_errors_name_no_text_of_the_answer_and_a_new_url_clears_the_key() {
+async fn provider_errors_keep_the_answers_text_to_their_detail_and_a_new_url_clears_the_key() {
     let ts = TestServer::spawn().await;
     let secret = "<html>intranet console: db=10.0.0.7 password=hunter2</html>";
     let base = failing_provider(secret).await;
@@ -1163,12 +1188,22 @@ async fn provider_errors_name_no_text_of_the_answer_and_a_new_url_clears_the_key
     )
     .await;
     assert_eq!((s2, code(&m)), (502, "provider_error"), "{m}");
-    for shown in [v.to_string(), m.to_string()] {
+    // Clax's own words hold no text of the answer; the detail quotes it,
+    // as one line of plain text, for the admin who configured the provider.
+    for shown in [v["error"].to_string(), m["error"]["message"].to_string()] {
         for leak in ["hunter2", "10.0.0.7", "intranet", "<html>"] {
             assert!(!shown.contains(leak), "{shown}");
         }
     }
     assert!(v["error"].as_str().unwrap().contains("500"), "{v}");
+    for detail in [&v["detail"], &m["error"]["detail"]] {
+        assert_eq!(
+            (&detail["class"], &detail["status"]),
+            (&json!("api"), &json!(500)),
+            "{detail}"
+        );
+        assert_eq!(detail["message"], secret, "{detail}");
+    }
 
     // A new base URL drops the key set for the old one.
     let (s, v) = call(
@@ -1192,6 +1227,224 @@ async fn provider_errors_name_no_text_of_the_answer_and_a_new_url_clears_the_key
             .iter()
             .any(|(_, b)| b["op"] == "clear")
     );
+}
+
+/// A provider on a loopback port whose `GET /v1/models` lists one model,
+/// or, while the flag it returns holds, answers 400
+/// `invalid_request_error` with a `request-id` header and a message that
+/// echoes [`KEY`]; its base URL and that flag.
+async fn refusing_provider() -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    use std::sync::atomic::Ordering;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let refusing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    let r = refusing.clone();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = l.accept().await {
+            let r = r.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 16384];
+                let _ = sock.read(&mut buf).await;
+                let (status, head, body) = if r.load(Ordering::SeqCst) {
+                    let body = json!({"type": "error", "error": {"type": "invalid_request_error",
+                        "message": format!("models: the key {KEY} may not list models\nretry")}});
+                    ("400 Bad Request", "request-id: req_refused_1\r\n", body)
+                } else {
+                    let body = json!({"data": [{"type": "model", "id": "claude-sonnet-5-5",
+                        "display_name": "Claude Sonnet 5.5", "created_at": "2026-09-01T00:00:00Z"}],
+                        "has_more": false, "first_id": "claude-sonnet-5-5",
+                        "last_id": "claude-sonnet-5-5"});
+                    ("200 OK", "", body)
+                };
+                let body = body.to_string();
+                let res = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n{head}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(res.as_bytes()).await;
+            });
+        }
+    });
+    (base, refusing)
+}
+
+#[tokio::test]
+async fn a_refused_request_is_the_keys_last_problem_with_the_providers_words_never_the_key() {
+    use std::sync::atomic::Ordering;
+    let ts = TestServer::spawn().await;
+    let (base, refusing) = refusing_provider().await;
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/provider",
+        json!({"base_url": base}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    configured(&ts).await;
+    let provider = || async {
+        let (s, v) = call(
+            &ts,
+            &Who::OwnerBrowser,
+            Method::GET,
+            "/api/admin/provider",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        v
+    };
+    let v = provider().await;
+    assert_eq!(
+        (&v["key"]["problem"], &v["key"]["last_problem"]),
+        (&Value::Null, &Value::Null),
+        "{v}"
+    );
+
+    // The test: Clax's words in `error`, the provider's in `detail`.
+    let (s, t) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::POST,
+        "/api/admin/provider/test",
+        json!({}),
+    )
+    .await;
+    assert_eq!((s, &t["ok"]), (200, &json!(false)), "{t}");
+    assert_eq!(
+        t["error"], "the provider refused the request (HTTP 400)",
+        "{t}"
+    );
+    let d = &t["detail"];
+    assert_eq!(
+        (&d["class"], &d["status"], &d["type"], &d["request_id"]),
+        (
+            &json!("invalid_request"),
+            &json!(400),
+            &json!("invalid_request_error"),
+            &json!("req_refused_1")
+        ),
+        "{t}"
+    );
+    assert_eq!(
+        d["message"], "models: the key [redacted] may not list models retry",
+        "{t}"
+    );
+
+    // The key's last problem, in the admin's view of the provider.
+    let v = provider().await;
+    assert_eq!(
+        v["key"]["problem"],
+        "the instance key: the last request with it failed: the provider refused the request",
+        "{v}"
+    );
+    let p = &v["key"]["last_problem"];
+    assert_eq!(
+        (&p["class"], &p["message"], &p["request_id"]),
+        (&d["class"], &d["message"], &d["request_id"]),
+        "{v}"
+    );
+    assert!(p["at"].as_str().is_some_and(|a| !a.is_empty()), "{v}");
+
+    // The models route: 502 with the same detail.
+    let (s, m) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/provider/models",
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, code(&m)), (502, "provider_error"), "{m}");
+    assert_eq!(
+        m["error"]["message"], "the provider refused the request (HTTP 400)",
+        "{m}"
+    );
+    assert_eq!(&m["error"]["detail"], d, "{m}");
+    for shown in [&t, &v, &m] {
+        let shown = shown.to_string();
+        assert!(
+            !shown.contains(KEY) && !shown.contains("TOPSECRETKEYVALUE"),
+            "{shown}"
+        );
+    }
+    let kept = ts
+        .store
+        .secret_meta(&clax_store::secrets::SecretSlot::Instance)
+        .unwrap()
+        .unwrap()
+        .last_problem
+        .unwrap()
+        .to_string();
+    assert!(!kept.contains("TOPSECRETKEYVALUE"), "{kept}");
+
+    // Both failures are in the provider failure log, the admin's, newest
+    // first, with the redaction kept.
+    let (s, log) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/provider/failures",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{log}");
+    let requests: Vec<&str> = log["failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["request"].as_str().unwrap())
+        .collect();
+    assert_eq!(requests, ["provider.models", "provider.test"], "{log}");
+    let f = &log["failures"][1];
+    assert_eq!(
+        (
+            &f["class"],
+            &f["status"],
+            &f["message"],
+            &f["request_id"],
+            &f["run_id"]
+        ),
+        (
+            &d["class"],
+            &d["status"],
+            &d["message"],
+            &d["request_id"],
+            &Value::Null
+        ),
+        "{log}"
+    );
+    assert_eq!(f["person"]["id"], "*owner", "{log}");
+    let shown = log.to_string();
+    assert!(
+        !shown.contains(KEY) && !shown.contains("TOPSECRETKEYVALUE"),
+        "{shown}"
+    );
+
+    // A later request that succeeds clears it.
+    refusing.store(false, Ordering::SeqCst);
+    let (s, t) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::POST,
+        "/api/admin/provider/test",
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        (s, &t["ok"], &t["error"], &t["detail"]),
+        (200, &json!(true), &Value::Null, &Value::Null),
+        "{t}"
+    );
+    let v = provider().await;
+    assert_eq!(
+        (&v["key"]["problem"], &v["key"]["last_problem"]),
+        (&Value::Null, &Value::Null),
+        "{v}"
+    );
+    assert!(v["key"]["last_ok_at"].is_string(), "{v}");
 }
 
 #[tokio::test]
@@ -1608,12 +1861,10 @@ impl Catalog {
         *self.body.lock().unwrap() = None;
     }
 
-    /// Waits (at most 30 s) for the next request: whether it was answered
-    /// 200.
+    /// Waits for the next request: whether it was answered 200.
     async fn hit(&mut self) -> bool {
-        tokio::time::timeout(std::time::Duration::from_secs(30), self.hits.recv())
+        clax_testkit::within("a catalog request", self.hits.recv())
             .await
-            .expect("a catalog request within 30 s")
             .expect("the catalog server runs")
     }
 }
@@ -2387,4 +2638,544 @@ async fn the_providers_models_say_how_each_is_priced() {
         json!({"source": "default", "estimated": true, "input_credits_milli_per_mtok": 560_000,
                "output_credits_milli_per_mtok": 2_800_000})
     );
+}
+
+const CF_TOKEN: &str = "cf-TOPSECRETTOKENVALUE-wxyz";
+
+#[tokio::test]
+async fn admin_web_round_trips() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let owner = Who::OwnerBrowser;
+    let (s, v) = call(ts, &owner, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["search"]["enabled"], false);
+    assert_eq!(v["search"]["provider"], "ceramic");
+    assert_eq!(v["search"]["limit"], 5);
+    assert_eq!(v["search"]["max_per_run"], 10);
+    assert_eq!(v["fetch"]["url_rule"], "sourced");
+    assert_eq!(v["fetch"]["allowlist"], json!([]));
+    assert_eq!(v["fetch"]["max_per_run"], 20);
+    assert_eq!(v["cloudflare"]["account_id"], "");
+    assert_eq!(v["cloudflare"]["token"]["set"], false);
+    // A daemon fetches without a Cloudflare account; it searches with one.
+    assert_eq!(v["configured"], json!({"search": false, "fetch": true}));
+    assert_eq!(v["sources"]["search.provider"], "default");
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({
+            "search": {"enabled": true, "provider": "exa", "limit": 3, "max_per_run": 4},
+            "fetch": {"url_rule": "allowlist", "allowlist": ["example.com"]},
+            "cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"},
+        }),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["search"]["enabled"], true);
+    assert_eq!(v["search"]["provider"], "exa");
+    assert_eq!(v["search"]["limit"], 3);
+    assert_eq!(v["search"]["max_per_run"], 4);
+    assert_eq!(v["fetch"]["enabled"], false);
+    assert_eq!(v["fetch"]["url_rule"], "allowlist");
+    assert_eq!(v["fetch"]["allowlist"], json!(["example.com"]));
+    assert_eq!(
+        v["cloudflare"]["account_id"],
+        "0123456789abcdef0123456789abcdef"
+    );
+    assert_eq!(v["sources"]["search.provider"], "db");
+    assert_eq!(events(ts, "admin.provider").len(), 1);
+    // null puts a field back to its default.
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"provider": null}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["search"]["provider"], "ceramic");
+    // A field the daemon's configuration sets is refused.
+    let mut ov = Overrides::default();
+    ov.set(Setting::WebSearchLimit, &json!(7), "file").unwrap();
+    ts.store.set_bot_overrides(ov);
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"limit": 2}}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (409, "setting_overridden"), "{v}");
+    let (_, v) = call(ts, &owner, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!(v["search"]["limit"], 7);
+    assert_eq!(v["sources"]["search.limit"], "file");
+    // An unknown field is refused.
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"nope": 1}}),
+    )
+    .await;
+    assert_eq!(s, 400, "{v}");
+}
+
+#[tokio::test]
+async fn a_bot_web_file_value_is_read_only_on_the_admin_page() {
+    let p = people().await;
+    let ts = &p.ts;
+    let cfg = clax_core::config::HomeConfig::from_text(
+        std::path::PathBuf::from("/h/config.toml"),
+        "[bot.web.fetch]\nurl_rule = \"any_public\"\n[bot.web.search]\nenabled = true\n",
+        [],
+    )
+    .unwrap();
+    ts.store
+        .set_bot_overrides(clax_server::core::bot_overrides(&cfg).0);
+    let owner = Who::OwnerBrowser;
+    let (_, v) = call(ts, &owner, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!(v["fetch"]["url_rule"], "any_public");
+    assert_eq!(v["sources"]["fetch.url_rule"], "file");
+    assert_eq!(v["search"]["enabled"], true);
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"fetch": {"url_rule": "sourced"}}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (409, "setting_overridden"), "{v}");
+    // A field the file leaves alone is the page's.
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"fetch": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["sources"]["fetch.enabled"], "db");
+}
+
+#[tokio::test]
+async fn admin_web_refuses_a_bad_rule() {
+    let p = people().await;
+    let ts = &p.ts;
+    for body in [
+        json!({"fetch": {"url_rule": "anything"}}),
+        json!({"search": {"provider": "bing"}}),
+        json!({"search": {"limit": 11}}),
+        json!({"fetch": {"allowlist": ["not a host"]}}),
+        json!({"cloudflare": {"account_id": "0123"}}),
+    ] {
+        let (s, v) = call(
+            ts,
+            &Who::OwnerBrowser,
+            Method::PUT,
+            "/api/admin/web",
+            body.clone(),
+        )
+        .await;
+        assert_eq!(s, 400, "{body}: {v}");
+    }
+    let (_, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/web",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(v["fetch"]["url_rule"], "sourced");
+}
+
+#[tokio::test]
+async fn the_token_is_write_only() {
+    let p = people().await;
+    let ts = &p.ts;
+    let owner = Who::OwnerBrowser;
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web/token",
+        json!({"token": CF_TOKEN}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["cloudflare"]["token"]["set"], true);
+    assert_eq!(v["cloudflare"]["token"]["last4"], "wxyz");
+    assert_eq!(
+        v["cloudflare"]["token"]["host"],
+        "https://api.cloudflare.com"
+    );
+    let (_, v) = call(ts, &owner, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!(v["cloudflare"]["token"]["last4"], "wxyz");
+    assert!(!v.to_string().contains("TOPSECRET"), "{v}");
+    for e in ts.store.events_after(0, 10_000).unwrap() {
+        assert!(!e.body.contains("TOPSECRET"), "{}", e.body);
+    }
+    let keys = events(ts, "admin.key");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].1["scope"], "cloudflare");
+    assert_eq!(keys[0].1["op"], "set");
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::DELETE,
+        "/api/admin/web/token",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["cloudflare"]["token"]["set"], false);
+    let keys = events(ts, "admin.key");
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[1].1["op"], "clear");
+    let (s, v) = call(
+        ts,
+        &Who::Agent,
+        Method::PUT,
+        "/api/admin/web/token",
+        json!({"token": CF_TOKEN}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
+    for (m, path, body) in [
+        (Method::PUT, "/api/admin/web", json!({})),
+        (Method::DELETE, "/api/admin/web/token", Value::Null),
+    ] {
+        let (s, v) = call(ts, &Who::Agent, m.clone(), path, body).await;
+        assert_eq!((s, code(&v)), (403, "not_for_agents"), "{m} {path}: {v}");
+    }
+}
+
+#[tokio::test]
+async fn web_is_configured_once_the_account_and_token_are_set() {
+    let p = people_with_driver().await;
+    let ts = &p.ts;
+    let owner = Who::OwnerBrowser;
+    let sam = Who::Person(p.sam.0.clone());
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"enabled": true},
+               "cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["configured"],
+        json!({"search": false, "fetch": true}),
+        "an account ID without a token"
+    );
+    // Search alone on, which needs the token: not configured.
+    let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(me["web"]["why_off"], "not_configured");
+    assert_eq!(me["web"]["offered"], false);
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web/token",
+        json!({"token": CF_TOKEN}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    // Taken at once, without a restart.
+    assert_eq!(
+        v["configured"],
+        json!({"search": true, "fetch": true}),
+        "{v}"
+    );
+    let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(
+        (
+            &me["web"]["on"],
+            &me["web"]["offered"],
+            &me["web"]["why_off"]
+        ),
+        (&json!(true), &json!(true), &Value::Null)
+    );
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::DELETE,
+        "/api/admin/web/token",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["configured"], json!({"search": false, "fetch": true}));
+    // Fetch on too: offered without the token, for fetch alone.
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"fetch": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(
+        (
+            &me["web"]["offered"],
+            &me["web"]["operations"],
+            &me["web"]["why_off"]
+        ),
+        (
+            &json!(true),
+            &json!({"search": false, "fetch": true}),
+            &Value::Null
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_member_cannot_admin_web() {
+    let p = people().await;
+    let ts = &p.ts;
+    for who in [Who::Person(p.sam.0.clone()), Who::Viewer(p.lan.clone())] {
+        for (m, path, body) in [
+            (Method::GET, "/api/admin/web", Value::Null),
+            (Method::PUT, "/api/admin/web", json!({})),
+            (
+                Method::PUT,
+                "/api/admin/web/token",
+                json!({"token": CF_TOKEN}),
+            ),
+            (Method::DELETE, "/api/admin/web/token", Value::Null),
+        ] {
+            let (s, v) = call(ts, &who, m.clone(), path, body).await;
+            assert_eq!((s, code(&v)), (403, "forbidden"), "{who:?} {m} {path}: {v}");
+        }
+    }
+    let (s, v) = call(ts, &Who::Agent, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
+}
+
+#[tokio::test]
+async fn a_member_sees_the_web_prices_of_the_active_provider() {
+    let p = people().await;
+    let ts = &p.ts;
+    let sam = Who::Person(p.sam.0.clone());
+    let owner = Who::OwnerBrowser;
+    // Fixed charges per thousand requests, so one request is a visible number of milli-credits.
+    let (s, mut pr) = call(ts, &owner, Method::GET, "/api/admin/pricing", Value::Null).await;
+    assert_eq!(s, 200, "{pr}");
+    for l in pr["lines"].as_array_mut().unwrap() {
+        let fixed = match l["id"].as_str().unwrap() {
+            "web.search.ceramic" => 5_000,
+            "web.search.exa" => 70_000,
+            "web.fetch" => 9_000,
+            _ => continue,
+        };
+        l["fixed_credits_milli"] = json!(fixed);
+    }
+    let (s, v) = call(ts, &owner, Method::PUT, "/api/admin/pricing", pr).await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["web"]["prices"],
+        json!({"search_milli": 5, "fetch_milli": 9})
+    );
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"provider": "exa"}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(
+        v["web"]["prices"],
+        json!({"search_milli": 70, "fetch_milli": 9})
+    );
+}
+
+#[tokio::test]
+async fn me_turns_web_off() {
+    let p = people().await;
+    let ts = &p.ts;
+    let sam = Who::Person(p.sam.0.clone());
+    let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["web"]["on"], true);
+    assert_eq!(v["web"]["offered"], false);
+    assert_eq!(v["web"]["why_off"], "admin_off");
+    let (s, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    // The host has no source in the test daemon.
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(v["web"]["why_off"], "not_configured");
+    assert_eq!(v["web"]["offered"], false);
+    let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"web": false})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["web"]["on"], false);
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(v["web"]["on"], false);
+    assert_eq!(events(ts, "me.web").len(), 1);
+    // The choice is the person's own.
+    let (_, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/me/bot",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(v["web"]["on"], true);
+    let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"web": true})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["web"]["on"], true);
+}
+
+#[tokio::test]
+async fn me_put_needs_a_field() {
+    let p = people().await;
+    let ts = &p.ts;
+    let sam = Who::Person(p.sam.0.clone());
+    let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({})).await;
+    assert_eq!((s, code(&v)), (400, "empty_request"), "{v}");
+    // Both fields in one request: use_own still needs a key.
+    let (s, v) = call(
+        ts,
+        &sam,
+        Method::PUT,
+        "/api/me/bot",
+        json!({"web": false, "use_own": true}),
+    )
+    .await;
+    assert_eq!(s, 404, "{v}");
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(v["web"]["on"], true, "a refused request changes nothing");
+}
+
+/// Counts the admin web view's checks of the host's web source.
+#[derive(Default)]
+struct CountedCheck(std::sync::atomic::AtomicUsize);
+
+impl clax_http::bot::AdminWebCheck for CountedCheck {
+    fn before_view(&self) -> futures::future::BoxFuture<'static, ()> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async {})
+    }
+}
+
+#[tokio::test]
+async fn only_an_admins_web_view_checks_the_web_source() {
+    let check = std::sync::Arc::new(CountedCheck::default());
+    let hook = check.clone();
+    let ts = TestServer::spawn_with(move |s| {
+        s.bot = std::sync::Arc::new(clax_http::bot::Bot {
+            web_configured: clax_bot::web::WebShape::BOTH,
+            admin_web_check: Some(hook),
+            ..Default::default()
+        });
+    })
+    .await;
+    let checks = || check.0.load(std::sync::atomic::Ordering::SeqCst);
+    // A request refused before the view starts no check and waits for none.
+    for who in [Who::Anonymous, Who::Agent] {
+        let (s, v) = call(&ts, &who, Method::GET, "/api/admin/web", Value::Null).await;
+        assert!(s == 401 || s == 403, "{who:?}: {s} {v}");
+        assert_eq!(checks(), 0, "{who:?}");
+    }
+    // Nor does any other admin web route.
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(checks(), 0);
+    // The admin's view does, once.
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/web",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(checks(), 1);
+}
+
+#[tokio::test]
+async fn the_admin_web_view_says_why_web_is_unavailable() {
+    // A host whose configured public origin or site domain names no host
+    // (`Bot::web_check`, unusable from the start) has web off, even with a
+    // source, and says why.
+    let why = "the site domain \"https://sites.example/x\" is not a bare host name";
+    let ts = TestServer::spawn_with(|s| {
+        s.bot = std::sync::Arc::new(clax_http::bot::Bot {
+            web_configured: clax_bot::web::WebShape::BOTH,
+            web_check: std::sync::Arc::new(clax_bot::web::HostCheck::unusable(why)),
+            ..Default::default()
+        });
+    })
+    .await;
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/web",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["configured"],
+        json!({"search": false, "fetch": false}),
+        "{v}"
+    );
+    assert_eq!(v["unavailable"], why, "{v}");
+    assert_eq!(v["checking"], false, "{v}");
+    // Without the reason the same host is configured, and says nothing.
+    let ts = TestServer::spawn_with(|s| {
+        s.bot = std::sync::Arc::new(clax_http::bot::Bot {
+            web_configured: clax_bot::web::WebShape::BOTH,
+            ..Default::default()
+        });
+    })
+    .await;
+    let (_, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/web",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        v["configured"],
+        json!({"search": true, "fetch": true}),
+        "{v}"
+    );
+    assert!(v["unavailable"].is_null(), "{v}");
 }

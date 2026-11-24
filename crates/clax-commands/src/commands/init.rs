@@ -18,6 +18,12 @@
 //! missing or unreadable is left registered and named in the output, with
 //! the command that removes it.
 //!
+//! `init` and `uninit` do not remove a Pi registration of the Clax Pi
+//! package from npm or git. Pi names such a registration by package name or
+//! repository. While one is listed, `init` adds no local copy for Pi, because
+//! Pi does not start with two copies of the extension. `init` says how to
+//! switch.
+//!
 //! `init` also sets the home's `bin` setting to this executable
 //! ([`crate::plugin_bin::set`]), so the plugins it registers, which match
 //! this binary, run it rather than the release they pin; `uninit` removes
@@ -43,7 +49,7 @@
 //!
 //! Each harness is one entry in [`HARNESSES`].
 
-use super::doctor_agent::Dirs;
+use super::doctor_agent::{self, Dirs, PiSource};
 use crate::codex_approvals;
 use clax_core::Home;
 use clax_mcp::tools::ClaxTools;
@@ -62,6 +68,9 @@ struct Ctx {
     home: PathBuf,
     /// What `init` recorded per harness (`registrations.json`).
     recorded: Map<String, Value>,
+    /// The working directory `init` runs in. Pi reads the project settings
+    /// in `<cwd>/.pi/settings.json` when it runs there.
+    cwd: Option<PathBuf>,
 }
 
 /// A harness Clax registers its plugin with.
@@ -71,8 +80,9 @@ struct Harness {
     /// The commands that remove Clax's registration and any under the
     /// previous name, with notes on what was left and why.
     removals: fn(&Ctx) -> Actions,
-    /// The commands that register the marketplace at the given root.
-    additions: fn(&Path) -> Vec<Step>,
+    /// The commands that register the marketplace at the given root, or,
+    /// with `keep`, none because another registration of the plugin stands.
+    additions: fn(&Ctx, &Path) -> Actions,
     /// What `init` records after registering the marketplace at the root.
     record: fn(&Path) -> Value,
     /// Whether the harness's registry still refers to a path under the
@@ -87,7 +97,7 @@ const HARNESSES: &[Harness] = &[
     Harness {
         name: "claude",
         removals: claude_removals,
-        additions: claude_additions,
+        additions: |_, root| Actions::steps(claude_additions(root)),
         record: name_record,
         uses: claude_uses,
         by_hand: |_| {
@@ -97,7 +107,7 @@ const HARNESSES: &[Harness] = &[
     Harness {
         name: "codex",
         removals: codex_removals,
-        additions: codex_additions,
+        additions: |_, root| Actions::steps(codex_additions(root)),
         record: name_record,
         uses: codex_uses,
         by_hand: |_| "codex plugin remove clax@clax; codex plugin marketplace remove clax".into(),
@@ -105,7 +115,7 @@ const HARNESSES: &[Harness] = &[
     Harness {
         name: "grok",
         removals: grok_removals,
-        additions: grok_additions,
+        additions: |_, root| Actions::steps(grok_additions(root)),
         record: |root| json!({"plugin": GROK_PLUGIN, "source": grok_plugin_dir(root)}),
         uses: grok_uses,
         by_hand: |_| format!("grok plugin uninstall {GROK_PLUGIN} --confirm"),
@@ -138,12 +148,26 @@ pub struct Args {
 struct Step {
     args: Vec<String>,
     required: bool,
+    /// The harness's registry was read and does not list what the command
+    /// removes, so its failure is not noted.
+    unlisted: bool,
 }
 
 fn step(required: bool, args: &[&str]) -> Step {
     Step {
         args: args.iter().map(|s| s.to_string()).collect(),
         required,
+        unlisted: false,
+    }
+}
+
+/// A removal that still runs when the registry, read without error, does
+/// not list its target (`listed` false): the harness's files can differ
+/// from what Clax reads.
+fn removal(listed: bool, read: bool, args: &[&str]) -> Step {
+    Step {
+        unlisted: read && !listed,
+        ..step(false, args)
     }
 }
 
@@ -152,6 +176,18 @@ fn step(required: bool, args: &[&str]) -> Step {
 struct Actions {
     steps: Vec<Step>,
     notes: Vec<String>,
+    /// The harness already loads the plugin from a registration `init`
+    /// does not own; `init` keeps it and adds nothing.
+    keep: bool,
+}
+
+impl Actions {
+    fn steps(steps: Vec<Step>) -> Actions {
+        Actions {
+            steps,
+            ..Actions::default()
+        }
+    }
 }
 
 /// A registry file's contents: `Ok(None)` when it does not exist, an error
@@ -208,7 +244,7 @@ fn lexical(p: &Path) -> PathBuf {
 
 /// A stored path as an absolute path: `file://…`, `~` or `~/…` (against
 /// `home`), absolute, or relative to `base`; resolved lexically.
-fn stored_path(s: &str, base: &Path, home: &Path) -> PathBuf {
+pub(super) fn stored_path(s: &str, base: &Path, home: &Path) -> PathBuf {
     let s = s.trim();
     let s = s.strip_prefix("file://").unwrap_or(s);
     let p = if s == "~" {
@@ -255,14 +291,11 @@ fn claude_removals(ctx: &Ctx) -> Actions {
     let mut a = Actions::default();
     let old_plugin = old_plugin();
     let plugins = ctx.dirs.claude_dir.join("plugins");
-    let installed = read_for_removal(
-        load_json(&plugins.join("installed_plugins.json")),
-        &mut a.notes,
-    );
-    let markets = read_for_removal(
-        load_json(&plugins.join("known_marketplaces.json")),
-        &mut a.notes,
-    );
+    let installed = load_json(&plugins.join("installed_plugins.json"));
+    let markets = load_json(&plugins.join("known_marketplaces.json"));
+    let (installed_read, markets_read) = (installed.is_ok(), markets.is_ok());
+    let installed = read_for_removal(installed, &mut a.notes);
+    let markets = read_for_removal(markets, &mut a.notes);
     if names(&installed, &old_plugin) {
         a.steps
             .push(step(false, &["plugin", "uninstall", old_plugin.as_str()]));
@@ -271,10 +304,16 @@ fn claude_removals(ctx: &Ctx) -> Actions {
         a.steps
             .push(step(false, &["plugin", "marketplace", "remove", OLD]));
     }
-    a.steps
-        .push(step(false, &["plugin", "uninstall", "clax@clax"]));
-    a.steps
-        .push(step(false, &["plugin", "marketplace", "remove", "clax"]));
+    a.steps.push(removal(
+        names(&installed, "clax@clax"),
+        installed_read,
+        &["plugin", "uninstall", "clax@clax"],
+    ));
+    a.steps.push(removal(
+        names(&markets, "clax"),
+        markets_read,
+        &["plugin", "marketplace", "remove", "clax"],
+    ));
     a
 }
 
@@ -303,10 +342,9 @@ fn claude_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
 fn codex_removals(ctx: &Ctx) -> Actions {
     let mut a = Actions::default();
     let old_plugin = old_plugin();
-    let cfg = read_for_removal(
-        load_toml(&ctx.dirs.codex_home.join("config.toml")),
-        &mut a.notes,
-    );
+    let cfg = load_toml(&ctx.dirs.codex_home.join("config.toml"));
+    let read = cfg.is_ok();
+    let cfg = read_for_removal(cfg, &mut a.notes);
     let has = |table: &str, key: &str| {
         cfg.as_ref()
             .and_then(|c| c.get(table))
@@ -321,10 +359,16 @@ fn codex_removals(ctx: &Ctx) -> Actions {
         a.steps
             .push(step(false, &["plugin", "marketplace", "remove", OLD]));
     }
-    a.steps
-        .push(step(false, &["plugin", "remove", "clax@clax"]));
-    a.steps
-        .push(step(false, &["plugin", "marketplace", "remove", "clax"]));
+    a.steps.push(removal(
+        has("plugins", "clax@clax"),
+        read,
+        &["plugin", "remove", "clax@clax"],
+    ));
+    a.steps.push(removal(
+        has("marketplaces", "clax"),
+        read,
+        &["plugin", "marketplace", "remove", "clax"],
+    ));
     a
 }
 
@@ -352,13 +396,10 @@ fn grok_plugin_dir(root: &Path) -> PathBuf {
 }
 
 fn grok_removals(_ctx: &Ctx) -> Actions {
-    Actions {
-        steps: vec![step(
-            false,
-            &["plugin", "uninstall", GROK_PLUGIN, "--confirm"],
-        )],
-        notes: Vec::new(),
-    }
+    Actions::steps(vec![step(
+        false,
+        &["plugin", "uninstall", GROK_PLUGIN, "--confirm"],
+    )])
 }
 
 fn grok_additions(root: &Path) -> Vec<Step> {
@@ -490,9 +531,76 @@ fn pi_removals(ctx: &Ctx) -> Actions {
     a
 }
 
-fn pi_additions(root: &Path) -> Vec<Step> {
-    let pi = pi_package_dir(root).display().to_string();
-    vec![step(true, &["install", pi.as_str()])]
+/// The first source in the `settings.json` of the Pi directory `pi_dir`
+/// that registers the Clax Pi package from npm or git: an `npm:` source
+/// that names it, or a git source whose installed copy, under
+/// `<pi_dir>/git`, has its name.
+fn pi_registered_clax(pi_dir: &Path) -> Option<String> {
+    doctor_agent::pi_sources(&pi_dir.join("settings.json"))
+        .into_iter()
+        .find(|s| match doctor_agent::parse_pi_source(s) {
+            PiSource::Npm { name } => name == PI_PACKAGE,
+            PiSource::Git { host, path } => {
+                doctor_agent::is_clax_pi_package(&pi_dir.join("git").join(host).join(path))
+            }
+            PiSource::Local(_) => false,
+        })
+}
+
+/// A note for each source in the working directory's `.pi/settings.json`
+/// that names a Clax Pi package other than the user's, which `source`
+/// names and which is installed at `root`. Pi counts an entry with the
+/// user's identity as the same package.
+fn pi_project_notes(ctx: &Ctx, source: &str, root: &Path) -> Vec<String> {
+    let Some(project) = ctx.cwd.as_ref().map(|c| c.join(".pi")) else {
+        return Vec::new();
+    };
+    if lexical(&project) == lexical(&ctx.dirs.pi_dir) {
+        return Vec::new();
+    }
+    let user = doctor_agent::pi_identity(source, root);
+    let cwd = project.parent().unwrap_or(&project).display().to_string();
+    doctor_agent::pi_sources(&project.join("settings.json"))
+        .into_iter()
+        .filter(|s| {
+            let at = doctor_agent::pi_source_root(s, &project, &ctx.home);
+            let named = matches!(
+                doctor_agent::parse_pi_source(s),
+                PiSource::Npm { name } if name == PI_PACKAGE
+            );
+            (named || doctor_agent::is_clax_pi_package(&at))
+                && doctor_agent::pi_identity(s, &at) != user
+        })
+        .map(|s| {
+            format!(
+                "the project in {cwd} registers another copy of the Clax package with Pi (`{s}`), so Pi finds two copies there and does not start; to keep one copy there, run `pi remove -l {s}` in {cwd}"
+            )
+        })
+        .collect()
+}
+
+fn pi_additions(ctx: &Ctx, root: &Path) -> Actions {
+    if let Some(source) = pi_registered_clax(&ctx.dirs.pi_dir) {
+        let at = doctor_agent::pi_source_root(&source, &ctx.dirs.pi_dir, &ctx.home);
+        let mut notes = vec![format!(
+            "Pi already loads the Clax package from `{source}` ({}); that registration is kept and Clax's own copy is not added. To use this binary's copy instead, run `pi remove {source}`, then `clax init` again",
+            ctx.dirs.pi_dir.join("settings.json").display()
+        )];
+        notes.extend(pi_project_notes(ctx, &source, &at));
+        return Actions {
+            keep: true,
+            notes,
+            ..Actions::default()
+        };
+    }
+    let dir = pi_package_dir(root);
+    let pi = dir.display().to_string();
+    let mut a = Actions {
+        notes: pi_project_notes(ctx, &pi, &dir),
+        ..Actions::default()
+    };
+    a.steps.push(step(true, &["install", pi.as_str()]));
+    a
 }
 
 fn pi_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
@@ -507,8 +615,9 @@ fn on_path(name: &str) -> Option<PathBuf> {
 }
 
 /// Runs `actions` with `h`'s CLI in the home directory; the harness's
-/// result as JSON. A failed optional command is noted and skipped; a failed
-/// required one fails the harness and stops it.
+/// result as JSON. A failed optional command is noted and skipped, without
+/// a note when its target was not listed; a failed required one fails the
+/// harness and stops it.
 fn run_steps(h: &Harness, ctx: &Ctx, actions: Actions, done: &str) -> Value {
     let mut commands = Vec::new();
     let mut notes = actions.notes;
@@ -530,6 +639,9 @@ fn run_steps(h: &Harness, ctx: &Ctx, actions: Actions, done: &str) -> Value {
             failed = true;
             notes.push(format!("`{line}` failed: {err}"));
             break;
+        }
+        if s.unlisted {
+            continue;
         }
         let first = err.lines().next().unwrap_or_default();
         notes.push(format!("`{line}` failed (ignored): {first}"));
@@ -969,6 +1081,7 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
         dirs,
         home: user_home,
         recorded: load_recorded(home),
+        cwd: std::env::current_dir().ok(),
     };
     let root = home.root().join("marketplace");
     if install {
@@ -988,8 +1101,12 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
             continue;
         }
         let mut actions = (h.removals)(&ctx);
+        let mut keep = false;
         if install {
-            actions.steps.extend((h.additions)(&root));
+            let add = (h.additions)(&ctx, &root);
+            actions.steps.extend(add.steps);
+            actions.notes.extend(add.notes);
+            keep = add.keep;
         }
         let codex_saved = (install && h.name == "codex").then(|| {
             keep_settings_for_removal(
@@ -1004,6 +1121,9 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
             actions,
             if install { "registered" } else { "removed" },
         );
+        if keep && r["status"] == "registered" {
+            r["status"] = json!("kept");
+        }
         if let Some(saved) = codex_saved {
             let yes = a.yes;
             let approvals = codex_settings(
@@ -1035,7 +1155,7 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
             Some("registered") => {
                 recorded.insert(h.name.into(), (h.record)(&root));
             }
-            Some("removed") => {
+            Some("removed" | "kept") => {
                 recorded.remove(h.name);
             }
             _ => {}
@@ -1052,8 +1172,17 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
         remove_marketplace_unless_used(&ctx, &root)?
     };
     let failed = results.iter().any(|r| r["status"] == "failed");
+    let pi_kept = results
+        .iter()
+        .any(|r| r["agent"] == "pi" && r["status"] == "kept");
     let bin = if has_home {
-        update_bin_setting(home, install)
+        let mut b = update_bin_setting(home, install);
+        if pi_kept && b["status"] == "set" {
+            b["note"] = json!(
+                "note: Pi keeps its own registration of the Clax package, but runs this clax: the bin setting names it for every plugin. `clax bin clear` makes every plugin, Pi's included, run the release it pins"
+            );
+        }
+        b
     } else {
         json!({"status": "kept", "detail": "there is no Clax home"})
     };
@@ -1094,6 +1223,9 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
             j["bin"]["status"].as_str().unwrap_or_default(),
             j["bin"]["detail"].as_str().unwrap_or_default()
         ));
+        if let Some(n) = j["bin"]["note"].as_str() {
+            lines.push(n.to_string());
+        }
         let ext = &j["extension"];
         let mut l = format!("extension: {}", ext["status"].as_str().unwrap_or_default());
         if let Some(d) = ext["detail"].as_str() {
@@ -1153,6 +1285,7 @@ pub fn uninit(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -1450,6 +1583,215 @@ mod tests {
         for a in ["", "\n", "n", "no", "yep", "ok"] {
             assert!(!is_yes(a), "{a:?}");
         }
+    }
+
+    /// A scratch home with a Pi directory at `<d>/pi` and a working
+    /// directory at `<d>/work`.
+    fn pi_ctx() -> (tempfile::TempDir, Ctx) {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx {
+            dirs: Dirs {
+                home: d.path().to_path_buf(),
+                codex_home: d.path().join("codex"),
+                claude_dir: d.path().join("claude"),
+                pi_dir: d.path().join("pi"),
+                grok_home: d.path().join("grok"),
+            },
+            home: d.path().to_path_buf(),
+            recorded: Map::new(),
+            cwd: Some(d.path().join("work")),
+        };
+        (d, ctx)
+    }
+
+    fn write(p: &Path, text: &str) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    fn pi_settings(ctx: &Ctx, packages: Value) {
+        write(
+            &ctx.dirs.pi_dir.join("settings.json"),
+            &json!({ "packages": packages }).to_string(),
+        );
+    }
+
+    fn args(a: &Actions) -> Vec<String> {
+        a.steps.iter().map(|s| s.args.join(" ")).collect()
+    }
+
+    fn install_args(root: &Path) -> Vec<String> {
+        vec![format!("install {}", root.join("plugins/pi").display())]
+    }
+
+    #[test]
+    fn an_npm_registration_of_the_clax_package_is_kept_and_nothing_added() {
+        for source in ["npm:@empathic/clax-pi", "npm:@empathic/clax-pi@0.4.1"] {
+            let (d, ctx) = pi_ctx();
+            pi_settings(&ctx, json!(["npm:other-pkg", source]));
+            let a = pi_additions(&ctx, &d.path().join("ax/marketplace"));
+            assert!(a.keep, "{source}");
+            assert!(a.steps.is_empty(), "{source}: {:?}", args(&a));
+            let note = a.notes.join("\n");
+            assert!(note.contains(source), "{note}");
+            assert!(note.contains("kept"), "{note}");
+            assert!(
+                note.contains(&format!("`pi remove {source}`, then `clax init`")),
+                "{note}"
+            );
+            assert!(pi_removals(&ctx).steps.is_empty(), "never removed");
+        }
+    }
+
+    #[test]
+    fn a_git_registration_whose_copy_is_the_clax_package_is_kept() {
+        for (source, copy) in [
+            (
+                json!("git:github.com/empathic/clax@v0.4.1"),
+                "git/github.com/empathic/clax",
+            ),
+            (
+                json!({"source": "https://git.example.com/tools/clax-pi.git"}),
+                "git/git.example.com/tools/clax-pi",
+            ),
+            (
+                json!("git:git@github.com:empathic/clax-fork@main"),
+                "git/github.com/empathic/clax-fork",
+            ),
+            (
+                json!("git:github:empathic/clax#v0.4.1"),
+                "git/github.com/empathic/clax",
+            ),
+            (json!("git:empathic/clax"), "git/github.com/empathic/clax"),
+        ] {
+            let (d, ctx) = pi_ctx();
+            pi_settings(&ctx, json!([source]));
+            write(
+                &ctx.dirs.pi_dir.join(copy).join("package.json"),
+                r#"{"name":"@empathic/clax-pi"}"#,
+            );
+            let a = pi_additions(&ctx, &d.path().join("ax/marketplace"));
+            assert!(a.keep, "{source}");
+            assert!(a.steps.is_empty(), "{source}: {:?}", args(&a));
+            let s = source.as_str().or(source["source"].as_str()).unwrap();
+            let note = a.notes.join("\n");
+            assert!(note.contains(&format!("`pi remove {s}`")), "{note}");
+            assert!(pi_removals(&ctx).steps.is_empty(), "never removed");
+        }
+    }
+
+    #[test]
+    fn other_npm_or_git_packages_do_not_stop_the_local_install() {
+        let (d, ctx) = pi_ctx();
+        pi_settings(
+            &ctx,
+            json!([
+                "npm:@empathic/clax-pi-extras",
+                "npm:pi-clax-pi",
+                "git:github.com/someone/tool",
+                "git:github.com/someone/missing"
+            ]),
+        );
+        write(
+            &ctx.dirs
+                .pi_dir
+                .join("git/github.com/someone/tool/package.json"),
+            r#"{"name":"tool"}"#,
+        );
+        let root = d.path().join("ax/marketplace");
+        let a = pi_additions(&ctx, &root);
+        assert!(!a.keep);
+        assert_eq!(args(&a), install_args(&root));
+        assert!(a.notes.is_empty(), "{:?}", a.notes);
+    }
+
+    #[test]
+    fn a_local_registration_from_a_previous_init_is_replaced_as_before() {
+        let (d, ctx) = pi_ctx();
+        let root = d.path().join("ax/marketplace");
+        let ours = root.join("plugins/pi");
+        write(
+            &ours.join("package.json"),
+            r#"{"name":"@empathic/clax-pi"}"#,
+        );
+        pi_settings(&ctx, json!([ours]));
+        assert_eq!(
+            args(&pi_removals(&ctx)),
+            vec![format!("remove {}", ours.display())]
+        );
+        let a = pi_additions(&ctx, &root);
+        assert!(!a.keep);
+        assert_eq!(args(&a), install_args(&root));
+    }
+
+    /// A project's registration loads only in that project: the user-scope
+    /// install goes ahead, with a note on the two copies there.
+    #[test]
+    fn a_project_registration_of_the_clax_package_is_named_but_does_not_stop_the_install() {
+        let (d, ctx) = pi_ctx();
+        let work = ctx.cwd.clone().unwrap();
+        write(
+            &work.join(".pi/settings.json"),
+            r#"{"packages":["npm:@empathic/clax-pi"]}"#,
+        );
+        let root = d.path().join("ax/marketplace");
+        let a = pi_additions(&ctx, &root);
+        assert!(!a.keep);
+        assert_eq!(args(&a), install_args(&root));
+        let note = a.notes.join("\n");
+        assert!(note.contains(&work.display().to_string()), "{note}");
+        assert!(
+            note.contains("`pi remove -l npm:@empathic/clax-pi`"),
+            "{note}"
+        );
+
+        // The project lists the copy init installs: one package.
+        write(
+            &work.join(".pi/settings.json"),
+            &json!({ "packages": [root.join("plugins/pi")] }).to_string(),
+        );
+        write(
+            &root.join("plugins/pi/package.json"),
+            r#"{"name":"@empathic/clax-pi"}"#,
+        );
+        assert!(pi_additions(&ctx, &root).notes.is_empty());
+    }
+
+    #[test]
+    fn a_project_copy_other_than_the_kept_registration_is_named() {
+        let (d, ctx) = pi_ctx();
+        let work = ctx.cwd.clone().unwrap();
+        let root = d.path().join("ax/marketplace");
+        pi_settings(&ctx, json!(["npm:@empathic/clax-pi@0.4.1"]));
+
+        // The same npm package in the project: Pi counts one package.
+        write(
+            &work.join(".pi/settings.json"),
+            r#"{"packages":["npm:@empathic/clax-pi"]}"#,
+        );
+        let a = pi_additions(&ctx, &root);
+        assert!(a.keep);
+        assert_eq!(a.notes.len(), 1, "{:?}", a.notes);
+
+        // A local copy in the project is a second package.
+        write(
+            &work.join("vendor/clax-pi/package.json"),
+            r#"{"name":"@empathic/clax-pi"}"#,
+        );
+        write(
+            &work.join(".pi/settings.json"),
+            r#"{"packages":["../vendor/clax-pi","../vendor/other"]}"#,
+        );
+        let a = pi_additions(&ctx, &root);
+        assert!(a.keep);
+        assert!(a.steps.is_empty());
+        assert_eq!(a.notes.len(), 2, "{:?}", a.notes);
+        assert!(
+            a.notes[1].contains("`pi remove -l ../vendor/clax-pi`")
+                && a.notes[1].contains(&work.display().to_string()),
+            "{:?}",
+            a.notes
+        );
     }
 
     #[test]

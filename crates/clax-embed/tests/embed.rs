@@ -1,5 +1,6 @@
 //! The embedded core answering request frames through the router, by who
 //! each frame speaks for (spec 2026-10-19 §2.3, §2.5).
+#![warn(clippy::disallowed_methods)]
 
 use clax_embed::frame::{self, As, RequestHead, ResponseHead};
 use clax_embed::{Embed, OpenError, OpenEvent, OpenOptions};
@@ -1250,5 +1251,131 @@ async fn the_apps_own_calls_decide_at_once_while_an_agent_is_live() {
         (200, Some(0)),
         "{v}"
     );
+    embed.close();
+}
+
+/// A content frame's request of `path` on `id`'s site with `headers`: its
+/// status, `Content-Security-Policy` headers, `Cache-Control`, `ETag` and
+/// body.
+async fn site_answer(
+    embed: &Embed,
+    id: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> (u16, Vec<String>, Option<String>, Option<String>, String) {
+    let mut h = content("GET", path, id);
+    h.headers = headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let (res, body) = call(embed, h, b"").await;
+    let all = |n: &str| -> Vec<String> {
+        res.headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case(n))
+            .map(|(_, v)| v.clone())
+            .collect()
+    };
+    (
+        res.status,
+        all("content-security-policy"),
+        header(&res, "cache-control").map(str::to_string),
+        header(&res, "etag").map(str::to_string),
+        String::from_utf8_lossy(&body).to_string(),
+    )
+}
+
+/// The app answers a clax's site as the daemon does under each
+/// `content_security_policy`: `self`, the lockdown and Clax's service
+/// worker kill switch; `unrestricted`, the framing alone, files that
+/// revalidate under a tag naming the policy, and the clax's own worker
+/// script; `self` again, the lockdown and the kill switch. A content
+/// frame's `If-None-Match` is dropped (it is never answered 304), so a copy
+/// kept while `unrestricted` is never reused.
+#[tokio::test]
+async fn an_unrestricted_clax_is_answered_in_the_app_as_on_the_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    let sw = "self.addEventListener('fetch', () => {});";
+    let (status, v) = call_json(
+        &embed,
+        head("POST", "/api/artifacts", As::Owner),
+        Some(json!({"title": "Unrestricted", "files": {
+            "index.html": {"content": "<title>Unrestricted</title>unrestricted", "encoding": "utf8"},
+            "app.js": {"content": "export {}", "encoding": "utf8"},
+            "sw.js": {"content": sw, "encoding": "utf8"},
+        }})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    let id = v["artifact"]["id"].as_str().unwrap().to_string();
+    handshake(&embed, &id).await;
+    let lockdown = |p: &[String]| {
+        p.iter().any(|p| {
+            p.starts_with("frame-ancestors 'self' ")
+                && p.contains("connect-src 'self';")
+                && p.contains("form-action 'none'")
+        })
+    };
+    let framing_alone = |p: &[String]| {
+        p.len() == 1 && p[0].starts_with("frame-ancestors 'self' ") && !p[0].contains(';')
+    };
+    let kill = clax_http::content_policy::SERVICE_WORKER_KILL_SWITCH;
+    let worker = [("service-worker", "script")];
+    let paths = ["/", "/app.js", "/_clax/v/1/", "/_clax/v/1/app.js"];
+    let patch = |policy: &'static str| {
+        let embed = &embed;
+        let id = id.clone();
+        async move {
+            let (s, v) = call_json(
+                embed,
+                head("PATCH", &format!("/api/artifacts/{id}"), As::Owner),
+                Some(json!({"content_security_policy": policy})),
+            )
+            .await;
+            assert_eq!(s, 200, "{policy}: {v}");
+            assert_eq!(v["artifact"]["content_security_policy"], policy, "{v}");
+        }
+    };
+
+    let mut was = Vec::new();
+    for path in paths {
+        let (s, p, cc, tag, _) = site_answer(&embed, &id, path, &[]).await;
+        assert_eq!(s, 200, "self {path}");
+        assert!(lockdown(&p), "self {path}: {p:?}");
+        was.push((cc, tag));
+    }
+    let (s, _, _, _, body) = site_answer(&embed, &id, "/sw.js", &worker).await;
+    assert_eq!((s, body.as_str()), (200, kill), "self worker");
+
+    patch("unrestricted").await;
+    let mut tags = Vec::new();
+    for (path, before) in paths.iter().zip(&was) {
+        let (s, p, cc, tag, _) = site_answer(&embed, &id, path, &[]).await;
+        assert_eq!(s, 200, "unrestricted {path}");
+        assert!(framing_alone(&p), "unrestricted {path}: {p:?}");
+        let cc = cc.unwrap_or_default();
+        assert!(
+            cc.contains("no-cache") && !cc.contains("immutable") && !cc.contains("max-age"),
+            "unrestricted {path}: {cc}"
+        );
+        let tag = tag.unwrap_or_else(|| panic!("unrestricted {path}: no ETag"));
+        assert_ne!(Some(&tag), before.1.as_ref(), "unrestricted {path}");
+        tags.push(tag);
+    }
+    let (s, p, _, _, body) = site_answer(&embed, &id, "/sw.js", &worker).await;
+    assert_eq!((s, body.as_str()), (200, sw), "unrestricted worker");
+    assert!(framing_alone(&p), "unrestricted worker: {p:?}");
+
+    patch("self").await;
+    for ((path, tag), before) in paths.iter().zip(&tags).zip(&was) {
+        let (s, p, cc, etag, _) =
+            site_answer(&embed, &id, path, &[("if-none-match", tag.as_str())]).await;
+        assert_eq!(s, 200, "self again {path}");
+        assert!(lockdown(&p), "self again {path}: {p:?}");
+        assert_eq!(&(cc, etag), before, "self again {path}");
+    }
+    let (s, _, _, _, body) = site_answer(&embed, &id, "/sw.js", &worker).await;
+    assert_eq!((s, body.as_str()), (200, kill), "self again worker");
     embed.close();
 }

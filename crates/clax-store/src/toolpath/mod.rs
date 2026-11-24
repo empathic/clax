@@ -767,6 +767,7 @@ impl Event<'_> {
                 | K::BotTurn
                 | K::BotScript
                 | K::BotCall
+                | K::BotWeb
                 | K::BotRunEnd
                 | K::BotCancel
                 | K::ViewRun,
@@ -776,9 +777,10 @@ impl Event<'_> {
                 .map(Obj::Person)
                 .or(Some(Obj::Install)),
             Some(K::ViewAudit | K::AdminProvider | K::AdminSettings) => Some(Obj::Install),
-            Some(K::AdminRole | K::AdminFlag | K::AdminCredits | K::BotRefused) => {
+            Some(K::AdminRole | K::AdminFlag | K::AdminCredits | K::BotRefused | K::MeWeb) => {
                 self.str("person").map(Obj::Person)
             }
+            Some(K::BotSurfaceRegistered) => self.str("registered_by").map(Obj::Person),
             Some(K::AdminKey) => Some(self.str("person").map_or(Obj::Install, Obj::Person)),
             Some(K::AdminCostLine) => self.str("line").map(Obj::CostLine),
             Some(K::QueueCreate | K::QueueUpdate) => self.str("queue_id").map(Obj::Queue),
@@ -1444,6 +1446,23 @@ impl Event<'_> {
                     "refused"
                 }
             ),
+            Some(K::BotWeb) => format!(
+                "ClaxBot run {} {} (step {}, {} credits)",
+                self.show("run"),
+                match (self.str("op"), self.str("query"), self.str("url")) {
+                    _ if self.body.get("ok") == Some(&Value::Bool(false)) => format!(
+                        "was refused {} {} ({})",
+                        self.show("op"),
+                        self.str("query").or(self.str("url")).unwrap_or(""),
+                        self.show("code")
+                    ),
+                    (Some("web.search"), Some(q), _) => format!("searched the web for {q}"),
+                    (Some("web.fetch"), _, Some(u)) => format!("fetched {u}"),
+                    _ => format!("called {}", self.show("op")),
+                },
+                self.show("step"),
+                credits(self.body.get("credits_milli"))
+            ),
             Some(K::BotRunEnd) => format!(
                 "Ended ClaxBot run {}: {}{} ({} credits)",
                 self.show("run"),
@@ -1463,6 +1482,16 @@ impl Event<'_> {
                 "ClaxBot refused a run for person {}: {}",
                 self.show("person"),
                 self.show("reason")
+            ),
+            Some(K::BotSurfaceRegistered) => format!(
+                "Registered ClaxBot surface {} for person {} (registration {}{})",
+                self.show("name"),
+                self.show("registered_by"),
+                self.show("registration"),
+                match self.str("replaces") {
+                    Some(old) => format!(", in place of {old}"),
+                    None => String::new(),
+                }
             ),
             Some(K::ViewRun) => format!("Viewed ClaxBot run {}", self.show("run")),
             Some(K::ViewAdmin) => match self.str("subject_person") {
@@ -1514,18 +1543,27 @@ impl Event<'_> {
                 };
                 format!("Changed the ClaxBot settings {}", and_list(&fields))
             }
+            Some(K::MeWeb) => format!(
+                "Turned web search and fetch {} for person {}",
+                if self.body.get("value").and_then(Value::as_bool) == Some(true) {
+                    "on"
+                } else {
+                    "off"
+                },
+                self.show("person")
+            ),
             Some(K::AdminKey) => format!(
-                "{} the {} model key{}",
+                "{} the {}{}",
                 match (self.str("op"), self.body.get("value")) {
                     (Some("clear"), _) => "Cleared",
                     (Some("use_own"), Some(Value::Bool(true))) => "Put in use",
                     (Some("use_own"), _) => "Took out of use",
                     _ => "Set",
                 },
-                if self.str("scope") == Some("own") {
-                    "own"
-                } else {
-                    "instance"
+                match self.str("scope") {
+                    Some("own") => "own model key",
+                    Some("cloudflare") => "Cloudflare API token",
+                    _ => "instance model key",
                 },
                 match self.str("person") {
                     Some(p) => format!(" of person {p}"),
@@ -1875,8 +1913,10 @@ pub fn unrenderable_step(row: &AuditRow, prev: Option<i64>, env: &RenderEnv) -> 
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 #[path = "../../../clax-core/tests/toolpath/seal.rs"]
 mod seal;
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests;

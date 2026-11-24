@@ -7,10 +7,23 @@ name: Release
 # already, built from the same tree (the tag moved to a re-signed copy of
 # its commit), finishes without building or uploading anything; one whose
 # release was built from another tree fails (scripts/release-exists-check.sh).
+#
+# Called by staging.yml with `candidate: true` on a push to a release
+# branch, it builds the release candidate: the same jobs at the branch's
+# head, no publish, and every file of `release-dist` attested
+# (actions/attest-build-provenance: its digest signed as made by this
+# workflow at that commit), so that Deploy prod ships these files, checked
+# with `gh attestation verify`, rather than a second build.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch: {}
+  workflow_call:
+    inputs:
+      candidate:
+        description: Build a release branch's candidate (no publish; attested)
+        type: boolean
+        required: true
   pull_request:
     paths:
       - ".github/workflows/release.yml"
@@ -46,10 +59,14 @@ jobs:
       skip: ${{ steps.existing.outputs.skip == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A call from staging.yml runs on its push to the release branch,
+      # which is no tag: the version files are checked as a pull request's.
       - id: v
         shell: bash
+        env:
+          CANDIDATE: ${{ inputs.candidate == true }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = push ]; then
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$CANDIDATE" != true ]; then
             scripts/check-version.sh "$GITHUB_REF_NAME"
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
@@ -59,7 +76,7 @@ jobs:
           echo "version=$(scripts/check-version.sh --print)" >> "$GITHUB_OUTPUT"
       - id: existing
         name: Check for a release of this tag
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && inputs.candidate != true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,6 +148,11 @@ jobs:
     name: Assemble, and install through install.sh and the plugins' wrapper
     needs: [version, build]
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    # id-token and attestations for a candidate's attestations alone.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -173,11 +195,17 @@ jobs:
           test "$(plugins/clax/scripts/ensure-clax.sh exec --version)" = "clax $VERSION"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: release-dist, path: dist/, if-no-files-found: error }
+      # Each file staging tests and Deploy prod ships, signed as this
+      # workflow's at this commit (scripts/verify-candidate.sh checks them).
+      - name: Attest the candidate's files
+        if: inputs.candidate == true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with: { subject-path: "dist/*" }
 
   publish:
     name: Publish ${{ github.ref_name }}
     needs: [version, assemble]
-    if: needs.version.outputs.publish == 'true'
+    if: needs.version.outputs.publish == 'true' && inputs.candidate != true
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write

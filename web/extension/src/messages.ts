@@ -283,6 +283,10 @@ export type PanelToWorker =
   /** Opens a daemon path in a new tab, the browser signed in as the
    * owner's on the way (the panel's "Open in Clax"). */
   | { t: "open-clax"; path: string }
+  /** Opens the confirmation a pairing is held for in Clax's inbox, in a
+   * new tab, the browser signed in as the owner's on the way. The worker
+   * names the confirmation. */
+  | { t: "confirm-pairing" }
   /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
   | { t: "visible"; on: boolean }
   | { t: "ping" };
@@ -539,7 +543,7 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "queue-reports": return has("req", "qid", "cursor") && count(m.req) && ulid(m.qid) && (m.cursor === null || (typeof m.cursor === "string" && /^[\x21-\x7e]{1,200}$/.test(m.cursor)));
     case "queue-report": case "queue-clip": case "queue-resolve": return has("req", "qid", "tid") && count(m.req) && ulid(m.qid) && ulid(m.tid);
     case "queue-reply": return has("req", "qid", "tid", "body") && count(m.req) && ulid(m.qid) && ulid(m.tid) && text(m.body, MAX_BODY);
-    case "retry": case "ping": return has();
+    case "retry": case "ping": case "confirm-pairing": return has();
     default: return false;
   }
 }

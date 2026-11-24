@@ -185,7 +185,9 @@ export interface Recorder {
 
 /** `Clax.overlay`'s options. */
 export interface OverlayOptions {
-  /** The instance's base URL, such as `https://clax.corp.example`. */
+  /** The instance's origin, such as `https://clax.corp.example`: Clax is
+   * served at the root of its own host, so a URL with a path, query or
+   * fragment is refused with a `TypeError`. */
   instance: string;
   /** The queue's ID. Optional with an install, whose config names it. */
   queue?: string;
@@ -231,6 +233,15 @@ export interface OverlayOptions {
   theme?: Record<string, string>;
   /** Filters and attachments turned on or off (by id), over each plugin's own default. */
   defaults?: Record<string, boolean>;
+  /** Your own page of the reporter's reports: called, in place of opening
+   * "Your reports", by the Filed notice's "View in …" (with the report just
+   * filed) and the corner launcher's "Your reports" (with none). The notice
+   * closes and focus leaves its button before the call. `showReports()`
+   * still opens "Your reports". */
+  onShowReports?: (report?: Report) => void;
+  /** What the Filed notice calls the place replies show (default
+   * `"Your reports"`): "Replies and fixes show in <label>." and "View in <label>". */
+  reportsLabel?: string;
 }
 
 /** The plugin contract (web/sdk/src/plugin.ts), version 1. */
@@ -321,6 +332,7 @@ export interface OverlayEvents {
 /** A running overlay. */
 export interface OverlayHandle {
   report(opts?: { mode?: Mode | "note" }): void;
+  /** Opens "Your reports", the overlay's own panel, with or without `onShowReports`. */
   showReports(): void;
   /** What the host's command palette may offer: Send feedback, and Your reports. */
   actions(): { id: string; label: string; run(): void }[];

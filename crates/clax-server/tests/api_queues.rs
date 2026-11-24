@@ -85,13 +85,16 @@ async fn a_queue_is_made_listed_changed_and_deleted_in_the_browser() {
         &w.owner,
         Method::POST,
         "/api/queues",
-        Some(json!({"name": "  Bugs ", "origins": ["https://App.Example.com/"]})),
+        Some(json!({"name": "  Bugs ", "origins": ["https://App.Example.com/", "HTTPS://*.Fly.Dev/"]})),
     )
     .await;
     assert_eq!(s, 201, "{v}");
     let q = &v["queue"];
     assert_eq!(q["name"], "Bugs");
-    assert_eq!(q["origins"], json!(["https://app.example.com"]));
+    assert_eq!(
+        q["origins"],
+        json!(["https://app.example.com", "https://*.fly.dev"])
+    );
     assert_eq!(q["reporters_see"], "own");
     assert_eq!(q["role"], "admin");
     let qid = q["id"].as_str().unwrap().to_string();
@@ -112,7 +115,10 @@ async fn a_queue_is_made_listed_changed_and_deleted_in_the_browser() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["queue"]["name"], "Reports");
     assert_eq!(v["queue"]["reporters_see"], "all");
-    assert_eq!(v["queue"]["origins"], json!(["https://app.example.com"]));
+    assert_eq!(
+        v["queue"]["origins"],
+        json!(["https://app.example.com", "https://*.fly.dev"])
+    );
 
     // Bad input is refused, naming what is wrong.
     let (s, v) = browser(
@@ -124,6 +130,50 @@ async fn a_queue_is_made_listed_changed_and_deleted_in_the_browser() {
     )
     .await;
     assert_eq!((s, code(&v)), (400, "invalid_origin"), "{v}");
+    // Origin patterns are listed, normalized as an origin is, as broad as
+    // the owner wants; a malformed one is refused.
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PATCH,
+        &format!("/api/queues/{qid}"),
+        Some(json!({"origins": [
+            "https://app.example.com",
+            "HTTPS://PathBase-PR-*.Fly.Dev:443/",
+            "https://*.fly.dev",
+            "https://web.*.example.com",
+            "https://*",
+            "https://*.dev",
+            "https://pr-*.dev",
+            "https://a.*.com",
+        ]})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["queue"]["origins"],
+        json!([
+            "https://app.example.com",
+            "https://pathbase-pr-*.fly.dev",
+            "https://*.fly.dev",
+            "https://web.*.example.com",
+            "https://*",
+            "https://*.dev",
+            "https://pr-*.dev",
+            "https://a.*.com",
+        ])
+    );
+    for bad in ["https://a**.fly.dev", "https://*.fly.dev:*"] {
+        let (s, v) = browser(
+            &w.ts,
+            &w.owner,
+            Method::PATCH,
+            &format!("/api/queues/{qid}"),
+            Some(json!({"origins": [bad]})),
+        )
+        .await;
+        assert_eq!((s, code(&v)), (400, "invalid_origin"), "{bad}: {v}");
+    }
     let (s, v) = browser(
         &w.ts,
         &w.owner,

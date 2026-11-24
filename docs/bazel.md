@@ -90,7 +90,9 @@ never runs `cargo check` into a `target/`; for VS Code, in
 
 Use `scripts/bazel-test.sh` rather than `--config=clippy` by hand: it gives
 `crates/clax-commands` its own `clippy.toml`, which Bazel takes only one of per
-command. It holds off idle sleep on macOS while it runs; a plain
+command, with the `clippy::disallowed_methods` lint that `--config=clippy`
+allows for the timing rules (the root `clippy.toml`'s, for test code only:
+docs/usage.md, "Developing Clax") turned back on. It holds off idle sleep on macOS while it runs; a plain
 `bazelisk test` does not (`caffeinate -i bazelisk test …` does).
 
 ## Keeping Bazel in step with Cargo
@@ -199,6 +201,13 @@ which declares, with `<lib>` the library's crate name:
   module made a clax-core edit compile eight times as much. The root gates
   each module with `#[cfg(any(not(clax_split), clax_split = "<module>"))]`;
   Cargo sets no `clax_split` and builds them all into one binary, as before;
+- for clax-store's unit tests, one test binary run as several targets
+  (`split_lib_test`): `//crates/clax-store:clax_store_lib_test` and
+  `clax_store_lib_test__2` … `__6`, each given its share of the modules by
+  libtest's filters and `--skip`, so that every test runs in exactly one;
+  and the same shares again on one connection,
+  `clax_store_one_connection_test__1` … `__6`. `//crates/clax-store:all`
+  runs them all;
 - `build_script` when the crate has one;
 - for a crate the hosted Worker builds, `<lib>_wasm` (and, with `cdylib`,
   `<lib>_wasm_shared`): the library for wasm32, its third-party
@@ -252,7 +261,10 @@ natively). Under Bazel, rules_js fetches each project's packages from its
 lockfile (`@npm_web`, `@npm_pi`) and runs the project's own `package.json`
 scripts through `bazel/js/npm_script.mjs` (taken from `../changelist`): in
 a private copy of exactly the declared files, so a deleted module or
-package is really gone (`scripts/bazel-web.test.sh` checks this). Inputs
+package is really gone (`scripts/bazel-web.test.sh` checks this). The
+packages are not copied: each is linked to its directory in rules_js's
+store, which Bazel writes whole, so a run copies the project's own files
+and not the tens of thousands in its packages. Inputs
 named in `skips` (the warmed `clax`) are read where Bazel put them rather
 than copied. `scripts/pnpm-lock-check.py` fails when a `package.json` and
 its lockfile disagree. Node is the toolchain `MODULE.bazel` pins (22, as
@@ -269,6 +281,20 @@ macOS's sandbox the `rest` project ran in 31 minutes instead of one, and
 user-activation tests timed out. In CI,
 `bazelisk run //web:playwright -- install-deps chromium` installs the
 system libraries Chromium needs.
+
+Cases written for every engine (`web/e2e/lockdown.spec.ts`,
+`web/e2e/content-security-policy.spec.ts`) skip WebKit and Firefox there, having no
+build of them. To run them, install the locked Playwright's builds into a
+directory outside the tree and name it with `CLAX_E2E_BROWSERS`, which
+takes the place of the pinned Chromium (`web/e2e/bazel-env.ts`):
+
+```
+PLAYWRIGHT_BROWSERS_PATH=<dir> bazelisk run //web:playwright -- install chromium webkit firefox
+bazelisk test //web:e2e_rest --test_env=CLAX_E2E_BROWSERS=<dir> --test_arg=--retries=0 --test_arg=content-security-policy
+```
+
+(An option between `--project rest` and the file filter ends the
+project's list.)
 
 ## The Clax app
 
@@ -595,7 +621,9 @@ whole working tree and the `v*` tags, the two Bazel-setup tests on the
 Cargo, Bazel and package manifests and Bazel's own files. A pass is
 recorded under `~/.cache/clax-checks/` (`CLAX_CHECKS_CACHE`) by its key, so
 a new worktree at contents some worktree checked skips them too; delete the
-directory to rerun them. CI keeps no such record and runs every one. Tests that
+directory to rerun them. CI keeps the records on its Bazel sticky disk
+(`CLAX_CHECKS_CACHE` in `.github/workflows/ci.yml`): a pull request skips a
+check that main passed on the same files. Tests that
 need a real harness CLI, a model or credentials (`scripts/verify-harnesses.sh`
 against real harnesses, the smoke scripts) stay native and manual, as
 before.
@@ -620,7 +648,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | build clax, build tests | the build of `//crates/...` in the one `bazel test` |
 | cargo nextest (or cargo test) | every Rust test target, `tests(//crates/...)`, the integration tests in a few targets per crate |
 | cargo fmt --check | `--config=fmt` over `//crates/...` |
-| cargo clippy | `--config=clippy` over `//crates/...`: each library, binary and test target; `crates/clax-commands` again with its own `clippy.toml` |
+| cargo clippy | `--config=clippy` over `//crates/...`: each library, binary and test target, the timing rules in test code only; `crates/clax-commands` again with its own `clippy.toml` and its disallowed methods errors |
 | release build | `//crates/clax-cli:clax_opt` |
 | justfile | `scripts/test-justfile.sh`, outside Bazel |
 | release scripts | `//scripts:release` |

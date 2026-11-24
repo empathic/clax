@@ -10,6 +10,7 @@
 /// or `/api/live/…`) or its handler is listed in [`l10::GUARDS`] with the
 /// guard its source shows.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod l10 {
     /// How a handler of a route outside the path rule keeps live pages hidden.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +115,15 @@ mod l10 {
         ("remote_apps::record_install", Owner),
         ("settings::get", Bot),
         ("settings::put", Bot),
+        ("bot_surfaces::list", NoArtifact),
+        ("bot_surfaces::register", NoArtifact),
+        ("bot_surfaces::start", NoArtifact),
+        ("bot_surfaces::serve", NoArtifact),
+        ("bot_content::upload", NoArtifact),
+        ("bot_content::download", NoArtifact),
+        ("bot_messages::send", NoArtifact),
+        ("bot_messages::state", NoArtifact),
+        ("bot_joins::put", NoArtifact),
         ("bot::me_get", Bot),
         ("bot::me_put", Bot),
         ("bot::key_put", Bot),
@@ -139,7 +149,12 @@ mod l10 {
         ("admin::set_key", Bot),
         ("admin::clear_key", Bot),
         ("admin::test", Bot),
+        ("admin::web", Bot),
+        ("admin::set_web", Bot),
+        ("admin::set_web_token", Bot),
+        ("admin::clear_web_token", Bot),
         ("admin::models", Bot),
+        ("admin::failures", Bot),
         ("admin::pricing", Bot),
         ("admin::set_pricing", Bot),
         ("admin::price_from_tokenulator", Bot),
@@ -381,12 +396,17 @@ mod l10 {
     pub(super) fn module_source_opt(m: &str) -> Option<&'static str> {
         Some(match m {
             "admin" => include_str!("admin.rs"),
+            "analytics" => include_str!("analytics.rs"),
             "app_bundles" => include_str!("app_bundles.rs"),
             "app_drafts" => include_str!("app_drafts.rs"),
             "client_imports" => include_str!("client_imports.rs"),
             "approvals" => include_str!("approvals.rs"),
             "audit_trail" => include_str!("audit_trail.rs"),
             "bot" => include_str!("bot.rs"),
+            "bot_surfaces" => include_str!("bot_surfaces.rs"),
+            "bot_content" => include_str!("bot_content.rs"),
+            "bot_messages" => include_str!("bot_messages.rs"),
+            "bot_joins" => include_str!("bot_joins.rs"),
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),
             "connect" => include_str!("connect.rs"),
@@ -602,6 +622,22 @@ mod l10 {
     /// ([`AuditCtx`](clax_core::audit::AuditCtx) or
     /// [`DeferredAudit`](clax_http::audit::DeferredAudit)), and why.
     const UNAUDITED: &[(&str, &str)] = &[
+        (
+            "bot_surfaces::serve",
+            "a host's long-poll: each answer it brings is journaled as its run's call",
+        ),
+        (
+            "bot_content::upload",
+            "a host's bytes for its run, kept with the run's journal: the answer that names them is journaled as the run's call",
+        ),
+        (
+            "bot_messages::send",
+            "a host's message to its run, kept in the run's inbox and in the payload of the turn that is given it",
+        ),
+        (
+            "bot_joins::put",
+            "a host's joins: no audit kind records them yet (crates/clax-core/src/audit/mod.rs)",
+        ),
         ("working::renew", "a heartbeat (§6.11)"),
         (
             "queue_agent::renew",
@@ -641,7 +677,7 @@ mod l10 {
         ),
         (
             "admin::test",
-            "a read of the provider's model list, recorded as the view view.admin {page: provider.test}",
+            "a read of the provider's model list, recorded as the view view.admin {page: provider.test}; a failure is kept in the provider failure log, which is not content",
         ),
         (
             "admin::refresh_catalog",
@@ -1303,6 +1339,7 @@ mod l10 {
 /// builds a view of others' content or streams events refuses the owner's
 /// agents; and every plugin runs `clax` through its wrapper.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod agents {
     use super::l10::{
         function, handlers, method_handlers, module_source, module_source_opt, routes,
@@ -2492,6 +2529,7 @@ mod agents {
 /// [`crate::router::held_open`] is the router's block of routes that hold
 /// their connection open, read from its source, and rmcp's `/mcp`.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod held_open {
     use crate::router::held_open::{ALL, MCP, matches};
 

@@ -11,6 +11,7 @@
   // dialog: everything else is inert while it is open, Tab stays inside,
   // Escape, Close or a click outside closes it and focus goes back.
   import { expiresIn, mintToken, type CloneOptions, type CloneScope, type GitToken } from "./clone-api";
+  import { reasonText } from "../trouble";
   import { onMount, tick } from "svelte";
   import { inertOutside, trapTab } from "./modal";
 
@@ -50,7 +51,7 @@
       await tick();
       panel?.querySelector<HTMLElement>("button[aria-label=\"Copy git\"]")?.focus();
     }
-    catch (e) { error = e instanceof Error ? e.message.replace(/^\d+ /, "") : "No token was made"; }
+    catch (e) { error = e instanceof Error ? reasonText(e) : "No token was made"; }
     finally { busy = false; }
   }
 

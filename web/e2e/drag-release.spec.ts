@@ -11,6 +11,7 @@ import { type Browser, type BrowserType, type Frame, type Page, chromium, webkit
 import { existsSync } from "node:fs";
 import { hostChannel, NONCE } from "./app-host";
 import { test, expect, type Daemon, contentFrame, publishAs, record, registerSession, trustBrowser } from "./fixtures";
+import { fence } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -88,9 +89,17 @@ for (const engine of [chromium, webkit]) {
       await host(page, "submitDraft()");
       await expect.poll(async () => (await toHost(page)).filter(m => m.type === "sent").length).toBe(1);
       const thread = (await toHost(page)).find(m => m.type === "sent")!.thread as string;
-      // The page has resolved the posted thread, and been told what to focus since.
+      // The page has resolved the posted thread, and been told what to focus
+      // since: the shell's messages reach the page in order, so once a
+      // message the test has the shell post after that is in, and the page
+      // has painted after it, every focus it was told of is drawn.
       await expect.poll(() => page.evaluate(() => (window as unknown as { claxMsgs: { type: string; results?: { found: boolean }[] }[] }).claxMsgs.some(m => m.type === "clax:anchors" && m.results?.some(r => r.found)))).toBe(true);
-      await frame.evaluate(() => new Promise(r => setTimeout(r)));
+      await frame.evaluate(() => addEventListener("message", e => {
+        if (e.data === "clax-test-fence") requestAnimationFrame(() => { (window as unknown as { fenced: boolean }).fenced = true; });
+      }));
+      await fence("a message from the shell after its focus, and a paint",
+        () => page.evaluate(() => document.querySelector<HTMLIFrameElement>("iframe.frame")!.contentWindow!.postMessage("clax-test-fence", "*")),
+        () => frame.evaluate(() => (window as unknown as { fenced?: boolean }).fenced === true));
       expect(await drawn(frame, "f")).toBe("none");
       // The app opens the thread: its area flashes, and the outline goes after.
       await host(page, `openThread(${JSON.stringify(thread)})`);

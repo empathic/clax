@@ -13,3 +13,10 @@ if (runfiles) {
     if (value && !isAbsolute(value)) process.env[name] = join(root, value);
   }
 }
+
+// CLAX_E2E_BROWSERS (`--test_env`, an absolute path) names a directory of the
+// locked Playwright's builds to run instead of the pinned Chromium alone: one
+// that holds its WebKit and Firefox too runs the cases written for every
+// engine, which skip an engine Playwright has no build of (docs/bazel.md,
+// "Browser tests").
+if (process.env.CLAX_E2E_BROWSERS) process.env.PLAYWRIGHT_BROWSERS_PATH = process.env.CLAX_E2E_BROWSERS;

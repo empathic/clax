@@ -11,17 +11,13 @@ use clax_core::Home;
 use clax_core::remote::{RemoteConfig, save_key};
 use clax_core::secret::Secret;
 use clax_core::working::ManualClock;
-use clax_testkit::TestServer;
 use clax_testkit::people::{self, World};
+use clax_testkit::{TestServer, until, within};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
-
-/// Longest a `clax` run may take.
-const LIMIT: Duration = Duration::from_secs(60);
 
 /// The harness environment a test inherits from the agent running it.
 const HARNESS_ENV: [&str; 10] = [
@@ -72,13 +68,12 @@ impl Machine {
     /// Runs `clax args` to its end, off the test's runtime.
     async fn run(&self, args: &[&str]) -> Output {
         let mut c = self.cmd(args);
-        let label = args.join(" ");
-        tokio::time::timeout(
-            LIMIT,
+        let label = format!("clax {} to finish", args.join(" "));
+        within(
+            &label,
             tokio::task::spawn_blocking(move || c.output().unwrap()),
         )
         .await
-        .unwrap_or_else(|_| panic!("clax {label} did not finish"))
         .unwrap()
     }
 
@@ -355,37 +350,27 @@ impl Waiting {
         Waiting { child, lines }
     }
 
-    /// The first line holding `what`, within [`LIMIT`].
+    /// The first line holding `what`.
     async fn line_with(&self, what: &str) -> String {
-        let deadline = std::time::Instant::now() + LIMIT;
-        loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            assert!(!left.is_zero(), "no line with {what}");
-            match self
-                .lines
-                .recv_timeout(left.min(Duration::from_millis(200)))
-            {
-                Ok(l) if l.contains(what) => return l,
-                Ok(_) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => tokio::task::yield_now().await,
-                Err(e) => panic!("no line with {what}: {e}"),
+        let label = format!("a line with {what}");
+        let found = || {
+            loop {
+                match self.lines.try_recv() {
+                    Ok(l) if l.contains(what) => return Some(l),
+                    Ok(_) => {}
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                    Err(e) => panic!("no line with {what}: {e}"),
+                }
             }
-        }
+        };
+        within(&label, until(&label, || std::future::ready(found()))).await
     }
 
-    /// Its exit status, within [`LIMIT`].
+    /// Its exit status.
     async fn wait(mut self) -> std::process::ExitStatus {
-        let deadline = std::time::Instant::now() + LIMIT;
-        loop {
-            if let Some(s) = self.child.try_wait().unwrap() {
-                return s;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "connect did not finish"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        let label = "connect to finish";
+        let exited = || std::future::ready(self.child.try_wait().unwrap());
+        within(label, until(label, exited)).await
     }
 }
 
@@ -423,6 +408,10 @@ async fn approve(ts: &TestServer, gid: &str, code: &str, name: &str) {
 /// A daemon on every interface whose clock the test moves (the
 /// continuation's `wait` is 5 s of it), set to now so signed times fall
 /// within its window.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the CLI signs with the system's time, so the daemon's clock starts at it"
+)]
 async fn clocked_server() -> (TestServer, Arc<ManualClock>) {
     let now = chrono::Utc::now().to_rfc3339();
     let clock = Arc::new(ManualClock::at(&now));
@@ -1074,9 +1063,9 @@ impl Machine {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let input = input.to_string();
-        let label = format!("hook {agent} {event}");
-        tokio::time::timeout(
-            LIMIT,
+        let label = format!("hook {agent} {event} to finish");
+        within(
+            &label,
             tokio::task::spawn_blocking(move || {
                 let mut child = c.spawn().unwrap();
                 child
@@ -1089,7 +1078,6 @@ impl Machine {
             }),
         )
         .await
-        .unwrap_or_else(|_| panic!("clax {label} did not finish"))
         .unwrap()
     }
 
@@ -1993,7 +1981,7 @@ async fn remote_follow_follows_its_harness_session_across_a_restart() {
     let w = World::two_people().await;
     let m = sams_machine(&w);
     let (first, _, aid) = sams_watching_session(&w, &m, "cc-again", None).await;
-    let mut c = m.cmd(&[
+    let mut c = tokio::process::Command::from(m.cmd(&[
         "feedback",
         "follow",
         "--agent",
@@ -2005,24 +1993,25 @@ async fn remote_follow_follows_its_harness_session_across_a_restart() {
         "1",
         "--grace-secs",
         "60",
-    ]);
-    c.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child = c.spawn().unwrap();
-    let pid = child.id();
-    let waited = tokio::task::spawn_blocking(move || child.wait_with_output());
+    ]));
+    // Killed with its task, should the test fail before it exits.
+    c.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let waited = tokio::spawn(c.spawn().unwrap().wait_with_output());
     w.ts.store
         .end_session(&clax_core::audit::AuditCtx::DAEMON, &first)
         .unwrap();
     let (second, _, _) = sams_watching_session(&w, &m, "cc-again", Some(&aid)).await;
     assert_ne!(second, first);
     let tid = sam_sends(&w, &aid, "after the restart").await;
-    let out = match tokio::time::timeout(LIMIT, waited).await {
-        Ok(out) => out.unwrap().unwrap(),
-        Err(_) => {
-            let _ = Command::new("kill").arg(pid.to_string()).status();
-            panic!("the follower did not print the comment sent after the restart");
-        }
-    };
+    let out = within(
+        "the follower to print the comment sent after the restart",
+        waited,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(out.status.success(), "{}", text(&out));
     assert!(text(&out).contains(&tid), "{}", text(&out));
 }
@@ -2083,10 +2072,7 @@ impl Shim {
             }
             (stdin, stdout)
         });
-        let (stdin, stdout) = tokio::time::timeout(LIMIT, job)
-            .await
-            .expect("the shim did not answer")
-            .unwrap();
+        let (stdin, stdout) = within("the shim to answer", job).await.unwrap();
         Shim {
             child,
             stdin,
@@ -2108,10 +2094,7 @@ impl Shim {
             let _ = stdout.read_to_string(&mut rest);
             child.wait().unwrap()
         });
-        tokio::time::timeout(LIMIT, job)
-            .await
-            .expect("the shim did not exit")
-            .unwrap()
+        within("the shim to exit", job).await.unwrap()
     }
 }
 

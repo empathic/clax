@@ -31,7 +31,7 @@ describe("the parts while the page parses", () => {
     send({ type: "clax:comment-mode", on: true });
     send({ type: "clax:resolve-anchors", requestId: "r1", anchors: [{ id: "a", anchor }] });
     send({ type: "clax:key", key: "Alt", down: true });
-    await new Promise(r => setTimeout(r, 20));
+    await settle();
     expect(requests).toEqual([]);
     expect(posted.filter(m => m.type === "clax:wait")).toEqual([{ type: "clax:wait", waiting: true }]);
     document.documentElement.appendChild(document.createElement("body")).innerHTML = "<h2>Goals</h2>";

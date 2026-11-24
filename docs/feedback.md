@@ -62,7 +62,8 @@ On the instance, as the person who will administer the queue:
 
 1. Queues, New queue. Give it a name, list your origins one per line
    (`https://app.example.com`, and `http://localhost:5173` for
-   development if you want reports from there), and pick who reporters see
+   development if you want reports from there; a pattern covers preview
+   deployments, below), and pick who reporters see
    ("Their own reports" is the usual choice).
 2. Manage, add the people who triage (Members), then "Create service
    grant". Copy the token and the private key into your backend's secrets,
@@ -72,6 +73,32 @@ On the instance, as the person who will administer the queue:
 
 The same steps as API calls are in `docs/prod.md`, "Feedback: clax.dev's
 own report queue".
+
+### Preview deployments
+
+A preview deployment per branch or pull request has an origin of its own
+(`https://pathbase-pr-538.fly.dev`, `https://pathbase-pr-539.fly.dev`, …).
+List one origin pattern for all of them, `https://pathbase-pr-*.fly.dev`,
+beside your exact origins. A `*` beside other characters stands for one or
+more letters, digits and `-` within its label, never a `.`, so this
+pattern matches `https://pathbase-pr-538.fly.dev` and not
+`https://pathbase-pr-1.evil.fly.dev`, `https://pathbase-pr-.fly.dev` or
+another scheme or port. A label that is only `*` stands for one or more
+whole labels: `https://*.preview.example.com` matches
+`https://pr-538.preview.example.com` and `https://a.b.preview.example.com`.
+A pattern can be as broad as you want, up to `https://*` for every
+`https` origin: it only widens the origins your backend may mint for, and
+filing still needs a reporter token your backend minted for one exact
+origin.
+
+Each preview's backend still mints for its own exact origin (the page's,
+never the pattern), and the token is bound to it: a page on another
+`fly.dev` name the pattern also matches cannot use it, and without your
+service grant it cannot mint one of its own. So take the origin from the
+deployment's own configuration, never from the request: a token route
+that mints for whatever origin a caller names would mint for that other
+page too. `docs/contract.md` ("Report queue routes", Origins) has the
+whole rule.
 
 ## 2. The token route in your backend
 
@@ -88,29 +115,38 @@ triage members with each report, and never to other reporters. A
 `github` login lets a fixing agent ask the reporter to review its pull
 request.
 
-### Licences of the code you copy
+### Licences of the code you use
 
-The files this guide has you copy or depend on carry Clax's licences
-(`LICENSE`): `web/sdk/src` (`service.ts`, `client.ts`, `sign.ts`,
-`types.ts`) and the overlay's `overlay.d.ts` are AGPL-3.0-only, and
-`clax-core` (with `clax_core::sig`) is GPL-2.0-only OR AGPL-3.0-only;
-the snippets quoted here are as their source files say. They suit a
-product that accepts those terms. A product that does not implements the
-protocol itself: the signed request (`docs/contract.md`, "Signed
-requests") and the reporter routes (`docs/contract.md`, "Report queue routes")
-are the whole contract, and any Ed25519 library signs the lines; the
-overlay script itself is loaded from the instance, not copied.
+The SDK, the overlay and the bridge they are built from (`web/sdk`,
+`web/overlay`, `overlay.d.ts` included, and `web/bridge`) are
+LGPL-2.1-only, as the repository's `LICENSE` says, so the products that
+use them may be under any license. The npm package,
+`@empathic/clax-client-sdk`, is built from them alone and carries the
+same license. The Rust path below depends on `clax-core` (for
+`clax_core::sig`), which is GPL-2.0-only OR AGPL-3.0-only; a product that
+does not accept those terms implements the signed request itself:
+`docs/contract.md`, "Signed requests" and "Report queue routes", is the
+whole contract, and any Ed25519 library signs the lines.
 
 ### TypeScript (Node 20 or later, Workers, Deno, Bun)
 
-`ServiceClient` (`web/sdk/src/service.ts`) signs the request with
-WebCrypto. It is a small file with no dependencies; copy `service.ts`,
-`client.ts`, `sign.ts` and `types.ts` from `web/sdk/src` into your
-backend (AGPL-3.0-only; see "Licences of the code you copy" above).
+`ServiceClient` signs the request with WebCrypto, and retries as the
+contract says (once on `stale_request` with the instance's clock, three
+times on 429 `limit_reached` and 503 `busy`, after 1, 2 and 4 seconds).
+Install the SDK package, which has no dependencies:
+
+```
+npm install @empathic/clax-client-sdk
+```
+
+Its `/service` entry is an ES module and, under the `require` condition,
+a CommonJS file, so `require("@empathic/clax-client-sdk/service")` works
+on any Node 20; the other entries are ES modules alone. A backend that
+cannot take a dependency can copy `service.ts`, `client.ts`, `sign.ts` and
+`types.ts` from `web/sdk/src` instead, and takes no updates that way.
 
 ```ts
-import { ClaxError } from "./clax/client";
-import { ServiceClient } from "./clax/service";
+import { ClaxError, ServiceClient } from "@empathic/clax-client-sdk/service";
 
 const clax = new ServiceClient({
   instance: "https://clax.dev",          // the instance's base URL
@@ -129,14 +165,17 @@ app.post("/clax-token", async (req, res) => {
   try {
     const minted = await clax.mintReporterToken({
       reporter_id: user.id,
-      origin: "https://app.example.com", // the page's origin, one of the queue's (not the instance)
+      origin: "https://app.example.com", // the page's exact origin, one the queue allows (not the instance)
       public_key,
     }, { name: user.name, github: user.githubLogin });
     res.set("cache-control", "no-store").json(minted); // {token, expires_at}
   } catch (e) {
     // The browser's key refused (the overlay makes a new one), or a limit
-    // reached: passed back with its code. Anything else is your grant's.
+    // still reached after the client's retries: passed back with its code
+    // (and the wait the instance asked for, if it named one). Anything
+    // else is your grant's.
     if (e instanceof ClaxError && (e.code === "invalid_key" || e.code === "limit_reached")) {
+      if (e.retryAfterS !== undefined) res.set("retry-after", String(e.retryAfterS));
       return res.status(e.status).json({ error: { code: e.code, message: e.message } });
     }
     console.error("clax mint", e);
@@ -158,12 +197,12 @@ requests") lists. Two addresses go into it and must not be confused:
 - the **instance** (`https://clax.dev`, or your own Clax): the request is
   sent to it, and signed for its host;
 - the **page origin** (`https://app.example.com`): where your overlay
-  runs, one of the queue's origins. It goes in the body, and the token is
-  bound to it.
+  runs, an exact origin the queue lists or one of its patterns matches.
+  It goes in the body, and the token is bound to it.
 
 A Rust backend can depend on `clax-core` for `clax_core::sig` (the signer
 the instance verifies with; GPL-2.0-only OR AGPL-3.0-only, see
-"Licences of the code you copy" above), or implement the lines with any
+"Licences of the code you use" above), or implement the lines with any
 Ed25519 crate. clax.dev's own token route is written this way. Its backend half
 uses only what an outside backend has (a queue ID, the grant's token and
 key, and the public route). Here it is, quoted from
@@ -293,7 +332,11 @@ The instance's limits on queue keys (`crates/clax-http/src/grant_auth.rs`):
 - A queue holds the nonces of at most 4,096 keys at once
   (`QUEUE_KEYS_PER_QUEUE`), and past that its requests are refused.
 
-Both refusals are 429 `limit_reached`, with `Retry-After`.
+Both refusals are 429 `limit_reached`, until the nonces age out. The
+SDK's clients retry it three times, after 1, 2 and 4 seconds, then fail
+with a `ClaxError` whose `retryAfterS` is the wait the instance asked for,
+when it named one (`Retry-After`, which the reporter routes let the page
+read).
 
 - **Every reporter shares the service grant's limit.** Every mint is
   signed by the one grant key, so the whole product mints at most 1,024
@@ -318,7 +361,9 @@ Both refusals are 429 `limit_reached`, with `Retry-After`.
   - every 15 minutes of use after that;
   - in each new browser or private window, and after the site's storage
     is cleared;
-  - after the instance refuses a token (401);
+  - after the instance refuses a token (401 `token_expired` or
+    `invalid_token`; another 401, such as `stale_request` or
+    `invalid_signature`, is the request's, and mints nothing);
   - on every page load where IndexedDB is unavailable;
   - on every page load when you do not pass `user`.
 
@@ -333,7 +378,21 @@ Both refusals are 429 `limit_reached`, with `Retry-After`.
 
 ## 3. Load the overlay on your pages
 
-The instance serves the overlay to any origin, without credentials:
+`instance` is the instance's origin (`https://clax.dev`): Clax is served
+at the root of its own host, and the overlay refuses a URL with a path,
+query or fragment with a `TypeError`.
+
+A page built with a bundler imports the overlay from the SDK package
+(`npm install @empathic/clax-client-sdk`), with its types:
+
+```ts
+import { overlay } from "@empathic/clax-client-sdk/overlay";
+
+const clax = overlay({ instance: "https://clax.dev", queue: "<queue ID>", user: currentUser.id, auth });
+```
+
+`auth` and `user` are as in the script tag below. The instance also serves
+the same overlay to any origin, without credentials:
 
 - `<instance>/_clax/overlay.js`: a classic script that defines
   `window.Clax`;
@@ -374,8 +433,8 @@ const clax = Clax.overlay({
 
 Save `<instance>/_clax/overlay.d.ts` beside your code as
 `clax-overlay.d.ts` (in SvelteKit, `src/lib/clax-overlay.d.ts`, imported
-as `$lib/clax-overlay`; AGPL-3.0-only, see "Licences of the code you
-copy" above). It is a module, so import its types and type the import
+as `$lib/clax-overlay`; LGPL-2.1-only, see "Licences of the code you
+use" above). It is a module, so import its types and type the import
 with it:
 
 ```ts
@@ -530,12 +589,15 @@ drawn in fallback fonts.
 | `externalId` | The record the report is about, in your terms (`invoice:4821`). Default: the page's `<meta name="clax-artifact" content="…">`; with neither, the instance files the report on the page's origin and path (its query and fragment left out), so every report on one path is about one record. |
 | `nonce` | Your policy's style nonce (section 3). |
 | `user` | A stable ID of the signed-in user: the reporter's key and token are kept across page loads for it (section 2). |
+| `onShowReports(report?)` | Your own page of the user's reports, called where the overlay would open "Your reports": the Filed notice's "View in …" (with the report just filed) and the corner's "Your reports" (with none). Default: none, and both open "Your reports". |
+| `reportsLabel` | What the Filed notice calls that place: "Replies and fixes show in *label*." and "View in *label*". Default `"Your reports"`. |
 
 The handle:
 
 - `report({mode?})` opens the capture bar (`"element"` by default, or
   `"area"`, `"screen"`);
-- `showReports()` opens "Your reports";
+- `showReports()` opens "Your reports", the overlay's own panel, with or
+  without `onShowReports`;
 - `on("badge", n => …)` hears how many reports wait for the user (a fix
   to check, or a reply), at once and on every change; `on("filed", r =>
   …)` hears each filed report; each returns its unsubscribe function;
@@ -567,6 +629,30 @@ addEventListener("keydown", e => {
   clax.report();
 });
 ```
+
+If your app has its own page of the user's reports, send them there
+instead of "Your reports": give `onShowReports`, and name the page with
+`reportsLabel`.
+
+```js
+const clax = Clax.overlay({
+  ...,
+  launcher: false,
+  reportsLabel: "Feedback",
+  onShowReports: report => router.push(report ? `/feedback#${report.id}` : "/feedback"),
+});
+```
+
+The Filed notice then reads "Replies and fixes show in Feedback.", and
+its button, "View in Feedback", calls `onShowReports` with the report
+just filed; with `launcher: "corner"`, the corner's "Your reports" calls
+it with no report. The notice closes and focus leaves its button, for
+Report in the corner or else the page's body, before the call, so your
+page can take focus. `showReports()` still opens the overlay's panel,
+and a "Still broken" note started there goes back to it. Your page reads
+and answers the reports with a `ReporterClient` of the same `instance`,
+`queue`, `user` and `auth`: `myReports()`, `comment()`, `seen()` (which
+takes a read reply off the badge), `verify()` and `reopen()`.
 
 ## 5. Context and flags
 
@@ -652,7 +738,8 @@ reporter sees it before sending.
 4. **What's sent** shows exactly what goes: the page and the anchor, the
    context JSON, your metadata, the error lines when ticked, and whether
    the screenshot goes.
-5. **Send**, then "Filed" with "View in Your reports".
+5. **Send**, then "Filed" with "View in Your reports" (or in your own page:
+   `onShowReports`, section 4).
 
 **Your reports** lists what the user filed, with their state ("Open",
 "Being worked on", "Fix ready for you to check", "Fixed: you confirmed

@@ -16,6 +16,7 @@ clax-rt = { path = "../clax-rt" }
 async-trait = "0.1"
 clax-bot = { path = "../clax-bot" }
 clax-bot-sandbox = { path = "../clax-bot-sandbox" }
+clax-surface = { path = "../clax-surface" }
 axum.workspace = true
 chrono.workspace = true
 futures = "0.3"

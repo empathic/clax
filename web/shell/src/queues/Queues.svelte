@@ -28,7 +28,8 @@
   import QueueView from "./QueueView.svelte";
   import ReportView from "./ReportView.svelte";
 
-  const p: { stream?: EventStream } = $props();
+  /** `onready`: called once the page shows its first data (the queues, or why they did not load). */
+  const p: { stream?: EventStream; onready?: () => void } = $props();
   let queues = $state<api.Queue[] | null>(null);
   let counts = $state<Record<string, Counts | "failed">>({});
   let loadError = $state<string | null>(null);
@@ -166,7 +167,7 @@
   });
 
   onMount(() => {
-    void load();
+    void load().then(() => p.onready?.());
     const back = () => moved();
     addEventListener("popstate", back);
     const off = p.stream?.watch(["queues"], e => {

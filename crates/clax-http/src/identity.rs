@@ -897,6 +897,7 @@ pub fn foreign_session() -> ApiError {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

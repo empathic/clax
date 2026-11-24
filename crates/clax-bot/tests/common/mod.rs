@@ -2,12 +2,13 @@
 //! one scripted reply per request, in order, recording the usage it
 //! reported), a store on a scratch home with an injected clock, a run on a
 //! one-page artifact, and the deps that drive it (the QuickJS sandbox, a
-//! [`FakeBotHost`] over the store).
+//! [`FakeBotHost`] over the store, a [`FakeWebSource`]).
 
 #![allow(dead_code)]
 
 use clax_bot::host::{ArtifactMeta, CommentMeta, FakeBotHost, RequestContext, ThreadMeta};
 use clax_bot::run::{Deps, Keys, RunSettings, SettingsSource};
+use clax_bot::web::{FakeWebSource, WebShape};
 use clax_bot::{EventHub, Next, TickOpts, TickOutcome};
 use clax_bot_sandbox::{CancelToken, Sandbox};
 use clax_core::audit::AuditCtx;
@@ -16,6 +17,7 @@ use clax_core::{Home, publish::PublishRequest};
 use clax_sample::messages::{ApiKey, MessagesClient, RetryPolicy};
 use clax_store::Store;
 use clax_store::bot_runs::{DriverId, NewRun, RequestKind, Run};
+use clax_store::bot_settings::Setting;
 use clax_store::credits::{KeySource, UsageRow};
 use clax_store::roles::OWNER;
 use clax_store::secrets::Kek;
@@ -80,6 +82,8 @@ pub enum Reply {
 pub struct Seen {
     pub headers: Vec<(String, String)>,
     pub body: Value,
+    /// The body's bytes as they arrived, before parsing.
+    pub raw: String,
 }
 
 impl Seen {
@@ -131,6 +135,7 @@ async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<Seen> {
     Some(Seen {
         headers,
         body: serde_json::from_slice(&body).unwrap_or(Value::Null),
+        raw: String::from_utf8_lossy(&body).into_owned(),
     })
 }
 
@@ -426,6 +431,8 @@ pub struct Env {
     pub sandbox: Arc<dyn Sandbox>,
     pub hub: Arc<EventHub>,
     pub instance_key: bool,
+    /// The web source [`Env::deps`] gives runs.
+    pub web: Arc<FakeWebSource>,
     /// The run's thread, another thread of the artifact, and a thread of
     /// another artifact, all in the store.
     pub t1: String,
@@ -532,8 +539,17 @@ impl Env {
         )
         .unwrap();
         store.set_bot_overrides(ov);
-        let sandbox: Arc<dyn Sandbox> =
-            Arc::new(clax_bot_js::QuickJs::new(clax_bot::api::op_names()));
+        // The watchdog's floor is the hang guard: a script ends by itself or
+        // by the CPU budget the engine measures, never by the wall time a
+        // loaded machine takes to run it.
+        let sandbox: Arc<dyn Sandbox> = Arc::new(
+            clax_bot_js::QuickJs::new(clax_bot::api::op_names()).with_watchdog(
+                clax_bot_js::Watchdog {
+                    factor: 1,
+                    floor: HANG,
+                },
+            ),
+        );
         let host = Arc::new(FakeBotHost::new(store.clone(), thread_context(&aid, &t1)));
         Env {
             _dir: dir,
@@ -547,6 +563,7 @@ impl Env {
             sandbox,
             hub: Arc::new(EventHub::new()),
             instance_key: true,
+            web: Arc::new(FakeWebSource::new()),
             t1,
             t2,
             foreign,
@@ -624,6 +641,70 @@ impl Env {
     }
 
     pub fn run_with(&self, request: RequestKind, model: &str, key_source: KeySource) -> String {
+        self.run_shaped(request, model, key_source, "", vec![self.t1.clone()])
+    }
+
+    /// The web source runs get from [`Env::deps`].
+    pub fn web(&self) -> Arc<FakeWebSource> {
+        self.web.clone()
+    }
+
+    /// Sets the instance's ClaxBot settings `changes`, as its admin
+    /// ([`Env::set`] changes what a run's driver is given instead).
+    pub fn admin_sets(&self, changes: &[(Setting, Value)]) {
+        let changes: Vec<_> = changes.iter().map(|(s, v)| (*s, Some(v.clone()))).collect();
+        self.store
+            .set_bot_settings(&AuditCtx::DAEMON, &changes)
+            .unwrap();
+    }
+
+    /// A thread run that declares the web operations of `shape`
+    /// (`"search"`, `"fetch"` or `"search,fetch"`), with those operations
+    /// turned on by the admin.
+    pub fn run_with_web(&self, shape: &str) -> String {
+        self.run_shaped(
+            RequestKind::Thread,
+            "claude-sonnet-5-5",
+            KeySource::Instance,
+            shape,
+            vec![self.t1.clone()],
+        )
+    }
+
+    /// [`Env::run_with_web`] (`""` for no web operation) on both of the
+    /// artifact's threads, so that what the run tells its threads is
+    /// posted twice.
+    pub fn run_on_both_threads(&self, shape: &str) -> String {
+        self.run_shaped(
+            RequestKind::Thread,
+            "claude-sonnet-5-5",
+            KeySource::Instance,
+            shape,
+            vec![self.t1.clone(), self.t2.clone()],
+        )
+    }
+
+    /// A run on `threads` that declares the web operations of `web`,
+    /// which the admin turns on.
+    fn run_shaped(
+        &self,
+        request: RequestKind,
+        model: &str,
+        key_source: KeySource,
+        web: &str,
+        threads: Vec<String>,
+    ) -> String {
+        let shape = WebShape::parse(web);
+        let mut on = Vec::new();
+        if shape.search {
+            on.push((Setting::WebSearchEnabled, json!(true)));
+        }
+        if shape.fetch {
+            on.push((Setting::WebFetchEnabled, json!(true)));
+        }
+        if !on.is_empty() {
+            self.admin_sets(&on);
+        }
         self.store
             .create_run(
                 &clax_bot::run::bot_ctx(OWNER),
@@ -631,11 +712,12 @@ impl Env {
                     artifact_id: self.aid.clone(),
                     person: OWNER.into(),
                     request,
-                    thread_ids: vec![self.t1.clone()],
+                    thread_ids: threads,
                     model: model.into(),
                     key_source,
                     base_version: 1,
                     agent_grant: None,
+                    web: shape.as_str().into(),
                 },
             )
             .unwrap()
@@ -659,7 +741,7 @@ impl Env {
             max_attempts: 1,
             ..RetryPolicy::default()
         };
-        d
+        d.with_web(self.web.clone())
     }
 
     pub fn deps(&self) -> Deps {
@@ -708,6 +790,18 @@ impl Env {
         self.store.run(id).unwrap().unwrap()
     }
 
+    /// Run `id`'s row with what the run was made as.
+    pub fn run_as_made(&self, id: &str) -> (Run, clax_store::bot_runs::RunAsMade) {
+        let (row, made, _) = self.store.run_with_steps_as_made(id).unwrap().unwrap();
+        (row, made)
+    }
+
+    /// Run `id` as the run loop knows it, read from its row.
+    pub fn info(&self, id: &str) -> clax_bot::surface::RunInfo {
+        let (row, made) = self.run_as_made(id);
+        self.deps().providers.bind(&row, &made).unwrap().info
+    }
+
     pub fn usage(&self) -> Vec<UsageRow> {
         self.store.usage_rows(OWNER, self.clock_now()).unwrap()
     }
@@ -749,5 +843,24 @@ impl Env {
     }
 }
 
-/// How long a test waits for something that happens promptly.
-pub const PROMPTLY: Duration = Duration::from_secs(30);
+/// How long a test's wait on something that will happen may take before
+/// the test calls it a hang: `clax_testkit::HANG`. A hang guard only: a
+/// loaded machine reaches every condition far sooner, so it never decides
+/// whether a test passes.
+pub const HANG: Duration = Duration::from_secs(120);
+
+/// `fut`'s output, bounded by the [`HANG`] guard: panics naming `what`
+/// when `fut` has none by then (`clax_testkit::within`, which these tests
+/// do not reach).
+///
+/// # Panics
+/// Past the [`HANG`] guard.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "within is the HANG guard on a wait"
+)]
+pub async fn within<F: std::future::IntoFuture>(what: &str, fut: F) -> F::Output {
+    tokio::time::timeout(HANG, fut)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: not after {HANG:?} (hang guard)"))
+}

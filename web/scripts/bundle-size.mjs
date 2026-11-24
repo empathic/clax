@@ -7,9 +7,10 @@
 // scripts, and each page with the scripts and stylesheets it names), of the
 // question module (`questions`: the `q` chunk, which the gallery loads
 // through its lazy module, with what it imports that the gallery has not
-// loaded by then), of the People and Queues pages (`people`, `queues`: each one's chunk, which the
-// gallery loads at `/people` and `/queues` through its lazy module, with what it imports
-// that the gallery has not loaded by then), and of app mode's host chunk (`host`:
+// loaded by then), of the artifact view's Analytics panel (`analytics`: its chunk with
+// what it imports beyond the artifact entry and the more menu), of Settings' People screen and the Queues page (`people`, `queues`: the
+// chunks the gallery loads at `/settings/people` (Settings and its People screen) and `/queues`
+// through its lazy module, with what they import that the gallery has not loaded by then), and of app mode's host chunk (`host`:
 // what the artifact entry loads for `?app=1` beyond itself),
 // of the embeddable overlay (`overlay`: dist/_clax/overlay.js, which loads
 // nothing more), and of the SDK package's overlay entry (`sdkOverlay`:
@@ -21,7 +22,7 @@
 // content script, and its build may carry no key file and no test hook.
 // --record lowers the shell's and the bridge's budgets to the measured
 // sizes plus 10%, never raising one, and adds one that is missing; the
-// extension's, the question module's, the People and Queues pages' and the
+// extension's, the question module's, the Analytics panel's, the People and Queues pages' and the
 // SDK overlay's budgets are ceilings set by hand and are never recorded.
 //
 // Sizes are deflated by pako (a pinned JavaScript port of reference zlib), not
@@ -56,7 +57,7 @@ const entry = html => {
   return gz(html) + files.reduce((n, f) => n + gz(f), 0);
 };
 
-for (const [html, markers] of [["index.html", []], ["artifact.html", ["<script id=\"clax-early\">", "<!--clax:boot-->", "<!--clax:frame-->", "<h1>Clax</h1>"]]]) {
+for (const [html, markers] of [["index.html", ["<!--clax:boot-->"]], ["artifact.html", ["<script id=\"clax-early\">", "<!--clax:boot-->", "<!--clax:frame-->", "<h1>Clax</h1>"]]]) {
   const text = read(html).toString();
   if (text.includes(`<link rel="stylesheet"`)) throw new Error(`dist/${html} links a stylesheet; the CSS must be inlined`);
   for (const m of markers) if (!text.includes(m)) throw new Error(`dist/${html} lost ${m}, which the daemon injects at or the shell needs`);
@@ -103,6 +104,11 @@ function part(name) {
   return [...seen].reduce((n, k) => n + gz(`_clax/bridge/${partsManifest[k].file}`), 0);
 }
 
+// The gallery's lazy module's key in the manifest: its source, or its chunk
+// when another chunk imports from it too (Vite then keys it by the chunk).
+const lazyKey = () => Object.keys(manifest).find(m => m.endsWith("src/ui/gallery-working.ts"))
+  ?? Object.keys(manifest).find(m => manifest[m].name === "gallery-working" && manifest[m].isDynamicEntry);
+
 // The app's transport (`transport`), a classic script of its own that only
 // the shell documents an embedded core serves load, before their entry.
 const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js"), transport: gz("_clax/transport.js") };
@@ -116,7 +122,7 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
 // imports from it). What the module itself loads on demand is not counted.
 {
   const key = k => Object.keys(manifest).find(m => m.endsWith(k));
-  const lazy = key("src/ui/gallery-working.ts");
+  const lazy = lazyKey();
   const stream = key("src/view/artifact-stream.ts");
   // The artifact entry loads these after its first paint, before its stream opens.
   const painted = ["src/ui/MoreMenu.svelte", "src/ui/Who.svelte"].map(key);
@@ -126,18 +132,33 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
   const beyond = hosts => { const loaded = files(hosts); return [...files([q])].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0); };
   sizes.questions = Math.max(beyond(["index.html", lazy]), beyond(["artifact.html", stream, ...painted]));
 }
-// The People and Queues pages: each one's chunk and what it imports beyond
-// the gallery's entry and its lazy module, through which `/people` and
+// Settings' People screen and the Queues page: their chunks and what they
+// import beyond the gallery's entry and its lazy module, through which
+// `/settings/people` (Settings, which loads its People screen) and
 // `/queues` load them.
 {
-  const lazy = Object.keys(manifest).find(m => m.endsWith("src/ui/gallery-working.ts"));
+  const lazy = lazyKey();
   if (!lazy) throw new Error("dist has no gallery-working chunk");
   const loaded = new Set([...closure("index.html"), ...closure(lazy)].map(k => manifest[k].file));
-  for (const [key, src] of [["people", "src/people/People.svelte"], ["queues", "src/queues/Queues.svelte"]]) {
-    const page = Object.keys(manifest).find(m => m.endsWith(src));
-    if (!page) throw new Error(`dist has no ${src} chunk`);
-    sizes[key] = [...new Set([...closure(page)].map(k => manifest[k].file))].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
+  for (const [key, srcs] of [["people", ["src/settings/Settings.svelte", "src/people/People.svelte"]], ["queues", ["src/queues/Queues.svelte"]]]) {
+    // A page another chunk also imports from is keyed by its chunk, under its name.
+    const named = src => Object.keys(manifest).find(m => manifest[m].isDynamicEntry && manifest[m].name === src.replace(/^.*\/|\.\w+$/g, ""));
+    const pages = srcs.map(src => Object.keys(manifest).find(m => m.endsWith(src)) ?? named(src));
+    if (pages.some(p => !p)) throw new Error(`dist has no ${srcs.join(" or ")} chunk`);
+    sizes[key] = [...new Set(pages.flatMap(page => [...closure(page)].map(k => manifest[k].file)))].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
   }
+}
+// The Analytics panel (`analytics`): its chunk and what it imports beyond
+// what the artifact entry has loaded by the time it is opened (the entry and
+// the more menu and roster it loads after its first paint). The top bar
+// loads it for whoever administers a hosted clax.
+{
+  const key = k => Object.keys(manifest).find(m => m.endsWith(k));
+  const panel = key("src/ui/AnalyticsPanel.svelte") ?? Object.keys(manifest).find(m => manifest[m].isDynamicEntry && manifest[m].name === "AnalyticsPanel");
+  const painted = ["artifact.html", "src/ui/MoreMenu.svelte", "src/ui/Who.svelte"].map(k => k.endsWith(".html") ? k : key(k));
+  if (!panel || painted.some(k => !k)) throw new Error("dist has no AnalyticsPanel, MoreMenu or Who chunk");
+  const loaded = new Set(painted.flatMap(h => [...closure(h)].map(k => manifest[k].file)));
+  sizes.analytics = [...closure(panel)].map(k => manifest[k].file).filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
 }
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
 // The embeddable overlay (`overlay`): one classic script, loaded whole, and
@@ -204,10 +225,10 @@ for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidep
   walk("overlay.js");
   sizes.sdkOverlay = [...seen].reduce((n, f) => n + pako.gzip(readFileSync(new URL(f, sdk)), { level: 9 }).length, 0);
 }
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, queues ${sizes.queues}, eager bridge ${sizes.bridge}, app host ${sizes.host}, transport ${sizes.transport}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, origin ${sizes.partOrigin}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, embed ${sizes.overlay}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}, sdk package: overlay entry ${sizes.sdkOverlay}`);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, queues ${sizes.queues}, analytics ${sizes.analytics}, eager bridge ${sizes.bridge}, app host ${sizes.host}, transport ${sizes.transport}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, origin ${sizes.partOrigin}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, embed ${sizes.overlay}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}, sdk package: overlay entry ${sizes.sdkOverlay}`);
 
 const RECORDED = ["gallery", "artifact", "host", "bridge", "transport", "overlay", ...Object.values(partKeys)];
-const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues", "sdkOverlay"];
+const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues", "analytics", "sdkOverlay"];
 const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;
