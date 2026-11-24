@@ -41,7 +41,7 @@ pub fn answer(id: &str, overlay: Option<(String, String)>) -> Value {
 /// the queue's list), else none.
 pub fn allowed_origin<'a>(origin: Option<&'a str>, origins: &[String]) -> Option<&'a str> {
     let o = origin?;
-    let n = clax_core::queue::normalize_origin(o).ok()?;
+    let n = clax_core::origin::normalize_origin(o).ok()?;
     origins.contains(&n).then_some(o)
 }
 

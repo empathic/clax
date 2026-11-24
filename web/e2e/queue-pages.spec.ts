@@ -11,7 +11,7 @@ import { expect, startDaemon, test } from "./fixtures";
 const SITE = "https://app.example.com";
 
 test("a queue and each of its reports are pages of their own, live", async ({ browser }) => {
-  test.setTimeout(60_000);
+  test.slow();
   const d = await startDaemon();
   try {
     const owner = await browser.newPage();

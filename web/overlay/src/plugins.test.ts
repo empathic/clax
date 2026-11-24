@@ -7,6 +7,7 @@ import type { Anchor } from "../../bridge/src/protocol";
 import { type ClaxPlugin, definePlugin, PLUGIN_API_VERSION, PluginHost } from "../../sdk/src/plugin";
 import type { NewReport } from "../../sdk/src/reporter";
 import type { Report } from "../../sdk/src/types";
+import { settled } from "../../shell/src/test/settled";
 import { mount, type Mounted } from "../../shell/src/test/svelte";
 import type { FlattenDeps, Surface } from "./annotate";
 import { type ReporterApi, Session } from "./model";
@@ -19,7 +20,7 @@ import {
 
 const anchor: Anchor = { kind: "element", selector: "#total", quote: "Total", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 100, 0, 0, 0, 20]).buffer;
-const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0)); flushSync(); };
+const settle = async () => { await settled(); flushSync(); };
 const pickOf = (target?: Element | Range): Picked => ({ anchor, mode: "element", target, rect: () => ({ x: 0, y: 0, w: 100, h: 20 }), render: async () => ({ png: PNG, omitted: [], at: { x: 0, y: 0, w: 100, h: 20 }, scale: 1 }) });
 
 let view: Mounted<Record<string, unknown>>;

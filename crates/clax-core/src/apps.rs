@@ -134,7 +134,7 @@ impl Apps {
             }
             let mut addresses = Vec::with_capacity(a.addresses.len());
             for ad in a.addresses {
-                let origin = crate::queue::normalize_origin(&ad.origin).map_err(|_| {
+                let origin = crate::origin::normalize_origin(&ad.origin).map_err(|_| {
                     CoreError::invalid(
                         "bad_config",
                         format!("apps.json: app:{name}: {:?} is not an origin", ad.origin),
@@ -195,7 +195,7 @@ impl Apps {
     /// The live app a page at `origin` and `path` is of: the one whose
     /// address at that origin has the longest prefix covering `path`.
     pub fn resolve(&self, origin: &str, path: &str) -> Option<&str> {
-        let origin = crate::queue::normalize_origin(origin).ok()?;
+        let origin = crate::origin::normalize_origin(origin).ok()?;
         let path = if path.is_empty() { "/" } else { path };
         self.live()
             .flat_map(|(n, a)| a.addresses.iter().map(move |ad| (n, ad)))

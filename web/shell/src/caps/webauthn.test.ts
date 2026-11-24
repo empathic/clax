@@ -7,6 +7,7 @@ const declared = { webauthn: { paths: ["/approve/v1/"] } };
 const b64u = (s: string) => btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const buf = (s: string) => new TextEncoder().encode(s).buffer;
 
+// oxlint-disable-next-line clax-timing/literal-timeout -- the WebAuthn options' own `timeout` field, data the service sends and the test passes on: no wait of the test's
 const challenge = { ok: true, publicKey: { challenge: b64u("chal"), rpId: location.hostname, allowCredentials: [{ id: b64u("cred") }], timeout: 60000 }, intent: { to: "work-human", text: "Ship it" } };
 
 function env(prompt: CapEnv["prompt"], token: string | null = "tk"): CapEnv {

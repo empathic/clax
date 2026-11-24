@@ -8,6 +8,7 @@
 import { ReporterClient } from "../sdk/src/reporter";
 import { ServiceClient } from "../sdk/src/service";
 import { expect, test } from "./extension-fixtures";
+import { until } from "./time";
 
 test.use({ devtools: true });
 
@@ -26,19 +27,9 @@ async function session(url: string) {
   });
   return { ev, close: () => ws.close() };
 }
-/** Polls `f` until it answers truthy, or fails after `ms`. */
-async function until<T>(what: string, f: () => Promise<T>, ms = 15_000): Promise<NonNullable<T>> {
-  const end = Date.now() + ms;
-  for (;;) {
-    const v = await f();
-    if (v) return v as NonNullable<T>;
-    if (Date.now() > end) throw new Error(`${what}: not in ${ms} ms`);
-    await new Promise(r => setTimeout(r, 200));
-  }
-}
 
 test("the DevTools panel's Queues view shows the site's queue live, and shows a report's element on the page", async ({ live }) => {
-  test.setTimeout(120_000);
+  test.slow();
   const site = new URL(live.siteUrl).origin;
   // The owner's queue for the site, and a service grant, from the owner's browser (a loopback page of the daemon).
   const owner = await live.ctx.newPage();
@@ -76,7 +67,7 @@ test("the DevTools panel's Queues view shows the site's queue live, and shows a 
       s.close();
     }
     return null;
-  }, 30_000);
+  });
   // Its text, laid out or not (a DevTools frame not in front is not laid out).
   const text = () => panel.ev(`document.getElementById("dt-queues-panel").textContent`) as Promise<string>;
   await panel.ev(`document.getElementById("dt-queues").click()`);
@@ -94,7 +85,7 @@ test("the DevTools panel's Queues view shows the site's queue live, and shows a 
   await until("the report's page", async () => (await text()).includes("Show on the page"));
   await panel.ev(`[...document.querySelectorAll("button")].find(b => b.textContent === "Show on the page").click()`);
   // The outline lasts two seconds.
-  await until("the element outlined in the page", () => page.evaluate(() => (document.getElementById("app") as HTMLElement).style.outlineWidth === "3px"), 2000);
+  await until("the element outlined in the page", () => page.evaluate(() => (document.getElementById("app") as HTMLElement).style.outlineWidth === "3px"));
   await until("Show on the page said", async () => (await panel.ev(`document.querySelector(".notices [role=status]").textContent`)) === "Shown on the page, and selected in Elements.");
   panel.close();
 });

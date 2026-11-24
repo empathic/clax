@@ -14,7 +14,9 @@ describe("the gallery header's links", () => {
   it("are in a fixed order, each as its answers decide, asking nothing", () => {
     const calls = stubFetch({});
     const m = mount(GalleryLinks, links({ inbox: true, unread: 3, queues: true, feedback: true, member: true }));
-    expect([...m.root.querySelector(".glinks")!.children].map(e => e.className)).toEqual(["inbox-link", "queues-link", "fb-slot", "settings-link"]);
+    expect([...m.root.querySelector(".glinks")!.children].map(e => e.className)).toEqual(["inbox-link", "queues-link", "queues-link", "fb-slot", "settings-link"]);
+    // Queues, then Reports (every report across those queues) beside it.
+    expect([...m.root.querySelectorAll("a.queues-link")].map(a => [a.getAttribute("href"), a.getAttribute("aria-label")])).toEqual([["/queues", "Queues"], ["/reports", "Reports"]]);
     expect(m.root.querySelector(".inbox-link")!.getAttribute("aria-label")).toBe("Inbox, 3 unread");
     expect(m.root.querySelector(".inbox-link .count")!.textContent).toBe("3");
     expect(calls).toEqual([]);

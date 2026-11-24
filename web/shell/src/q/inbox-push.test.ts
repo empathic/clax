@@ -1,13 +1,14 @@
 // The inbox's push controls, in the owner's browser (the token is served).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
+import { settled } from "../test/settled";
 import { flush, mount } from "../test/svelte";
 import { InboxFeed, QuestionFeed } from "./feed.svelte";
 import InboxPage from "./InboxPage.svelte";
 import type { PushEnv } from "./push";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
-const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+const settle = async () => { await settled(); flush(); };
 
 function stubOwner() {
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {

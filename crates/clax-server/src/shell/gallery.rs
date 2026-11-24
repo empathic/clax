@@ -203,11 +203,17 @@ const DROPPED: &[&str] = &[
 
 /// Whether the routes would answer the page load as they answer the shell's
 /// own `fetch` from the page it loads (see the module docs): the API's host
-/// rule holds (a hosted daemon's gate checked the host already), it carries
-/// no owner browser session's cookie without its proof, and no other site
-/// started it.
-pub fn answers_as_shell(headers: &HeaderMap, uri: &Uri, extensions: &Extensions) -> bool {
-    let host_ok = clax_http::auth::request_host_allowed(headers, uri, extensions)
+/// rule holds, a name of `trusted` (`[serve] trusted_hosts`) among them (a
+/// hosted daemon's gate checked the host already), it carries no owner
+/// browser session's cookie without its proof, and no other site started
+/// it.
+pub fn answers_as_shell(
+    headers: &HeaderMap,
+    uri: &Uri,
+    extensions: &Extensions,
+    trusted: &[String],
+) -> bool {
+    let host_ok = clax_http::auth::request_host_allowed(headers, uri, extensions, trusted)
         || extensions
             .get::<clax_http::hosted::HostedRequest>()
             .is_some();
@@ -397,7 +403,7 @@ pub async fn assemble(
     uri: &Uri,
     extensions: &Extensions,
 ) -> Option<(String, Vec<HeaderValue>)> {
-    if !answers_as_shell(headers, uri, extensions) {
+    if !answers_as_shell(headers, uri, extensions, &s.trusted_hosts) {
         return None;
     }
     let router = instance.router();
@@ -560,23 +566,29 @@ mod tests {
             h
         };
         let none = Extensions::new();
-        assert!(answers_as_shell(&host(&[]), &uri, &none));
+        assert!(answers_as_shell(&host(&[]), &uri, &none, &[]));
         for site in ["none", "same-origin"] {
             assert!(
-                answers_as_shell(&host(&[("sec-fetch-site", site)]), &uri, &none),
+                answers_as_shell(&host(&[("sec-fetch-site", site)]), &uri, &none, &[]),
                 "{site}"
             );
         }
         for site in ["same-site", "cross-site"] {
             assert!(
-                !answers_as_shell(&host(&[("sec-fetch-site", site)]), &uri, &none),
+                !answers_as_shell(&host(&[("sec-fetch-site", site)]), &uri, &none, &[]),
                 "{site}"
             );
         }
-        assert!(!answers_as_shell(
-            &headers(&[("host", "evil.example:7481")]),
+        let evil = headers(&[("host", "evil.example:7481")]);
+        assert!(!answers_as_shell(&evil, &uri, &none, &[]));
+        // A `[serve] trusted_hosts` name is the shell's own, as the API answers it.
+        let named = headers(&[("host", "devbox.example.ts.net")]);
+        assert!(!answers_as_shell(&named, &uri, &none, &[]));
+        assert!(answers_as_shell(
+            &named,
             &uri,
-            &none
+            &none,
+            &["devbox.example.ts.net".to_string()]
         ));
     }
 

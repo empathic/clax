@@ -1053,7 +1053,7 @@
 
   {#if filed && !open && !draft}
     <section class="filed" role="status" aria-label="Filed">
-      <p><strong>Filed.</strong>{#if reportsOn} Replies and fixes show in {reportsLabel}.{/if}</p>
+      <p><strong>Filed.</strong>{#if reportsOn}{" "}Replies and fixes show in {reportsLabel}.{/if}</p>
       <div class="actions">
         <button type="button" class="ghost" aria-label="Dismiss" onclick={() => { filed = null; }}>✕</button>
         {#if reportsOn}<button type="button" class="primary" bind:this={viewBtn} onclick={viewFiled}>View in {reportsLabel}</button>{/if}

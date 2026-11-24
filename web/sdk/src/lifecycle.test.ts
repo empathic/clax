@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { settled } from "../../shell/src/test/settled";
 import {
   BadgeWatch, type ReporterLifecycleState, POLL_MS, Poll, ReporterLifecycle, type Timers, type Visibility,
   initialLifecycleState, pendingFixCount, update,
@@ -28,7 +29,7 @@ function manualTimers() {
   };
   return t;
 }
-const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+const settle = settled;
 
 /** A page that is always visible, with no real listeners (tests drive it by hand). */
 function visibility(): Visibility & { fireFocus(): void } {
