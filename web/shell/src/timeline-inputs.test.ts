@@ -79,7 +79,6 @@ describe("the timeline's inputs", () => {
       const row = (id: string) => m.root.querySelector<HTMLElement>(`.tl-row[data-row="${id}"]`)!;
       m.update({ ctl, s: { ...s, selected: "a" } as never });
       await vi.waitFor(() => expect(scrolled).toEqual([row("a")]));
-      // The viewer closes the row, then the pointer enters its thread and leaves: new state objects, the same selection.
       flush(() => row("a").click());
       m.update({ ctl, s: { ...s, selected: "a", hovered: "a" } as never });
       m.update({ ctl, s: { ...s, selected: "a", hovered: null } as never });
