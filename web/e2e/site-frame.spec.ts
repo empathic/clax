@@ -65,7 +65,7 @@ test("a frame whose code is refused offers the page in a tab", async ({ page }) 
   await expect(page.locator(".stage > iframe.frame")).toHaveCount(0);
 });
 
-test("a frame whose browser keeps its cookies from the site is told so, asked for storage access, tried once more, then offered in a tab", async ({ page }) => {
+test("a frame whose browser keeps its cookies from the site is told so, asked for storage access, shows its button, tried once more, then offered in a tab", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Cookies refused", { "index.html": `<p id="hi">hi</p>` });
   // As where the browser refuses the frame's cookies: the site's answers
   // reach the frame without their cookies (fetched outside the browser, so
@@ -96,7 +96,16 @@ test("a frame whose browser keeps its cookies from the site is told so, asked fo
     await r.fulfill(res);
   });
   await page.goto(`${d.base}/a/${artifact.id}`);
-  await expect(page.getByRole("link", { name: "Open in a tab" })).toBeVisible();
+  // Refused without the viewer's activation, the frame shows its button and
+  // the shell waits; each press answers. The cookies stay stripped, so the
+  // handshake never lands, whatever the browser grants.
+  const tab = page.getByRole("link", { name: "Open in a tab" });
+  // A pressed button is disabled: an enabled one is a new no-cookie page's.
+  const load = page.frameLocator(".stage > iframe.frame").locator("button:enabled", { hasText: "Load the page" });
+  await load.click();
+  await expect.poll(async () => (await tab.isVisible()) || (await load.isVisible())).toBe(true);
+  if (await load.isVisible()) await load.click();
+  await expect(tab).toBeVisible();
   expect(redemptions).toBe(2);
   await expect(page.locator(".stage > iframe.frame")).toHaveCount(0);
 });
