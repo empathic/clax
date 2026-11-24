@@ -142,8 +142,10 @@
     const box = [...(list?.querySelectorAll<HTMLElement>(".tl-row") ?? [])].find(r => r.dataset.row === id)?.parentElement;
     return !!box && (box.contains(document.activeElement) || !!box.querySelector<HTMLInputElement>('input[aria-label="Reply"]')?.value.trim());
   };
+  // Derived, so the effect runs when the selection is another thread, not on every change of the state it is read from.
+  const selected = $derived(p.selected);
   $effect(() => {
-    const sel = p.selected;
+    const sel = selected;
     if (!sel) return;
     untrack(() => {
       const d = ds.find((x, i) => i > 0 && x.lines.some(l => l.here.includes(sel)));
