@@ -131,12 +131,16 @@ class HostedDaemon {
   }
 
   /// The owner approves device sign-in [userCode] on the approval page.
+  ///
+  /// The request has no body, as the route reads none: the daemon answers
+  /// it once its headers are in and, with a body still to come, closes the
+  /// connection, so a body written after that answer fails with a broken
+  /// pipe.
   Future<void> approve(String userCode) async {
     final (s, body, _) = await _send(
       'POST',
       _base.resolve('/api/hosted/device/${Uri.encodeComponent(userCode)}/approve'),
       headers: {'origin': origin, 'cookie': 'clax_session=$_cookie'},
-      body: const {},
     );
     if (s != 200) throw StateError('the approval answered $s: $body');
   }

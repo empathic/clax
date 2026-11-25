@@ -74,6 +74,31 @@ impl Pair {
         .await;
     }
 
+    /// Stops the sync and returns once nothing of it acts there: its task
+    /// has ended and the hosted daemon has dropped the feedback long-poll
+    /// that task left waiting, which could otherwise still deliver rows to
+    /// the sync's session (and so take their threads).
+    async fn sync_stopped(&self) {
+        let there = self
+            .public
+            .ts
+            .store
+            .list_sessions(true)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name.as_deref() == Some("clax-sync"))
+            .expect("the sync's session there")
+            .id;
+        for t in clax_server::linked::stop(&self.local.state) {
+            let _ = t.await;
+        }
+        let waiters = &self.public.ts.state.feedback_waiters;
+        until("the sync's feedback poll there ends", || async {
+            (!waiters.is_waiting(&there)).then_some(())
+        })
+        .await;
+    }
+
     /// [`Pair::backstop`] after [`Pair::settled`].
     async fn backstop_settled(&self) {
         self.settled().await;
@@ -570,6 +595,12 @@ async fn since_is_an_agent_tokens_and_a_keyed_comment_is_written_once() {
 async fn a_resent_keyed_write_does_the_sends_its_first_write_did_not_reach() {
     use clax_store::threads::{AUTHOR_VIEWER, NewComment, NewThread};
     let p = Pair::new().await;
+    // The keyed writes below stand in for the sync's own, made here by
+    // hand; the sync itself is stopped. Its session there is an agent of
+    // the same person, watching the copy: a feedback poll of its still
+    // waiting when a resend sends would deliver the rows and take the
+    // thread first, and the agent's reply below would be refused as taken.
+    p.sync_stopped().await;
     let token = p.local.store.remote_token(&p.remote).unwrap().unwrap();
     let grant = p
         .local

@@ -91,8 +91,13 @@ html[data-page="auth"] #app > .gbar, html[data-page="auth"] #app > .gal, html[da
 @keyframes gskel { to { opacity: .45; } }
 @media (max-width: 700px) {
   /* The gallery's search box takes a row of its own under the bar (not on a
-     page beside the gallery, whose frame holds the box hidden). */
-  html:not([data-page="page"]) .gbar:has(> .search) { flex-wrap: wrap; height: auto; padding-top: 10px; padding-bottom: 10px; row-gap: 10px; }
+     page beside the gallery, whose frame holds the box hidden). The bar is
+     chosen by the page's kind, which the inline clax-page script sets
+     before the body is parsed, and which is `gallery` exactly where the
+     bar holds the box (Gallery.svelte `listing`), not by `:has(> .search)`:
+     a frame painted while the parser has not reached the box would lay the
+     bar out unwrapped, and the mark would move when the box arrived. */
+  html[data-page="gallery"] .gbar { flex-wrap: wrap; height: auto; padding-top: 10px; padding-bottom: 10px; row-gap: 10px; }
   .gbar > .search { order: 1; flex: 1 0 100%; width: auto; max-width: none; }
   .needs .cards { grid-template-columns: 1fr; }
   .needs .card h3, .gskel .sk-need .sk-t { font-size: 15px; }

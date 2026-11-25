@@ -275,6 +275,30 @@ for (const [form, use] of FORMS) {
       });
     }
 
+    // The browser may paint a document it has parsed only in part (its
+    // bytes arrive in pieces, or a loaded machine's parser yields), and
+    // what it has shown then must not move when the rest arrives. The
+    // header's start is the gallery's first visible content; the search
+    // box comes after its mark, and on a phone the box's row wraps the
+    // bar, which must already be wrapped before the box is read. (The
+    // title, visually hidden on a phone, is no landmark here.)
+    test("the header's mark is in its place before the parser reaches the search box", async ({ freshDaemon: d, page }) => {
+      const html = await (await fetch(`${d.base}/`)).text();
+      const cut = html.indexOf('<input type="search" class="search"');
+      expect(cut, "the search box in the gallery's document").toBeGreaterThan(html.indexOf('class="home"'));
+      // The document alone: the shell's scripts, which mount the gallery in its place, empty.
+      await page.route("**/_clax/shell/**", r => r.fulfill({ status: 200, contentType: "text/javascript", body: "" }));
+      await page.route(`${d.base}/`, r => r.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html.slice(0, cut) }));
+      await page.goto(`${d.base}/`);
+      const part = await landmarks(page, HEADER_MARKS);
+      await page.unroute(`${d.base}/`);
+      await page.goto(`${d.base}/`);
+      const whole = await landmarks(page, HEADER_MARKS);
+      const marks = HEADER_MARKS.filter(m => m.name === "mark").concat({ ...HEADER_MARKS.find(m => m.name === "header bar")!, keys: ["x", "y", "w"] });
+      expect(part.mark, "the mark in the part of the document").not.toBeNull();
+      expect(placesDiffer(marks, part, whole)).toEqual([]);
+    });
+
     for (const path of Object.keys(PAGES)) {
       for (const again of [false, true]) {
         test(`the page at ${path} loads without moving anything${again ? " (a second visit)" : ""}`, async ({ page, freshDaemon: d }) => {

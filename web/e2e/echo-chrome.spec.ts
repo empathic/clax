@@ -33,13 +33,16 @@ async function firstBackground(page: Page, path: string): Promise<string> {
   return page.evaluate(() => (window as unknown as { firstBg: string }).firstBg);
 }
 
-test("both entries name the Echo mark as their icon, and it is served", async ({ page }) => {
-  const { artifact } = await publishWith(d.base, d.token, "Icon", PAGE, {});
+// On a daemon of its own: the shell dots the icon while the inbox holds
+// anything unread (shell/src/q/badge.ts), and the worker's daemon carries
+// the questions and threads other specs leave unread.
+test("both entries name the Echo mark as their icon, and it is served", async ({ freshDaemon: own, page }) => {
+  const { artifact } = await publishWith(own.base, own.token, "Icon", PAGE, {});
   for (const path of ["/", `/a/${artifact.id}`]) {
-    await page.goto(`${d.base}${path}`);
+    await page.goto(`${own.base}${path}`);
     await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", "/_clax/mark.svg");
   }
-  const res = await page.request.get(`${d.base}/_clax/mark.svg`);
+  const res = await page.request.get(`${own.base}/_clax/mark.svg`);
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toContain("image/svg+xml");
 });

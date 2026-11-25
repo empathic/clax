@@ -1039,7 +1039,10 @@ test("Escape and back leave a group's name as it was; a tap away keeps what the 
     document.querySelector('.h-group').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     await wait(() => ui.exists('.h-group-menu'));
     await ui.click('Rename');
-    await wait(() => nameField() && document.activeElement === nameField());
+    // Rename goes back off the menu's entry and then takes the name's: a
+    // back made before both have landed is a second traversal, which goes
+    // past the page's first entry and out of its document.
+    await wait(() => nameField() && document.activeElement === nameField() && history.state?.clax === 'name');
     nameField().value = 'Nope';
     nameField().dispatchEvent(new Event('input', { bubbles: true }));
   };
@@ -1080,7 +1083,7 @@ test("back closes the group's own menu, and only it; Escape leaves its history e
   clock.advance(1000);
   await wait(() => ui.exists('.h-fan'));
   menu();
-  await wait(() => ui.exists('.h-group-menu'));
+  await wait(() => ui.exists('.h-group-menu') && history.state?.clax === 'menu');
   history.back();
   await wait(() => !ui.exists('.h-group-menu'));
   clock.advance(1000);
