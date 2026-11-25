@@ -479,7 +479,11 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
 
   for (const at of ["before the page greets", "before the page reports where it loaded"] as const) {
     it(`history: a back() made ${at} after back() to another page is one move, not an entry`, async () => {
-      const { frame, host } = await appView();
+      // A back() between the greeting and the report: the version holds
+      // other.html, so its greeting is welcomed and index.html's is a new
+      // document, as in a browser.
+      const files = at === "before the page greets" ? undefined : { "index.html": page, "other.html": page };
+      const { frame, host } = await appView(files && { api: () => new Response(JSON.stringify(artifact(1, files))) });
       const win = frame.contentWindow!;
       hello(frame, 1);
       for (const hash of ["", "#/item/3", ""]) fromFrame(win, { type: "clax:hash", hash });

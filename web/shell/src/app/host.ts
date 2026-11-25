@@ -498,6 +498,10 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // `clax:hash` has not come back yet: each is the page reporting that move,
   // not a new entry, even after a later `back()` left it.
   let echoes: string[] = [];
+  // The fragment the latest welcome entered the page at, until the page's
+  // first `clax:hash` after it: the bridge reports where it is once
+  // welcomed, and that report is no move, even when a `back()` came first.
+  let greetedAt: string | null = null;
   const postHistory = () => {
     const back = trail.length > 1;
     if (nonce === null || back === toldBack) return;
@@ -579,6 +583,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     // fires for a traversal of the page's own entries) keeps its routes.
     welcome: (file, again) => {
       if (!again) newDocument();
+      greetedAt = ctl.frameHash;
       visit(file, ctl.frameHash);
       // Routes a new document dropped can leave nothing to go back to.
       postHistory();
@@ -772,8 +777,14 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       const file = s().file;
       if (file === null) return;
       if (m.type === "clax:hash") {
-        // Messages come in order: one that is not the next echo is the page
-        // moving itself, and the echoes it overtook are not coming.
+        const greeting = greetedAt;
+        greetedAt = null;
+        // The welcome's report of the fragment the welcome entered: already
+        // on the trail, and no reply to the echoes a back() queued since.
+        // Otherwise messages come in order: one that is not the next echo
+        // is the page moving itself, and the echoes it overtook are not
+        // coming.
+        if (m.hash === greeting) return;
         if (echoes[0] === m.hash) echoes.shift();
         else {
           echoes = [];
