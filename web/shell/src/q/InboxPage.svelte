@@ -46,7 +46,10 @@
   // waits on the reader, open questions, approval and connection requests,
   // then agents' replies that are the last word of an open thread
   // (`waiting=1`), oldest first, at most four shown and the rest behind
-  // "N more". **All items** (`?view=all`, or any search or filter) is the
+  // "N more". With nothing waiting, it says how many unread items (notices,
+  // such as "added you to a queue") are under All items, in a status line,
+  // rather than leaving the reader to think the inbox is empty.
+  // **All items** (`?view=all`, or any search or filter) is the
   // grouped list above; its **Activity** chip picks the notices that wait
   // on no one (versions, publishes, finished and ended sessions, pushes).
   import { onMount } from "svelte";
@@ -61,7 +64,7 @@
   import { ticker } from "../ui/ticker.svelte";
   import { after } from "../clock";
   import type { InboxFeed, QuestionFeed } from "./feed.svelte";
-  import { approvalOf, newestSeq } from "./inbox-model";
+  import { approvalOf, newestSeq, nothingWaitsText } from "./inbox-model";
   import { ACTIVITY_KINDS, INBOX_KINDS, filterFromUrl, filterToUrl } from "./inbox-filter";
   import { GROUP_PAGE, GROUP_ROWS, type Group, MAX_GROUP_PAGE, MORE_ROWS, appendGroups, appendRows, fromWire, groupKey, mergeGroups, takeItem } from "./inbox-groups";
   import ApprovalCard from "../people/ApprovalCard.svelte";
@@ -613,7 +616,7 @@
       {@render decided(shownDecisions)}
       {#if shownReplies.length}<ul class="rows waiting">{#each shownReplies as i (i.id)}<InboxRow item={i} others={listed} now={p.now} onOpen={open} onToggle={toggle} />{/each}</ul>{/if}
       {#if hiddenCount > 0}<button type="button" class="more wmore" onclick={() => { expanded = true; }}>{fmt(hiddenCount)} more</button>{/if}
-      {#if !waitingCount}<p class="note">Nothing waits on you. <button type="button" class="ghost" onclick={() => showAll(true)}>All items</button></p>{/if}
+      {#if !waitingCount}<p class="note" role="status">{nothingWaitsText(inbox.unread)} <button type="button" class="ghost" onclick={() => showAll(true)}>{inbox.unread > 0 ? "Show all items" : "All items"}</button></p>{/if}
     {:else}
       {#if pinned}<h3 class="pinned-h" id="inbox-pinned-h">{decisions.length ? "Waiting on you" : "Questions"}<span class="c">{fmt(pinned)}</span></h3>{/if}
       <QuestionList list={cards} feed={questions} now={p.now} />

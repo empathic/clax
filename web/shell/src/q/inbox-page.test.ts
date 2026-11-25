@@ -677,6 +677,28 @@ describe("InboxPage, Waiting on you", () => {
     expect(m.root.querySelector(".rows.waiting")).not.toBeNull();
   });
 
+  it("says, when nothing waits, how many unread notices are under All items, and leaves them there", async () => {
+    // An "added you to a queue" notice: it waits on no one, so it is not listed here.
+    const ACCESS = item("access", { id: "IA", seq: 20 });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/api/inbox?group=agent") return ok({ agents: [], unread: 1 });
+      if (url === "/api/artifacts") return ok({ artifacts: [] });
+      const u = new URL(url, "http://x");
+      if (u.searchParams.get("waiting") === "1") return ok({ items: [], next_cursor: null, unread: 1, total: 0 });
+      return answer(url, [ACCESS]).json().then(b => ok({ ...b, unread: 1 }));
+    }));
+    const { m } = page();
+    await settle();
+    expect(m.root.querySelector(".icnt")!.textContent).toBe("0 waiting on you");
+    expect(m.root.querySelector(".rows.waiting")).toBeNull();
+    const note = m.root.querySelector('.sec [role="status"].note')!;
+    expect(note.textContent).toContain("Nothing waits on you. 1 unread item is under All items.");
+    click([...note.querySelectorAll("button")].find(b => b.textContent === "Show all items")!);
+    await settle();
+    expect(location.search).toBe("?view=all");
+    expect(m.root.querySelector('[data-item="IA"]')).not.toBeNull();
+  });
+
   it("fetches the agent strip again when the stream's agents topic says the roster changed", async () => {
     vi.useFakeTimers();
     stubRoutes();
