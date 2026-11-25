@@ -83,8 +83,11 @@ async function inboxNotice(page: Page, name: string, notice: RegExp) {
   await shot(page, `${name}-all-items`, page.locator("main"));
 }
 
+/** The whole walkthrough's hang guard: some two dozen steps, each a page load and a shot. */
+const HANG_MS = 240_000;
+
 test("shared report queues, as a user story", async ({ browser: plain }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(HANG_MS);
   mkdirSync(OUT, { recursive: true });
   const browser = desktop(plain);
   const gh = await startFakeGitHub("e2e-client", "e2e-secret");
