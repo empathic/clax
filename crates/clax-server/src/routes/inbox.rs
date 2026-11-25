@@ -111,7 +111,7 @@ impl Filter {
             kinds.push(Kind::parse(k).ok_or_else(|| {
                 invalid(format!(
                     "'{k}' is not a kind: reply, version, published, question, finished, \
-                     approval, connection or ended"
+                     approval, connection, ended, push, remote_request, queue_request or access"
                 ))
             })?);
         }
@@ -557,13 +557,15 @@ pub async fn summary(
             let (rows, _) = db.inbox_list(&InboxQuery {
                 recipient: me.clone(),
                 // What waits on the reader: replies, and approval,
-                // connection and remote connection requests.
+                // connection and remote connection requests; and the
+                // queues they were added to.
                 kinds: vec![
                     Kind::Reply,
                     Kind::Connection,
                     Kind::Approval,
                     Kind::RemoteRequest,
                     Kind::QueueRequest,
+                    Kind::Access,
                 ],
                 read: ReadFilter::Unread,
                 limit: SUMMARY_LATEST,

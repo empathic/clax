@@ -4497,8 +4497,21 @@ its members and its service grants:
 | `GET /api/queues` | | `{queues: [{id, name, origins, reporters_see, created_at, role, member}]}`, oldest first: the queues the caller made or is a member of; for the owner and the instance's administrators, every live queue, `role` `admin` and `member` false where they are no member (an agent's `queue_list` reads its person's queues alone, without `member`) |
 | `POST /api/queues` | `{name, origins?, reporters_see?}` | 201 `{queue}`: the caller is its maker, listed first among its members as `admin`; a connected person who administers nothing makes one only while `queues.members_create` is on (below), else 403 `queues_admin_only` |
 | `PATCH /api/queues/<qid>`, `DELETE /api/queues/<qid>` | `{name?, origins?, reporters_see?}` | `{queue}`; 204 |
-| `GET /api/queues/<qid>/members` | | `{members: [{public_id, name, role, maker, owner}]}`: the maker first (`maker` true, always `admin`), then in the order they were added; `owner` marks the owner, whose `public_id` is their viewer's (`*owner` before they have one) |
+| `GET /api/queues/<qid>/members` | | `{members: [{public_id, name, role, maker, owner}], pending: [{id, github_login, role, created_at}]}`: the maker first (`maker` true, always `admin`), then in the order they were added; `owner` marks the owner, whose `public_id` is their viewer's (`*owner` before they have one). `pending`: the GitHub logins added who have not signed in here yet, oldest first |
 | `PUT /api/queues/<qid>/members/<public_id>`, `DELETE` the same | `{role}` (`admin` or `triage`) | 204: adds a connected, unrevoked person, or the owner (`*owner` or the owner's public ID), or changes their role; removes one. 404 `not_found` for anyone else; 400 `queue_maker` for the maker, who stays its admin |
+| `PUT /api/queues/<qid>/members` | `{github_login, role}` | 201 `{member}` (as `members` lists one) when a GitHub account with that login (a leading `@` dropped, any case) has signed in here: its person, or the owner, is a member at once at `role`, or takes it; else 201 `{invite: {id, github_login, role, created_at}}` (as `pending` lists one), which that account's first GitHub sign-in here makes a membership (adding it again changes its role). 400 `invalid_login`, `queue_maker` (the maker's login), `limit_reached` (100 waiting); 404 `not_found` for a blocked account's or a revoked person's |
+| `DELETE /api/queues/<qid>/members/pending/<id>` | | 204: removes a login still waiting (`pending`'s `id`); one that is none changes nothing |
+
+Someone newly a member of a queue, by either `PUT` (at once, or at the
+sign-in that binds their invite), gets one inbox item of kind `access`
+(`access: {queue_id, queue_name, role, by}`: the queue's name as it is
+now, `null` once it is gone, with `gone` true; `by` the adder's name, or
+`null`; `url` `/queues`), the owner too; a role change, being added again
+after a removal, and an admin adding themselves make none. Audit: each
+member change is `queue.update {queue_id, op: "member", member, role}`
+(`role` null for a removal), each invite `queue.update {queue_id, op:
+"invite", member: <login>, role}` (`role` null when removed; binding it
+records the member change).
 | `GET /api/queues/<qid>/people?q=<text>` | | `{people: [{public_id, name, avatar_url, owner}]}`: at most 20 of the people an admin may add, the owner first, then by name: the owner and the connected, unrevoked people (a hosted Clax's members) whose name holds `q` ignoring case, or whose public ID is `q`; `avatar_url` their linked GitHub account's. Nothing else of a person (`GET /api/people` stays the owner's). A blank `q` finds no one; one over 100 characters is 400 `invalid_argument` |
 | `GET /api/queues/<qid>/service-grants`, `POST` the same `{name}`, `DELETE …/<gid>` | | as in "Report queue routes" below |
 
@@ -5973,6 +5986,9 @@ An item is made in the same transaction as its source:
   version to a public Clax was refused (the public copy moved, the remote
   unreachable, its token revoked there): one item per artifact, remote and
   version. It adds `push: {n, origin, code, message, url}`.
+- **`access`**: for its person (the owner too), they were added to a
+  report queue, once per queue ("Administering a queue"). It adds
+  `access: {queue_id, queue_name, role, by}`; `url` is `/queues`.
 
 No connected person gets an item about a live page, and a revoked person
 gets none.
@@ -6921,6 +6937,8 @@ router), and a test fails when it differs:
 | `DELETE /api/queues/{qid}/installs/{iid}` | Denied | yes: 403 `not_for_agents` |
 | `PATCH /api/queues/{qid}/installs/{iid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}/members/pending/{id}` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/queues/{qid}/people` | Denied | yes: 403 `not_for_agents` |

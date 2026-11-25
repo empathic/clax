@@ -6,8 +6,11 @@
 //!   (also an agent's, for `queue_list`).
 //! - `POST /api/queues {name, origins, reporters_see}` → `{queue}`;
 //!   `PATCH /api/queues/<qid>`, `DELETE /api/queues/<qid>`.
-//! - `GET /api/queues/<qid>/members` → `{members}`, its maker first; `PUT
-//!   /api/queues/<qid>/members/<public_id> {role}`, `DELETE` the same.
+//! - `GET /api/queues/<qid>/members` → `{members, pending}`, its maker
+//!   first; `PUT /api/queues/<qid>/members/<public_id> {role}`, `DELETE`
+//!   the same; `PUT /api/queues/<qid>/members {github_login, role}` → 201
+//!   `{member}` or `{invite}`, `DELETE
+//!   /api/queues/<qid>/members/pending/<id>`.
 //! - `GET /api/queues/<qid>/responders` → `{responders}`; `PUT` the same
 //!   `{responders}` replaces who answers the queue, in order.
 //! - `GET /api/queues/<qid>/people?q=` → `{people}`: the people an admin
@@ -42,6 +45,7 @@ use axum::http::StatusCode;
 use base64::Engine as _;
 use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
+use clax_core::model::Viewer;
 use clax_core::queue::{ReportersSee, Role};
 use clax_http::agent::{Agent, DeniedToGrants, QueuesList};
 use clax_http::audit::DeferredAudit;
@@ -51,7 +55,7 @@ use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_store::Store;
 use clax_store::bot_settings::Setting;
-use clax_store::queues::{NewQueue, OWNER_MEMBER, QueuePatch};
+use clax_store::queues::{AddedByLogin, NewQueue, OWNER_MEMBER, QueuePatch, member_key};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -378,12 +382,48 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// One member of a queue as its listing shows them: `{public_id, name,
+/// role, maker, owner}` for member key `p` ([`clax_store::queues::member_key`]),
+/// `maker` the queue maker's key, `owner` the owner's viewer and `viewers`
+/// the people's, to name them by.
+fn member_view(
+    p: &str,
+    role: Role,
+    maker: &str,
+    owner: Option<&Viewer>,
+    viewers: &[Viewer],
+) -> Value {
+    let is_maker = p == maker;
+    if p == OWNER_MEMBER {
+        let id = owner.map_or(OWNER_MEMBER, |o| o.public_id.as_str());
+        let name = owner.and_then(|o| o.display_name.clone());
+        return json!({"public_id": id, "name": name, "role": role,
+                      "maker": is_maker, "owner": true});
+    }
+    let name = viewers
+        .iter()
+        .find(|v| v.public_id == p)
+        .and_then(|v| v.display_name.clone());
+    json!({"public_id": p, "name": name, "role": role,
+           "maker": is_maker, "owner": false})
+}
+
+/// The member key of queue `qid`'s maker.
+fn maker_of(st: &Store, qid: &str) -> clax_core::Result<String> {
+    Ok(st
+        .queue(qid)?
+        .ok_or(CoreError::NotAMember)?
+        .person
+        .unwrap_or_else(|| OWNER_MEMBER.to_string()))
+}
+
 /// `GET /api/queues/<qid>/members` → `{members: [{public_id, name, role,
-/// maker, owner}]}`: an admin reads the queue's members, its maker first
-/// (`maker` true, always `admin`), then in the order they were added.
-/// `name` is the person's display name, or `null`; `owner` marks the
-/// owner, whose `public_id` is their viewer's (`*owner` before they have
-/// one).
+/// maker, owner}], pending: [{id, github_login, role, created_at}]}`: an
+/// admin reads the queue's members, its maker first (`maker` true, always
+/// `admin`), then in the order they were added. `name` is the person's
+/// display name, or `null`; `owner` marks the owner, whose `public_id` is
+/// their viewer's (`*owner` before they have one). `pending` are the
+/// GitHub logins added who have not signed in here yet, oldest first.
 pub async fn members(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -394,40 +434,93 @@ pub async fn members(
     let a = admin_person(&s, &d).await?;
     let qid = path(qid)?;
     admin_of(&s, &qid, a).await?;
-    let members = s
+    let (members, pending) = s
         .store_call(move |st| {
-            let maker = st
-                .queue(&qid)?
-                .ok_or(CoreError::NotAMember)?
-                .person
-                .unwrap_or_else(|| OWNER_MEMBER.to_string());
+            let maker = maker_of(st, &qid)?;
             let rows = st.queue_members(&qid)?;
             let owner = st.owner()?;
             let ids: Vec<String> = rows.iter().map(|(p, _)| p.clone()).collect();
             let viewers = st.viewers_by_public_ids(&ids)?;
-            Ok(rows
+            let members = rows
                 .into_iter()
-                .map(|(p, role)| {
-                    let is_maker = p == maker;
-                    if p == OWNER_MEMBER {
-                        let id = owner
-                            .as_ref()
-                            .map_or(OWNER_MEMBER, |o| o.public_id.as_str());
-                        let name = owner.as_ref().and_then(|o| o.display_name.clone());
-                        return json!({"public_id": id, "name": name, "role": role,
-                                      "maker": is_maker, "owner": true});
-                    }
-                    let name = viewers
-                        .iter()
-                        .find(|v| v.public_id == p)
-                        .and_then(|v| v.display_name.clone());
-                    json!({"public_id": p, "name": name, "role": role,
-                           "maker": is_maker, "owner": false})
-                })
-                .collect::<Vec<_>>())
+                .map(|(p, role)| member_view(&p, role, &maker, owner.as_ref(), &viewers))
+                .collect::<Vec<_>>();
+            Ok((members, st.queue_invites(&qid)?))
         })
         .await?;
-    Ok(Json(json!({ "members": members })))
+    Ok(Json(json!({ "members": members, "pending": pending })))
+}
+
+/// `PUT /api/queues/<qid>/members` body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddMemberBody {
+    github_login: String,
+    role: Role,
+}
+
+/// `PUT /api/queues/<qid>/members {github_login, role}` → 201 `{member}`
+/// or `{invite}`: an admin adds a teammate by GitHub login (a leading `@`
+/// dropped, any case). A login a GitHub account has signed in here with
+/// names its person, the owner included, who is a member at once at
+/// `role` (or takes it): `{member}`, as `GET …/members` lists one. Any
+/// other waits for that account's first GitHub sign-in here, which makes
+/// it a membership: `{invite: {id, github_login, role, created_at}}`, as
+/// `pending` lists one (adding it again changes its role). A person newly
+/// a member gets an `access` inbox item, at once or at that sign-in. 400
+/// `invalid_login` (not 1 to 39 letters, digits or hyphens, or starting
+/// with a hyphen); 400 `queue_maker` for the maker's login; 404
+/// `not_found` for a blocked account's or a revoked person's; 400
+/// `limit_reached` past 100 waiting.
+pub async fn add_member(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    ctx: AuditCtx,
+    qid: Result<Path<String>, PathRejection>,
+    req: Result<Json<AddMemberBody>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    d.refuse_agents()?;
+    let a = admin_person(&s, &d).await?;
+    let by = member_key(a.person.as_deref()).to_string();
+    let qid = path(qid)?;
+    let b = body(req)?;
+    admin_of(&s, &qid, a).await?;
+    let v = s
+        .store_call(move |st| {
+            Ok(
+                match st.add_member_by_login(&ctx, &qid, &b.github_login, b.role, &by)? {
+                    AddedByLogin::Member(key, role) => {
+                        let maker = maker_of(st, &qid)?;
+                        let owner = st.owner()?;
+                        let viewers = st.viewers_by_public_ids(std::slice::from_ref(&key))?;
+                        json!({"member": member_view(&key, role, &maker, owner.as_ref(), &viewers)})
+                    }
+                    AddedByLogin::Invite(i) => json!({ "invite": i }),
+                },
+            )
+        })
+        .await?;
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+/// `DELETE /api/queues/<qid>/members/pending/<id>` → 204: an admin removes
+/// a GitHub login still waiting for its sign-in (`pending`'s `id`); one
+/// that is none changes nothing.
+pub async fn delete_invite(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    ctx: AuditCtx,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<StatusCode, ApiError> {
+    d.refuse_agents()?;
+    let a = admin_person(&s, &d).await?;
+    let (qid, id) = path(p)?;
+    admin_of(&s, &qid, a).await?;
+    s.store_call(move |st| st.delete_queue_invite(&ctx, &qid, &id))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The member key ([`clax_store::queues::member_key`]) of `public_id`: the
@@ -489,7 +582,8 @@ pub struct MemberBody {
 
 /// `PUT /api/queues/<qid>/members/<public_id> {role}` → 204: an admin adds
 /// a connected person, or the owner (`*owner` or the owner's public ID),
-/// at `role` (`admin` or `triage`), or changes their role. 404 `not_found`
+/// at `role` (`admin` or `triage`), or changes their role; one newly a
+/// member gets an `access` inbox item. 404 `not_found`
 /// for a public ID that is neither the owner's nor a connected, unrevoked
 /// person's; 400 `queue_maker` for the queue's maker, who stays its admin.
 pub async fn put_member(
@@ -502,6 +596,7 @@ pub async fn put_member(
 ) -> Result<StatusCode, ApiError> {
     d.refuse_agents()?;
     let a = admin_person(&s, &d).await?;
+    let by = member_key(a.person.as_deref()).to_string();
     let (qid, member) = path(p)?;
     let b = body(req)?;
     admin_of(&s, &qid, a).await?;
@@ -513,7 +608,7 @@ pub async fn put_member(
                 _ => return Err(CoreError::NotFound),
             }
         }
-        st.set_member(&ctx, &qid, &key, Some(b.role))
+        st.add_member(&ctx, &qid, &key, b.role, &by).map(drop)
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
