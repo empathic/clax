@@ -23,6 +23,7 @@ pub mod shim;
 pub mod standdown;
 pub mod target;
 pub mod tools;
+pub mod webmcp_schema;
 
 pub use client::{ClientError, DaemonClient};
 pub use tools::ClaxTools;

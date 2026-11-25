@@ -14,6 +14,10 @@ exports_files([
     "pnpm-lock.yaml",
     "package.json",
     "pnpm-workspace.yaml",
+    # The WebMCP tools' input schemas (webmcp.ts imports it): the formal
+    # source crates/clax-mcp's webmcp_schema tests check against the
+    # schemars-derived Rust types (BUILD.bazel: clax-mcp's test_data).
+    "shell/src/webmcp.schemas.json",
 ])
 
 # The project's own files, where the tools run, in two parts that do not
