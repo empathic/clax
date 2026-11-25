@@ -45,9 +45,8 @@ const q = (qid: string) => `/api/queues/${e(qid)}`;
 /** The pending queue requests the viewer answers (`GET /api/queue-requests?status=pending`),
  * here so the Queues page lists them without loading the request card's module. */
 export const listPendingQueueRequests = () => call<{ requests: QueueRequest[] }>("/api/queue-requests?status=pending");
-/** A queue as listed: `member` false for one an administrator of this Clax oversees without being its member. */
-export type ListedQueue = Queue & { member?: boolean };
-export const listQueues = () => call<{ queues: ListedQueue[] }>("/api/queues");
+/** The queues the viewer made or is a member of, at their role. */
+export const listQueues = () => call<{ queues: Queue[] }>("/api/queues");
 /** What this browser may do with queues; none known reads as none. */
 export const queueAccess = () => call<{ queues?: Partial<QueueAccess> }>("/api/viewers/me").then(b => ({ member: b.queues?.member ?? 0, may_make: b.queues?.may_make === true }));
 /** The people a queue's admin may add whose name holds `q`, or whose public ID is `q`. */

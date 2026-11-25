@@ -4432,7 +4432,7 @@ its members and its service grants:
 
 | Route | Body | Answer |
 |---|---|---|
-| `GET /api/queues` | | `{queues: [{id, name, origins, reporters_see, created_at, role, member}]}`, oldest first: the queues the caller made or is a member of; for the owner and the instance's administrators, every live queue, `role` `admin` and `member` false where they are no member (an agent's `queue_list` reads its person's queues alone, without `member`) |
+| `GET /api/queues` | | `{queues: [{id, name, origins, reporters_see, created_at, role}]}`, oldest first: the queues the caller made or is a member of, the owner's and the instance's administrators' as anyone's (an agent's `queue_list` reads its person's) |
 | `POST /api/queues` | `{name, origins?, reporters_see?}` | 201 `{queue}`: the caller is its maker, listed first among its members as `admin`; a connected person who administers nothing makes one only while `queues.members_create` is on (below), else 403 `queues_admin_only` |
 | `PATCH /api/queues/<qid>`, `DELETE /api/queues/<qid>` | `{name?, origins?, reporters_see?}` | `{queue}`; 204 |
 | `GET /api/queues/<qid>/members` | | `{members: [{public_id, name, role, maker, owner}]}`: the maker first (`maker` true, always `admin`), then in the order they were added; `owner` marks the owner, whose `public_id` is their viewer's (`*owner` before they have one) |
@@ -4440,15 +4440,17 @@ its members and its service grants:
 | `GET /api/queues/<qid>/people?q=<text>` | | `{people: [{public_id, name, avatar_url, owner}]}`: at most 20 of the people an admin may add, the owner first, then by name: the owner and the connected, unrevoked people (a hosted Clax's members) whose name holds `q` ignoring case, or whose public ID is `q`; `avatar_url` their linked GitHub account's. Nothing else of a person (`GET /api/people` stays the owner's). A blank `q` finds no one; one over 100 characters is 400 `invalid_argument` |
 | `GET /api/queues/<qid>/service-grants`, `POST` the same `{name}`, `DELETE …/<gid>` | | as in "Report queue routes" below |
 
-The owner and the instance's administrators (the owner and the people the
-owner makes admin, as ClaxBot's admin pages name them) oversee every
-queue in their browser: each queue is theirs to read, triage and
-administer as an admin's, member or not, and the owner's browser streams
-are told of every queue's report changes. Their agents work only the
-queues they are members of, so the owner adds themselves to a member's
-queue to have their agents triage it. Anyone else's queue they are no
-member of answers 404 `not_a_member`, as an unknown one does; a triage
-member's change is 403 `not_queue_admin`.
+A queue is seen and reached only by those it is shared with: its maker
+and its members. That holds for the owner and the instance's
+administrators (the owner and the people the owner makes admin, as
+ClaxBot's admin pages name them) too, on a local Clax and a hosted one:
+a queue they are no member of is not listed to them, its report changes
+are not streamed to them, and each of its routes answers them 404
+`not_a_member`, as it answers a queue ID no queue has. A queue's admin
+adds the owner as a member (`*owner`) for the owner, and the owner's
+agents, to see it. A triage member's change is 403 `not_queue_admin`.
+The owner and administrators still make queues whatever
+`queues.members_create` says (below).
 
 `GET /api/admin/queues` → `{members_create, source}` and `PUT
 /api/admin/queues {members_create: true|false|null}` (the owner and

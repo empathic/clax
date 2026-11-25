@@ -867,10 +867,10 @@ fn members_and_roles() {
 
 /// The owner joins a person's queue under the owner's member key: the
 /// owner then reads it among their queues, at that role, and leaves it
-/// when removed. Every queue reads as an administrator sees it: at their
-/// role where they are a member, else admin, and whether they are one.
+/// when removed. A queue they are not a member of is not among theirs, and
+/// a change to its reports is not addressed to them.
 #[test]
-fn the_owner_is_a_member_like_anyone_and_every_queue_is_an_administrators() {
+fn the_owner_is_a_member_like_anyone_and_reaches_no_other_queue() {
     let (_d, st) = store();
     let mine = queue(&st, ReportersSee::Own);
     let sams = st
@@ -914,26 +914,10 @@ fn the_owner_is_a_member_like_anyone_and_every_queue_is_an_administrators() {
         .unwrap();
     assert_eq!(st.queue_role(&sams, None).unwrap(), None);
 
-    let every = st.every_queue(Some("u_ana")).unwrap();
     assert_eq!(
-        every
-            .iter()
-            .map(|(q, m)| (q.id.clone(), q.role, *m))
-            .collect::<Vec<_>>(),
-        [
-            (mine.clone(), Role::Admin, false),
-            (sams.clone(), Role::Admin, false)
-        ]
-    );
-    st.set_member(DAEMON, &sams, "u_ana", Some(Role::Triage))
-        .unwrap();
-    let every = st.every_queue(Some("u_ana")).unwrap();
-    assert_eq!((every[1].0.role, every[1].1), (Role::Triage, true));
-    st.delete_queue(DAEMON, &mine).unwrap();
-    assert_eq!(
-        st.every_queue(None).unwrap().len(),
-        1,
-        "deleted ones are gone"
+        ids(st.queues_of(None).unwrap()),
+        std::slice::from_ref(&mine),
+        "the owner no longer reads Sam's queue"
     );
 }
 

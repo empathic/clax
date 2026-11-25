@@ -44,8 +44,9 @@ tools". This guide says how the parts fit together.
   own reports or every report in the queue. The owner and the instance's
   administrators always may; other members may while Settings › Report
   queues ("Members may make report queues") is on, which it is until an
-  administrator turns it off. The owner and
-  administrators see every queue on the instance.
+  administrator turns it off. A queue shows only to those it is shared
+  with, its maker and its members: the owner and administrators see no
+  queue they were not added to.
 - **The service grant** is your backend's credential for the queue: a
   `cxq_` token and an Ed25519 private key, shown once when the admin makes
   it (Queues page, Manage, "Create service grant"). Keep it in your

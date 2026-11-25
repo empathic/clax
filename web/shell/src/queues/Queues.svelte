@@ -2,9 +2,9 @@
 
 <script lang="ts">
   // The Queues page (`/queues`, spec 2026-10-27-clax-sdk-design §5.3, §6.2):
-  // every report queue the viewer is a member of (for the owner and the
-  // instance's administrators, every queue, those they are no member of
-  // marked), with its origins, what its reporters see, the viewer's role
+  // every report queue the viewer made or is a member of (the owner and
+  // the instance's administrators too: no queue shows to one it was not
+  // shared with), with its origins, what its reporters see, the viewer's role
   // and its reports counted by state. New queue makes one (the maker is
   // its admin); where this browser may not make one (`GET
   // /api/viewers/me`'s `queues.may_make`), a line says who does instead.
@@ -34,7 +34,7 @@
   const p: { stream?: EventStream; onready?: () => void } = $props();
   // The pending requests for a queue as listed, each kept, decided, until the list is fetched again.
   let requests = $state<QueueRequest[]>([]);
-  let queues = $state<api.ListedQueue[] | null>(null);
+  let queues = $state<api.Queue[] | null>(null);
   // Whether New queue shows: until the daemon says otherwise, it does (the daemon refuses a queue it does not allow).
   let mayMake = $state(true);
   let counts = $state<Record<string, Counts | "failed">>({});
@@ -163,7 +163,6 @@
             <header class="qrow">
               <h3><a href={queueHref(q.id)} onclick={nav}>{q.name}</a></h3>
               <span class="role">{q.role === "admin" ? "Admin" : "Triage"}</span>
-              {#if q.member === false}<span class="role" title="You oversee this queue as an administrator of this Clax">Not a member</span>{/if}
               <span class="sp"></span>
               {#if q.role === "admin"}
                 <span class="acts">
