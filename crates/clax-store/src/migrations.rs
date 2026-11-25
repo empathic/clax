@@ -6250,9 +6250,17 @@ mod tests {
         drop(Store::open(&home).unwrap());
         {
             let c = Connection::open(home.db_path()).unwrap();
-            // The schema as it was at 67, with an artifact.
+            // The schema as it was at 67 (nothing of the migrations after
+            // 68 either), with an artifact.
             c.execute_batch(
-                "ALTER TABLE artifacts DROP COLUMN analytics;
+                "DROP TABLE queue_responders;
+                 DROP TABLE installs;
+                 DROP TABLE queue_view_sessions;
+                 DROP TABLE queue_view_codes;
+                 DROP TABLE queue_reporters;
+                 DROP INDEX viewers_tailscale_login;
+                 ALTER TABLE viewers DROP COLUMN tailscale_login;
+                 ALTER TABLE artifacts DROP COLUMN analytics;
                  DROP TABLE analytics_days;
                  DROP TABLE analytics_dims;
                  DROP TABLE analytics_timings;
@@ -6266,7 +6274,7 @@ mod tests {
         }
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         let setting: String = c
             .query_row("SELECT analytics FROM artifacts", [], |r| r.get(0))
             .unwrap();
@@ -8450,7 +8458,7 @@ mod tests {
     /// A database as a wip/bdelanghe build of 2026-11 left it at `at` (63
     /// to 66): main's 1 to 62, then the first `at - 62` of the tailnet
     /// login, the reporter view, the installs and the responders, with a
-    /// viewer's login and, from 64 on, a queue with a reporter's name.
+    /// viewer's login.
     fn wip_queues_database(home: &Home, at: u32) {
         home.ensure_dirs().unwrap();
         let mut c = Connection::open(home.db_path()).unwrap();
@@ -8485,9 +8493,10 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
             wip_queues_database(&home, at);
-            let (cols, before) = {
+            let before: i64 = {
                 let c = Connection::open(home.db_path()).unwrap();
-                (columns_of(&c), every_row(&c))
+                c.query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get(0))
+                    .unwrap()
             };
             let st = Store::open(&home).unwrap();
             let again = st.tailscale_viewer("alex@github", Some("Alex")).unwrap();
@@ -8500,7 +8509,18 @@ mod tests {
             let mut c = Connection::open(home.db_path()).unwrap();
             assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION, "at {at}");
             assert_eq!(shape_of(&c), fresh, "at {at}: a fresh database's schema");
-            assert_eq!(rows_in(&c, &cols), before, "at {at}: every row kept");
+            // Main's 63 to 68 ran (the web lines are seeded), and no viewer
+            // was made or lost.
+            let (viewers, web_lines): (i64, i64) = c
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM viewers),
+                            (SELECT COUNT(*) FROM cost_lines WHERE unit = 'kreq')",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(viewers, before, "at {at}: every viewer kept");
+            assert!(web_lines > 0, "at {at}: main's 63 seeded the web lines");
             assert_eq!(
                 c.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
                     .unwrap(),
@@ -8824,7 +8844,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             run_indexes(&c),
@@ -9100,7 +9120,7 @@ mod tests {
         );
         drop(opened_after_the_runs(&home));
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         let before = every_row(&c);
         let set = |sql: &str| {
             c.execute(
@@ -9190,7 +9210,7 @@ mod tests {
             .query_row([], |r| r.get::<_, i64>(0))
             .unwrap();
         crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         let finished: i64 = c
             .prepare_cached("SELECT count(*) FROM bot_runs WHERE status = 'finished'")
             .unwrap()
@@ -9512,7 +9532,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             rows_in(&c, &cols),
@@ -9772,7 +9792,7 @@ mod tests {
         drop(at_64_with_runs(&home));
         drop(opened_after_the_runs(&home));
         let mut c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         let (schema, rows) = (schema_of(&c), every_row(&c));
         let before = super::Numbering {
             migrations: &MIGRATIONS[..super::RUN_BINDINGS_MIGRATION as usize],
@@ -9783,7 +9803,7 @@ mod tests {
             matches!(
                 refused,
                 Err(clax_core::CoreError::SchemaNewer { found, known })
-                    if found == super::ANALYTICS_MIGRATION
+                    if found == MIGRATIONS.len() as u32
                         && known == super::RUN_BINDINGS_MIGRATION
             ),
             "{refused:?}"
