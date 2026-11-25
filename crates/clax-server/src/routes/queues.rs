@@ -477,7 +477,14 @@ pub async fn members(
                 .into_iter()
                 .map(|(p, role)| {
                     let reads = reads_reports(st, &p, hosted)?;
-                    Ok(member_view(&p, role, &maker, owner.as_ref(), &viewers, reads))
+                    Ok(member_view(
+                        &p,
+                        role,
+                        &maker,
+                        owner.as_ref(),
+                        &viewers,
+                        reads,
+                    ))
                 })
                 .collect::<clax_core::Result<Vec<_>>>()?;
             Ok((members, st.queue_invites(&qid)?))

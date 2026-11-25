@@ -10155,7 +10155,8 @@ async fn a_member_whose_rights_do_not_read_comments_is_listed_as_not_reading_rep
     let site = Site::new().await;
     let owner = site.owner().await;
     let (lee, lee_pid) = site.person_with(&owner, "Lee", json!([])).await;
-    let reads = json!([{"type": "clax-comments", "actions": ["read", "reply"], "locations": ["*"]}]);
+    let reads =
+        json!([{"type": "clax-comments", "actions": ["read", "reply"], "locations": ["*"]}]);
     let (sam, _) = site.person_with(&owner, "Sam", reads.clone()).await;
     let (s, v) = site
         .post(
@@ -10193,11 +10194,19 @@ async fn a_member_whose_rights_do_not_read_comments_is_listed_as_not_reading_rep
     assert_eq!(v["members"][0]["owner"], true, "{v}");
     assert_eq!(v["members"][0]["reads_reports"], true, "{v}");
     let (s, v) = site.get(&lee, &reports).await;
-    assert_eq!((s, v["error"]["code"].as_str()), (403, Some("not_permitted")), "{v}");
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (403, Some("not_permitted")),
+        "{v}"
+    );
 
     // A person who reads comments but is no member reads none of it.
     let (s, v) = site.get(&sam, &reports).await;
-    assert_eq!((s, v["error"]["code"].as_str()), (404, Some("not_a_member")), "{v}");
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (404, Some("not_a_member")),
+        "{v}"
+    );
 
     let (s, v) = site
         .send(
