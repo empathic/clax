@@ -68,11 +68,20 @@ pub fn mentions_agent(body: &str) -> bool {
 
 /// Broadcasts the `thread` event. It reaches every subscriber, so its view
 /// ([`clax_http::views::thread::thread_event_views`]) has no `clip_path` and no
-/// delivery state, whoever made the change. A report's change also
-/// reaches its queue's topic ([`super::queue_agent::publish_report`]).
+/// delivery state, whoever made the change. A report's change reaches its
+/// queue's topic alone ([`super::queue_agent::publish_report`]), as IDs and
+/// state to its members: never the `thread` event, whose `artifact` and
+/// `gallery` topics anyone who reads the report's external artifact holds.
 /// Best-effort: it runs after the change committed, so a failed read is
 /// logged and that event is not sent, and the caller's answer stands.
 pub(crate) fn publish_thread(ctx: &clax_realtime::feedback::FeedbackCtx, st: &Store, t: &Thread) {
+    // A report's change reaches its queue's members as IDs and state.
+    if let Some(qid) = &t.queue_id {
+        if let Err(e) = super::queue_agent::publish_report(ctx, st, qid, &t.id) {
+            tracing::warn!(queue = qid.as_str(), report = t.id.as_str(), error = %e, "a report's change was not announced");
+        }
+        return;
+    }
     match thread_event_views(st, std::slice::from_ref(t), ctx.codex_push()) {
         Ok(mut views) => {
             let view = views.pop().expect("one view per thread");
@@ -84,12 +93,6 @@ pub(crate) fn publish_thread(ctx: &clax_realtime::feedback::FeedbackCtx, st: &St
         Err(e) => {
             tracing::warn!(thread = t.id.as_str(), error = %e, "a thread's change was not announced");
         }
-    }
-    // A report's change reaches its queue's members as IDs and state.
-    if let Some(qid) = &t.queue_id
-        && let Err(e) = super::queue_agent::publish_report(ctx, st, qid, &t.id)
-    {
-        tracing::warn!(queue = qid.as_str(), report = t.id.as_str(), error = %e, "a report's change was not announced");
     }
 }
 

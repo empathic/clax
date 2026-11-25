@@ -2020,3 +2020,71 @@ async fn a_lapsed_lease_publishes_the_reports_state() {
         );
     }
 }
+
+/// A person's queue that was not shared with the owner reaches none of the
+/// owner's streams: its topic is refused as an unknown queue's is, and a
+/// change to one of its reports sends nothing to the owner's `artifact`
+/// topic of the report's external artifact, nor to their `gallery`, nor
+/// to any other topic they hold, while its maker hears of it on the queue's
+/// topic.
+#[tokio::test]
+async fn a_queue_not_shared_with_the_owner_reaches_none_of_their_streams() {
+    let q = setup().await;
+    let bob = q.ts.person("Bob").await;
+    let qid =
+        q.ts.store
+            .create_queue(
+                &AuditCtx::DAEMON,
+                Some(&bob.public_id),
+                NewQueue {
+                    name: "Bob's".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+    let r = file_into(&q.ts, &qid, None).await;
+    let owner_cookie = q.ts.owner_cookie();
+    let unknown = "01J0000000000000000000000A";
+    let (_, s, v) = stream_with(&q.ts, &owner_cookie, &[&format!("queue:{qid}")]).await;
+    let (_, s2, v2) = stream_with(&q.ts, &owner_cookie, &[&format!("queue:{unknown}")]).await;
+    assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
+    assert_eq!((s2, &v2), (s, &v), "as an unknown queue: {v2}");
+
+    let aid = r.artifact.id.clone();
+    let mut owner =
+        q.ts.stream_as_owner(&[&format!("artifact:{aid}"), "gallery", "inbox", "questions"])
+            .await;
+    let (mut bobs, s, v) = stream_with(
+        &q.ts,
+        &format!("clax_viewer={}", bob.cookie),
+        &[&format!("queue:{qid}")],
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = q
+        .browser(
+            &bob.cookie,
+            "POST",
+            &format!("/api/queues/{qid}/reports/{}/comments", r.id),
+            json!({"body": "Bob's reply"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(next_report(&mut bobs).await, (r.id.clone(), "open".into()));
+    // A marker the owner's gallery hears after: anything the reply sent
+    // them arrives before it.
+    q.ts.publish("Marker", &[("index.html", "<p>m</p>")]).await;
+    loop {
+        let (n, d) = within("the marker", owner.next()).await;
+        let text = d.to_string();
+        assert!(
+            !text.contains(&r.id) && !text.contains("Bob's reply"),
+            "the owner heard of the report: {n} {d}"
+        );
+        if n == "version" && d["title"] == "Marker" {
+            break;
+        }
+    }
+}
