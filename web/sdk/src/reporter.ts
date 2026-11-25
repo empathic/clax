@@ -235,6 +235,14 @@ export class ReporterClient {
     return readJson<ReportPage>(await this.send("GET", queuePath(this.opts.queue, "reporter", "reports") + q));
   }
 
+  /** Report `reportId`, when this reporter sees it (`GET …/reporter/reports/<id>`):
+   * as `myReports` lists it; 404 `not_found` for one it does not see. */
+  async report(reportId: string): Promise<Report> {
+    const { report } = await readJson<{ report: Report }>(
+      await this.send("GET", queuePath(this.opts.queue, "reporter", "reports", reportId)));
+    return report;
+  }
+
   /** Comments `body` (made well-formed, `wellFormed`) on report `reportId` as this reporter. */
   async comment(reportId: string, body: string): Promise<Report> {
     const bytes = new TextEncoder().encode(JSON.stringify({ body: wellFormed(body) }));

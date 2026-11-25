@@ -71,6 +71,14 @@ describe("ReporterClient", () => {
     expect(s.auths).toEqual([signer.publicKey]);
   });
 
+  it("reads one report by its ID", async () => {
+    const s = setup(() => json(200, { report: { id: "t/1", mine: true } }));
+    const { client } = await s.make();
+    expect(await client.report("t/1")).toMatchObject({ id: "t/1", mine: true });
+    expect(s.inst.sent[0].method).toBe("GET");
+    expect(s.inst.sent[0].url.pathname).toBe("/api/queues/q%201/reporter/reports/t%2F1");
+  });
+
   it("asks for a new token from 60 s before expiry, not sooner", async () => {
     const s = setup();
     const { client } = await s.make();

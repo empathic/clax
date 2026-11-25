@@ -588,7 +588,7 @@ drawn in fallback fonts.
 | `externalId` | The record the report is about, in your terms (`invoice:4821`). Default: the page's `<meta name="clax-artifact" content="…">`; with neither, the instance files the report on the page's origin and path (its query and fragment left out), so every report on one path is about one record. |
 | `nonce` | Your policy's style nonce (section 3). |
 | `user` | A stable ID of the signed-in user: the reporter's key and token are kept across page loads for it (section 2). |
-| `onShowReports(report?)` | Your own page of the user's reports, called where the overlay would open "Your reports": the Filed notice's "View in …" (with the report just filed) and the corner's "Your reports" (with none). Default: none, and both open "Your reports". |
+| `onShowReports(report?)` | Your own page of the user's reports, called where the overlay would open "Your reports": the Filed notice's "View in …" (with the report just filed), the corner's "Your reports" (with none), and a link to one report (with it, below). Default: none, and each opens "Your reports". |
 | `reportsLabel` | What the Filed notice calls that place: "Replies and fixes show in *label*." and "View in *label*". Default `"Your reports"`. |
 
 The handle:
@@ -650,8 +650,24 @@ Report in the corner or else the page's body, before the call, so your
 page can take focus. `showReports()` still opens the overlay's panel,
 and a "Still broken" note started there goes back to it. Your page reads
 and answers the reports with a `ReporterClient` of the same `instance`,
-`queue`, `user` and `auth`: `myReports()`, `comment()`, `seen()` (which
-takes a read reply off the badge), `verify()` and `reopen()`.
+`queue`, `user` and `auth`: `myReports()`, `report(id)`, `comment()`,
+`seen()` (which takes a read reply off the badge), `verify()` and
+`reopen()`.
+
+### A link to one report
+
+Add `clax-report=<report ID>` to the query of any page that loads the
+overlay, `https://app.example.com/invoices/4821?clax-report=01JQ…`, and
+the overlay opens "Your reports" on that report once it starts: a link
+in a Slack message or an email lands the reporter on the fix waiting
+for them. The overlay takes the parameter out of the address as it
+reads it (`history.replaceState`, the rest of the URL and the history
+state kept), so a reload does not open it again. It asks for the report
+with the signed-in reporter's token (`GET
+…/reporter/reports/<report ID>`); a report that token does not read, or
+a reporter not signed in, leaves the page as it was, saying nothing.
+With `onShowReports` the overlay calls it with the report instead of
+opening its panel.
 
 ## 5. Context and flags
 
@@ -814,6 +830,12 @@ its summary, "Check it here" and "The change". Then:
   reporter"), whether it watches the queue or not. It claims again,
   reads the new capture with `queue_get`, updates the pull request or
   opens another, and proposes again.
+
+A report that is closed, `verified` or `resolved` (a fix that regressed,
+or a close the reporter disagrees with), still shows "Still broken" in
+"Your reports", and it reopens the report the same way. The overlay
+offers verdicts only on the reporter's own reports (`mine`); under
+`reporters_see: all` it shows the others without them.
 
 No agent can verify its own fix: verifying and reopening on a reporter's
 behalf are a person's alone.

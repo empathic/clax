@@ -389,6 +389,32 @@ const RESOLVED: Record<ResolveReason, string> = {
   other: "Resolved",
 };
 
+/** The query parameter of a link that opens the overlay on one report:
+ * `?clax-report=<report ID>` on any page that mounts the overlay. */
+export const REPORT_LINK_PARAM = "clax-report";
+
+/** The report ID a link to one report names in `win`'s URL
+ * (`REPORT_LINK_PARAM`), taken out of the URL in place
+ * (`history.replaceState`, keeping its state), so a reload or a copied
+ * address does not open it again; null when the URL names none. */
+export function takeReportLink(win: Pick<Window, "location" | "history">): string | null {
+  let url: URL;
+  try {
+    url = new URL(win.location.href);
+  } catch {
+    return null;
+  }
+  if (!url.searchParams.has(REPORT_LINK_PARAM)) return null;
+  const id = url.searchParams.get(REPORT_LINK_PARAM)?.trim() ?? "";
+  url.searchParams.delete(REPORT_LINK_PARAM);
+  try {
+    win.history.replaceState(win.history.state, "", url.href);
+  } catch {
+    // A sandboxed frame may refuse; the link still opens the report.
+  }
+  return id && id.length <= 128 ? id : null;
+}
+
 /** A report's state as the reporter reads it. */
 export function stateLabel(r: Pick<Report, "state" | "resolve_reason">): string {
   switch (r.state) {
@@ -573,6 +599,7 @@ export class BadgeWatch {
 export interface ReporterApi {
   fileReport(r: NewReport): Promise<Report>;
   myReports(cursor?: string): Promise<ReportPage>;
+  report(reportId: string): Promise<Report>;
   comment(reportId: string, body: string): Promise<Report>;
   verify(reportId: string, v?: Verification): Promise<Report>;
   reopen(reportId: string, r: Reopening): Promise<Report>;

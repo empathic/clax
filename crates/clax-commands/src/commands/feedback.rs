@@ -219,14 +219,16 @@ pub(crate) struct Pace {
 /// the session, across daemon restarts and re-registrations, calls
 /// `ready` for each session it finds before its first poll (and again
 /// after a failed poll, as the daemon may have restarted), and hands each
-/// answer of `GET /api/sessions/<sid>/notices` to `on_poll`, which says
-/// whether to stop. Returns once `on_poll` says stop, or the session has
+/// answer of `GET /api/sessions/<sid>/notices` (with `queue`, only the
+/// notices on that queue's reports: the session's others stay for another
+/// follower) to `on_poll`, which says whether to stop. Returns once `on_poll` says stop, or the session has
 /// ended (a Clax session at once; a harness session after `pace.grace`
 /// with no live Clax session). An error of `ready` or `on_poll` ends it.
 pub(crate) fn follow(
     home: &Home,
     target: &Target,
     pace: &Pace,
+    queue: Option<&str>,
     mut ready: impl FnMut(&Client, &str, Option<&SessionCredential>) -> anyhow::Result<Ready>,
     mut on_poll: impl FnMut(&Value) -> anyhow::Result<bool>,
 ) -> anyhow::Result<()> {
@@ -289,7 +291,11 @@ pub(crate) fn follow(
                 }
             }
         }
-        let path = format!("/api/sessions/{sid}/notices?wait={}", poll.as_secs());
+        let mut path = format!("/api/sessions/{sid}/notices?wait={}", poll.as_secs());
+        if let Some(q) = queue {
+            path.push_str("&queue=");
+            path.push_str(q);
+        }
         let polled = Instant::now();
         match client.request_with(
             reqwest::Method::GET,
@@ -342,6 +348,7 @@ pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
         home,
         &target,
         &pace,
+        None,
         |_, _, _| Ok(Ready::Yes),
         |v| {
             let lines: Vec<&str> = v["lines"]
@@ -446,9 +453,14 @@ mod tests {
     }
 
     /// Follows session `s1` of `home` on a thread of its own until a poll
-    /// prints `last`: follow's result and the answers it handed on, in
-    /// order, bounded by the hang guard.
-    fn follow_until(home: &Home, last: &'static str) -> (anyhow::Result<()>, Vec<Value>) {
+    /// prints `last` (with `queue`, of that queue's notices only):
+    /// follow's result and the answers it handed on, in order, bounded by
+    /// the hang guard.
+    fn follow_until(
+        home: &Home,
+        queue: Option<&'static str>,
+        last: &'static str,
+    ) -> (anyhow::Result<()>, Vec<Value>) {
         let home = home.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -461,6 +473,7 @@ mod tests {
                 &home,
                 &Target::Session("s1".into()),
                 &pace,
+                queue,
                 |_, _, _| Ok(Ready::Yes),
                 |v| {
                     seen.push(v.clone());
@@ -491,7 +504,7 @@ mod tests {
                 .collect(),
         );
         record(&home, &daemon);
-        let (r, seen) = follow_until(&home, "b");
+        let (r, seen) = follow_until(&home, None, "b");
         r.unwrap();
         let lines: Vec<&Value> = seen.iter().map(|v| &v["lines"]).collect();
         assert_eq!(lines, [&json!([]), &json!(["a"]), &json!(["b"])]);
@@ -500,6 +513,22 @@ mod tests {
             .filter(|p| p.contains("/notices"))
             .collect();
         assert_eq!(polls, vec!["/api/sessions/s1/notices?wait=50"; 3]);
+    }
+
+    /// A queue's follower asks for that queue's notices only.
+    #[test]
+    fn follow_of_a_queue_polls_for_its_notices_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let daemon = FakeDaemon::start(round(&["a"]).to_vec());
+        record(&home, &daemon);
+        let (r, _) = follow_until(&home, Some("01JQUEUE00000000000000000Q"), "a");
+        r.unwrap();
+        assert_eq!(
+            paths(&daemon).last().map(String::as_str),
+            Some("/api/sessions/s1/notices?wait=50&queue=01JQUEUE00000000000000000Q")
+        );
     }
 
     /// A daemon that does not answer `/healthz` is no daemon to follow: it
@@ -513,7 +542,7 @@ mod tests {
         answers.extend(round(&["a"]));
         let daemon = FakeDaemon::start(answers);
         record(&home, &daemon);
-        let (r, seen) = follow_until(&home, "a");
+        let (r, seen) = follow_until(&home, None, "a");
         r.unwrap();
         assert_eq!(seen.len(), 1, "{seen:?}");
         assert_eq!(

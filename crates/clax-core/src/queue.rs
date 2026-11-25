@@ -301,6 +301,10 @@ pub struct Report {
     /// The reporter that filed it, from its reporter token; `None` for a
     /// report filed otherwise.
     pub reporter_id: Option<String>,
+    /// On a report served to a reporter: whether that reporter filed it
+    /// (only they give it a verdict or reopen it); absent on a member's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mine: Option<bool>,
     /// Opaque JSON the app wrote with the report; `null` when none.
     pub metadata: serde_json::Value,
     pub metadata_version: u64,
@@ -630,6 +634,7 @@ mod tests {
             status: "open".into(),
             state: State::Open,
             reporter_id: Some("emp-1".into()),
+            mine: None,
             metadata: serde_json::Value::Null,
             metadata_version: 0,
             has_clip: false,

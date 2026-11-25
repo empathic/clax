@@ -2058,9 +2058,13 @@ mod agents {
                 {
                     assert!(
                         h.src.contains("vis.filter_")
-                            || ["st.take_feedback_readable(", "st.take_notices("]
-                                .iter()
-                                .any(|t| h.src.contains(t)),
+                            || [
+                                "st.take_feedback_readable(",
+                                "st.take_notices(",
+                                "st.take_queue_notices(",
+                            ]
+                            .iter()
+                            .any(|t| h.src.contains(t)),
                         "{name}: a Filtered route open to agents must pass its response through vis.filter_"
                     );
                 }

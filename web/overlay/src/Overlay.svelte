@@ -23,6 +23,11 @@
   // reports" call it in place of opening the panel. `showReports()`, the
   // host's own ask, still opens the panel, and so does going back to it
   // from a "Still broken" note.
+  //
+  // A link to one report (`?clax-report=<report ID>`, `takeReportLink`)
+  // opens the overlay on it once mounted, when the reporter's token reads
+  // it (else the page shows as ever); the parameter leaves the URL as it
+  // is read. With `onShowReports` the report is handed to the host.
   import { onDestroy, onMount, untrack } from "svelte";
   import type { Report } from "../../sdk/src/types";
   import { type FlattenDeps, type Shape, browserFlatten, flatten } from "./annotate";
@@ -31,7 +36,7 @@
   import { displayCaptureSupported } from "../../bridge/src/display-capture";
   import {
     BadgeWatch, type Draft, POLL_MS, Poll, type ReporterApi, type Session, type Timers, canSend, carryShapes, clipOf, clipStatus, defaultShapes,
-    failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, summaryOf, withCapture,
+    failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, summaryOf, takeReportLink, withCapture,
   } from "./model";
   import ModeBar from "./ModeBar.svelte";
   import type { Mode } from "./options";
@@ -86,6 +91,8 @@
   let reportBtn = $state<HTMLButtonElement | null>(null);
   let viewBtn = $state<HTMLButtonElement | null>(null);
 
+  /** The report a link opened, kept in "Your reports" when no page listed holds it. */
+  let linked: Report | null = null;
   /** The report newly waiting on the reporter, which "Your reports" opens on next. */
   let waitingId: string | null = null;
   /** The pick a draft's capture came from, for the exact screenshot. */
@@ -103,9 +110,12 @@
   onMount(() => {
     const made = makePicker(onPick, () => closeBar(), what => { outlined = what; });
     picker = made;
+    void openLinked();
     return () => made.destroy();
   });
+  let destroyed = false;
   onDestroy(() => {
+    destroyed = true;
     poll.stop();
     badge.stop();
     revokeClip();
@@ -383,7 +393,7 @@
   const poll = untrack(() => new Poll(async () => {
     const page = await client.myReports();
     if (!open) return;
-    reports = page.reports;
+    reports = withLinked(page.reports);
     loadError = null;
   }, timers, POLL_MS, e => { loadError = failureText(e); }));
 
@@ -449,6 +459,32 @@
     const context = await session.verdictContext();
     merge(await client.verify(id, { context }));
     badge.now();
+  }
+
+  /** Opens the overlay on the report a link in the page's URL names, when
+   * the reporter's token reads it; nothing otherwise. */
+  async function openLinked(): Promise<void> {
+    const id = takeReportLink(win);
+    if (!id) return;
+    let r: Report;
+    try {
+      r = await client.report(id);
+    } catch {
+      return;
+    }
+    if (destroyed) return;
+    linked = r;
+    if (onShowReports) { handOff(r); return; }
+    waitingId = null;
+    showReports();
+    expand(r.id);
+  }
+
+  /** `list`, with the linked report after it when the list lacks it. */
+  function withLinked(list: Report[]): Report[] {
+    const l = linked;
+    if (!l || list.some(x => x.id === l.id)) return list;
+    return [...list, reports?.find(x => x.id === l.id) ?? l];
   }
 
   /** "Still broken": a note, and the mode bar for a new capture. */

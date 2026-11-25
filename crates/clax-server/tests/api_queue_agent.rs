@@ -1980,3 +1980,43 @@ async fn a_failed_live_update_read_does_not_fail_a_committed_write() {
     let t = q.ts.store.get_thread(&q.tid).unwrap().unwrap();
     assert_eq!(t.comments.last().unwrap().body, "on it");
 }
+
+/// A lease that runs out with no write is announced on the queue's topic
+/// by the sweep: an open triage view learns the report is open again.
+#[tokio::test]
+async fn a_lapsed_lease_publishes_the_reports_state() {
+    let q = setup().await;
+    let a = q.session("a").await;
+    let (s, _) = q
+        .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    assert_eq!(s, 200);
+    let mut rx = q.ts.events.subscribe();
+    q.clock.advance(LEASE_SECS + 1);
+    q.ts.state.sweep().await;
+    let state = within("the lapse's report event", async {
+        loop {
+            if let clax_core::Event::Report {
+                queue_id,
+                report_id,
+                state,
+                ..
+            } = rx.recv().await.unwrap().event
+                && (queue_id.as_str(), report_id.as_str()) == (q.qid.as_str(), q.tid.as_str())
+            {
+                return state;
+            }
+        }
+    })
+    .await;
+    assert_eq!(state, clax_core::queue::State::Open);
+    // Announced once: a later sweep publishes nothing for it.
+    q.ts.state.sweep().await;
+    while let Ok(e) = rx.try_recv() {
+        assert!(
+            !matches!(e.event, clax_core::Event::Report { .. }),
+            "{:?}",
+            e.event
+        );
+    }
+}

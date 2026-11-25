@@ -819,6 +819,7 @@ fn follow(home: &Home, a: &FollowArgs) -> anyhow::Result<()> {
         home,
         &target,
         &pace,
+        Some(qid.as_str()),
         |c, sid, cred| {
             let q = qid.clone();
             let s = InSession::new(sid.to_string(), cred);

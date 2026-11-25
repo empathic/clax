@@ -4428,6 +4428,8 @@ never changes a report's state; only a reopen opens a closed one.
 **The report.** Beside the milestone-1 fields (`id, queue_id, artifact,
 anchor, status, state, reporter_id, metadata, metadata_version, has_clip,
 comments, claim, created_at`), a report carries, when they apply:
+`mine` (on a reporter's read: whether that reporter filed it, the only
+reports it may give a verdict on or reopen; absent on a member's),
 `context` (what the reporter's browser said at capture, below), `server`
 (`{version, commit?, build?, received_at}`: the receiving server's
 version, the commit and build `/healthz` reports, and when it received
@@ -4582,6 +4584,7 @@ reporter routes' tests fail on a refusal whose code it lacks.
 | `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}`, bound to exact `origin`; 403 `wrong_origin` for one the queue does not allow, 400 `invalid_origin` for a pattern |
 | `POST /api/queues/<qid>/reporter/reports` | multipart `external_id?`, `url`, `title`, `anchor` (JSON), `body`, `metadata?` (JSON), `revision?`, `clip?` (PNG), `context?` (JSON), `diagnostics?` (JSON lines, `diagnostics.jsonl`) | 201 `{report}`, with `server` |
 | `GET /api/queues/<qid>/reporter/reports?cursor=` | | `{reports, next}`; 400 `invalid_query` for another query |
+| `GET …/reporter/reports/<tid>` | | `{report}`, one it sees (an overlay opened from a link to it); 404 `not_found` for one it does not |
 | `POST …/reporter/reports/<tid>/comments` | `{body}` | `{report}` |
 | `GET …/reporter/reports/<tid>/clip` | | the filing's PNG |
 | `GET …/reporter/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
@@ -5154,7 +5157,10 @@ wake, "Queue wakes" above, which needs no watch), and it sets
 waits for tiers 1, 2 and 4, which deliver it once under the rules above,
 so a monitor never causes a second delivery. Retargeting a row clears
 `notified_at`. While the session is inside `wait_for_feedback`, the
-notices poll answers empty at once and announces nothing. The command
+notices poll answers empty at once and announces nothing. With
+`queue=<qid>` the poll announces only the rows on that queue's reports
+and leaves the session's others unannounced, for another follower
+(`clax queue follow` polls so). The command
 finds the session by `--session`, by `--agent` and `--harness-session`,
 or by `GROK_SESSION_ID`; it never starts a daemon, follows the session
 across daemon restarts, and exits 0 once the session has ended (at once
@@ -8419,7 +8425,7 @@ except as noted:
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
 | `docs:<B>?reader=<A>` | B's `doc` events that `view` with no viewer may read, each only while app A may read B (checked as it is dispatched); subscribing needs A to exist and to be allowed to read B then (403 `not_granted` or `not_declared`). See "Reading another app's documents". |
 | `agents` | `agents` (`{topic}`, naming nothing) whenever the agents roster may have changed: an agent started, ended, was renamed or got watches back, a thread's owner changed, or a working record, question or approval request changed. Refetch `GET /api/agents`. Only the owner's and connected people's streams take it (403 `forbidden` otherwise). |
-| `queue:<qid>` | `report` whenever a report of report queue `<qid>` is filed, claimed, renewed, released (by its agent, or ended by a person), given a fix, verified, reopened, resolved, commented on, or given new metadata (its own or its page artifact's). A claim that lapses publishes none. Only a member of the queue takes it (404 `not_a_member` otherwise, as its triage routes answer, and 400 `invalid_topic` for a `<qid>` that is not a queue ID); each event reaches only the streams of the queue's members at the change, so a member removed hears no more though their stream still holds the topic. |
+| `queue:<qid>` | `report` whenever a report of report queue `<qid>` is filed, claimed, renewed, released (by its agent, or ended by a person), given a fix, verified, reopened, resolved, commented on, or given new metadata (its own or its page artifact's), and when its claim lapses (the daemon's sweep, every 5 s, or a hosted instance's alarm, set for the earliest lease's expiry, publishes it, so the event can come up to a sweep after the expiry). Only a member of the queue takes it (404 `not_a_member` otherwise, as its triage routes answer, and 400 `invalid_topic` for a `<qid>` that is not a queue ID); each event reaches only the streams of the queue's members at the change, so a member removed hears no more though their stream still holds the topic. |
 | `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin's site (every origin joined to it, those joined later too: see "Joined sites"), those made later included, and `site` when an origin joins the site or is split off. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
 **Events.** Every event but `ready` and `resync` carries `id:
@@ -9321,12 +9327,13 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   answer; no result carries the session's waiting feedback, which still
   arrives through its delivery tiers. `follow [<queue>]` watches the queue
   as that session (`POST /api/queues/<qid>/watch`, again whenever the
-  session is registered anew) and long-polls its notices, printing one
-  JSON line per notice of the queue: `{event, queue, report_id, title,
+  session is registered anew) and long-polls its notices of that queue
+  (`GET /api/sessions/<sid>/notices?queue=<qid>`), printing one
+  JSON line per notice: `{event, queue, report_id, title,
   url}`, `event` being `filed`, `reopened` or `comment` (a comment on a
   report sent to the session), with `reopened_by` when the notice has it.
-  It passes over notices of anything else (they still arrive through the
-  tiers), never starts a daemon, follows the session across daemon
+  It never takes a notice of anything else, so a `clax feedback follow` of
+  the same session still announces those; it never starts a daemon, follows the session across daemon
   restarts, exits 0 once the session has ended (or, with `--once`, after
   the first poll that printed a line), exits 1 on a refused watch (such
   as `not_a_member`), and exits 2 without a session.
