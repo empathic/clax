@@ -13,6 +13,12 @@ export const newestSeq = (items: readonly InboxItem[]): number => items.reduce((
 
 const pageOf = (i: InboxItem): string => i.artifact?.title ?? "a deleted page";
 
+/** An `access` item's level, as text: a queue role or a share's access. */
+const ACCESS_LEVEL_LABEL: Record<string, string> = {
+  admin: "Can manage", triage: "Can triage",
+  viewer: "Can view", commenter: "Can comment", editor: "Can edit",
+};
+
 /** A person as an approval names them, the owner marked as such (the
  * daemon names an unnamed owner "The owner"). */
 export const personName = (a: Pick<CardPerson, "name" | "owner">): string => (a.owner && a.name !== "The owner" ? `${a.name} (the owner)` : a.name);
@@ -84,7 +90,17 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = [], { page = true 
     case "ended": return `${who} ended`;
     case "push": return `${i.push?.origin ?? "A public Clax"} refused v${i.push?.n ?? "?"}${on(" of ")}`;
     case "remote_request": return remoteRequestText(i, others);
+    case "access": return accessTitle(i);
   }
+}
+
+/** An `access` item's title: being added to a queue, or a page shared
+ * with the recipient ("You were added to Bugs", "Quarterly Review was
+ * shared with you"); without the source any more, a plain fallback. */
+export function accessTitle(i: InboxItem): string {
+  const a = i.access;
+  if (!a) return "You were given access";
+  return a.what === "queue" ? `You were added to ${a.name ?? "a queue"}` : `${pageOf(i)} was shared with you`;
 }
 
 /** A connection request's line, as its card reads: "<agent> wants to
@@ -117,6 +133,7 @@ export function itemText(i: InboxItem): string {
     : i.kind === "ended" ? i.ended?.text.split(" · ").slice(1).join(" · ")
     : i.kind === "push" ? i.push?.message
     : i.kind === "remote_request" ? i.remote_request?.reason
+    : i.kind === "access" ? (i.access ? ACCESS_LEVEL_LABEL[i.access.level] ?? i.access.level : null)
     : null;
   return (t ?? "").replace(/\s+/g, " ").trim();
 }

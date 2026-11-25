@@ -14,7 +14,7 @@ const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], report
 const routes = (o: Record<string, unknown> = {}) => ({
   "GET /api/queues": { queues: [QUEUE] },
   "GET /api/queues/q1/reports": { reports: [{ state: "open" }, { state: "open" }, { state: "claimed" }], next: null },
-  "GET /api/queues/q1/members": { members: [{ public_id: "p2", name: "Mia", role: "triage" }] },
+  "GET /api/queues/q1/members": { members: [{ id: "p2", public_id: "p2", name: "Mia", role: "triage" }] },
   "GET /api/queues/q1/service-grants": { grants: [] },
   "GET /api/queues/q1/responders": { responders: [] },
   ...o,
@@ -117,7 +117,7 @@ describe("Queues", () => {
     stubFetch(routes({
       "GET /api/queues": { queues: [sams, { ...QUEUE, id: "q2", name: "Ideas" }] },
       "GET /api/queues/q2/reports": { reports: [], next: null },
-      "GET /api/queues/q1/members": { members: [{ public_id: "p1", name: "Sam", role: "owner" }, { public_id: "p2", name: "Mia", role: "triage" }] },
+      "GET /api/queues/q1/members": { members: [{ id: "p1", public_id: "p1", name: "Sam", role: "owner" }, { id: "p2", public_id: "p2", name: "Mia", role: "triage" }] },
     }));
     const m = mount(Queues, {});
     await settle();
@@ -184,19 +184,57 @@ describe("Queues", () => {
   });
 
   it("adds a member by public ID at a role, and removes one after confirming", async () => {
-    const calls = stubFetch(routes({ "PUT /api/queues/q1/members/p3": {}, "DELETE /api/queues/q1/members/p2": {} }));
+    const calls = stubFetch(routes({
+      "PUT /api/queues/q1/members": { member: { id: "m1", person: "p3", github_login: null, role: "triage" } },
+      "DELETE /api/queues/q1/members/pending/p2": {},
+    }));
     vi.stubGlobal("confirm", () => true);
     const m = mount(Queues, {});
     await settle();
     click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
     await settle();
-    type(m.root.querySelector('input[name="public_id"]'), " p3 ");
+    type(m.root.querySelector('input[name="who"]'), " p3 ");
     click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Add member"));
     await settle();
-    expect(calls.find(c => c.method === "PUT")).toMatchObject({ url: "/api/queues/q1/members/p3", body: { role: "triage" } });
+    expect(calls.find(c => c.method === "PUT")).toMatchObject({ url: "/api/queues/q1/members", body: { person: "p3", role: "triage" } });
     click(m.root.querySelector('[data-member="p2"] button'));
     await settle();
-    expect(calls.some(c => c.method === "DELETE" && c.url === "/api/queues/q1/members/p2")).toBe(true);
+    expect(calls.some(c => c.method === "DELETE" && c.url === "/api/queues/q1/members/pending/p2")).toBe(true);
+  });
+
+  it("adds a pending GitHub login, lowercased, at the default role, and shows it waiting for sign-in", async () => {
+    const calls = stubFetch(routes({
+      "PUT /api/queues/q1/members": { member: { id: "m2", person: null, github_login: "octo-cat", role: "triage" } },
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    type(m.root.querySelector('input[name="who"]'), "@Octo-Cat");
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Add member"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT" && c.url === "/api/queues/q1/members")).toMatchObject({ body: { github_login: "octo-cat", role: "triage" } });
+  });
+
+  it("shows a pending login waiting for sign-in, and removes it by row id", async () => {
+    vi.stubGlobal("confirm", () => true);
+    const calls = stubFetch(routes({
+      "GET /api/queues/q1/members": { members: [
+        { id: "p2", public_id: "p2", name: "Mia", role: "triage" },
+        { id: "m2", public_id: null, github_login: "octo-cat", pending: true, role: "admin" },
+      ] },
+      "DELETE /api/queues/q1/members/pending/m2": {},
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    const pending = m.root.querySelector('[data-member="m2"]')!;
+    expect(pending.textContent).toContain("@octo-cat");
+    expect(pending.textContent).toContain("Not signed in yet");
+    click(pending.querySelector("button"));
+    await settle();
+    expect(calls.some(c => c.method === "DELETE" && c.url === "/api/queues/q1/members/pending/m2")).toBe(true);
   });
 
   it("names who answers the queue, in order: adds an agent through a grant, moves one up, removes one", async () => {

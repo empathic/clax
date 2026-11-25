@@ -16,6 +16,7 @@
   import * as api from "./api";
   import Installs from "./Installs.svelte";
   import { containerPath, deployments, installTag, type OverlayPin, ownerText, refusal } from "./model";
+  import { parseLogin } from "../ui/share-model";
 
   const p: { queue: api.Queue } = $props();
   let members = $state<api.QueueMember[] | null>(null);
@@ -24,7 +25,7 @@
   let grants = $state<api.ServiceGrant[] | null>(null);
   let memberErr = $state<string | null>(null);
   let grantErr = $state<string | null>(null);
-  let pid = $state("");
+  let who = $state("");
   let role = $state<api.QueueRole>("triage");
   let grantName = $state("");
   let made = $state<api.ServiceGrantCreated | null>(null);
@@ -35,23 +36,35 @@
   const loadMembers = () => api.listMembers(qid).then(b => { members = b.members; }, x => { memberErr = `Could not load the members: ${refusal(x)}`; });
   const loadGrants = () => api.listGrants(qid).then(b => { grants = b.grants; }, x => { grantErr = `Could not load the service grants: ${refusal(x)}`; });
 
+  /** `who`, typed as a GitHub login (`@octocat`) or, without the `@`, an
+   * existing connected person's public ID (as the field was before). */
+  function memberTarget(s: string): { person: string } | { github_login: string } | null {
+    const t = s.trim();
+    if (!t) return null;
+    if (t.startsWith("@")) { const login = parseLogin(t); return login ? { github_login: login } : null; }
+    return { person: t };
+  }
   async function addMember(e: Event) {
     e.preventDefault();
-    const id = pid.trim();
-    if (!id) return;
+    const to = memberTarget(who);
+    if (!to) return;
     memberErr = null;
-    try { await api.setMember(qid, id, role); pid = ""; } catch (x) { memberErr = refusal(x); }
+    try { await api.addMember(qid, to, role); who = ""; } catch (x) { memberErr = refusal(x); }
     await loadMembers();
   }
   async function changeRole(m: api.QueueMember, r: api.QueueRole) {
     memberErr = null;
-    try { await api.setMember(qid, m.public_id, r); } catch (x) { memberErr = refusal(x); }
+    try {
+      if (m.pending && m.github_login) await api.addMember(qid, { github_login: m.github_login }, r);
+      else if (m.public_id) await api.setMember(qid, m.public_id, r);
+    } catch (x) { memberErr = refusal(x); }
     await loadMembers();
   }
   async function removeMember(m: api.QueueMember) {
-    if (!confirm(`Remove ${m.name ?? m.public_id} from ${p.queue.name}?`)) return;
+    const name = m.name ?? (m.github_login ? `@${m.github_login}` : m.public_id ?? "them");
+    if (!confirm(`Remove ${name} from ${p.queue.name}?`)) return;
     memberErr = null;
-    try { await api.removeMember(qid, m.public_id); } catch (x) { memberErr = refusal(x); }
+    try { await api.removeMember(qid, m.id); } catch (x) { memberErr = refusal(x); }
     await loadMembers();
   }
   async function makeGrant(e: Event) {
@@ -136,11 +149,11 @@
     <p class="owner">{ownerText(p.queue)}{#if p.queue.owner && !p.queue.is_owner && p.queue.owner.name}<span class="key">{p.queue.owner.public_id}</span>{/if}</p>
     {#if added?.length}
       <ul class="lines">
-        {#each added as m (m.public_id)}
-          <li class="line" data-member={m.public_id}>
-            <span class="who">{m.name ?? m.public_id}{#if m.name}<span class="key">{m.public_id}</span>{/if}</span>
-            <select aria-label={`Role of ${m.name ?? m.public_id}`} value={m.role} onchange={e => void changeRole(m, e.currentTarget.value as api.QueueRole)}>
-              <option value="triage">Triage</option><option value="admin">Admin</option>
+        {#each added as m (m.id)}
+          <li class="line" data-member={m.id}>
+            <span class="who">{m.name ?? (m.github_login ? `@${m.github_login}` : m.public_id)}{#if m.pending}<span class="key">Not signed in yet: has access once they sign in with GitHub</span>{:else if m.name && m.public_id}<span class="key">{m.public_id}</span>{/if}</span>
+            <select aria-label={`Role of ${m.name ?? m.github_login ?? m.public_id}`} value={m.role} onchange={e => void changeRole(m, e.currentTarget.value as api.QueueRole)}>
+              <option value="triage">Can triage</option><option value="admin">Can manage</option>
             </select>
             <button type="button" class="ghost danger" onclick={() => void removeMember(m)}>Remove</button>
           </li>
@@ -150,11 +163,11 @@
       <p class="none">No one else is a member yet.</p>
     {/if}
     <form class="add" onsubmit={addMember}>
-      <label class="field">Public ID <input name="public_id" autocomplete="off" spellcheck="false" value={pid} oninput={e => { pid = e.currentTarget.value; }} /></label>
-      <label class="field">Role <select value={role} onchange={e => { role = e.currentTarget.value as api.QueueRole; }}><option value="triage">Triage</option><option value="admin">Admin</option></select></label>
-      <button type="submit" disabled={!pid.trim()}>Add member</button>
+      <label class="field">Public ID or @github-login <input name="who" autocomplete="off" spellcheck="false" placeholder="@github-login" value={who} oninput={e => { who = e.currentTarget.value; }} /></label>
+      <label class="field">Role <select value={role} onchange={e => { role = e.currentTarget.value as api.QueueRole; }}><option value="triage">Can triage</option><option value="admin">Can manage</option></select></label>
+      <button type="submit" disabled={!memberTarget(who)}>Add member</button>
     </form>
-    <p class="hint">Triage reads and works the queue's reports; admin also changes the queue and its service grants.</p>
+    <p class="hint">They get access when they sign in with GitHub. Can triage works reports and changes the queue's settings, installs and responders; manage also adds people and service grants; only the owner deletes it.</p>
     {#if memberErr}<p class="err" role="alert">{memberErr}</p>{/if}
   </section>
 

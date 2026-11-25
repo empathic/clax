@@ -19,8 +19,17 @@ export class Refused extends Error {
 export type { DiagLine, Install, InstallConfig, Queue, QueueRole, Report, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated };
 /** What a queue's form sets. */
 export type QueueFields = { name: string; origins: string[]; reporters_see: ReportersSee };
-/** A queue's member, by public ID, with the name the daemon knows them by; the person who made the queue is listed first as its `owner`. */
-export type QueueMember = { public_id: string; name?: string | null; role: QueueRole | "owner" };
+/** A queue's member, by public ID, with the name the daemon knows them
+ * by; the person who made the queue is listed first as its `owner`. A
+ * login no GitHub account here has signed in with yet is `pending`:
+ * `public_id` null, `github_login` its login, until that account's first
+ * GitHub sign-in binds it. `id` is the row's own (the owner's their
+ * public ID), which `removeMember` takes: the only way to remove a
+ * pending row, which has no public ID. */
+export type QueueMember = {
+  id: string; public_id: string | null; name?: string | null;
+  github_login?: string | null; pending?: boolean; role: QueueRole | "owner";
+};
 /** A service grant as listed: never its token or key. */
 export type ServiceGrant = ServiceGrantCreated["grant"];
 
@@ -74,9 +83,16 @@ export const verify = (qid: string, tid: string, note?: string) => call<{ report
 /** Says, on the reporter's behalf, that the report is still broken, with `body` as their comment. */
 export const reopen = (qid: string, tid: string, body: string) => call<{ report: Report }>(`${r(qid, tid)}/reopen`, "POST", { body });
 export const listMembers = (qid: string) => call<{ members: QueueMember[] }>(`${q(qid)}/members`);
-/** Adds person `pid` to the queue at `role`, or changes their role. */
+/** Adds person `pid` (already on this Clax) to the queue at `role`, or changes their role. */
 export const setMember = (qid: string, pid: string, role: QueueRole) => call<unknown>(`${q(qid)}/members/${e(pid)}`, "PUT", { role });
-export const removeMember = (qid: string, pid: string) => call<unknown>(`${q(qid)}/members/${e(pid)}`, "DELETE");
+/** Adds `to` (a connected person's public ID, or a GitHub login) to the
+ * queue at `role`, as the Share dialog's `share` adds a person: a login
+ * already linked here names that account's person at once; any other
+ * waits, pending, for that account's first GitHub sign-in. */
+export const addMember = (qid: string, to: { person: string } | { github_login: string }, role: QueueRole) =>
+  call<{ member: QueueMember }>(`${q(qid)}/members`, "PUT", { ...to, role });
+/** Removes member row `id` (as the listing gives it), bound or pending. */
+export const removeMember = (qid: string, id: string) => call<unknown>(`${q(qid)}/members/pending/${e(id)}`, "DELETE");
 export const listGrants = (qid: string) => call<{ grants: ServiceGrant[] }>(`${q(qid)}/service-grants`);
 /** Makes a service grant; its token and private key are in this answer alone. */
 export const createGrant = (qid: string, name: string) => call<ServiceGrantCreated>(`${q(qid)}/service-grants`, "POST", { name });

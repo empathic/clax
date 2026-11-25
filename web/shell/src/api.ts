@@ -224,7 +224,12 @@ export type QuestionLink = {
   answered_there: boolean; unlinked: boolean;
 };
 
-export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push" | "remote_request";
+export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push" | "remote_request" | "access";
+/** An `access` item (spec: a queue membership or an artifact share just
+ * granted, or bound at a GitHub sign-in): what it is, its level (a queue
+ * role or a share's access) and who granted it (`null`: the daemon, at a
+ * sign-in that bound a pending one). */
+export type InboxAccess = { what: "queue" | "artifact"; id: string; name: string | null; level: string; by: string | null };
 /** A `connection` item's grant: a request waiting for the owner, or a
  * machine that connected with an invite (`person` once it has one). */
 export type InboxConnection = {
@@ -298,6 +303,8 @@ export type InboxItem = {
   push?: { n: number | null; origin: string | null; code: string | null; message: string | null; url: string | null };
   /** `remote_request`: an agent asks the owner to connect another Clax. */
   remote_request?: InboxRemoteRequest;
+  /** `access`: a queue or an artifact just made reachable. */
+  access?: InboxAccess | null;
   gone: boolean;
   /** Where opening the item leads (a path on the daemon). */
   url: string;
