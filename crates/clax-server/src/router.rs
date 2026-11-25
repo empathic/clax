@@ -188,6 +188,26 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/queue-requests/{id}/deny", post(queue_requests::deny))
         .route("/api/queue-requests/{id}/take", post(queue_requests::take))
+        .route(
+            "/api/queues/{qid}/webhooks",
+            get(queues::webhooks).post(queues::create_webhook),
+        )
+        .route(
+            "/api/queues/{qid}/webhooks/{wid}",
+            delete(queues::delete_webhook),
+        )
+        .route(
+            "/api/queues/{qid}/webhooks/{wid}/verify",
+            post(queues::verify_webhook),
+        )
+        .route(
+            "/api/queues/{qid}/webhooks/{wid}/deliveries",
+            get(queues::webhook_deliveries),
+        )
+        .route(
+            "/api/queues/{qid}/webhooks/{wid}/deliveries/{did}/redeliver",
+            post(queues::redeliver_webhook),
+        )
         .route("/api/queues/{qid}/reports", get(queue_agent::list))
         .route(
             "/api/queues/{qid}/watch",

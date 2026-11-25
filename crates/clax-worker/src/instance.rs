@@ -111,7 +111,9 @@
 //! batch of page views a minute old and the UTC day's rollover,
 //! `clax_http::analytics`), the grant expiry by
 //! `Store::grants_next_due`, a queue lease's lapse, which the sweep
-//! announces, by `Store::next_lease_lapse`, and the store's planner refresh an hour after
+//! announces, by `Store::next_lease_lapse`, report queues' webhook
+//! deliveries by `Store::webhooks_next_due` (sent through the Worker's
+//! `fetch`, `crate::webhooks`), and the store's planner refresh an hour after
 //! the last one once a request that may write was served, with the prune
 //! of ended ClaxBot runs and of site analytics' daily totals past their
 //! 13 months ([`prune_pass`]). A server built anew reads whether a day of
@@ -926,6 +928,8 @@ impl Instance {
             app.presence.restore(&k.presence);
         }
         install_git_remotes(&app, env);
+        app.webhooks
+            .set_sender(Arc::new(crate::webhooks::FetchSender));
         clax_server::start_listeners(&app);
         let router = clax_server::router::build_router(app.clone());
         let inst = Rc::new(Instance {
@@ -1449,7 +1453,13 @@ impl InstanceDo {
             Ok(t) => t.map(|t| t.timestamp_millis() as f64),
             Err(_) => Some(now),
         };
-        [sweep, grants, leases, optimize, unseen]
+        // The next webhook delivery due (a retry's backoff, or one queued
+        // by the request just served).
+        let webhooks = match inst.app.store.call(|st| st.webhooks_next_due()).await {
+            Ok(t) => t.map(|t| t.timestamp_millis() as f64),
+            Err(_) => Some(now),
+        };
+        [sweep, grants, leases, optimize, unseen, webhooks]
             .into_iter()
             .flatten()
             .reduce(f64::min)
@@ -2019,10 +2029,12 @@ impl InstanceDo {
     }
 
     /// The instance's timed work that is due (the module docs' Alarm):
-    /// the sweep, grants expired, sessions unseen, the planner refresh and
-    /// the prune of ended ClaxBot runs.
+    /// the sweep, report queues' webhooks due, grants expired, sessions
+    /// unseen, the planner refresh and the prune of ended ClaxBot runs.
     async fn timed_work(&self, inst: &Instance) {
         inst.app.sweep().await;
+        // Report queues' webhooks that are due: sent before the alarm ends.
+        clax_http::webhooks::deliver_due(&inst.app).await;
         let now = now_ms();
         let grants_due = inst
             .app

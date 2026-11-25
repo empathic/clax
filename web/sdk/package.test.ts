@@ -35,7 +35,7 @@ interface Manifest {
 const RUNTIME: Record<string, string[]> = {
   ".": ["ClaxError", "ReporterClient"],
   "./overlay": ["CONTEXT_TIMEOUT_MS", "diagnostics", "forgetReporter", "overlay"],
-  "./service": ["ClaxError", "ServiceClient"],
+  "./service": ["ClaxError", "ServiceClient", "WEBHOOK_TOLERANCE_S", "WebhookError", "verifyWebhook", "webhookChallengeAnswer", "webhookSignature"],
 };
 
 let manifest: Manifest;
@@ -175,7 +175,7 @@ export const limited: QueueErrorCode = "limit_reached";
     // TypeScript names the files it read by their real paths.
     const real = realpathSync(pkg);
     const read = program.getSourceFiles().map(f => relative(real, realpathSync(f.fileName))).filter(f => !f.startsWith(".."));
-    expect(read.sort()).toEqual(["types/sdk/src/client.d.cts", "types/sdk/src/service.d.cts", "types/sdk/src/sign.d.cts", "types/sdk/src/types.d.cts"]);
+    expect(read.sort()).toEqual(["types/sdk/src/client.d.cts", "types/sdk/src/service.d.cts", "types/sdk/src/sign.d.cts", "types/sdk/src/types.d.cts", "types/sdk/src/webhook.d.cts"]);
   });
 
   it("changes nothing on import, and runs the overlay with its components' CSS from its own bundle", async () => {

@@ -10,7 +10,8 @@ import { BACKOFF_S, checkInstance, ClaxError, errorCode, queuePath, readJson, se
 import { fromBase64url, importPkcs8Signer, type Signer } from "./sign";
 
 export { ClaxError } from "./client";
-export type { ClaxErrorCode, FixTicket, PreviewAttached, PreviewAttachment, QueueErrorCode, ReporterProfile, ReporterToken, ReporterTokenRequest, SdkErrorCode } from "./types";
+export { verifyWebhook, webhookChallengeAnswer, webhookSignature, WebhookError, WEBHOOK_TOLERANCE_S, type VerifyWebhookOptions, type WebhookErrorReason, type WebhookHeaders } from "./webhook";
+export type { ClaxErrorCode, FixTicket, PreviewAttached, PreviewAttachment, QueueErrorCode, ReporterProfile, ReporterToken, ReporterTokenRequest, SdkErrorCode, ReportWebhookEvent, WebhookComment, WebhookEvent, WebhookEventType, WebhookFix, WebhookReport, WebhookVerifyEvent, WebhookVerifyReply } from "./types";
 
 /** A fix ticket's parts: `cxf_<queue ID>.<report ID>.<fix number>.<secret>`. */
 const TICKET = /^cxf_([^./]+)\.([^./]+)\.([1-9]\d*)\.[\w-]+$/;

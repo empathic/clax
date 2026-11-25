@@ -17,6 +17,15 @@
 //! - `GET /api/admin/queues` → `{members_create, source}`; `PUT
 //!   /api/admin/queues {members_create}`: whether members who administer
 //!   nothing make queues (the owner and administrators always may).
+//! - `GET /api/queues/<qid>/webhooks` → `{webhooks}`; `POST
+//!   /api/queues/<qid>/webhooks {url, events?}` → `{webhook, secret}`,
+//!   the secret shown once, the endpoint unverified until it answers the
+//!   verification sent then; `POST /api/queues/<qid>/webhooks/<wid>/verify`
+//!   (Verify again, or re-enable a disabled one); `DELETE
+//!   /api/queues/<qid>/webhooks/<wid>`;
+//!   `GET /api/queues/<qid>/webhooks/<wid>/deliveries` → `{deliveries}`;
+//!   `POST /api/queues/<qid>/webhooks/<wid>/deliveries/<did>/redeliver`
+//!   (spec §9, [`clax_core::webhook`]).
 //!
 //! Every route but the listing is a person's in their browser (or the
 //! owner by hand), from the daemon's own origin (`SameOrigin`); agents are
@@ -699,4 +708,163 @@ pub async fn set_policy(
         })
         .await?;
     Ok(Json(v))
+}
+
+/// `GET /api/queues/<qid>/webhooks` → `{webhooks: [{id, url, events,
+/// created_at, state, verified_at, verify_by, disabled_at, given_up,
+/// failing_since, last_error, dropped, last_dropped_at}]}`: an admin reads
+/// the queue's webhook endpoints, oldest first; never their secrets.
+pub async fn webhooks(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    qid: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let person = admin_person(&s, &d).await?;
+    let qid = path(qid)?;
+    admin_of(&s, &qid, person).await?;
+    let hooks = s.store_call(move |st| st.webhooks(&qid)).await?;
+    Ok(Json(json!({ "webhooks": hooks })))
+}
+
+/// `POST /api/queues/<qid>/webhooks` body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebhookBody {
+    url: String,
+    #[serde(default)]
+    events: Vec<String>,
+}
+
+/// `POST /api/queues/<qid>/webhooks {url, events?}` → 201 `{webhook,
+/// secret}`: an admin names an endpoint, sent `events` (every event when
+/// none are given) once it is verified: it starts `unverified`, sent one
+/// `webhook.verify` delivery at once
+/// ([`clax_core::webhook::check_answer`]). `secret` (`whsec_…`), which
+/// signs its deliveries, is in this answer alone. `url` is `https`; a local Clax also takes
+/// `http` to a loopback host, and a hosted Clax only a public DNS name
+/// ([`clax_core::webhook::check_url`]). 400 `invalid_url`,
+/// `invalid_events`, `too_many_webhooks`; 429 `verifications_limited`
+/// past the queue's or the host's hourly cap on verifications.
+pub async fn create_webhook(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    ctx: AuditCtx,
+    qid: Result<Path<String>, PathRejection>,
+    req: Result<Json<WebhookBody>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    d.refuse_agents()?;
+    let person = admin_person(&s, &d).await?;
+    let qid = path(qid)?;
+    let b = body(req)?;
+    admin_of(&s, &qid, person.clone()).await?;
+    let hosted = s.hosted.is_some();
+    let (hook, secret) = s
+        .store_call(move |st| {
+            st.create_webhook(
+                &ctx,
+                &qid,
+                person.person.as_deref(),
+                &b.url,
+                &b.events,
+                hosted,
+            )
+        })
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "webhook": hook, "secret": secret.expose() })),
+    ))
+}
+
+/// `DELETE /api/queues/<qid>/webhooks/<wid>` → 204: an admin removes an
+/// endpoint and its deliveries, sent or not. 404 `not_found` for no such
+/// endpoint of the queue.
+pub async fn delete_webhook(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    ctx: AuditCtx,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<StatusCode, ApiError> {
+    d.refuse_agents()?;
+    let person = admin_person(&s, &d).await?;
+    let (qid, wid) = path(p)?;
+    admin_of(&s, &qid, person).await?;
+    s.store_call(move |st| st.delete_webhook(&ctx, &qid, &wid))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/queues/<qid>/webhooks/<wid>/verify` → `{webhook}`: an admin
+/// has an unverified endpoint sent another verification, with a new
+/// challenge, or re-enables a disabled one, which is then unverified until
+/// it answers one. 409 `already_verified`, `verification_expired` (not
+/// verified within a day of being added: remove it and add it again); 429
+/// `limit_reached` past 5 verifications of it in an hour,
+/// `verifications_limited` past the queue's (30) or the host's (60) an
+/// hour; 404 `not_found`.
+pub async fn verify_webhook(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    ctx: AuditCtx,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let person = admin_person(&s, &d).await?;
+    let (qid, wid) = path(p)?;
+    admin_of(&s, &qid, person).await?;
+    let hook = s
+        .store_call(move |st| st.verify_webhook(&ctx, &qid, &wid))
+        .await?;
+    Ok(Json(json!({ "webhook": hook })))
+}
+
+/// Deliveries the log answers.
+const DELIVERY_LOG: usize = 50;
+
+/// `GET /api/queues/<qid>/webhooks/<wid>/deliveries` → `{deliveries:
+/// [{id, webhook_id, event_id, event, report_id, state, attempts, next_at,
+/// last_at, last_status, last_error, delivered_at, created_at}]}`: an
+/// admin reads the endpoint's latest 50 deliveries, latest first.
+pub async fn webhook_deliveries(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let person = admin_person(&s, &d).await?;
+    let (qid, wid) = path(p)?;
+    admin_of(&s, &qid, person).await?;
+    let deliveries = s
+        .store_call(move |st| st.webhook_deliveries(&qid, &wid, DELIVERY_LOG))
+        .await?;
+    Ok(Json(json!({ "deliveries": deliveries })))
+}
+
+/// `POST /api/queues/<qid>/webhooks/<wid>/deliveries/<did>/redeliver` →
+/// `{delivery}`: an admin sends a delivery again, due now with a fresh
+/// count of attempts, under the same event ID and payload. 409
+/// `not_verified` for an endpoint that is not verified, or a verification
+/// (sent again by `…/verify` alone); 404 `not_found` for no such endpoint
+/// or delivery.
+pub async fn redeliver_webhook(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    ctx: AuditCtx,
+    p: Result<Path<(String, String, String)>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let person = admin_person(&s, &d).await?;
+    let (qid, wid, did) = path(p)?;
+    admin_of(&s, &qid, person).await?;
+    let delivery = s
+        .store_call(move |st| st.redeliver_webhook(&ctx, &qid, &wid, &did))
+        .await?;
+    Ok(Json(json!({ "delivery": delivery })))
 }

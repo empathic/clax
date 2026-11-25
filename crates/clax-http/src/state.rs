@@ -326,6 +326,8 @@ pub struct AppState {
     /// The host's git remotes ([`crate::git_remotes`]), once it installs
     /// them; empty on the native daemon.
     pub git_remotes: Arc<crate::git_remotes::Slot>,
+    /// Report queues' webhooks' sender and wake-up ([`crate::webhooks`]).
+    pub webhooks: Arc<crate::webhooks::Webhooks>,
     /// Linked threads' sync with remotes (`clax_server::linked`); idle on a
     /// hosted daemon.
     pub linked: Arc<clax_realtime::linked::Linked>,
@@ -490,6 +492,7 @@ impl AppState {
             p.store
                 .set_base_url_policy(clax_store::bot_settings::BaseUrlPolicy::Hosted);
         }
+        let webhooks = crate::webhooks::Webhooks::install(&p.store, p.hosted.is_some());
         Ok(AppState {
             settings,
             bot: Arc::default(),
@@ -583,6 +586,7 @@ impl AppState {
             clax_app: Arc::default(),
             build: None,
             git_remotes: Arc::default(),
+            webhooks,
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,
             ))),

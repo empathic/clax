@@ -51,8 +51,11 @@ use clax_core::report::{
 };
 use clax_core::secret::Secret;
 use clax_core::sig::KeyPair;
+use clax_core::webhook::Event;
 use clax_core::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+
+pub mod webhooks;
 
 /// A queue to make ([`Store::create_queue`]).
 #[derive(Clone, Debug)]
@@ -1171,6 +1174,7 @@ impl Store {
                 "DELETE FROM queue_reporter_tokens WHERE queue_id = ?1",
                 params![qid],
             )?;
+            Store::delete_webhooks_in(tx, qid)?;
             let rec = queue_record(AuditKind::QueueUpdate, &now, qid).with("op", "delete");
             self.record_audit(tx, ctx, rec)?;
             Ok(())
@@ -1926,6 +1930,7 @@ impl Store {
                     QueueEvent::Filed,
                     None,
                 )?;
+                self.webhook_event_in(tx, &qid_owned, tid, Event::Created, None)?;
                 Ok((None, records))
             })
             .await?;
@@ -2089,13 +2094,13 @@ impl Store {
             live_session_in(tx, sid, "a claim comes from a live session")?;
             settle_in(self, tx, tid, &now)?;
             let cur = current_in(tx, tid, &now)?;
-            let (lease_id, fence) = match cur {
+            let (lease_id, fence, fresh) = match cur {
                 Some(cur) if cur.live && cur.session_id == sid => {
                     tx.execute(
                         "UPDATE queue_claims SET expires_at = ?3 WHERE thread_id = ?1 AND session_id = ?2",
                         params![tid, sid, expires_at],
                     )?;
-                    (cur.lease_id, cur.fence)
+                    (cur.lease_id, cur.fence, false)
                 }
                 Some(cur) if cur.live => {
                     return Err(CoreError::ThreadTaken {
@@ -2119,7 +2124,7 @@ impl Store {
                         params![tid, sid],
                     )?;
                     self.agents_pinged();
-                    (lease_id, fence)
+                    (lease_id, fence, true)
                 }
             };
             let mut rec = queue_record(AuditKind::QueueClaim, &now, qid)
@@ -2132,6 +2137,10 @@ impl Store {
             rec.ids.thread = Some(tid.to_string());
             rec.ids.session = Some(sid.to_string());
             self.record_audit(tx, ctx, rec)?;
+            // A claim renewed by its own holder is no new claim.
+            if fresh {
+                self.webhook_event_in(tx, qid, tid, Event::Claimed, None)?;
+            }
             let report =
                 report_in(tx, &q, tid, Visibility::All, &now)?.ok_or(CoreError::NotFound)?;
             Ok(Lease {
@@ -2247,6 +2256,7 @@ impl Store {
             rec.ids.thread = Some(tid.to_string());
             rec.ids.session = Some(sid.to_string());
             self.record_audit(tx, ctx, rec)?;
+            self.webhook_event_in(tx, qid, tid, Event::Released, None)?;
             Ok(())
         })
     }
@@ -2329,6 +2339,9 @@ impl Store {
             rec.ids.thread = Some(tid.to_string());
             rec.ids.session = Some(cur.session_id.clone());
             self.record_audit(tx, ctx, rec)?;
+            // The person's note is for the queue's members: the event
+            // carries no comment.
+            self.webhook_event_in(tx, qid, tid, Event::Released, None)?;
             self.wake_session_in(tx, qid, tid, &c.id, QueueEvent::Released, &cur.session_id)
                 .map(Some)
         })?;
@@ -2611,13 +2624,13 @@ impl Store {
         };
         let agent = by.session();
         let now = self.now();
-        let c = self.add_comment_then(ctx, tid, comment, |tx, _, _| {
+        let c = self.add_comment_then(ctx, tid, comment, |tx, _, c| {
             report_artifact_in(tx, qid, tid)?;
             if let Some(sid) = agent {
                 check_reply_in(tx, qid, tid, sid, &now)?;
                 check_not_taken_in(tx, tid, sid)?;
             }
-            Ok(())
+            self.webhook_event_in(tx, qid, tid, Event::Replied, Some(&c.id))
         })?;
         let report = self
             .report(qid, tid, Visibility::All)?
@@ -2672,7 +2685,8 @@ impl Store {
                 check_lease_in(tx, tid, sid, &now)?;
                 check_not_taken_in(tx, tid, sid)?;
             }
-            self.resolve_thread_reason_in(
+            let was_open = standing_in(tx, tid)?.status != "resolved";
+            let touched = self.resolve_thread_reason_in(
                 tx,
                 ctx,
                 tid,
@@ -2680,7 +2694,11 @@ impl Store {
                 person.as_deref(),
                 Some(reason.as_str()),
                 |_, _| Ok(None),
-            )
+            )?;
+            if was_open {
+                self.webhook_event_in(tx, qid, tid, Event::Resolved, None)?;
+            }
+            Ok(touched)
         })?;
         let thread = self.get_thread(tid)?.ok_or(CoreError::NotFound)?;
         let report = self
@@ -2954,7 +2972,7 @@ impl Store {
             rec.ids.thread = Some(tid.to_string());
             rec.ids.session = agent.map(str::to_string);
             self.record_audit(tx, ctx, rec)?;
-            Ok(())
+            self.webhook_event_in(tx, qid, tid, Event::FixProposed, None)
         })?;
         let report = self
             .report(qid, tid, Visibility::All)?
@@ -3071,6 +3089,7 @@ impl Store {
             rec.ids.artifact = Some(s.artifact_id);
             rec.ids.thread = Some(tid.to_string());
             self.record_audit(tx, ctx, rec)?;
+            self.webhook_event_in(tx, qid, tid, Event::Verified, None)?;
             Ok(touched)
         })?;
         let report = self
@@ -3280,6 +3299,7 @@ impl Store {
             rec.ids.artifact = Some(s.artifact_id);
             rec.ids.thread = Some(tid.to_string());
             self.record_audit(tx, ctx, rec)?;
+            self.webhook_event_in(tx, qid, tid, Event::Reopened, Some(&c.id))?;
             self.notify_queue_event_in(
                 tx,
                 qid,

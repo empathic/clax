@@ -4771,6 +4771,162 @@ Error codes besides the common ones: `invalid_context`,
 `no_preview_origins` (400); `not_fix_proposed`, `not_claimable`,
 `lease_lost` (409).
 
+#### Queue webhooks
+
+A queue's admins name endpoints Clax posts its reports' events to (SDK
+spec §9; `crates/clax-core/src/webhook.rs`, `clax_store::queues::webhooks`,
+`clax_http::webhooks`), so a deployer's backend can tell its people
+through its own channels (a Slack message, an email). The routes are an
+admin's in a browser, as the queue's other admin routes are: agents are
+refused (403 `not_for_agents`), a triage member 403 `not_queue_admin`, a
+non-member 404 `not_a_member`.
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /api/queues/<qid>/webhooks` | | `{webhooks: [{id, url, events, created_at, state, verified_at, verify_by, disabled_at, given_up, failing_since, last_error, dropped, last_dropped_at}]}`, oldest first; never a secret. `state` is `unverified`, `verified`, `disabled` or `expired` |
+| `POST /api/queues/<qid>/webhooks` | `{url, events?}` | 201 `{webhook, secret}`: `secret` (`whsec_…`) signs its deliveries and is in this answer alone; `events` (default: every event) names which it is sent once verified. The endpoint is `unverified`, sent its verification at once. 400 `invalid_url`, `invalid_events`, `too_many_webhooks` (10 a queue); 429 `verifications_limited` past the hourly caps on verifications below, no endpoint made |
+| `POST /api/queues/<qid>/webhooks/<wid>/verify` | | `{webhook}`: Verify again: an `unverified` endpoint is sent another verification, with a new challenge; a `disabled` one is re-enabled, `unverified` until it answers one. 409 `already_verified`, `verification_expired`; 429 `limit_reached` (5 verifications of it an hour), `verifications_limited` (the queue's or the host's cap below), nothing changed; 404 `not_found` |
+| `DELETE /api/queues/<qid>/webhooks/<wid>` | | 204: the endpoint and its deliveries, sent or not, are gone; 404 `not_found` |
+| `GET /api/queues/<qid>/webhooks/<wid>/deliveries` | | `{deliveries: [{id, webhook_id, event_id, event, report_id, state, attempts, next_at, last_at, last_status, last_error, delivered_at, created_at}]}`, the latest 50, latest first; `state` `pending`, `delivered` or `failed`; a verification's `event` is `webhook.verify`, its `report_id` `null` |
+| `POST /api/queues/<qid>/webhooks/<wid>/deliveries/<did>/redeliver` | | `{delivery}`: due now with no attempts made, the same event ID and payload; 409 `not_verified` for an endpoint that is not `verified`, or a verification (Verify again sends a new one); 404 `not_found` |
+
+Each change is recorded as `queue.update` with `op` `webhook_add`
+(`webhook_id`, `url`, `events`), `webhook_verify` (`webhook_id`,
+`reenabled`), `webhook_remove` (`webhook_id`) or `webhook_redeliver`
+(`webhook_id`, `delivery_id`, `event_id`).
+
+**Verification.** Clax posts report events only to an endpoint that has
+shown that whoever answers its URL holds its secret, so a URL cannot be
+made to receive reports its owner never agreed to. Adding an endpoint
+sends it one delivery, signed as every delivery is (below), of:
+
+```json
+{
+  "id": "evt_01JDX…",
+  "type": "webhook.verify",
+  "created_at": "2026-11-24T12:00:00.000Z",
+  "queue": {"id": "…", "name": "App reports"},
+  "webhook": {"id": "<wid>", "url": "https://app.example.com/clax/webhook"},
+  "challenge": "<43 base64url characters, new each time>"
+}
+```
+
+The endpoint is verified when it answers 2xx within 10 seconds with a
+JSON object of at most 1024 bytes whose `answer` is the hex HMAC-SHA256,
+under the endpoint's secret, of `webhook.verify.<challenge>`:
+
+```json
+{"answer": "<64 hex digits>"}
+```
+
+An HMAC, not the challenge itself: the request carries the challenge, so
+a URL that echoes its request verifies nothing. Nothing but `answer`
+counts; a longer answer is refused unread past its first 1024 bytes, and
+a redirect is not followed. The SDK's `verifyWebhook` sets the reply on
+the event it answers (`event.reply`, after checking the signature): a
+receiver answers `res.json(event.reply)`. A verification is tried once,
+never on the retry schedule: a wrong answer, another status or no answer
+leaves the endpoint `unverified`, its `last_error` saying why, and Verify
+again (`…/verify`) sends another, at most 5 an hour (the first
+included). A queue's endpoints are sent at most 30 verifications an
+hour, those of endpoints since removed included, so removing an endpoint
+and adding it again sends no more; and one host (the URL's, any case) at
+most 60 an hour from all of the instance's queues. Past either, adding
+an endpoint or Verify again is refused (429 `verifications_limited`),
+nothing is made or sent. An endpoint not verified within 24 hours of being added (or
+re-enabled) is `expired`: it is sent nothing and Verify again is refused
+(409 `verification_expired`) until it is removed and added again. An
+unverified endpoint is queued no report event, and none of those that
+happened before is sent once it verifies.
+
+**Limits.** 5 deliveries in a row given up (each after its 8 attempts,
+none delivered between) disable an endpoint (`disabled`, `disabled_at`):
+it is queued no event, its pending deliveries are given up, and none is
+redelivered until Verify again re-enables it and it answers a new
+verification. An endpoint is queued at most 1000 report events an hour
+(the hour starting with the first after the last hour ended); the rest
+are not queued for it but counted in its `dropped` (with
+`last_dropped_at`), which the Manage panel shows.
+
+**Endpoint URLs.** `https`, at most 2048 bytes, with no user name,
+password or fragment. A local Clax also takes `http` to `localhost`,
+`127.0.0.0/8` or `[::1]`, for development. A hosted Clax takes only a DNS
+name that is no IP address in any spelling (`2130706433`, `0x7f.1`),
+not `localhost` and no private name (`.local`, `.internal`, …); its
+daemon resolves the name at each send and connects only to public
+addresses (no loopback, private, shared, link-local, multicast or
+reserved one), and the Worker's `fetch` reaches no private network.
+No redirect is followed: a 3xx answer is a failed attempt.
+
+**Events.** `report.created` (filed), `report.claimed` (a new claim; a
+holder's renewal is none), `report.released` (its holder released it, or
+a person ended the claim; a lease that lapses or whose session ends
+sends none), `report.replied` (a triage person's or the claiming agent's
+reply; a reporter's own comment sends none), `report.fix_proposed`,
+`report.verified`, `report.reopened` and `report.resolved` (triage closed
+it; resolving a closed report sends none). Each is queued in the
+transaction of the change it reports: one never goes without the other.
+
+**Payload.** A `POST` of JSON:
+
+```json
+{
+  "id": "evt_01JDX…",
+  "type": "report.fix_proposed",
+  "created_at": "2026-11-24T12:00:00.000Z",
+  "queue": {"id": "…", "name": "App reports"},
+  "report": {
+    "id": "<report ID>", "state": "fix_proposed", "external_id": "invoice:9",
+    "artifact_id": "…", "title": "Invoice 9", "page_url": "https://app.example.com/invoices/9",
+    "link": "https://clax.example.com/queues/<qid>/<report ID>",
+    "reporter_id": "emp-1",
+    "reporter": {"name": "Ana", "email": "ana@example.com", "github": "ana", "avatar_url": "…"},
+    "resolve_reason": "fixed", "reopen_count": 0, "created_at": "…"
+  },
+  "fix": {"n": 1, "summary": "…", "url": "…", "commit": "…", "release": "…",
+          "verify_url": "…", "verify_after": "…", "outcome": "pending", "proposer_name": "claude"},
+  "comment": {"id": "…", "author_kind": "viewer", "author_name": "Mia", "body": "…", "created_at": "…"}
+}
+```
+
+`report` is the report as triage reads it when the event happened;
+`reporter` is the profile its reporter token was minted with (`null`
+without one), `resolve_reason` is there once it is closed. `fix` (the
+latest fix) is on `report.fix_proposed`, `report.verified` and
+`report.reopened`; `comment` on `report.replied` (the reply) and
+`report.reopened` (the reopen's comment). **The payload carries the
+reporter's personal data** (name, email, GitHub login, avatar) as the
+deployer's backend asserted it, so a relay can find the reporter
+elsewhere: only a queue's admins name endpoints, and they should name
+only their own. A member's note on a release (`triage_only`) is never
+sent.
+
+**Signature.** Each delivery carries `Content-Type: application/json`,
+`User-Agent: Clax-Webhooks/<version>`, `Clax-Event` (the type),
+`Clax-Event-Id` (the payload's `id`), `Clax-Timestamp` (the send's Unix
+time in seconds) and `Clax-Signature: v1=<hex>`, the HMAC-SHA256 under
+the endpoint's secret of `<Clax-Timestamp>.<body>`, the body's exact
+bytes. A receiver recomputes it over the raw body, compares in constant
+time and refuses a timestamp more than 300 seconds from its own clock;
+the SDK's `verifyWebhook` (`@empathic/clax-client-sdk/service`) does
+this. A redelivery is signed anew at its own time.
+
+**Delivery.** At least once: a report event's delivery is retried until the endpoint
+answers 2xx within 10 seconds, up to 8 attempts, waiting 1, 4, 16 and 64
+minutes, 4 h 16 min, then 6 hours after each failure (about 18 hours in
+all). The eighth failure gives it up (`failed`) and marks the endpoint
+`failing_since`, with its `last_error`; a later delivery to it that
+succeeds clears the mark. A receiver drops repeats by `id`
+(`Clax-Event-Id`), the same on every attempt and redelivery of an event
+and in every endpoint's delivery of it. A delivery taken for sending
+whose outcome is never recorded (the process ended) is due again a
+minute later. Events are sent in the order they are due, but a retry can
+overtake: order by `created_at`, not by arrival. The daemon sends from a
+task woken by each change that queued one; the Worker from its alarm,
+set for the next due delivery. An endpoint keeps its latest 200
+finished deliveries; a queue's deletion removes its endpoints and their
+deliveries.
+
 **The instance's own feedback queue.** An instance files its people's
 reports about Clax itself into one of its queues, as an integrating
 product's backend does (`crates/clax-server/src/integrations/feedback.rs`,
@@ -6801,6 +6957,12 @@ router), and a test fails when it differs:
 | `GET /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/service-grants/{gid}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/webhooks` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues/{qid}/webhooks` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}/webhooks/{wid}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/webhooks/{wid}/deliveries` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues/{qid}/webhooks/{wid}/deliveries/{did}/redeliver` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues/{qid}/webhooks/{wid}/verify` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/remotes` | Denied | no |
 | `POST /api/remotes` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/remotes/mutes` | Denied | yes: 403 `not_for_agents` |

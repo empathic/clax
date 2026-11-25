@@ -4,7 +4,7 @@
 // change is the browser's own session (`SameOrigin`), never the token. A
 // refusal throws `Refused` with the daemon's message and code.
 import type { QueueRequest } from "../api";
-import type { DiagLine, Queue, QueueRole, Report, ReportPage, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated } from "../../../sdk/src/types";
+import type { DiagLine, Queue, QueueRole, Report, ReportPage, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated, Webhook, WebhookCreated, WebhookDelivery, WebhookEventType, WebhookState } from "../../../sdk/src/types";
 
 /** What a listing of reports filters by: a state, or `active` (`open` or `claimed`). */
 export type StateFilter = ReportState | "active";
@@ -17,7 +17,7 @@ export class Refused extends Error {
   }
 }
 
-export type { DiagLine, Queue, QueueRole, Report, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated };
+export type { DiagLine, Queue, QueueRole, Report, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated, Webhook, WebhookCreated, WebhookDelivery, WebhookEventType, WebhookState };
 /** What a queue's form sets. */
 export type QueueFields = { name: string; origins: string[]; reporters_see: ReportersSee };
 /** A queue's member, by public ID, with the name the daemon knows them by:
@@ -105,3 +105,14 @@ export const listGrants = (qid: string) => call<{ grants: ServiceGrant[] }>(`${q
 export const createGrant = (qid: string, name: string, origins?: string[]) => call<ServiceGrantCreated>(`${q(qid)}/service-grants`, "POST", origins ? { name, origins } : { name });
 /** Revokes a service grant, which ends every reporter token it minted. */
 export const revokeGrant = (qid: string, gid: string) => call<unknown>(`${q(qid)}/service-grants/${e(gid)}`, "DELETE");
+export const listWebhooks = (qid: string) => call<{ webhooks: Webhook[] }>(`${q(qid)}/webhooks`);
+/** Names an endpoint sent `events` (every event when empty); its secret is in this answer alone. */
+export const createWebhook = (qid: string, url: string, events: WebhookEventType[]) => call<WebhookCreated>(`${q(qid)}/webhooks`, "POST", { url, events });
+/** Sends an unverified endpoint another verification, or re-enables a disabled one (verifying it again). */
+export const verifyWebhook = (qid: string, wid: string) => call<{ webhook: Webhook }>(`${q(qid)}/webhooks/${e(wid)}/verify`, "POST");
+/** Removes an endpoint and its deliveries. */
+export const deleteWebhook = (qid: string, wid: string) => call<unknown>(`${q(qid)}/webhooks/${e(wid)}`, "DELETE");
+/** The endpoint's latest deliveries, latest first. */
+export const webhookDeliveries = (qid: string, wid: string) => call<{ deliveries: WebhookDelivery[] }>(`${q(qid)}/webhooks/${e(wid)}/deliveries`);
+/** Sends a delivery again, now, under the same event ID. */
+export const redeliver = (qid: string, wid: string, did: string) => call<{ delivery: WebhookDelivery }>(`${q(qid)}/webhooks/${e(wid)}/deliveries/${e(did)}/redeliver`, "POST");

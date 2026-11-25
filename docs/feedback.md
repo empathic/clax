@@ -59,6 +59,9 @@ tools". This guide says how the parts fit together.
   reports", records recent errors, and talks to the reporter routes.
 - **Triage** is the queue's members: people in the Clax UI, and their
   agents through the MCP tools or the CLI.
+- **Webhooks** (optional) are your backend's URLs that Clax posts the
+  queue's report events to, signed, so you can tell reporters through your
+  own channels (section 10).
 
 ## 1. Make the queue and its service grant
 
@@ -922,6 +925,101 @@ behalf are a person's alone.
 on another origin with a strict policy, a report with context and recent
 errors, an agent on the MCP tools, a fix that is still broken, a second
 fix, and the report verified.
+
+## 10. Tell the reporter outside the app: webhooks
+
+The overlay's badge reaches a reporter while they have your app open. To
+reach them elsewhere (a Slack message when a fix is proposed or someone
+replies), have Clax post the queue's events to your backend.
+
+On the Queues page, **Manage, Webhooks**: give your backend's URL (`https`;
+a local Clax also takes `http://localhost:…` for development, a hosted
+Clax only a public name) and the events it wants, then copy the signing
+secret, shown once, into your backend's secrets.
+
+Clax sends the new endpoint nothing but a signed `webhook.verify` event
+until your backend answers it: 2xx with `{"answer": "<hex HMAC-SHA256 of
+webhook.verify.<challenge> under the secret>"}`. `verifyWebhook` computes
+that for you (`event.reply`, below), so a backend that checks signatures
+answers it in one line, and a URL whose owner never deployed your secret
+cannot. The verification is sent once, when you add the endpoint: if your
+backend was not ready, deploy the secret and press **Verify again** (at
+most 5 times an hour, within a day of adding it). Events from before it
+verified are not sent.
+
+The panel shows each endpoint's state and deliveries, marks one that
+keeps failing, and redelivers a report delivery. Five deliveries in a row
+given up (each after about 18 hours of retries) disable the endpoint;
+**Re-enable** verifies it again before it is sent anything. An endpoint is
+sent at most 1000 events an hour: the panel counts any dropped past that.
+The routes, payloads, verification and retry schedule are in
+`docs/contract.md`, "Queue webhooks".
+
+Each delivery is signed (`Clax-Signature`, an HMAC-SHA256 of
+`<Clax-Timestamp>.<body>`) and sent at least once: Clax retries for about
+18 hours until your backend answers 2xx, and every attempt carries the
+same event `id`, so drop the ones you have handled. Verify the raw body
+before you parse it. A payload carries the report's ID, queue, state and
+link, the fix's `summary`, `url` and `verify_url` on fix events, and the
+reporter's ID and profile (`{name, email, github, avatar_url}`) as your
+backend minted their token with: **the reporter's personal data goes to
+every endpoint**, so only a queue's admins name endpoints, and they should
+name only their own.
+
+An Express backend that DMs the reporter on Slack when a fix is proposed
+or a person replies, with a link back to the page that opens the overlay on
+that report (`?clax-report=<report ID>`, the overlay's deep link):
+
+```ts
+import express from "express";
+import { verifyWebhook, WebhookError } from "@empathic/clax-client-sdk/service";
+
+const app = express();
+const seen = new Set<string>(); // use your database: a delivery may come again after a restart
+
+// The raw body: the signature covers its exact bytes.
+app.post("/clax/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  let event;
+  try {
+    event = await verifyWebhook({ secret: process.env.CLAX_WEBHOOK_SECRET!, headers: req.headers, body: req.body });
+  } catch (e) {
+    if (e instanceof WebhookError) return res.status(400).send(e.reason);
+    throw e;
+  }
+  // Clax's check that this URL holds the secret, before it sends any report.
+  if (event.type === "webhook.verify") return res.json(event.reply);
+  if (seen.has(event.id)) return res.sendStatus(204);
+  if (event.type === "report.fix_proposed" || event.type === "report.replied") {
+    const email = event.report.reporter?.email;
+    if (email) {
+      const slack = (method: string, body: object) =>
+        fetch(`https://slack.com/api/${method}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`, "content-type": "application/json; charset=utf-8" },
+          body: JSON.stringify(body),
+        }).then(r => r.json());
+      const found = await slack("users.lookupByEmail", { email }); // the bot needs users:read.email
+      if (found.ok) {
+        const open = new URL(event.fix?.verify_url ?? event.report.page_url);
+        open.searchParams.set("clax-report", event.report.id);
+        const text = event.type === "report.fix_proposed"
+          ? `A fix for your report "${event.report.title}" is ready: ${event.fix!.summary}\nCheck it, then say whether it works: ${open}`
+          : `${event.comment!.author_name} replied to your report "${event.report.title}": ${event.comment!.body}\n${open}`;
+        await slack("chat.postMessage", { channel: found.user.id, text }); // chat:write
+      }
+    }
+  }
+  seen.add(event.id);
+  res.sendStatus(204); // anything but 2xx, or no answer within 10 s, is retried
+});
+```
+
+`users.lookupByEmail` takes the bot's `users:read.email` scope and
+`chat.postMessage` its `chat:write`; posting to a user's ID opens the DM.
+The reporter still says "It's fixed" or "Still broken" in the overlay
+itself, through the public SDK: the message only brings them back.
+`verifyWebhook` runs on WebCrypto, in Node 20, a Worker or Deno; a backend
+in another language checks the same HMAC (the contract has the scheme).
 
 ## clax.dev, end to end
 

@@ -43,6 +43,10 @@ const TASKS_STOP_TIMEOUT: Duration = Duration::from_millis(250);
 /// How often grants due to expire are expired and the nonce caches swept.
 const GRANT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
+/// The longest the webhooks' task waits before looking at the outbox
+/// again when nothing woke it.
+const WEBHOOK_IDLE: Duration = Duration::from_secs(60);
+
 /// Tests: called with its home as each [`Core::stop`] ends, once its
 /// tasks have ended, the journal has synced and the store has closed.
 #[cfg(test)]
@@ -759,6 +763,25 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
         }
     });
 
+    // Report queues' webhooks: a pass at start, after every write that
+    // queued a delivery, and when the next retry is due (looked at again
+    // at least every WEBHOOK_IDLE).
+    let hooks = state.clone();
+    let webhooks = tokio::spawn(async move {
+        loop {
+            clax_http::webhooks::deliver_due(&hooks).await;
+            let wait = clax_http::webhooks::next_due_in(&hooks)
+                .await
+                .ok()
+                .flatten()
+                .map_or(WEBHOOK_IDLE, |d| d.min(WEBHOOK_IDLE));
+            tokio::select! {
+                () = hooks.webhooks.queued() => {}
+                () = tokio::time::sleep(wait) => {}
+            }
+        }
+    });
+
     // The price catalog, once its cache is a day old: looked at on start
     // and every hour after.
     let catalog = crate::catalog::spawn_refresher(state.clone(), crate::catalog::CHECK_EVERY);
@@ -770,6 +793,7 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
         drafts_sweeper,
         pruner,
         sweeper,
+        webhooks,
         catalog,
     ]
 }

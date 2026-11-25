@@ -116,6 +116,7 @@ pub mod sandbox;
 mod store;
 mod web;
 pub mod web_source;
+mod webhooks;
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};

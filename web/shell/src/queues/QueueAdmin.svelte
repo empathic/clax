@@ -16,8 +16,14 @@
   // origin patterns (a preview deployment's, such as
   // `https://app-pr-*.fly.dev`) offers a grant limited to them, which
   // mints for its previews alone; the list names a limited grant's
-  // origins. Each list is fetched
-  // when the panel opens and after each change.
+  // origins. A webhook endpoint is a URL Clax posts the report events it
+  // was chosen for to, signed with its secret, which is shown here once
+  // as a grant's token is. It is sent nothing but its verification until
+  // it answers that rightly (the box with the secret says how); an
+  // unverified one offers Verify again, a disabled one Re-enable, which
+  // verifies it again. Its deliveries' log opens under it, each report
+  // delivery with Redeliver. Each list is fetched when the panel opens and
+  // after each change.
   import { onMount } from "svelte";
   import * as api from "./api";
   import { refusal } from "./model";
@@ -90,10 +96,77 @@
     if (made?.grant.id === g.id) made = null;
     await loadGrants();
   }
+  // Webhooks.
+  const EVENTS: { id: api.WebhookEventType; label: string }[] = [
+    { id: "report.created", label: "Filed" },
+    { id: "report.claimed", label: "Claimed" },
+    { id: "report.released", label: "Released" },
+    { id: "report.replied", label: "Replied" },
+    { id: "report.fix_proposed", label: "Fix proposed" },
+    { id: "report.verified", label: "Verified" },
+    { id: "report.reopened", label: "Reopened" },
+    { id: "report.resolved", label: "Resolved" },
+  ];
+  let hooks = $state<api.Webhook[] | null>(null);
+  let hookErr = $state<string | null>(null);
+  let hookUrl = $state("");
+  let hookEvents = $state<api.WebhookEventType[]>(EVENTS.map(e => e.id));
+  let madeHook = $state<api.WebhookCreated | null>(null);
+  let copiedSecret = $state(false);
+  let openLog = $state<string | null>(null);
+  let deliveries = $state<api.WebhookDelivery[] | null>(null);
+  const loadHooks = () => api.listWebhooks(qid).then(b => { hooks = b.webhooks; }, x => { hookErr = `Could not load the webhooks: ${refusal(x)}`; });
+  const loadLog = (wid: string) => api.webhookDeliveries(qid, wid).then(b => { if (openLog === wid) deliveries = b.deliveries; }, x => { hookErr = `Could not load the deliveries: ${refusal(x)}`; });
+  const eventsText = (h: api.Webhook) => h.events.length === EVENTS.length ? "every event" : h.events.map(id => EVENTS.find(e => e.id === id)?.label ?? id).join(", ");
+  function toggleEvent(id: api.WebhookEventType, on: boolean) {
+    hookEvents = on ? EVENTS.map(e => e.id).filter(x => x === id || hookEvents.includes(x)) : hookEvents.filter(x => x !== id);
+  }
+  async function makeHook(e: Event) {
+    e.preventDefault();
+    const url = hookUrl.trim();
+    if (!url || !hookEvents.length) return;
+    hookErr = null; copiedSecret = false;
+    try { madeHook = await api.createWebhook(qid, url, hookEvents.length === EVENTS.length ? [] : hookEvents); hookUrl = ""; } catch (x) { hookErr = refusal(x); }
+    await loadHooks();
+  }
+  async function removeHook(h: api.Webhook) {
+    if (!confirm(`Remove the webhook to ${h.url}? Its deliveries not yet sent are dropped.`)) return;
+    hookErr = null;
+    try { await api.deleteWebhook(qid, h.id); } catch (x) { hookErr = refusal(x); }
+    if (madeHook?.webhook.id === h.id) madeHook = null;
+    if (openLog === h.id) { openLog = null; deliveries = null; }
+    await loadHooks();
+  }
+  function toggleLog(h: api.Webhook) {
+    if (openLog === h.id) { openLog = null; deliveries = null; return; }
+    openLog = h.id; deliveries = null;
+    void loadLog(h.id);
+  }
+  async function resend(h: api.Webhook, d: api.WebhookDelivery) {
+    hookErr = null;
+    try { await api.redeliver(qid, h.id, d.id); } catch (x) { hookErr = refusal(x); }
+    await loadLog(h.id);
+  }
+  async function verifyAgain(h: api.Webhook) {
+    hookErr = null;
+    try { await api.verifyWebhook(qid, h.id); } catch (x) { hookErr = refusal(x); }
+    await loadHooks();
+    if (openLog === h.id) await loadLog(h.id);
+  }
+  const when = (iso: string | null) => iso ? iso.slice(0, 16).replace("T", " ") : "";
+  const VERIFY = "webhook.verify";
+  const deliveryText = (d: api.WebhookDelivery) => d.event === VERIFY
+    ? (d.state === "delivered" ? `verified ${when(d.delivered_at)}` : d.state === "failed" ? "not verified" : "sending")
+    : d.state === "delivered" ? `delivered ${when(d.delivered_at)}` : d.state === "failed" ? `gave up after ${d.attempts} attempts` : d.attempts ? `retrying ${when(d.next_at)} (${d.attempts} failed)` : "sending";
+  const stateText = (h: api.Webhook) => h.state === "verified" ? "verified"
+    : h.state === "disabled" ? `disabled ${when(h.disabled_at)} after ${h.given_up} deliveries in a row failed`
+    : h.state === "expired" ? "never verified: remove it and add it again"
+    : `waiting for its verification answer, until ${when(h.verify_by)}`;
+
   const copy = (what: "token" | "key", text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
   const day = (iso: string) => iso.slice(0, 10);
 
-  onMount(() => { void loadMembers(); void loadGrants(); });
+  onMount(() => { void loadMembers(); void loadGrants(); void loadHooks(); });
 </script>
 
 <div class="qadmin">
@@ -179,6 +252,66 @@
     </form>
     {#if grantErr}<p class="err" role="alert">{grantErr}</p>{/if}
   </section>
+
+  <section class="part" aria-label={`Webhooks of ${p.queue.name}`}>
+    <h4>Webhooks</h4>
+    <p class="hint">Clax posts each chosen report event to the URL, signed with its secret, and retries until it answers 2xx, once the URL has answered its verification. A delivery carries the reporter's name and email: name only endpoints you control.</p>
+    {#if madeHook}
+      <div class="secret" role="region" aria-label="New webhook">
+        <p class="warn">Copy the signing secret of {madeHook.webhook.url} now: it is not shown again.</p>
+        <span class="lbl">Signing secret</span>
+        <div class="cmd"><code>{madeHook.secret}</code><button type="button" onclick={() => { void navigator.clipboard?.writeText(madeHook!.secret).then(() => { copiedSecret = true; }, () => {}); }}>{copiedSecret ? "Copied" : "Copy"}</button></div>
+        <p class="hint answer">Clax has sent it a signed <code>webhook.verify</code> event and sends it no report event until it answers 2xx with <code>{'{"answer": "<hex HMAC-SHA256 of webhook.verify.<challenge> under the secret>"}'}</code>. The SDK's <code>verifyWebhook</code> sets that reply on the event: answer <code>res.json(event.reply)</code>. Deploy the secret, then Verify again.</p>
+        <div class="row"><button type="button" class="primary" onclick={() => { madeHook = null; copiedSecret = false; }}>Done</button></div>
+      </div>
+    {/if}
+    {#if hooks?.length}
+      <ul class="lines">
+        {#each hooks as h (h.id)}
+          <li class="line hook" data-webhook={h.id}>
+            <span class="who url">{h.url}<span class="key">{eventsText(h)}</span></span>
+            <span class="state" data-state={h.state} title={h.state !== "verified" ? (h.last_error ?? "") : ""}>{stateText(h)}</span>
+            {#if h.state === "verified" && h.failing_since}<span class="failing" title={h.last_error ?? ""}>failing since {when(h.failing_since)}</span>{/if}
+            {#if h.dropped}<span class="failing dropped">{h.dropped} {h.dropped === 1 ? "event" : "events"} dropped over the hourly cap, latest {when(h.last_dropped_at)}</span>{/if}
+            {#if h.state === "unverified"}<button type="button" class="ghost" onclick={() => void verifyAgain(h)}>Verify again</button>{/if}
+            {#if h.state === "disabled"}<button type="button" class="ghost" onclick={() => void verifyAgain(h)}>Re-enable</button>{/if}
+            <button type="button" class="ghost" aria-expanded={openLog === h.id} onclick={() => toggleLog(h)}>Deliveries</button>
+            <button type="button" class="ghost danger" onclick={() => void removeHook(h)}>Remove</button>
+            {#if openLog === h.id}
+              <div class="log">
+                {#if deliveries?.length}
+                  <ul class="deliveries">
+                    {#each deliveries as d (d.id)}
+                      <li class="delivery" data-delivery={d.id} data-state={d.state}>
+                        <span class="ev">{d.event}</span>
+                        <span class="st">{deliveryText(d)}{d.last_status ? ` · ${d.last_status}` : ""}</span>
+                        {#if d.last_error && d.state !== "delivered"}<span class="why">{d.last_error}</span>{/if}
+                        {#if d.event !== VERIFY && h.state === "verified"}<button type="button" class="ghost" onclick={() => void resend(h, d)}>Redeliver</button>{/if}
+                      </li>
+                    {/each}
+                  </ul>
+                {:else if deliveries}
+                  <p class="none">No deliveries yet.</p>
+                {/if}
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {:else if hooks}
+      <p class="none">No webhooks.</p>
+    {/if}
+    <form class="add hookform" onsubmit={makeHook}>
+      <label class="field">URL <input name="webhook_url" type="url" autocomplete="off" spellcheck="false" placeholder="https://app.example.com/clax/webhook" value={hookUrl} oninput={e => { hookUrl = e.currentTarget.value; }} /></label>
+      <fieldset class="events"><legend>Events</legend>
+        {#each EVENTS as ev (ev.id)}
+          <label><input type="checkbox" name="event" value={ev.id} checked={hookEvents.includes(ev.id)} onchange={e => toggleEvent(ev.id, e.currentTarget.checked)} /> {ev.label}</label>
+        {/each}
+      </fieldset>
+      <button type="submit" disabled={!hookUrl.trim() || !hookEvents.length}>Add webhook</button>
+    </form>
+    {#if hookErr}<p class="err" role="alert">{hookErr}</p>{/if}
+  </section>
 </div>
 
 <style>
@@ -209,4 +342,20 @@
   .cmd { display: flex; gap: 8px; align-items: stretch; min-width: 0; }
   .cmd code { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); font: 13px/1.4 var(--mono); overflow-wrap: anywhere; user-select: all; }
   .row { display: flex; gap: 8px; margin-top: 4px; }
+  .url { font: 600 13px var(--mono); }
+  .url .key { display: block; margin-left: 0; font-family: inherit; font-weight: 400; }
+  .failing { font-size: 12.5px; color: var(--danger); }
+  .state { font-size: 12.5px; color: var(--muted); }
+  .state[data-state="disabled"], .state[data-state="expired"] { color: var(--danger); }
+  .answer code { font: 12px var(--mono); overflow-wrap: anywhere; }
+  .log { flex-basis: 100%; min-width: 0; padding: 4px 0 6px 12px; border-left: 2px solid var(--border); }
+  .deliveries { list-style: none; margin: 0; padding: 0; }
+  .delivery { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; padding: 3px 0; font-size: 13px; min-width: 0; }
+  .delivery .ev { font: 12.5px var(--mono); }
+  .delivery .st { color: var(--muted); }
+  .delivery[data-state="failed"] .st { color: var(--danger); }
+  .delivery .why { flex-basis: 100%; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+  .events { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; border: 0; font-size: 13px; min-width: 0; }
+  .events legend { padding: 0; margin-bottom: 4px; font-size: 12.5px; color: var(--muted); }
+  .events label { display: inline-flex; align-items: center; gap: 4px; }
 </style>
