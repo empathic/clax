@@ -867,19 +867,18 @@ mod tests {
         // Shared with @alice while account 1 held the login.
         st.share_artifact(DAEMON, a, &to(1, "alice"), ShareAccess::Editor, None)
             .unwrap();
-        // Alice renames to alice2; account 2 takes "alice" and signs in
-        // first: nothing for them (not even a person on a local Clax).
-        let (other, _) = st.github_sign_in(DAEMON, &gh(2, "alice"), false).unwrap();
-        let other = other.who.viewer.public_id;
-        assert!(!may(&st, &other, RightType::Artifacts, "read", a));
-        assert_eq!(st.artifact_shares(a).unwrap()[0].person, None, "still waiting");
-        // Sharing with "alice" again (GitHub names account 2 now), as a
-        // change of the waiting share's access would, never moves it.
+        // Alice renames to alice2 and account 2 takes "alice". Sharing with
+        // "alice" again (GitHub names account 2 now), as a change of the
+        // waiting share's access would, never moves the waiting share.
         assert_eq!(
             code_of(st.share_artifact(DAEMON, a, &to(2, "alice"), ShareAccess::Viewer, None)),
             "github_login_moved"
         );
+        // Account 2 signs in first: nothing for them.
+        let (other, _) = st.github_sign_in(DAEMON, &gh(2, "alice"), false).unwrap();
+        let other = other.who.viewer.public_id;
         assert!(!may(&st, &other, RightType::Artifacts, "read", a));
+        assert_eq!(st.artifact_shares(a).unwrap()[0].person, None, "still waiting");
         // Account 1 signs in as alice2: the share is theirs.
         let (alice, _) = st.github_sign_in(DAEMON, &gh(1, "alice2"), false).unwrap();
         let alice = alice.who.viewer.public_id;

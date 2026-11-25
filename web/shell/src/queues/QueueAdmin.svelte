@@ -110,8 +110,8 @@
       } else if (login) {
         const b = await api.addMemberByLogin(qid, login, role);
         // The login as GitHub spells it, once GitHub has named the account.
-        const as = b.invite?.github_login ?? login;
-        said = b.member ? [`Added ${nameOf(b.member)} (@${as}).`, cannotRead(b.member)].filter(Boolean).join(" ") : `@${as} becomes a member when that GitHub account first signs in here, even under a new login.`;
+        const shown = b.invite?.github_login ?? login;
+        said = b.member ? [`Added ${nameOf(b.member)} (@${shown}).`, cannotRead(b.member)].filter(Boolean).join(" ") : `@${shown} becomes a member when that GitHub account first signs in here, even under a new login.`;
         chosen = null; find = ""; found = null;
         await loadMembers();
       }
