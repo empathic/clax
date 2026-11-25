@@ -9,7 +9,13 @@
   // and the people connected to this Clax (`GET
   // /api/queues/<qid>/people`), choosing one, and a role; adding a member
   // already there changes their role. A search answered after a later one
-  // was asked is dropped. A new service grant's token and
+  // was asked is dropped. On a hosted Clax (where people sign in with
+  // GitHub) a teammate is added by GitHub login too: text
+  // that starts with `@`, or a login the search finds no one by, offers
+  // "Add @login" (`PUT /api/queues/<qid>/members`); one who has signed in
+  // here is a member at once, anyone else is listed as waiting for their
+  // GitHub sign-in, with Remove, until that sign-in makes them a member.
+  // A new service grant's token and
   // private key are shown here once, each with Copy, under a warning that
   // they are not shown again; Done forgets them. Revoking a grant, after
   // confirming, ends every reporter token it minted. A queue that lists
@@ -41,14 +47,25 @@
   /** The queue's origin patterns: the origins that hold a `*`. */
   const patterns = $derived(p.queue.origins.filter(o => o.includes("*")));
 
-  const loadMembers = () => api.listMembers(qid).then(b => { members = b.members; }, x => { memberErr = `Could not load the members: ${refusal(x)}`; });
+  let pending = $state<api.PendingMember[]>([]);
+  // Whether people sign in here with GitHub (a hosted Clax): adding by
+  // login is offered only then.
+  let byLogin = $state(false);
+  // What the last add did, said to a screen reader too.
+  let memberNote = $state<string | null>(null);
+  const loadMembers = () => api.listMembers(qid).then(b => { members = b.members; pending = b.pending ?? []; byLogin = b.github_logins === true; }, x => { memberErr = `Could not load the members: ${refusal(x)}`; });
+  /** The GitHub login the text offers to add: any login after `@`, or a
+   * login the search found no one by; none where no one signs in with
+   * GitHub. */
+  const login = $derived(byLogin && (find.trim().startsWith("@") || found?.length === 0) ? api.githubLogin(find) : null);
   const loadGrants = () => api.listGrants(qid).then(b => { grants = b.grants; }, x => { grantErr = `Could not load the service grants: ${refusal(x)}`; });
 
   const nameOf = (m: { name?: string | null; owner?: boolean; public_id: string }) => m.name ?? (m.owner ? "The owner" : m.public_id);
   async function search(text: string) {
     find = text; chosen = null;
     const n = ++asked;
-    if (!text.trim()) { found = null; return; }
+    // `@login` names a GitHub account, not someone to find by name.
+    if (!text.trim() || (byLogin && text.trim().startsWith("@"))) { found = null; return; }
     try {
       const b = await api.searchPeople(qid, text.trim());
       if (n === asked) found = b.people;
@@ -59,9 +76,24 @@
   const pick = (m: api.PersonMatch) => { chosen = m; find = nameOf(m); found = null; };
   async function addMember(e: Event) {
     e.preventDefault();
-    if (!chosen) return;
-    memberErr = null;
-    try { await api.setMember(qid, chosen.public_id, role); chosen = null; find = ""; found = null; } catch (x) { memberErr = refusal(x); }
+    if (!chosen && !login) return;
+    memberErr = null; memberNote = null;
+    try {
+      if (chosen) {
+        await api.setMember(qid, chosen.public_id, role);
+        memberNote = `Added ${nameOf(chosen)}.`;
+      } else if (login) {
+        const b = await api.addMemberByLogin(qid, login, role);
+        memberNote = b.member ? `Added ${nameOf(b.member)} (@${login}).` : `@${login} becomes a member when they first sign in here with GitHub.`;
+      }
+      chosen = null; find = ""; found = null;
+    } catch (x) { memberErr = refusal(x); }
+    await loadMembers();
+  }
+  async function removeWaiting(w: api.PendingMember) {
+    if (!confirm(`Remove @${w.github_login} from ${p.queue.name}?`)) return;
+    memberErr = null; memberNote = null;
+    try { await api.removePending(qid, w.id); } catch (x) { memberErr = refusal(x); }
     await loadMembers();
   }
   async function changeRole(m: api.QueueMember, r: api.QueueRole) {
@@ -118,10 +150,21 @@
     {:else if members}
       <p class="none">No members yet.</p>
     {/if}
+    {#if pending.length}
+      <ul class="lines" aria-label="Waiting for their GitHub sign-in">
+        {#each pending as w (w.id)}
+          <li class="line" data-pending={w.github_login}>
+            <span class="who">@{w.github_login}<span class="key">{" · waiting for their GitHub sign-in"}</span></span>
+            <span class="fixed">{w.role === "admin" ? "Admin" : "Triage"}</span>
+            <button type="button" class="ghost danger" aria-label={`Remove @${w.github_login}`} onclick={() => void removeWaiting(w)}>Remove</button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
     <form class="add" onsubmit={addMember}>
       <div class="field pick">
         <label for={`qa-find-${qid}`}>Add a person</label>
-        <input id={`qa-find-${qid}`} name="person" autocomplete="off" spellcheck="false" placeholder="Name or public ID" value={find} oninput={e => void search(e.currentTarget.value)} />
+        <input id={`qa-find-${qid}`} name="person" autocomplete="off" spellcheck="false" placeholder={byLogin ? "Name, public ID or @github-login" : "Name or public ID"} value={find} oninput={e => void search(e.currentTarget.value)} />
         {#if found?.length}
           <ul class="found" aria-label="People found">
             {#each found as f (f.public_id)}
@@ -134,14 +177,21 @@
               </li>
             {/each}
           </ul>
+        {:else if found && login}
+          <p class="none" role="status">No one connected to this Clax goes by that name. Add @{login} by their GitHub login: they become a member when they first sign in here with GitHub.</p>
+        {:else if found && byLogin}
+          <p class="none" role="status">No one connected to this Clax goes by that name. Add a teammate by their GitHub login, as @login, or the owner invites people in Settings › People.</p>
         {:else if found}
           <p class="none" role="status">No one connected to this Clax goes by that name. Only the owner and connected people can be added; the owner invites people in Settings › People.</p>
+        {:else if login}
+          <p class="none" role="status">Add @{login} by their GitHub login: someone who has signed in here is a member at once, anyone else when they first sign in with GitHub.</p>
         {/if}
       </div>
       <label class="field">Role <select value={role} onchange={e => { role = e.currentTarget.value as api.QueueRole; }}><option value="triage">Triage</option><option value="admin">Admin</option></select></label>
-      <button type="submit" disabled={!chosen}>Add member</button>
+      <button type="submit" disabled={!chosen && !login}>{!chosen && login ? `Add @${login}` : "Add member"}</button>
     </form>
     <p class="hint">Triage reads and works the queue's reports; admin also changes the queue and its service grants.</p>
+    <p class="hint" role="status">{memberNote ?? ""}</p>
     {#if memberErr}<p class="err" role="alert">{memberErr}</p>{/if}
   </section>
 

@@ -98,6 +98,9 @@ export function item(kind: InboxKind, over: Partial<InboxItem> = {}): InboxItem 
     case "queue_request":
       Object.assign(base, { agent: null, artifact: null, url: `/inbox?queue_request=${queueRequest().id}`, queue_request: queueRequest() });
       break;
+    case "access":
+      Object.assign(base, { agent: null, artifact: null, url: "/queues", access: { queue_id: "7q3k9mzx2b4t", queue_name: "App reports", role: "triage", by: "Sam" } });
+      break;
     case "ended":
       Object.assign(base, { url: "/inbox", ended: { name: "clax-claude", reason: "idle", text: "clax-claude ended · released 1 thread · withdrew 1 question", questions: 1, requests: 0,
         threads: [{ id: "01J9R0000000000000000000T1", artifact_id: "7q3k9mzx2b4t", title: "Quarterly Review", url: "/a/7q3k9mzx2b4t?thread=01J9R0000000000000000000T1" }] } });

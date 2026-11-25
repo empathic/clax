@@ -86,7 +86,16 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = [], { page = true 
     case "push": return `${i.push?.origin ?? "A public Clax"} refused v${i.push?.n ?? "?"}${on(" of ")}`;
     case "remote_request": return remoteRequestText(i, others);
     case "queue_request": return i.queue_request ? queueRequestLine(i.queue_request) : "A request for a report queue";
+    case "access": return accessTitle(i);
   }
+}
+
+/** An `access` item's title: "Sam added you to App reports as triage"
+ * ("Someone" for an adder with no name, "a deleted queue" once it is gone). */
+export function accessTitle(i: InboxItem): string {
+  const a = i.access;
+  if (!a) return "You were added to a report queue";
+  return `${a.by ?? "Someone"} added you to ${a.queue_name ?? "a deleted queue"} as ${a.role}`;
 }
 
 /** A connection request's line, as its card reads: "<agent> wants to
@@ -122,6 +131,7 @@ export function itemText(i: InboxItem): string {
     : i.kind === "push" ? i.push?.message
     : i.kind === "remote_request" ? i.remote_request?.reason
     : i.kind === "queue_request" ? i.queue_request?.note
+    : i.kind === "access" ? (i.access?.role === "admin" ? "You can manage the queue and its members" : i.access ? "You can triage its reports" : null)
     : null;
   return (t ?? "").replace(/\s+/g, " ").trim();
 }

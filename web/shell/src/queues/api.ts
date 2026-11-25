@@ -93,7 +93,24 @@ export const releaseClaim = (qid: string, tid: string, note?: string) => call<{ 
 export const verify = (qid: string, tid: string, note?: string) => call<{ report: Report }>(`${r(qid, tid)}/verify`, "POST", note ? { note } : {});
 /** Says, on the reporter's behalf, that the report is still broken, with `body` as their comment. */
 export const reopen = (qid: string, tid: string, body: string) => call<{ report: Report }>(`${r(qid, tid)}/reopen`, "POST", { body });
-export const listMembers = (qid: string) => call<{ members: QueueMember[] }>(`${q(qid)}/members`);
+/** A teammate added by GitHub login who has not signed in here yet: their membership waits for that sign-in. */
+export type PendingMember = { id: string; github_login: string; role: QueueRole; created_at: string };
+/** The queue's members, the logins waiting for their sign-in, and whether
+ * people sign in here with GitHub (a hosted Clax), so whether adding by
+ * login is offered. */
+export const listMembers = (qid: string) => call<{ members: QueueMember[]; pending?: PendingMember[]; github_logins?: boolean }>(`${q(qid)}/members`);
+/** `text` as a GitHub login (a leading `@` dropped, lowercased), or null
+ * when it is not one: 1 to 39 letters, digits or hyphens, not starting with
+ * a hyphen. */
+export function githubLogin(text: string): string | null {
+  const t = text.trim().replace(/^@/, "");
+  return /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(t) ? t.toLowerCase() : null;
+}
+/** Adds GitHub login `login` at `role`: `member` when someone signed in here with it (a member now), else `invite`, waiting for their sign-in. */
+export const addMemberByLogin = (qid: string, login: string, role: QueueRole) =>
+  call<{ member?: QueueMember; invite?: PendingMember }>(`${q(qid)}/members`, "PUT", { github_login: login, role });
+/** Removes a GitHub login still waiting for its sign-in. */
+export const removePending = (qid: string, id: string) => call<unknown>(`${q(qid)}/members/pending/${e(id)}`, "DELETE");
 /** Adds person `pid` to the queue at `role`, or changes their role. */
 export const setMember = (qid: string, pid: string, role: QueueRole) => call<unknown>(`${q(qid)}/members/${e(pid)}`, "PUT", { role });
 export const removeMember = (qid: string, pid: string) => call<unknown>(`${q(qid)}/members/${e(pid)}`, "DELETE");
