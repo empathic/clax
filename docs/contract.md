@@ -4484,7 +4484,14 @@ reporters_see, created_at, role, owner, is_owner}`: `role` is the
 caller's (`admin` or `triage`); `owner` is the person who made the queue,
 whose it is, as `{public_id, name}` (`name` their display name, or
 `null`), or `null` when the instance's owner made it; `is_owner` says
-whether the caller made it. Its owner is its admin. `GET
+whether the caller made it. Its owner is its admin. Roles are
+permissive: what is not reserved to a higher role is every member's,
+triage included. Reserved to the owner: deleting the queue. Reserved to
+the owner and its admins: its members and its service grants (reading
+and changing either; 403 `not_queue_admin` for a triage member). Open to
+every member: the queue's own settings (`PATCH /api/queues/<qid>`: name,
+origins, `reporters_see`), its installs (`…/installs`) and who answers it
+(`…/responders`); a non-member is 404 `not_a_member` on every one. `GET
 /api/queues/<qid>/members` (an admin's) answers `{members: [{public_id,
 name, role}]}`: a queue a person made lists them first with `role`
 `owner`, then the people added to it, in the order they were added, at
@@ -4494,7 +4501,7 @@ people added. `owner` is a role of that listing alone: `PUT
 /api/queues/<qid>` (204) is the owner's alone: any other member is 403
 `not_queue_owner`, and a non-member 404 `not_a_member`. Its service grants
 are revoked, its reporter tokens end, and its reports stay on their
-artifacts. Every other change to a queue is any of its admins'.
+artifacts.
 
 **States.** A report is `open` (waiting for someone: filed, released, its
 lease lapsed, or reopened), `claimed` (an agent's session holds its

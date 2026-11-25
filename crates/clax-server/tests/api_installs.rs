@@ -1,5 +1,5 @@
 //! A queue's installs (`routes/installs.rs`): made, listed, changed and
-//! deleted by the queue's admin in the browser; their public config read
+//! deleted by the queue's members in the browser, triage included; their public config read
 //! with no credential, its ETag and 304, and CORS for the install's own
 //! origins alone.
 
@@ -407,11 +407,11 @@ async fn the_config_is_public_with_an_etag_and_cors_for_the_installs_origins_alo
 }
 
 #[tokio::test]
-async fn only_the_queues_admin_changes_its_installs() {
-    let (ts, _owner, qid, iid) = world().await;
+async fn every_member_of_the_queue_changes_its_installs_triage_included() {
+    let (ts, owner, qid, iid) = world().await;
     let sam_client = ts.connect_person("Sam", "clax:collaborator").await;
-    let v = ts.store.viewer_of_grant(&sam_client.grant_id()).unwrap();
-    let sam = format!("clax_viewer={}", ts.browser_cookie(&v.id));
+    let viewer = ts.store.viewer_of_grant(&sam_client.grant_id()).unwrap();
+    let sam = format!("clax_viewer={}", ts.browser_cookie(&viewer.id));
     let (s, v) = browser(
         &ts,
         &sam,
@@ -440,4 +440,47 @@ async fn only_the_queues_admin_changes_its_installs() {
     )
     .await;
     assert_eq!(s, 404);
+
+    // A triage member makes, changes and deletes them.
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::PUT,
+        &format!("/api/queues/{qid}/members/{}", viewer.public_id),
+        Some(json!({"role": "triage"})),
+    )
+    .await;
+    assert_eq!(s, 204, "{v}");
+    let (s, v) = browser(
+        &ts,
+        &sam,
+        Method::POST,
+        &format!("/api/queues/{qid}/installs"),
+        Some(json!({"name": "Mine"})),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let mine = v["install"]["id"].as_str().unwrap().to_string();
+    let (s, v) = browser(
+        &ts,
+        &sam,
+        Method::PATCH,
+        &format!("/api/queues/{qid}/installs/{iid}"),
+        Some(json!({"name": "Changelist, renamed"})),
+    )
+    .await;
+    assert_eq!(
+        (s, &v["install"]["name"]),
+        (200, &json!("Changelist, renamed")),
+        "{v}"
+    );
+    let (s, v) = browser(
+        &ts,
+        &sam,
+        Method::DELETE,
+        &format!("/api/queues/{qid}/installs/{mine}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, 204, "{v}");
 }

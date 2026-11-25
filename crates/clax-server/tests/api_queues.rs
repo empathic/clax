@@ -235,7 +235,8 @@ async fn members_hold_the_role_an_admin_gives_them() {
     let (s, v) = browser(&w.ts, &w.sam, Method::GET, &members, None).await;
     assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
 
-    // Triage: Sam lists it and changes nothing.
+    // Triage: Sam lists it, changes its settings, and neither sees nor
+    // changes its members.
     let (s, v) = browser(
         &w.ts,
         &w.owner,
@@ -262,8 +263,18 @@ async fn members_hold_the_role_an_admin_gives_them() {
         Some(json!({"name": "Sam's"})),
     )
     .await;
-    assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["queue"]["role"], "triage", "{v}");
     let (s, v) = browser(&w.ts, &w.sam, Method::GET, &members, None).await;
+    assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
+    let (s, v) = browser(
+        &w.ts,
+        &w.sam,
+        Method::PUT,
+        &sams,
+        Some(json!({"role": "admin"})),
+    )
+    .await;
     assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
 
     // Sam's agent lists the queues Sam is a member of.
@@ -467,6 +478,50 @@ async fn the_owner_deletes_their_queue() {
         let (_, v) = browser(&w.ts, cookie, Method::GET, "/api/queues", None).await;
         assert_eq!(v["queues"], json!([]), "{v}");
     }
+}
+
+#[tokio::test]
+async fn a_triage_member_changes_the_queue_and_never_its_service_grants() {
+    let w = world().await;
+    let (qid, ana, ana_public) = sams_queue_with_ana_admin(&w).await;
+    let (s, _) = browser(
+        &w.ts,
+        &w.sam,
+        Method::PUT,
+        &format!("/api/queues/{qid}/members/{ana_public}"),
+        Some(json!({"role": "triage"})),
+    )
+    .await;
+    assert_eq!(s, 204);
+    // What is not reserved is hers: the queue's own settings.
+    let (s, v) = browser(
+        &w.ts,
+        &ana,
+        Method::PATCH,
+        &format!("/api/queues/{qid}"),
+        Some(json!({"name": "Ana's name for it", "reporters_see": "all"})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        (&v["queue"]["name"], &v["queue"]["reporters_see"]),
+        (&json!("Ana's name for it"), &json!("all"))
+    );
+    // Credentials are the owner's and admins': she neither lists nor makes one.
+    let grants = format!("/api/queues/{qid}/service-grants");
+    let (s, v) = browser(&w.ts, &ana, Method::GET, &grants, None).await;
+    assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
+    let (s, v) = browser(
+        &w.ts,
+        &ana,
+        Method::POST,
+        &grants,
+        Some(json!({"name": "Mine"})),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
+    let (s, v) = browser(&w.ts, &w.sam, Method::GET, &grants, None).await;
+    assert_eq!((s, &v["grants"]), (200, &json!([])), "{v}");
 }
 
 #[tokio::test]
@@ -708,7 +763,7 @@ async fn discovery_says_what_this_clax_is_without_a_credential() {
 /// Addendum 9: who answers a queue is the queue's own, ordered, checked,
 /// set by its admins, and audited.
 #[tokio::test]
-async fn an_admin_orders_who_answers_the_queue_and_a_triage_member_changes_nothing() {
+async fn a_member_orders_who_answers_the_queue_triage_included() {
     let w = world().await;
     let qid = make_queue(&w, &w.owner, "Feedback").await;
     let rs = format!("/api/queues/{qid}/responders");
@@ -788,7 +843,7 @@ async fn an_admin_orders_who_answers_the_queue_and_a_triage_member_changes_nothi
     .await;
     assert_eq!(s, 400, "{v}");
 
-    // A triage member reads nothing of it and changes nothing.
+    // A triage member reads and orders it too; a non-member reaches none.
     let (s, _) = browser(
         &w.ts,
         &w.owner,
@@ -798,6 +853,9 @@ async fn an_admin_orders_who_answers_the_queue_and_a_triage_member_changes_nothi
     )
     .await;
     assert_eq!(s, 204);
+    let (s, v) = browser(&w.ts, &w.sam, Method::GET, &rs, None).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["responders"].as_array().unwrap().len(), 2, "{v}");
     let (s, v) = browser(
         &w.ts,
         &w.sam,
@@ -806,7 +864,17 @@ async fn an_admin_orders_who_answers_the_queue_and_a_triage_member_changes_nothi
         Some(json!({"responders": []})),
     )
     .await;
-    assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
+    assert_eq!((s, &v["responders"]), (200, &json!([])), "{v}");
+    let (ana, _) = ana(&w).await;
+    let (s, v) = browser(
+        &w.ts,
+        &ana,
+        Method::PUT,
+        &rs,
+        Some(json!({"responders": []})),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
 
     let audited =
         w.ts.store
@@ -815,5 +883,5 @@ async fn an_admin_orders_who_answers_the_queue_and_a_triage_member_changes_nothi
             .into_iter()
             .filter(|e| e.kind == "queue.update" && e.body.contains("\"responders\""))
             .count();
-    assert_eq!(audited, 1);
+    assert_eq!(audited, 2, "the admin's order and the triage member's");
 }

@@ -1,7 +1,11 @@
 //! Report queues' administration (spec 2026-10-27-clax-sdk-design §7.1):
-//! a queue's maker and its admins, in a browser session, make and change
-//! queues, their members and their service grants. A queue is its maker's,
-//! its owner: only they delete it.
+//! people, in a browser session, make and change queues, their members and
+//! their service grants. Roles are permissive: what is not reserved to a
+//! higher role is any member's. A queue is its maker's, its owner: only
+//! they delete it. Its owner and admins alone see and change its members
+//! and service grants. Every member, triage included, changes its
+//! settings (`PATCH`), its responders and its installs
+//! (`routes/installs.rs`).
 //!
 //! - `GET /api/queues` → `{queues}`: the caller's queues with their role,
 //!   their owner and whether it is the caller (also an agent's, for
@@ -21,9 +25,9 @@
 //! owner by hand), from the daemon's own origin (`SameOrigin`); agents are
 //! refused. The owner acts as the person `None`, a connected person as
 //! their public ID. A queue the caller is not a member of answers 404
-//! `not_a_member`, as an unknown one does; a triage member's change 403
-//! `not_queue_admin`; a delete by anyone but the queue's owner 403
-//! `not_queue_owner`.
+//! `not_a_member`, as an unknown one does; a triage member's read or change
+//! of members or service grants 403 `not_queue_admin`; a delete by anyone
+//! but the queue's owner 403 `not_queue_owner`.
 
 use super::artifacts::{body, path};
 use axum::Json;
@@ -73,8 +77,31 @@ pub(super) async fn admin_person(
 fn not_queue_admin() -> ApiError {
     ApiError::forbidden(
         "not_queue_admin",
-        "only a queue's admins change it, its members and its service grants",
+        "only a queue's owner and admins see and change its members and its service grants",
     )
+}
+
+/// That `person` is a member of queue `qid`, at any role: what a change
+/// not reserved to its admins or its owner needs.
+///
+/// # Errors
+/// 404 `not_a_member` for a non-member or no such queue.
+pub(super) fn require_member(
+    st: &clax_store::Store,
+    qid: &str,
+    person: Option<&str>,
+) -> Result<(), ApiError> {
+    match st.queue_role(qid, person)? {
+        Some(_) => Ok(()),
+        None => Err(CoreError::NotAMember.into()),
+    }
+}
+
+/// [`require_member`] on the store's thread.
+async fn member_of(s: &AppState, qid: &str, person: Option<String>) -> Result<(), ApiError> {
+    let qid = qid.to_string();
+    s.store_call(move |st| Ok(require_member(st, &qid, person.as_deref())))
+        .await?
 }
 
 /// `person`'s role on queue `qid`, when it is `admin`.
@@ -185,8 +212,8 @@ pub struct PatchBody {
 }
 
 /// `PATCH /api/queues/<qid> {name?, origins?, reporters_see?}` →
-/// `{queue}`: an admin's change, the errors of `POST /api/queues` for bad
-/// fields.
+/// `{queue}`: any member's change, triage included; the errors of `POST
+/// /api/queues` for bad fields.
 pub async fn patch(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -201,7 +228,7 @@ pub async fn patch(
     let b = body(req)?;
     let queue = s
         .store_call(move |st| {
-            if let Err(e) = require_admin(st, &qid, person.as_deref()) {
+            if let Err(e) = require_member(st, &qid, person.as_deref()) {
                 return Ok(Err(e));
             }
             st.update_queue(
@@ -426,7 +453,7 @@ pub async fn revoke_grant(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /api/queues/<qid>/responders` → `{responders: [...]}`: an admin
+/// `GET /api/queues/<qid>/responders` → `{responders: [...]}`: any member
 /// reads who answers the queue's reports, first responder first
 /// ([`clax_core::queue::Responder`]: `{kind: "agent", name,
 /// service_grant_id?, escalate_after_secs?}` or `{kind: "bot", profile:
@@ -440,7 +467,7 @@ pub async fn responders(
     d.refuse_agents()?;
     let person = admin_person(&s, &d).await?;
     let qid = path(qid)?;
-    admin_of(&s, &qid, person).await?;
+    member_of(&s, &qid, person).await?;
     let rs = s.store_call(move |st| st.responders(&qid)).await?;
     Ok(Json(json!({ "responders": rs })))
 }
@@ -452,8 +479,8 @@ pub struct RespondersBody {
     responders: Vec<clax_core::queue::Responder>,
 }
 
-/// `PUT /api/queues/<qid>/responders {responders}` → `{responders}`: an
-/// admin replaces the queue's responders, in order. 400
+/// `PUT /api/queues/<qid>/responders {responders}` → `{responders}`: any
+/// member, triage included, replaces the queue's responders, in order. 400
 /// `invalid_responders` says which entry is refused (too many, a name
 /// twice, a grant not the queue's, an unknown tier, an escalation out of
 /// 60 s to 30 days).
@@ -469,7 +496,7 @@ pub async fn put_responders(
     let person = admin_person(&s, &d).await?;
     let qid = path(qid)?;
     let b = body(req)?;
-    admin_of(&s, &qid, person).await?;
+    member_of(&s, &qid, person).await?;
     let rs = s
         .store_call(move |st| {
             st.set_responders(&ctx, &qid, &b.responders)?;

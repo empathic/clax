@@ -1,12 +1,13 @@
 //! A queue's installs (`clax_core::install`): the sites that embed the
-//! overlay and file into the queue, edited by the queue's admins in Clax,
+//! overlay and file into the queue, edited by any of the queue's members
+//! in Clax, triage included,
 //! and the read-only config each site's overlay fetches.
 //!
 //! - `GET /api/queues/<qid>/installs` → `{installs}`: a member's read.
 //! - `POST /api/queues/<qid>/installs {name, origins, config?}` → 201
 //!   `{install}`; `PATCH /api/queues/<qid>/installs/<iid> {name?,
-//!   origins?, config?}` → `{install}`; `DELETE` the same → 204: an
-//!   admin's, from the daemon's own origin, as the queue's routes are
+//!   origins?, config?}` → `{install}`; `DELETE` the same → 204: a
+//!   member's, from the daemon's own origin, as the queue's routes are
 //!   (`routes/queues.rs`).
 //! - `GET /api/installs/<iid>/config` → the install's public config, for
 //!   anyone: no credential, mounted with the reporter routes in front of
@@ -18,7 +19,7 @@
 //!   live install, or one whose queue is deleted.
 
 use super::artifacts::{body, path};
-use super::queues::{admin_person, require_admin};
+use super::queues::{admin_person, require_member};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
@@ -70,7 +71,7 @@ pub struct CreateBody {
 }
 
 /// `POST /api/queues/<qid>/installs {name, origins?, config?}` → 201
-/// `{install}`: an admin's. 400 `invalid_install` (a blank or long name,
+/// `{install}`: a member's. 400 `invalid_install` (a blank or long name,
 /// bad wording or colour, or a queue at its most installs) or
 /// `invalid_origin`.
 pub async fn create(
@@ -87,7 +88,7 @@ pub async fn create(
     let b = body(req)?;
     let install = s
         .store_call(move |st| {
-            if let Err(e) = require_admin(st, &qid, person.as_deref()) {
+            if let Err(e) = require_member(st, &qid, person.as_deref()) {
                 return Ok(Err(e));
             }
             let i = st.create_install(
@@ -116,7 +117,7 @@ pub struct PatchBody {
 }
 
 /// `PATCH /api/queues/<qid>/installs/<iid> {name?, origins?, config?}` →
-/// `{install}`: an admin's; the errors of the `POST`, and 404 `not_found`
+/// `{install}`: a member's; the errors of the `POST`, and 404 `not_found`
 /// for no such install of the queue.
 pub async fn patch(
     State(s): State<AppState>,
@@ -132,7 +133,7 @@ pub async fn patch(
     let b = body(req)?;
     let install = s
         .store_call(move |st| {
-            if let Err(e) = require_admin(st, &qid, person.as_deref()) {
+            if let Err(e) = require_member(st, &qid, person.as_deref()) {
                 return Ok(Err(e));
             }
             let i = st.update_install(
@@ -151,7 +152,7 @@ pub async fn patch(
     Ok(Json(json!({ "install": install })))
 }
 
-/// `DELETE /api/queues/<qid>/installs/<iid>` → 204: an admin's; its config
+/// `DELETE /api/queues/<qid>/installs/<iid>` → 204: a member's; its config
 /// answers 404 from then on. 404 `not_found` for no such install.
 pub async fn delete(
     State(s): State<AppState>,
@@ -164,7 +165,7 @@ pub async fn delete(
     let person = admin_person(&s, &d).await?;
     let (qid, iid) = path(p)?;
     s.store_call(move |st| {
-        if let Err(e) = require_admin(st, &qid, person.as_deref()) {
+        if let Err(e) = require_member(st, &qid, person.as_deref()) {
             return Ok(Err(e));
         }
         st.delete_install(&ctx, &qid, &iid)?;
