@@ -40,6 +40,9 @@ test("a login added on a local Clax signs in with GitHub and finds the queue and
     await expect(cat).toHaveURL(`${d.base}/queues`);
     await expect(cat.getByRole("heading", { name: "Local bugs" })).toBeVisible();
     await cat.goto(`${d.base}/inbox`);
+    await expect(cat.getByRole("link", { name: "Inbox, 1 unread" })).toBeVisible();
+    // The notice is activity, not something waiting on them: under All items.
+    await cat.getByRole("group", { name: "View" }).getByRole("button", { name: "All items" }).click();
     await expect(cat.getByText(/added you to Local bugs as triage/).first()).toBeVisible();
 
     // The owner's panel: a member now, no longer waiting.
