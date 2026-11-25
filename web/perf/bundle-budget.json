@@ -1,6 +1,6 @@
 {
   "bridgeBaseline": 32861,
-  "gallery": 51906,
+  "gallery": 51913,
   "artifact": 74709,
   "host": 9088,
   "questions": 18302,
@@ -17,7 +17,7 @@
   "extComposer": 28804,
   "extPanel": 66560,
   "people": 1048576,
-  "queues": 35454,
+  "queues": 36674,
   "partLive": 4616,
   "overlay": 107178,
   "sdkOverlay": 150175,
