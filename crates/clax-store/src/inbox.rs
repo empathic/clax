@@ -65,10 +65,14 @@ pub enum Kind {
     /// An agent asks its person for a report queue (`detail_json`: the
     /// request's ID; [`crate::queue_requests`]).
     QueueRequest,
+    /// Someone was added to a report queue (`detail_json`: `{queue_id,
+    /// role, by}`, `by` the adder's public ID or `null` for the owner;
+    /// [`note_queue_access`]).
+    Access,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 11] = [
+    pub const ALL: [Kind; 12] = [
         Kind::Reply,
         Kind::Version,
         Kind::Published,
@@ -80,6 +84,7 @@ impl Kind {
         Kind::Push,
         Kind::RemoteRequest,
         Kind::QueueRequest,
+        Kind::Access,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -95,6 +100,7 @@ impl Kind {
             Kind::Push => "push",
             Kind::RemoteRequest => "remote_request",
             Kind::QueueRequest => "queue_request",
+            Kind::Access => "access",
         }
     }
 
@@ -1386,6 +1392,36 @@ fn queue_request_key(rid: &str) -> String {
     format!("queue_request:{rid}")
 }
 
+/// The member keyed `member` ([`crate::queues::member_key`]: a public ID,
+/// or [`crate::queues::OWNER_MEMBER`] for the owner) was added to queue
+/// `qid` at `role` by the member keyed `by`: one `access` item for them
+/// (the owner's `recipient` `None`), with `detail` `{queue_id, role, by}`
+/// (`by` a public ID, `null` for the owner) and the queue's name to
+/// search by. Keyed by the queue, so being added to it again, after a
+/// removal or at another role, makes no second item.
+pub(crate) fn note_queue_access(
+    c: &Connection,
+    qid: &str,
+    queue_name: &str,
+    member: &str,
+    role: &str,
+    by: &str,
+    now: &str,
+) -> Result<Option<i64>> {
+    let who = |k: &str| (k != super::queues::OWNER_MEMBER).then(|| k.to_string());
+    let recipient = who(member);
+    insert_at(
+        c,
+        New {
+            recipient: recipient.as_deref(),
+            detail: Some(serde_json::json!({"queue_id": qid, "role": role, "by": who(by)})),
+            text: format!("{queue_name} {role}"),
+            ..New::of(Kind::Access, format!("access:queue:{qid}"))
+        },
+        now,
+    )
+}
+
 /// Queue request `rid` for `recipient` stopped waiting (decided,
 /// cancelled or expired): its item is read.
 pub(crate) fn queue_request_closed(
@@ -2529,7 +2565,8 @@ impl Store {
                     | Kind::Question
                     | Kind::Connection
                     | Kind::Ended
-                    | Kind::Push => {}
+                    | Kind::Push
+                    | Kind::Access => {}
                 }
                 out.push(s);
             }

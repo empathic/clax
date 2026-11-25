@@ -128,8 +128,16 @@ fn linked(tx: &Transaction<'_>, github_id: i64) -> Result<Option<(String, bool, 
 /// Links `user` to viewer row `viewer_id` (moving the account's link, and
 /// refreshing its login, name and avatar), noting the sign-in, and binds
 /// the shares waiting for the account's login to that row
-/// ([`super::shares::bind_github_shares`]). Returns how many it bound.
-fn link(st: &Store, tx: &Transaction<'_>, user: &GitHubUser, viewer_id: &str) -> Result<usize> {
+/// ([`super::shares::bind_github_shares`]) and its queue invites to its
+/// person, the owner's as the owner ([`Store::bind_queue_invites`],
+/// recorded under `ctx`). Returns how many shares it bound.
+fn link(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    user: &GitHubUser,
+    viewer_id: &str,
+) -> Result<usize> {
     let now = st.now();
     tx.execute(
         "INSERT INTO github_identities (github_id, viewer_id, login, name, avatar_url, created_at, signed_in_at)
@@ -139,7 +147,19 @@ fn link(st: &Store, tx: &Transaction<'_>, user: &GitHubUser, viewer_id: &str) ->
              signed_in_at = excluded.signed_in_at",
         params![user.id, viewer_id, user.login, user.name, user.avatar_url, now],
     )?;
-    super::shares::bind_github_shares(tx, &user.login, viewer_id)
+    let shares = super::shares::bind_github_shares(tx, &user.login, viewer_id)?;
+    let (owner, public_id): (bool, String) = tx.query_row(
+        "SELECT owner, public_id FROM viewers WHERE id = ?1",
+        params![viewer_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let member = if owner {
+        super::queues::OWNER_MEMBER
+    } else {
+        public_id.as_str()
+    };
+    st.bind_queue_invites(tx, ctx, &user.login, member)?;
+    Ok(shares)
 }
 
 /// The names a new person for `user` may take, in order: the profile's
@@ -208,7 +228,7 @@ impl Store {
                         _ => Err(e),
                     })?;
                 let id = signed.who.viewer.id.clone();
-                self.with_tx(|tx| link(self, tx, user, &id).map(drop))?;
+                self.with_tx(|tx| link(self, tx, ctx, user, &id).map(drop))?;
                 return Ok((signed, GitHubOutcome::Owner));
             }
             // The owner's name follows the account's, when it is free.
@@ -228,7 +248,7 @@ impl Store {
                         "another GitHub account is this Clax's owner's",
                     ));
                 }
-                link(self, tx, user, &owner.id)?;
+                link(self, tx, ctx, user, &owner.id)?;
                 self.signed_in(tx, ctx, &owner.id, SignInVia::GitHub, &extra)
             })?;
             return Ok((signed, GitHubOutcome::Owner));
@@ -239,7 +259,7 @@ impl Store {
                 if is_blocked {
                     return Err(blocked());
                 }
-                if link(self, tx, user, &viewer_id)? > 0 {
+                if link(self, tx, ctx, user, &viewer_id)? > 0 {
                     // Shares given to the login before it signed in.
                     self.visibility_changed();
                 }
@@ -277,7 +297,7 @@ impl Store {
             )?;
             // A new person: not `*unconnected` (multi-person M14, M17).
             self.visibility_changed();
-            link(self, tx, user, &id)?;
+            link(self, tx, ctx, user, &id)?;
             let signed = self.signed_in(tx, ctx, &id, SignInVia::GitHub, &extra)?;
             Ok((signed, GitHubOutcome::New))
         })
