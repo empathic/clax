@@ -1041,6 +1041,34 @@ async fn a_reporter_sees_only_its_own_reports_under_own() {
         .as_reporter(&a, Some(ORIGIN), "GET", &clip, None, vec![])
         .await;
     assert_eq!(res.status(), 200);
+    // One report by its ID: its reporter's, and 404 to another, as for
+    // one that does not exist.
+    let one = format!("{}/{tid}", s.reports());
+    let res = s
+        .as_reporter(&b, Some(ORIGIN), "GET", &one, None, vec![])
+        .await;
+    assert_eq!(status_code(res).await, (404, "not_found".into()));
+    let res = s
+        .as_reporter(&a, Some(ORIGIN), "GET", &one, None, vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        (&v["report"]["id"], &v["report"]["mine"]),
+        (&json!(tid), &json!(true)),
+        "{v}"
+    );
+    let res = s
+        .as_reporter(
+            &a,
+            Some(ORIGIN),
+            "GET",
+            &format!("{}/01J0000000000000000000000Z", s.reports()),
+            None,
+            vec![],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (404, "not_found".into()));
 }
 
 #[tokio::test]
@@ -1142,6 +1170,7 @@ async fn every_queue_route_needs_its_own_credential() {
         ("POST", mint.clone()),
         ("GET", s.reports()),
         ("POST", s.reports()),
+        ("GET", format!("{}/t1", s.reports())),
         ("POST", format!("{}/t1/comments", s.reports())),
         ("GET", format!("{}/t1/clip", s.reports())),
         ("POST", format!("{}/t1/verify", s.reports())),
@@ -1375,6 +1404,7 @@ async fn under_all_a_reporter_reads_and_comments_on_anothers_report() {
     assert_eq!(cs[1]["author_name"], "emp-b");
     assert_eq!(cs[1]["author_kind"], "reporter");
     assert_eq!(v["report"]["reporter_id"], "emp-a");
+    assert_eq!(v["report"]["mine"], false, "{v}");
 }
 
 /// The artifact a report filed by a new reporter of `s`'s queue is on.

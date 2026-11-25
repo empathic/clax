@@ -12,7 +12,8 @@
 //!   a `Clax-Signature` by the reporter's key, and the token's `Origin`):
 //!   `POST /api/queues/<qid>/reporter/reports` (multipart) → `201
 //!   {report}`; `GET /api/queues/<qid>/reporter/reports?cursor=` →
-//!   `{reports, next}`; `POST …/reporter/reports/<tid>/comments {body}` →
+//!   `{reports, next}`; `GET …/reporter/reports/<tid>` → `{report}`;
+//!   `POST …/reporter/reports/<tid>/comments {body}` →
 //!   `{report}`; `GET …/reporter/reports/<tid>/clip` and
 //!   `…/comments/<cid>/clip` → the PNG; `POST …/reporter/reports/<tid>/verify
 //!   {note?, context?}` and `…/reopen` (multipart) → `{report}`; `GET
@@ -61,6 +62,10 @@ pub fn router(state: AppState) -> Router {
                 // The extractor bounds the body; `Multipart` reads it again.
                 .layer(DefaultBodyLimit::disable())
                 .options(preflight),
+        )
+        .route(
+            "/api/queues/{qid}/reporter/reports/{tid}",
+            get(one_report).options(preflight),
         )
         .route(
             "/api/queues/{qid}/reporter/reports/{tid}/comments",
@@ -467,6 +472,28 @@ pub async fn my_reports(
     Ok(Json(json!({ "reports": reports, "next": next })))
 }
 
+/// `GET /api/queues/<qid>/reporter/reports/<tid>`: one report the token's
+/// reporter sees, as the list serves it (an overlay opened from a link to
+/// the report). Answers `{report}`.
+///
+/// # Errors
+/// [`ReporterCaller`]'s; 404 `not_found` for a report the reporter does
+/// not see, as for one that does not exist.
+pub async fn one_report(
+    State(s): State<AppState>,
+    Path((qid, tid)): Path<(String, String)>,
+    r: ReporterCaller,
+) -> Result<Json<Value>, ApiError> {
+    let rid = r.token.reporter_id;
+    let report = s
+        .store_call(move |st| {
+            st.report(&qid, &tid, Visibility::Reporter(&rid))?
+                .ok_or(CoreError::NotFound)
+        })
+        .await?;
+    Ok(Json(json!({ "report": report.for_reporter() })))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommentBody {
@@ -753,10 +780,10 @@ mod tests {
                 _ => assert!(sig.contains("r: ReporterCaller"), "{name}"),
             }
         }
-        assert_eq!(seen, 12);
+        assert_eq!(seen, 13);
         let routes = &src[src.find("pub fn router").unwrap()..];
         let routes = &routes[..routes.find("\n}\n").unwrap()];
-        assert_eq!(routes.matches(".route(").count(), 10);
+        assert_eq!(routes.matches(".route(").count(), 11);
         assert_eq!(routes.matches(".route_layer(").count(), 1);
         assert!(routes.find("reporter::cors").unwrap() < routes.find("reporter-tokens").unwrap());
     }

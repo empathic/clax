@@ -2139,6 +2139,31 @@ impl Store {
         vis: &Visibility,
         readable: Reach<'_>,
     ) -> Result<Announced> {
+        self.take_notices_in(session_id, browser_base, vis, readable, None)
+    }
+
+    /// [`Store::take_notices`] of only the rows on threads of queue
+    /// `queue_id`: the session's other rows stay unannounced, for another
+    /// follower of the session (`clax feedback follow`) to announce.
+    pub fn take_queue_notices(
+        &self,
+        session_id: &str,
+        browser_base: &str,
+        vis: &Visibility,
+        readable: Reach<'_>,
+        queue_id: &str,
+    ) -> Result<Announced> {
+        self.take_notices_in(session_id, browser_base, vis, readable, Some(queue_id))
+    }
+
+    fn take_notices_in(
+        &self,
+        session_id: &str,
+        browser_base: &str,
+        vis: &Visibility,
+        readable: Reach<'_>,
+        queue_id: Option<&str>,
+    ) -> Result<Announced> {
         let base = browser_base.trim_end_matches('/').to_string();
         let now = self.now();
         self.with_tx(|tx| {
@@ -2159,12 +2184,13 @@ impl Store {
                      WHERE f.target_session_id = ?1
                        AND f.delivered_at IS NULL AND f.notified_at IS NULL
                        AND a.deleted_at IS NULL AND t.status = 'open'
+                       AND (?2 IS NULL OR t.queue_id = ?2)
                        AND (f.queue_event IS NOT NULL
                             OR EXISTS (SELECT 1 FROM watches w WHERE w.session_id = f.target_session_id
                                        AND w.artifact_id = t.artifact_id AND w.replies_armed = 1))
                      ORDER BY f.created_at, f.id",
                 )?;
-                stmt.query_map(params![session_id], |r| {
+                stmt.query_map(params![session_id, queue_id], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -5058,6 +5084,26 @@ mod delivery {
         assert_eq!(taken.items[0].queue_event, Some(QueueEvent::Filed));
         assert_eq!(taken.items[0].thread_id, tid);
         assert_eq!(taken.items[0].body, "The total is wrong");
+    }
+
+    /// A take of one queue's notices leaves the session's other rows
+    /// unannounced, for the follower that takes them.
+    #[test]
+    fn a_queue_take_announces_only_that_queues_rows() {
+        let w = two_people();
+        let (qid, tok) = sams_queue(&w);
+        let tid = file_into(&w, &qid, &tok, "Invoice 4821");
+        let vis = w.sam_vis();
+        let take = |q: &str| {
+            w.st.take_queue_notices(&w.sid, BASE, &vis, Reach::ALL, q)
+                .unwrap()
+                .notices
+        };
+        assert!(take("01JOTHERQUEUE0000000000000").is_empty());
+        let n = take(&qid);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].thread_id, tid);
+        assert!(take(&qid).is_empty(), "announced once");
     }
 
     /// A member's agent whose rights do not read reports (a grant that may

@@ -82,9 +82,10 @@ overlay({
   // What the Filed notice calls your page: "Replies and fixes show in
   // Feedback." and its button, "View in Feedback". Default "Your reports".
   reportsLabel: "Feedback",
-  // Called by that button with the report just filed, and by the corner's
-  // "Your reports" (with `launcher: "corner"`) with none. Default: none,
-  // and both open the panel. `handle.showReports()` still opens the panel.
+  // Called by that button with the report just filed, by the corner's
+  // "Your reports" (with `launcher: "corner"`) with none, and by a link to
+  // one report (`?clax-report=<report ID>` on the page) with it. Default:
+  // none, and each opens the panel. `handle.showReports()` still opens the panel.
   onShowReports: report => router.push(report ? `/feedback#${report.id}` : "/feedback"),
 });
 ```

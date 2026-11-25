@@ -72,6 +72,8 @@ let badges: Badge[];
 let pages: ReportPage[];
 let listed: number;
 let comments: [string, string][];
+/** The reports `client.report` answers; any other is 404. */
+let linkable: Report[];
 let timers: ReturnType<typeof manualTimers>;
 let host: HTMLElement;
 let screens: number;
@@ -107,6 +109,7 @@ beforeEach(() => {
   pages = [];
   listed = 0;
   comments = [];
+  linkable = [];
   drawn = [];
   screens = 0;
   contexts = 0;
@@ -119,6 +122,11 @@ beforeEach(() => {
     reopen: async (id, r) => { reopened.push([id, r]); return report(id, ["The end date is wrong", r.body], { state: "open" }); },
     badge: async () => badges.shift() ?? { waiting: 0, report_ids: [] },
     seen: async id => { seen.push(id); },
+    report: async id => {
+      const r = linkable.find(x => x.id === id);
+      if (!r) throw Object.assign(new Error("not found"), { code: "not_found", status: 404 });
+      return r;
+    },
   };
   host = document.createElement("div");
   document.body.append(host);
@@ -745,6 +753,45 @@ describe("the overlay", () => {
     expect(listed).toBe(2);
   });
 
+  describe("a link to one report", () => {
+    const at = location.href;
+    afterEach(() => history.replaceState(null, "", at));
+    /** Mounts the overlay anew on a page whose address is `path`. */
+    async function landOn(path: string, over: Record<string, unknown> = {}) {
+      view.unmount();
+      history.replaceState({ kept: 1 }, "", path);
+      view = mount(Overlay as never, props(over), host);
+      await settle();
+    }
+
+    it("opens Your reports on the report, past the first page, and leaves the URL", async () => {
+      linkable = [proposed("t7")];
+      pages.push({ reports: [report("t1", ["Typo"])], next: "c2" });
+      await landOn("/invoices/4821?tab=lines&clax-report=t7#top");
+      expect(location.pathname + location.search + location.hash).toBe("/invoices/4821?tab=lines#top");
+      expect(history.state).toEqual({ kept: 1 });
+      expect(q(".panel")).not.toBeNull();
+      expect(q('.panel li.open .fix.waiting')?.textContent).toMatch(/Fixed the end date/);
+      expect(seen).toEqual(["t7"]);
+      expect(view.root.querySelectorAll(".panel .row")).toHaveLength(2);
+    });
+
+    it("a report the reporter cannot read leaves the page as it was", async () => {
+      await landOn("/page?clax-report=t404");
+      expect(location.search).toBe("");
+      expect(q(".panel")).toBeNull();
+      expect(listed).toBe(0);
+    });
+
+    it("hands the report to the host's own page when it has one", async () => {
+      linkable = [report("t7", ["Typo"])];
+      const shown: (Report | undefined)[] = [];
+      await landOn("/page?clax-report=t7", { onShowReports: (r?: Report) => shown.push(r) });
+      expect(shown.map(r => r?.id)).toEqual(["t7"]);
+      expect(q(".panel")).toBeNull();
+    });
+  });
+
   it("marks a report read when it is opened", async () => {
     pages.push({ reports: [report("t1", ["Typo"])], next: null });
     click(button("Your reports"));
@@ -815,6 +862,39 @@ describe("the overlay", () => {
     await settle();
     click(q(".panel .row"));
     expect(q(".panel .reply-note")?.textContent ?? "").toMatch(/goes to Triage agent while they are still at work/);
+  });
+
+  it("a verified or resolved report of the reporter's own offers Still broken, which reopens it", async () => {
+    const confirmed = report("t1", ["The end date is wrong"], { state: "verified", status: "resolved", mine: true });
+    const closed = report("t2", ["Typo"], { state: "resolved", status: "resolved", resolve_reason: "wontfix", mine: true });
+    pages.push({ reports: [confirmed, closed], next: null });
+    click(button("Your reports"));
+    await settle();
+    const rows = () => [...view.root.querySelectorAll<HTMLElement>(".panel .row")];
+    click(rows()[1]);
+    expect(q(".panel .verdict.reopen button")?.textContent).toBe("Still broken");
+    click(rows()[0]);
+    expect(button("It's fixed")).toBeUndefined();
+    click(q(".panel .verdict.reopen button"));
+    await settle();
+    expect(q('.composer[aria-label="Still broken"]')?.textContent).toMatch(/The end date is wrong/);
+    typeIn(".composer textarea", "Broken again since 0.7");
+    click(button("Send"));
+    await settle();
+    expect(reopened.map(([id, r]) => [id, r.body])).toEqual([["t1", "Broken again since 0.7"]]);
+  });
+
+  it("another reporter's report offers no verdict and no Still broken", async () => {
+    const theirs = { ...proposed("t1"), mine: false };
+    const closed = report("t2", ["Typo"], { state: "verified", status: "resolved", mine: false });
+    pages.push({ reports: [theirs, closed], next: null });
+    click(button("Your reports"));
+    await settle();
+    for (const i of [0, 1]) {
+      click(view.root.querySelectorAll<HTMLElement>(".panel .row")[i]);
+      expect(button("Still broken")).toBeUndefined();
+      expect(button("It's fixed")).toBeUndefined();
+    }
   });
 
   it("Still broken requires a note and sends reopen with the new clip", async () => {

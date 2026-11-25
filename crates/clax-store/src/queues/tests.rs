@@ -154,6 +154,33 @@ fn claim_then_expiry_frees_report() {
 }
 
 #[test]
+fn a_lapsed_lease_is_named_once_and_a_released_one_never() {
+    let (_d, st, clock) = clocked();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, None, None);
+    let other = file(&st, &qid, None, Some("invoice:9"));
+    let a = session(&st, "claude", "a");
+    let start = st.now();
+    let lease = st.claim(DAEMON, &qid, &tid, &a).unwrap();
+    st.claim(DAEMON, &qid, &other, &a).unwrap();
+    st.release(DAEMON, &qid, &other, &a).unwrap();
+    assert_eq!(
+        st.next_lease_lapse().unwrap().map(clax_core::time::stamp),
+        Some(lease.expires_at.clone())
+    );
+    assert!(st.leases_lapsed(&start, &st.now()).unwrap().is_empty());
+    clock.advance(LEASE_SECS + 1);
+    let upto = st.now();
+    assert_eq!(
+        st.leases_lapsed(&start, &upto).unwrap(),
+        [(qid.clone(), tid.clone())],
+        "the released report's lease is not named"
+    );
+    assert!(st.leases_lapsed(&upto, &upto).unwrap().is_empty());
+    assert_eq!(st.next_lease_lapse().unwrap(), None);
+}
+
+#[test]
 fn renew_extends_lease() {
     let (_d, st, clock) = clocked();
     let qid = queue(&st, ReportersSee::Own);
@@ -265,6 +292,22 @@ fn reporter_sees_only_own_under_own() {
         .reports(&qid, Visibility::Reporter("emp-1"), None, None)
         .unwrap();
     assert_eq!(seen.len(), 2);
+}
+
+#[test]
+fn a_reporter_is_told_which_reports_it_filed() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::All);
+    let own = file(&st, &qid, Some("emp-1"), Some("a"));
+    let other = file(&st, &qid, Some("emp-2"), Some("b"));
+    let mine = |tid: &str, vis| st.report(&qid, tid, vis).unwrap().unwrap().mine;
+    assert_eq!(mine(&own, Visibility::Reporter("emp-1")), Some(true));
+    assert_eq!(mine(&other, Visibility::Reporter("emp-1")), Some(false));
+    assert_eq!(
+        mine(&own, Visibility::All),
+        None,
+        "a member's read says nothing"
+    );
 }
 
 #[test]

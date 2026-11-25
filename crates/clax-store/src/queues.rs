@@ -767,6 +767,7 @@ fn reports_of(
             status: row.status,
             state,
             reporter_id: row.reporter_id,
+            mine: (!with_profile).then_some(own),
             metadata: row
                 .metadata_json
                 .filter(|_| own)
@@ -2263,6 +2264,48 @@ impl Store {
             }
             Ok(Some((state, members)))
         })
+    }
+
+    /// The reports, as `(queue ID, report ID)`, whose current lease (the
+    /// claim with the largest fence) ran out in `(after, upto]` unreleased:
+    /// the reports that read claimed at `after` and no longer at `upto`
+    /// for that reason alone, which no write announced.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn leases_lapsed(&self, after: &str, upto: &str) -> Result<Vec<(String, String)>> {
+        self.with_read(|c| {
+            Ok(c.prepare_cached(
+                "SELECT c.queue_id, c.thread_id FROM queue_claims c
+                 WHERE NOT c.released AND c.expires_at > ?1 AND c.expires_at <= ?2
+                   AND c.fence = (SELECT MAX(fence) FROM queue_claims WHERE thread_id = c.thread_id)
+                 ORDER BY c.expires_at, c.thread_id",
+            )?
+            .query_map(params![after, upto], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// When the next unreleased lease runs out after the store's now, for
+    /// a host that wakes for it ([`Store::leases_lapsed`]); `None` while no
+    /// lease is live.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn next_lease_lapse(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let now = self.now();
+        let at: Option<String> = self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT MIN(expires_at) FROM queue_claims WHERE NOT released AND expires_at > ?1",
+                params![now],
+                |r| r.get(0),
+            )?)
+        })?;
+        Ok(at.and_then(|t| {
+            chrono::DateTime::parse_from_rfc3339(&t)
+                .ok()
+                .map(|t| t.with_timezone(&chrono::Utc))
+        }))
     }
 
     /// `Ok` when session `sid` may write to report `tid` of queue `qid`

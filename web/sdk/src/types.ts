@@ -79,6 +79,9 @@ export interface Report {
   status: ReportStatus;
   state: ReportState;
   reporter_id: string | null;
+  /** On a report served to a reporter: whether that reporter filed it.
+   * Only they give it a verdict or reopen it. Absent on a member's read. */
+  mine?: boolean;
   /** The host app's metadata; `null` on a report served to a reporter
    * that did not file it. */
   metadata: unknown;

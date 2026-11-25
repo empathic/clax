@@ -217,6 +217,10 @@ pub struct AppState {
     /// Held while delivery states are read and sent
     /// ([`clax_realtime::feedback::FeedbackCtx::states`]).
     pub feedback_states: Arc<std::sync::Mutex<()>>,
+    /// The store time up to which lapsed queue leases have been announced
+    /// ([`AppState::sweep`]); starts at the state's creation, as views
+    /// opened later fetch the reports anew.
+    pub leases_announced: Arc<std::sync::Mutex<String>>,
     /// Where the daemon's `codex` is; Codex tier 5 is off without it.
     pub codex: Arc<clax_realtime::push::CodexPush>,
     /// Working records (spec §10 "Working"), in memory.
@@ -522,6 +526,9 @@ impl AppState {
             feedback_waiters: Arc::new(Default::default()),
             followers: Arc::new(Default::default()),
             feedback_states: Arc::new(Default::default()),
+            leases_announced: Arc::new(std::sync::Mutex::new(clax_core::time::stamp(
+                p.clock.now(),
+            ))),
             codex: Arc::new(p.codex),
             working: Arc::new(clax_core::working::Working::new(p.clock.clone())),
             drafts: Arc::new(clax_core::drafts::Drafts::new(p.clock.clone())),
@@ -589,8 +596,9 @@ impl AppState {
     /// detached past their grace, and live seats gone idle. Live layers
     /// need none: each flush is a timer its own edit starts. On a hosted
     /// Clax, the page views' batch and the day's rollover when due
-    /// ([`crate::analytics::Analytics::sweep`]). The daemon runs it on a
-    /// loop; a Durable Object from its alarm.
+    /// ([`crate::analytics::Analytics::sweep`]). Queue leases that lapsed
+    /// since the last sweep ([`AppState::announce_lapsed_leases`]). The
+    /// daemon runs it on a loop; a Durable Object from its alarm.
     pub async fn sweep(&self) {
         if self.hosted.is_some()
             && self
@@ -610,6 +618,46 @@ impl AppState {
         self.seats.sweep();
         crate::views::question::withdraw_due(self).await;
         crate::git_remotes::settle(self).await;
+        self.announce_lapsed_leases().await;
+    }
+
+    /// Publishes a `report` event on its queue's topic for each report
+    /// whose lease ran out since the last call ([`Store::leases_lapsed`]),
+    /// as no write announces a lapse: a triage view showing it claimed
+    /// learns it is open. Natively from the sweep's loop; on the Worker
+    /// from the alarm, which wakes at [`Store::next_lease_lapse`].
+    pub async fn announce_lapsed_leases(&self) {
+        let upto = clax_core::time::stamp(self.question_clock.now());
+        let after = {
+            let mut mark = self
+                .leases_announced
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *mark >= upto {
+                return;
+            }
+            std::mem::replace(&mut *mark, upto.clone())
+        };
+        let events = self.events.clone();
+        let r = self
+            .store
+            .call(move |st| {
+                for (qid, tid) in st.leases_lapsed(&after, &upto)? {
+                    if let Some((state, members)) = st.report_change(&qid, &tid)? {
+                        events.publish(clax_core::Event::Report {
+                            queue_id: qid,
+                            report_id: tid,
+                            state,
+                            members,
+                        });
+                    }
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(e) = r {
+            tracing::warn!(error = %e, "announcing lapsed queue leases failed");
+        }
     }
 
     /// Ends the sessions unseen past their idle time on a host that runs
