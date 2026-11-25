@@ -5,7 +5,8 @@
 // changelog of who published what and why, and steps back through it: v4,
 // v3, v2, the page changing under him each time. The agent then restores v2
 // as a new version (`versions:restore`, the API an agent's restore uses:
-// the shell has no restore control of its own), Alex reloads onto it, and
+// the shell has no restore control of its own), Alex goes to it with the
+// version control's main part ("v2 of 6", which leads to the latest), and
 // the menu shows v6 "Restored v2" on top of the five it kept.
 //
 // The versions were published seconds before the film, and the camera's
@@ -16,7 +17,7 @@
 //
 // Every version choice is a navigation of the shell: the press is filmed,
 // and the film waits off camera until the chosen version's page has loaded
-// and the version button names it, so the frame it first shows on is the
+// and the version control names it, so the frame it first shows on is the
 // same each run.
 //
 // Beats: `menu` (the version menu opens), `scrub` (the first step back),
@@ -97,14 +98,21 @@ const routed = new WeakMap<Page, Map<string, string>>();
 /** Version `n`'s page, from the vignette's fixtures. */
 const fixture = (n: number) => readFileSync(new URL(`../fixtures/history/v${n}.html`, import.meta.url), "utf8");
 
-/** The version button, which names the version shown ("v4of 5 ▾"). */
+/** The button that opens the version menu: the whole control on the latest
+ * version ("Latest ▾"), the ▾ part of the split button otherwise. */
 const versionButton = (page: Page) => page.locator("button.vbtn");
 
 /** The version menu's row for version `n`. */
 const rowOf = (page: Page, n: number) => page.locator(".vmenu .vrow a").filter({ has: page.locator(".g", { hasText: new RegExp(`^v${n}$`) }) });
 
-/** What the shell's version button says, read without a gesture. */
-const shownText = (page: Page) => quietIn<string>(page, page.mainFrame(), `document.querySelector("button.vbtn")?.textContent ?? ""`);
+/** The accessible names of the version control's buttons, read without a
+ * gesture. Between them they name the version shown in either form of the
+ * control: "v4 of 5, back to the latest" on the main part of the split
+ * button, "Latest, version 6" on the one menu button. */
+const shownNames = (page: Page) => quietIn<string[]>(page, page.mainFrame(), `[...document.querySelectorAll(".version-menu > button")].map(b => b.getAttribute("aria-label") ?? "")`);
+
+/** The start of the name the version control gives version `n` of `latest`. */
+const nameOf = (n: number, latest: number) => (n < latest ? `v${n} of ${latest}` : `Latest, version ${n}`);
 
 /** Waits off camera until the shell shows version `n` of `latest`, its page
  * loaded in the frame. The shell loads without its first-load data (a page
@@ -114,7 +122,8 @@ async function landed(d: Director, cast: Cast, n: number, latest: number): Promi
   const url = new RegExp(`${cast.aid}\\.localhost:\\d+/_clax/v/${n}/(#.*)?$`);
   await d.settle(async () => cast.page.frame({ url }) !== null, `the frame shows v${n}`);
   await d.offstage(() => contentFrame(cast.page, cast.aid, n));
-  await d.until(async () => (await shownText(cast.page)).startsWith(`v${n}of ${latest}`), `the shell shows v${n} of ${latest}`);
+  const name = nameOf(n, latest);
+  await d.until(async () => (await shownNames(cast.page)).some(s => s === name || s.startsWith(`${name},`)), `the shell shows v${n} of ${latest}`);
   await closeThreads(d, cast.page);
 }
 
@@ -213,17 +222,19 @@ export default {
       await d.hold(n === 2 ? 600 : 350);
     }
 
-    // The agent restores v2 as a new version; Alex reloads onto it.
+    // The agent restores v2 as a new version; Alex goes to it, the latest.
     d.beat("restore");
     await d.offstage(async () => {
       const r = (await api(base, token, `/api/artifacts/${aid}/versions:restore`, { method: "POST", session: sid, body: JSON.stringify({ version: 2, if_version: latest, ...RESTORED }) })) as { version: { created_at: string } };
       staged.set(r.version.created_at, new Date(ROLL).toISOString());
       await stageTimes(page, base, staged);
     });
-    const reload = page.locator("button.reload");
-    await d.until(() => reload.isVisible(), "the Reload button offers the restored version");
+    // He is on v2, an older version: the control's main part, which goes to
+    // the latest, now counts the restored one ("v2 of 6").
+    const offered = `${nameOf(2, latest + 1)},`;
+    await d.until(async () => (await shownNames(page)).some(s => s.startsWith(offered)), "the version control counts the restored version");
     await d.hold(300);
-    await pressAndLand(d, cast, reload, latest + 1, latest + 1);
+    await pressAndLand(d, cast, page.locator("button.vmain"), latest + 1, latest + 1);
     await d.hold(300);
     // The menu shows the restored version on top, and every one before it.
     await openMenu(d, page);

@@ -1,7 +1,7 @@
 {
   "targets": {
     "menu": ".vmenu",
-    "chip": "button.vbtn"
+    "chip": ".version-menu"
   },
   "shots": [
     { "at": "@menu-0.2", "until": "scrub+0.1", "targets": ["menu"], "label": "the version menu" },
