@@ -2386,6 +2386,14 @@ fn gh(id: i64, login: &str) -> crate::github::GitHubUser {
     }
 }
 
+/// The account GitHub answered `login` with: `id`.
+fn acct(id: i64, login: &str) -> crate::github::GitHubAccount {
+    crate::github::GitHubAccount {
+        id,
+        login: login.into(),
+    }
+}
+
 /// The `access` items of `recipient` (`None`: the owner), oldest first.
 fn access_items(st: &Store, recipient: Option<&str>) -> Vec<serde_json::Value> {
     let mut rows = st
@@ -2427,12 +2435,12 @@ fn a_login_is_a_member_at_once_or_at_its_first_sign_in_with_one_access_item() {
 
     // Signed in here: a member at once, by their person.
     assert_eq!(
-        st.add_member_by_login(DAEMON, &qid, "@Sam-Lee", Role::Triage, owner)
+        st.add_member_by_login(DAEMON, &qid, &acct(7, "@Sam-Lee"), Role::Triage, owner)
             .unwrap(),
         super::AddedByLogin::Member(sam.clone(), Role::Triage)
     );
     assert_eq!(st.queue_role(&qid, Some(&sam)).unwrap(), Some(Role::Triage));
-    st.add_member_by_login(DAEMON, &qid, "sam-lee", Role::Admin, owner)
+    st.add_member_by_login(DAEMON, &qid, &acct(7, "sam-lee"), Role::Admin, owner)
         .unwrap();
     assert_eq!(st.queue_role(&qid, Some(&sam)).unwrap(), Some(Role::Admin));
     assert_eq!(
@@ -2443,22 +2451,23 @@ fn a_login_is_a_member_at_once_or_at_its_first_sign_in_with_one_access_item() {
 
     // Not signed in here yet: an invite, which takes a new role.
     let super::AddedByLogin::Invite(inv) = st
-        .add_member_by_login(DAEMON, &qid, "@Octo-Cat", Role::Triage, owner)
+        .add_member_by_login(DAEMON, &qid, &acct(9, "@Octo-Cat"), Role::Triage, owner)
         .unwrap()
     else {
         panic!("an invite")
     };
     assert_eq!(
-        (inv.github_login.as_str(), inv.role),
-        ("octo-cat", Role::Triage)
+        (inv.github_login.as_str(), inv.role, inv.legacy),
+        ("Octo-Cat", Role::Triage, false),
+        "as GitHub spells it"
     );
     let again = st
-        .add_member_by_login(DAEMON, &qid, "octo-cat", Role::Admin, owner)
+        .add_member_by_login(DAEMON, &qid, &acct(9, "Octo-Cat"), Role::Admin, owner)
         .unwrap();
     assert!(
         matches!(&again, super::AddedByLogin::Invite(i) if i.id == inv.id && i.role == Role::Admin)
     );
-    st.add_member_by_login(DAEMON, &qid, "octo-cat", Role::Admin, owner)
+    st.add_member_by_login(DAEMON, &qid, &acct(9, "Octo-Cat"), Role::Admin, owner)
         .unwrap();
     assert_eq!(st.queue_invites(&qid).unwrap().len(), 1);
     let invites: Vec<_> = audit(&st, "queue.update")
@@ -2475,7 +2484,7 @@ fn a_login_is_a_member_at_once_or_at_its_first_sign_in_with_one_access_item() {
         (&json!("octo-cat"), &json!("triage"))
     );
     assert_eq!(
-        code_of(st.add_member_by_login(DAEMON, &qid, "-nope", Role::Triage, owner)),
+        code_of(st.add_member_by_login(DAEMON, &qid, &acct(3, "-nope"), Role::Triage, owner)),
         "invalid_login"
     );
 
@@ -2492,7 +2501,7 @@ fn a_login_is_a_member_at_once_or_at_its_first_sign_in_with_one_access_item() {
     );
     // Removed and added again: no second item.
     st.set_member(DAEMON, &qid, &octo, None).unwrap();
-    st.add_member_by_login(DAEMON, &qid, "octo-cat", Role::Triage, owner)
+    st.add_member_by_login(DAEMON, &qid, &acct(9, "Octo-Cat"), Role::Triage, owner)
         .unwrap();
     assert_eq!(access_items(&st, Some(&octo)).len(), 1);
 
@@ -2500,7 +2509,7 @@ fn a_login_is_a_member_at_once_or_at_its_first_sign_in_with_one_access_item() {
     // own queue and a member of Sam's, with the item addressed to them.
     st.github_sign_in(DAEMON, &gh(1, "ada-gh"), true).unwrap();
     assert_eq!(
-        code_of(st.add_member_by_login(DAEMON, &qid, "ada-gh", Role::Triage, owner)),
+        code_of(st.add_member_by_login(DAEMON, &qid, &acct(1, "ada-gh"), Role::Triage, owner)),
         "queue_maker"
     );
     let sams = st
@@ -2516,7 +2525,7 @@ fn a_login_is_a_member_at_once_or_at_its_first_sign_in_with_one_access_item() {
         .unwrap()
         .id;
     assert_eq!(
-        st.add_member_by_login(DAEMON, &sams, "ada-gh", Role::Triage, &sam)
+        st.add_member_by_login(DAEMON, &sams, &acct(1, "ada-gh"), Role::Triage, &sam)
             .unwrap(),
         super::AddedByLogin::Member(owner.to_string(), Role::Triage)
     );
@@ -2573,7 +2582,7 @@ fn an_invite_is_removed_or_dropped_at_sign_in_without_failing_it() {
         queue(&st, ReportersSee::Own),
     );
     let inv = |q: &str| match st
-        .add_member_by_login(DAEMON, q, "mia", Role::Triage, owner)
+        .add_member_by_login(DAEMON, q, &acct(11, "mia"), Role::Triage, owner)
         .unwrap()
     {
         super::AddedByLogin::Invite(i) => i,
@@ -2603,14 +2612,103 @@ fn an_invite_is_removed_or_dropped_at_sign_in_without_failing_it() {
     assert!(st.queue_invites(&b).unwrap().is_empty());
     assert_eq!(access_items(&st, Some(&mia)).len(), 1);
     // A deleted queue drops its invites.
-    inv_for(&st, &c, "zed");
+    inv_for(&st, &c, 12, "zed");
     st.delete_queue(DAEMON, &c).unwrap();
     assert!(st.queue_invites(&c).unwrap().is_empty());
 }
 
-fn inv_for(st: &Store, qid: &str, login: &str) {
-    st.add_member_by_login(DAEMON, qid, login, Role::Triage, super::OWNER_MEMBER)
+fn inv_for(st: &Store, qid: &str, id: i64, login: &str) {
+    st.add_member_by_login(DAEMON, qid, &acct(id, login), Role::Triage, super::OWNER_MEMBER)
         .unwrap();
+}
+
+/// An invite to @alice binds to the account that held the login when it
+/// was given, under whatever login it signs in with, never to a later
+/// holder of the login; on a local Clax that later holder is not even
+/// made a person.
+#[test]
+fn an_invite_binds_to_the_account_not_to_a_later_holder_of_its_login() {
+    let (_d, st) = store();
+    st.hosted_setup(DAEMON, "Ada").unwrap();
+    let qid = queue(&st, ReportersSee::Own);
+    inv_for(&st, &qid, 1, "alice");
+    // Account 1 renames to alice2; account 2 registers "alice".
+    assert_eq!(
+        code_of(st.github_sign_in_local(DAEMON, &gh(2, "alice"))),
+        "github_not_invited",
+        "a later holder of the login signs up for nothing"
+    );
+    let (bob, _) = st.github_sign_in(DAEMON, &gh(2, "alice"), false).unwrap();
+    let bob = bob.who.viewer.public_id;
+    assert_eq!(st.queue_role(&qid, Some(&bob)).unwrap(), None);
+    assert_eq!(st.queue_invites(&qid).unwrap().len(), 1, "still waiting");
+    assert!(access_items(&st, Some(&bob)).is_empty());
+    let (alice, _) = st.github_sign_in(DAEMON, &gh(1, "alice2"), false).unwrap();
+    let alice = alice.who.viewer.public_id;
+    assert_eq!(st.queue_role(&qid, Some(&alice)).unwrap(), Some(Role::Triage));
+    assert!(st.queue_invites(&qid).unwrap().is_empty());
+}
+
+/// Adding by login matches an account signed in here by its ID: a stale
+/// login on a linked account (renamed on GitHub since its last sign-in
+/// here) makes no one a member.
+#[test]
+fn adding_by_login_matches_a_signed_in_account_by_its_id_not_a_stale_login() {
+    let (_d, st) = store();
+    st.hosted_setup(DAEMON, "Ada").unwrap();
+    let qid = queue(&st, ReportersSee::Own);
+    let (old, _) = st.github_sign_in(DAEMON, &gh(1, "alice"), false).unwrap();
+    let old = old.who.viewer.public_id;
+    // GitHub answers "alice" with account 2 now.
+    let added = st
+        .add_member_by_login(DAEMON, &qid, &acct(2, "alice"), Role::Admin, super::OWNER_MEMBER)
+        .unwrap();
+    assert!(matches!(added, super::AddedByLogin::Invite(_)), "{added:?}");
+    assert_eq!(st.queue_role(&qid, Some(&old)).unwrap(), None);
+    // Account 1 under its new login is a member at once.
+    assert_eq!(
+        st.add_member_by_login(DAEMON, &qid, &acct(1, "alice2"), Role::Triage, super::OWNER_MEMBER)
+            .unwrap(),
+        super::AddedByLogin::Member(old.clone(), Role::Triage)
+    );
+}
+
+/// An invite left by a build before migration 77 (by login, no account ID)
+/// is listed as legacy and still binds by login; adding the login again
+/// ties the one invite to the account GitHub names.
+#[test]
+fn a_legacy_invite_binds_by_login_and_adding_again_ties_it_to_the_account() {
+    let (_d, st) = store();
+    st.hosted_setup(DAEMON, "Ada").unwrap();
+    let (a, b) = (queue(&st, ReportersSee::Own), queue(&st, ReportersSee::Own));
+    st.with_tx(|tx| {
+        for (id, q) in [("inv_a", &a), ("inv_b", &b)] {
+            tx.execute(
+                "INSERT INTO queue_member_invites (id, queue_id, github_login, role, created_at)
+                 VALUES (?1, ?2, 'octo', 'triage', '2026-11-20')",
+                rusqlite::params![id, q],
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let listed = st.queue_invites(&a).unwrap().remove(0);
+    assert_eq!((listed.legacy, listed.github_login.as_str()), (true, "octo"));
+    let super::AddedByLogin::Invite(tied) = st
+        .add_member_by_login(DAEMON, &b, &acct(9, "Octo"), Role::Triage, super::OWNER_MEMBER)
+        .unwrap()
+    else {
+        panic!("an invite")
+    };
+    assert_eq!(
+        (tied.id.as_str(), tied.legacy, tied.github_login.as_str()),
+        ("inv_b", false, "Octo"),
+        "the same role still ties it"
+    );
+    let (other, _) = st.github_sign_in(DAEMON, &gh(5, "octo"), false).unwrap();
+    let other = other.who.viewer.public_id;
+    assert_eq!(st.queue_role(&a, Some(&other)).unwrap(), Some(Role::Triage), "legacy: by login");
+    assert_eq!(st.queue_role(&b, Some(&other)).unwrap(), None, "tied to account 9");
 }
 
 mod previews;

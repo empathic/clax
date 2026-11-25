@@ -2,13 +2,17 @@
 //! shared by link listed in the public gallery.
 //!
 //! - **A share** gives one person [`ShareAccess`] at one artifact. It names
-//!   the person by their viewer row, or by a GitHub login
-//!   ([`ShareTo::GitHub`]). A login that a GitHub account already signed in
-//!   with names that account's person at once; any other waits, and the
-//!   account's first sign-in with that login binds it to the person made
-//!   then ([`bind_github_shares`]). From then on the share follows the
-//!   person, not the login, so a login given up and taken by someone else
-//!   does not inherit it.
+//!   the person by their viewer row, or by a GitHub login, which the
+//!   server first asks GitHub for the account it names now
+//!   ([`ShareTo::GitHub`], a [`GitHubAccount`]). An account that has
+//!   signed in here (matched by its numeric ID, never its login) names its
+//!   person at once; any other share waits for that account, by its ID,
+//!   and the account's first sign-in binds it to the person made then
+//!   ([`bind_github_shares`]), whatever its login is by then. So a login
+//!   renamed, given up and taken by someone else never carries a share to
+//!   its new holder, before or after the share binds. A share waiting from
+//!   before migration 77 has no account ID: it still binds by login, and
+//!   is listed as `legacy`.
 //! - **Resolution** is [`share_rights`]: the rights every share of a person
 //!   holds, which the person's rights take in ([`Store::person_rights`]),
 //!   so their browser, their listings and their agents all see them. It is
@@ -22,6 +26,7 @@
 //! context.
 
 use super::Store;
+use super::github::{BINDS_TO, GitHubAccount, GitHubUser};
 use super::hosted::LinkAccess;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::rights::Rights;
@@ -104,8 +109,9 @@ impl ShareAccess {
 /// Whom a share names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShareTo {
-    /// A GitHub login, checked and lowercased by [`github_login`].
-    GitHub(String),
+    /// The GitHub account a login names, as GitHub answered for it (its
+    /// login checked by [`github_login`]).
+    GitHub(GitHubAccount),
     /// A person, by public ID.
     Person(String),
 }
@@ -116,11 +122,16 @@ pub struct Share {
     pub id: String,
     pub artifact_id: String,
     pub access: ShareAccess,
-    /// The login it was given to (lowercased), if it was given by login.
+    /// The login it was given to, if it was given by login: as GitHub
+    /// spelled it, or lowercased for one given before migration 77.
     pub github_login: Option<String>,
     /// The person's public ID once the share names one; `None` while it
-    /// waits for its login's first sign-in.
+    /// waits for its account's first sign-in.
     pub person: Option<String>,
+    /// A share waiting from before migration 77: given by login alone, with
+    /// no GitHub account ID, so it binds to whoever first signs in with
+    /// that login. Sharing with the login again ties it to the account.
+    pub legacy: bool,
     /// The person's name, once it names one.
     pub name: Option<String>,
     pub created_at: String,
@@ -186,21 +197,29 @@ pub(super) fn share_rights(c: &Connection, viewer_id: &str) -> Result<Option<Rig
     Ok(Some(Rights::parse_internal(&Value::Array(objects))?))
 }
 
-/// Binds the shares waiting for GitHub login `login` to viewer row
-/// `viewer_id`, at that account's sign-in, as [`give_shares`] does.
-/// Returns how many were waiting.
+/// Binds the shares waiting for GitHub account `user` ([`BINDS_TO`]: given
+/// to its ID, or before migration 77 to the login it signs in with) to
+/// viewer row `viewer_id`, at that account's sign-in, as [`give_shares`]
+/// does. Returns how many were waiting.
 pub(super) fn bind_github_shares(
     tx: &Transaction<'_>,
-    login: &str,
+    user: &GitHubUser,
     viewer_id: &str,
 ) -> Result<usize> {
-    let login = login.to_ascii_lowercase();
-    let waiting = moving(
-        tx,
+    let mut stmt = tx.prepare(&format!(
         "SELECT id, artifact_id, access FROM artifact_shares
-          WHERE viewer_id IS NULL AND github_login = ?1",
-        &login,
-    )?;
+          WHERE viewer_id IS NULL AND {BINDS_TO}"
+    ))?;
+    let waiting = stmt
+        .query_map(params![user.id, user.login.to_ascii_lowercase()], |r| {
+            Ok(Moving {
+                id: r.get(0)?,
+                artifact_id: r.get(1)?,
+                access: r.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
     let n = waiting.len();
     give_shares(tx, waiting, viewer_id)?;
     Ok(n)
@@ -278,8 +297,10 @@ fn give_shares(tx: &Transaction<'_>, shares: Vec<Moving>, viewer_id: &str) -> Re
     Ok(())
 }
 
-const SHARE_SELECT: &str = "SELECT s.id, s.artifact_id, s.access, s.github_login, v.public_id,
-        v.display_name, s.created_at, s.created_by
+const SHARE_SELECT: &str = "SELECT s.id, s.artifact_id, s.access,
+        COALESCE(s.github_login_shown, s.github_login), v.public_id,
+        v.display_name, s.created_at, s.created_by,
+        s.viewer_id IS NULL AND s.github_id IS NULL
     FROM artifact_shares s LEFT JOIN viewers v ON v.id = s.viewer_id";
 
 fn row_to_share(r: &rusqlite::Row<'_>) -> rusqlite::Result<Share> {
@@ -293,7 +314,61 @@ fn row_to_share(r: &rusqlite::Row<'_>) -> rusqlite::Result<Share> {
         name: r.get(5)?,
         created_at: r.get(6)?,
         created_by: r.get(7)?,
+        legacy: r.get(8)?,
     })
+}
+
+/// The one pending row of `aid` (an artifact's or a queue's) a grant to
+/// `account` (its lowercased login `login`) takes over, in `tx`: the one
+/// already given to the account's ID (under any login it had), else a
+/// legacy one waiting for the login (no account ID), which is then tied to
+/// the account. When both exist the legacy one is dropped, the other
+/// taking the grant. A row waiting under the login for another account
+/// (the login changed hands since) is never taken over: that grant stays
+/// that account's, and this one is refused. `table` and `scope`
+/// (`artifact_id` or `queue_id`) name the pending rows' table; `pending`
+/// is the extra condition a row is pending under (`viewer_id IS NULL`, or
+/// `1`).
+///
+/// # Errors
+/// `github_login_moved` when a row waits under `login` for another
+/// account.
+pub(super) fn pending_row_for(
+    tx: &Transaction<'_>,
+    (table, scope, pending): (&str, &str, &str),
+    aid: &str,
+    account: &GitHubAccount,
+    login: &str,
+) -> Result<Option<String>> {
+    let base = format!("SELECT id, github_id FROM {table} WHERE {scope} = ?1 AND {pending}");
+    let find = |cond: &str, arg: &dyn rusqlite::ToSql| -> Result<Option<(String, Option<i64>)>> {
+        Ok(tx
+            .query_row(&format!("{base} AND {cond}"), params![aid, arg], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?)
+    };
+    let by_id = find("github_id = ?2", &account.id)?.map(|(id, _)| id);
+    let by_login = find("github_login = ?2", &login)?;
+    if by_login
+        .as_ref()
+        .is_some_and(|(_, other)| other.is_some_and(|o| o != account.id))
+    {
+        return Err(CoreError::invalid(
+            "github_login_moved",
+            format!(
+                "@{login} is waiting here for the GitHub account that held the login when it was added, which is not the account that holds it now: remove that one first to add the account that holds @{login} now"
+            ),
+        ));
+    }
+    match (by_id, by_login.map(|(id, _)| id)) {
+        (Some(a), Some(b)) if a != b => {
+            tx.execute(&format!("DELETE FROM {table} WHERE id = ?1"), params![b])?;
+            Ok(Some(a))
+        }
+        (Some(a), _) => Ok(Some(a)),
+        (None, b) => Ok(b),
+    }
 }
 
 fn live_artifact(tx: &Connection, aid: &str) -> Result<()> {
@@ -337,13 +412,17 @@ impl Store {
 
     /// Shares artifact `aid` with `to` at `access`, or changes the access of
     /// the share it already has, recording `artifact.update` of its
-    /// `share` under `ctx`. `by` is the sharer's public ID. A login a
-    /// GitHub account signed in with names that account's person now.
+    /// `share` under `ctx`. `by` is the sharer's public ID. A GitHub
+    /// account that has signed in here (by its ID) names its person now;
+    /// any other's share waits for that account ([`pending_row_for`]: one
+    /// per artifact and account, which also takes over a pending share of
+    /// the same login, a legacy one included, now tied to the account).
     ///
     /// # Errors
     /// `NotFound` for no such live artifact; `unknown_person` for a public
     /// ID that names no unrevoked person (the owner is one to share with:
     /// the owner reads another person's artifact only through its share);
+    /// `invalid_login` for an account whose login is not one;
     /// `limit_reached` past
     /// [`MAX_SHARES_PER_ARTIFACT`].
     pub fn share_artifact(
@@ -356,6 +435,7 @@ impl Store {
     ) -> Result<Share> {
         self.with_tx(|tx| {
             live_artifact(tx, aid)?;
+            let mut account: Option<(i64, String)> = None;
             let (viewer, login): (Option<String>, Option<String>) = match to {
                 ShareTo::Person(pid) => {
                     let row: Option<(String, bool, bool, bool)> = tx
@@ -380,45 +460,55 @@ impl Store {
                         }
                     }
                 }
-                ShareTo::GitHub(login) => {
-                    let login = github_login(login)?;
+                ShareTo::GitHub(acct) => {
+                    let login = github_login(&acct.login)?;
+                    // By the account's ID: a login a stale row here holds
+                    // (its account renamed, the login taken since) names
+                    // no one.
                     let known: Option<String> = tx
                         .query_row(
-                            "SELECT viewer_id FROM github_identities
-                              WHERE lower(login) = ?1 ORDER BY signed_in_at DESC LIMIT 1",
-                            params![login],
+                            "SELECT viewer_id FROM github_identities WHERE github_id = ?1",
+                            params![acct.id],
                             |r| r.get(0),
                         )
                         .optional()?;
-                    match known {
-                        Some(id) => (Some(id), Some(login)),
-                        None => (None, Some(login)),
-                    }
+                    let shown = acct.login.trim().trim_start_matches('@').to_string();
+                    account = Some((acct.id, shown));
+                    (known, Some(login))
                 }
             };
-            let existing: Option<String> = match &viewer {
-                Some(v) => tx
+            let existing: Option<String> = match (&viewer, &to) {
+                (Some(v), _) => tx
                     .query_row(
                         "SELECT id FROM artifact_shares WHERE artifact_id = ?1 AND viewer_id = ?2",
                         params![aid, v],
                         |r| r.get(0),
                     )
                     .optional()?,
-                None => tx
-                    .query_row(
-                        "SELECT id FROM artifact_shares
-                          WHERE artifact_id = ?1 AND viewer_id IS NULL AND github_login = ?2",
-                        params![aid, login],
-                        |r| r.get(0),
-                    )
-                    .optional()?,
+                (None, ShareTo::GitHub(acct)) => pending_row_for(
+                    tx,
+                    ("artifact_shares", "artifact_id", "viewer_id IS NULL"),
+                    aid,
+                    acct,
+                    login.as_deref().unwrap_or_default(),
+                )?,
+                (None, ShareTo::Person(_)) => None,
+            };
+            // A pending share names its account; one bound to a person
+            // needs no account (it follows the person).
+            let (gid, shown) = match (&viewer, &account) {
+                (None, Some((id, shown))) => (Some(*id), Some(shown.clone())),
+                _ => (None, None),
             };
             let id = match existing {
                 Some(id) => {
                     tx.execute(
                         "UPDATE artifact_shares SET access = ?2,
-                                github_login = COALESCE(?3, github_login) WHERE id = ?1",
-                        params![id, access.as_str(), login],
+                                github_login = COALESCE(?3, github_login),
+                                github_id = COALESCE(?4, github_id),
+                                github_login_shown = COALESCE(?5, github_login_shown)
+                          WHERE id = ?1",
+                        params![id, access.as_str(), login, gid, shown],
                     )?;
                     id
                 }
@@ -437,9 +527,9 @@ impl Store {
                     let id = new_ulid();
                     tx.execute(
                         "INSERT INTO artifact_shares (id, artifact_id, viewer_id, github_login, access,
-                             created_at, created_by)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        params![id, aid, viewer, login, access.as_str(), self.now(), by],
+                             created_at, created_by, github_id, github_login_shown)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        params![id, aid, viewer, login, access.as_str(), self.now(), by, gid, shown],
                     )?;
                     id
                 }
@@ -626,6 +716,14 @@ mod tests {
         }
     }
 
+    /// A share to the account GitHub answered `login` with: `id`.
+    fn to(id: i64, login: &str) -> ShareTo {
+        ShareTo::GitHub(GitHubAccount {
+            id,
+            login: login.into(),
+        })
+    }
+
     /// A hosted store with its owner, and a GitHub member, Sam.
     fn hosted() -> (tempfile::TempDir, Store, String) {
         let (d, st) = store();
@@ -715,15 +813,15 @@ mod tests {
             .share_artifact(
                 DAEMON,
                 a,
-                &ShareTo::GitHub("@Octo-Cat".into()),
+                &to(42, "@Octo-Cat"),
                 ShareAccess::Commenter,
                 Some("u_x"),
             )
             .unwrap();
-        assert_eq!(s.github_login.as_deref(), Some("octo-cat"));
+        assert_eq!(s.github_login.as_deref(), Some("Octo-Cat"), "as GitHub spells it");
         assert_eq!(
-            (s.person.as_deref(), s.created_by.as_deref()),
-            (None, Some("u_x"))
+            (s.person.as_deref(), s.created_by.as_deref(), s.legacy),
+            (None, Some("u_x"), false)
         );
         let (signed, _) = st
             .github_sign_in(DAEMON, &gh(42, "octo-cat"), false)
@@ -736,14 +834,8 @@ mod tests {
         // person again changes the one share.
         let b = artifact(&st, None);
         let b = b.as_str();
-        st.share_artifact(
-            DAEMON,
-            b,
-            &ShareTo::GitHub("octo-cat".into()),
-            ShareAccess::Viewer,
-            None,
-        )
-        .unwrap();
+        st.share_artifact(DAEMON, b, &to(42, "octo-cat"), ShareAccess::Viewer, None)
+            .unwrap();
         st.share_artifact(
             DAEMON,
             b,
@@ -768,18 +860,105 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_share_binds_to_the_account_not_to_a_later_holder_of_its_login() {
+        let (_d, st, _sam) = hosted();
+        let a = artifact(&st, None);
+        let a = a.as_str();
+        // Shared with @alice while account 1 held the login.
+        st.share_artifact(DAEMON, a, &to(1, "alice"), ShareAccess::Editor, None)
+            .unwrap();
+        // Alice renames to alice2; account 2 takes "alice" and signs in
+        // first: nothing for them (not even a person on a local Clax).
+        let (other, _) = st.github_sign_in(DAEMON, &gh(2, "alice"), false).unwrap();
+        let other = other.who.viewer.public_id;
+        assert!(!may(&st, &other, RightType::Artifacts, "read", a));
+        assert_eq!(st.artifact_shares(a).unwrap()[0].person, None, "still waiting");
+        // Sharing with "alice" again (GitHub names account 2 now), as a
+        // change of the waiting share's access would, never moves it.
+        assert_eq!(
+            code_of(st.share_artifact(DAEMON, a, &to(2, "alice"), ShareAccess::Viewer, None)),
+            "github_login_moved"
+        );
+        assert!(!may(&st, &other, RightType::Artifacts, "read", a));
+        // Account 1 signs in as alice2: the share is theirs.
+        let (alice, _) = st.github_sign_in(DAEMON, &gh(1, "alice2"), false).unwrap();
+        let alice = alice.who.viewer.public_id;
+        assert!(may(&st, &alice, RightType::Artifacts, "update", a));
+        assert_eq!(
+            st.artifact_shares(a).unwrap()[0].person.as_deref(),
+            Some(alice.as_str())
+        );
+    }
+
+    #[test]
+    fn a_share_to_a_signed_in_account_matches_its_id_never_a_stale_login() {
+        let (_d, st, _sam) = hosted();
+        let a = artifact(&st, None);
+        let a = a.as_str();
+        // Account 1 signed in here as "alice", then renamed on GitHub
+        // without signing in again: its row still says "alice".
+        let (old, _) = st.github_sign_in(DAEMON, &gh(1, "alice"), false).unwrap();
+        let old = old.who.viewer.public_id;
+        // GitHub now answers "alice" with account 2: the share waits for
+        // account 2, and account 1 gets nothing.
+        let s = st
+            .share_artifact(DAEMON, a, &to(2, "alice"), ShareAccess::Viewer, None)
+            .unwrap();
+        assert_eq!(s.person, None);
+        assert!(!may(&st, &old, RightType::Artifacts, "read", a));
+        let (new, _) = st.github_sign_in(DAEMON, &gh(2, "alice"), false).unwrap();
+        assert!(may(&st, &new.who.viewer.public_id, RightType::Artifacts, "read", a));
+        // A share to account 1 by its new login names its person at once.
+        let b = artifact(&st, None);
+        let s = st
+            .share_artifact(DAEMON, b.as_str(), &to(1, "alice2"), ShareAccess::Viewer, None)
+            .unwrap();
+        assert_eq!(s.person.as_deref(), Some(old.as_str()));
+    }
+
+    #[test]
+    fn a_legacy_share_waits_by_login_is_flagged_and_sharing_again_ties_it_to_the_account() {
+        let (_d, st, _sam) = hosted();
+        let (a, b) = (artifact(&st, None), artifact(&st, None));
+        // Rows as a build before migration 77 left them: by login alone.
+        st.with_tx(|tx| {
+            for (id, aid) in [("s_a", &a), ("s_b", &b)] {
+                tx.execute(
+                    "INSERT INTO artifact_shares (id, artifact_id, github_login, access, created_at)
+                     VALUES (?1, ?2, 'octo', 'viewer', '2026-11-01')",
+                    params![id, aid],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let s = st.artifact_shares(&a).unwrap().remove(0);
+        assert_eq!((s.legacy, s.github_login.as_deref()), (true, Some("octo")));
+        // Shared with the login again: the one row, now account 9's.
+        let again = st
+            .share_artifact(DAEMON, &b, &to(9, "Octo"), ShareAccess::Commenter, None)
+            .unwrap();
+        assert_eq!(again.id, "s_b");
+        assert_eq!(
+            (again.legacy, again.github_login.as_deref(), again.access),
+            (false, Some("Octo"), ShareAccess::Commenter)
+        );
+        assert_eq!(st.artifact_shares(&b).unwrap().len(), 1);
+        // Another account signing in as "octo" takes the legacy share
+        // (as before migration 77), not the one tied to account 9.
+        let (other, _) = st.github_sign_in(DAEMON, &gh(5, "octo"), false).unwrap();
+        let other = other.who.viewer.public_id;
+        assert!(may(&st, &other, RightType::Artifacts, "read", &a));
+        assert!(!may(&st, &other, RightType::Artifacts, "read", &b));
+    }
+
+    #[test]
     fn a_login_share_waiting_for_the_owners_account_binds_to_the_owner_at_sign_in() {
         let (_d, st, _sam) = hosted();
         let a = artifact(&st, None);
         let a = a.as_str();
         let s = st
-            .share_artifact(
-                DAEMON,
-                a,
-                &ShareTo::GitHub("ada-gh".into()),
-                ShareAccess::Editor,
-                None,
-            )
+            .share_artifact(DAEMON, a, &to(1, "ada-gh"), ShareAccess::Editor, None)
             .unwrap();
         assert_eq!(s.person, None, "the login is linked to no one yet");
         st.github_sign_in(DAEMON, &gh(1, "ada-gh"), true).unwrap();
@@ -789,13 +968,7 @@ mod tests {
         assert_eq!(shares[0].person.as_deref(), Some(owner.as_str()));
         // A later share by the login names the owner at once, at its access.
         let again = st
-            .share_artifact(
-                DAEMON,
-                a,
-                &ShareTo::GitHub("ada-gh".into()),
-                ShareAccess::Viewer,
-                None,
-            )
+            .share_artifact(DAEMON, a, &to(1, "ada-gh"), ShareAccess::Viewer, None)
             .unwrap();
         assert_eq!(again.person.as_deref(), Some(owner.as_str()));
         assert_eq!(st.artifact_shares(a).unwrap().len(), 1);
@@ -822,16 +995,10 @@ mod tests {
             None,
         )
         .unwrap();
-        st.share_artifact(
-            DAEMON,
-            a,
-            &ShareTo::GitHub("mia".into()),
-            ShareAccess::Editor,
-            None,
-        )
-        .unwrap();
+        st.share_artifact(DAEMON, a, &to(12, "mia"), ShareAccess::Editor, None)
+            .unwrap();
         assert_eq!(st.artifact_shares(a).unwrap().len(), 2);
-        st.with_tx(|tx| bind_github_shares(tx, "Mia", &mia.id))
+        st.with_tx(|tx| bind_github_shares(tx, &gh(12, "Mia"), &mia.id))
             .unwrap();
         let shares = st.artifact_shares(a).unwrap();
         assert_eq!(shares.len(), 1);
@@ -854,11 +1021,7 @@ mod tests {
             "unknown_person"
         );
         for bad in ["", "@", "-lead", "has space", "a_b", "é", &"x".repeat(40)] {
-            assert_eq!(
-                code_of(share(ShareTo::GitHub(bad.into()))),
-                "invalid_login",
-                "{bad}"
-            );
+            assert_eq!(code_of(share(to(3, bad))), "invalid_login", "{bad}");
         }
         assert_eq!(github_login(&"x".repeat(39)).unwrap().len(), 39);
         assert_eq!(
@@ -942,14 +1105,8 @@ mod tests {
         );
         st.set_general_access(DAEMON, b, Some(LinkAccess::Commenter), None)
             .unwrap();
-        st.share_artifact(
-            DAEMON,
-            c,
-            &ShareTo::GitHub("someone".into()),
-            ShareAccess::Editor,
-            None,
-        )
-        .unwrap();
+        st.share_artifact(DAEMON, c, &to(4, "someone"), ShareAccess::Editor, None)
+            .unwrap();
         let ids = |st: &Store| {
             st.public_artifacts()
                 .unwrap()

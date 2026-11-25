@@ -29,6 +29,7 @@
 
 use super::Store;
 use super::external::{EXTERNAL_SELECT, NewExternal, row_to_external};
+use super::github::{BINDS_TO, GitHubAccount, GitHubUser};
 use super::threads::{
     AUTHOR_AGENT, AUTHOR_VIEWER, NewComment, NewThread, check_body, check_not_taken_in,
     clip_problem,
@@ -120,18 +121,24 @@ pub struct ServiceGrant {
 /// The most invites ([`QueueInvite`]) one queue holds at once.
 pub const MAX_QUEUE_INVITES: usize = 100;
 
-/// A queue member added by GitHub login, waiting for that account's first
-/// sign-in here ([`Store::add_member_by_login`]).
+/// A queue member added by GitHub login, waiting for the GitHub account
+/// the login named then to sign in here ([`Store::add_member_by_login`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct QueueInvite {
     pub id: String,
-    /// Lowercased.
+    /// As GitHub spelled it; lowercased for a legacy invite.
     pub github_login: String,
     pub role: Role,
     pub created_at: String,
+    /// An invite from before migration 77: by login alone, with no GitHub
+    /// account ID, so it binds to whoever first signs in with that login.
+    /// Adding the login again ties it to the account.
+    pub legacy: bool,
 }
 
-const INVITE_SELECT: &str = "SELECT id, github_login, role, created_at FROM queue_member_invites";
+const INVITE_SELECT: &str = "SELECT id, COALESCE(github_login_shown, github_login), role,
+        created_at, github_id IS NULL
+    FROM queue_member_invites";
 
 fn invite_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueInvite> {
     let role: String = r.get(2)?;
@@ -140,6 +147,7 @@ fn invite_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueInvite> {
         github_login: r.get(1)?,
         role: Role::parse(&role).unwrap_or(Role::Triage),
         created_at: r.get(3)?,
+        legacy: r.get(4)?,
     })
 }
 
@@ -1375,16 +1383,20 @@ impl Store {
         Ok(new)
     }
 
-    /// Adds GitHub login `login` (an optional `@` dropped, lowercased:
-    /// [`crate::shares::github_login`]) to queue `qid` at `role`, on behalf
-    /// of the member keyed `by`. A login a GitHub account here has signed
-    /// in with names that account's person (the owner's as
-    /// [`OWNER_MEMBER`]), added at once as [`Store::add_member`] does;
-    /// any other waits as an invite, one per queue and login (an invite
-    /// already there takes `role`), until that account's first GitHub
-    /// sign-in makes it a membership ([`Store::bind_queue_invites`]). An
+    /// Adds the GitHub account `account` (GitHub's answer for a login, its
+    /// login checked by [`crate::shares::github_login`]) to queue `qid` at
+    /// `role`, on behalf of the member keyed `by`. An account that has
+    /// signed in here (matched by its ID, never its login) names its
+    /// person (the owner's as [`OWNER_MEMBER`]), added at once as
+    /// [`Store::add_member`] does; any other waits as an invite, one per
+    /// queue and account (an invite already there takes `role`, and one
+    /// waiting under the same login, a legacy one included, is taken over
+    /// for the account: [`crate::shares::pending_row_for`]), until that
+    /// account's first GitHub sign-in makes it a membership
+    /// ([`Store::bind_queue_invites`]), whatever its login is by then. An
     /// invite is recorded as `queue.update {queue_id, op: "invite", member:
-    /// <login>, role}`; one already at `role` records nothing.
+    /// <login>, role}`; one already at `role` for the account records
+    /// nothing.
     ///
     /// # Errors
     /// `invalid_login`; [`CoreError::NotAMember`] for no such queue;
@@ -1395,11 +1407,12 @@ impl Store {
         &self,
         ctx: &AuditCtx,
         qid: &str,
-        login: &str,
+        account: &GitHubAccount,
         role: Role,
         by: &str,
     ) -> Result<AddedByLogin> {
-        let login = super::shares::github_login(login)?;
+        let login = super::shares::github_login(&account.login)?;
+        let shown = account.login.trim().trim_start_matches('@').to_string();
         let now = self.now();
         self.with_tx(|tx| {
             queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
@@ -1408,8 +1421,8 @@ impl Store {
                     "SELECT v.owner, v.person,
                             v.person_revoked_at IS NOT NULL OR gi.blocked_at IS NOT NULL, v.public_id
                        FROM github_identities gi JOIN viewers v ON v.id = gi.viewer_id
-                      WHERE lower(gi.login) = ?1 ORDER BY gi.signed_in_at DESC LIMIT 1",
-                    params![login],
+                      WHERE gi.github_id = ?1",
+                    params![account.id],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?;
@@ -1423,13 +1436,25 @@ impl Store {
                 self.add_member_in(tx, ctx, qid, &key, role, by, &now)?;
                 return Ok(AddedByLogin::Member(key, role));
             }
-            let held: Option<String> = tx
-                .query_row(
-                    "SELECT role FROM queue_member_invites WHERE queue_id = ?1 AND github_login = ?2",
-                    params![qid, login],
-                    |r| r.get(0),
-                )
-                .optional()?;
+            let row = super::shares::pending_row_for(
+                tx,
+                ("queue_member_invites", "queue_id", "1"),
+                qid,
+                account,
+                &login,
+            )?;
+            // The row's role, and whether it is already this account's
+            // under this login.
+            let held: Option<(String, bool)> = match &row {
+                Some(id) => Some(tx.query_row(
+                    "SELECT role, github_id IS ?2 AND github_login = ?3
+                            AND github_login_shown IS ?4
+                       FROM queue_member_invites WHERE id = ?1",
+                    params![id, account.id, login, shown],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?),
+                None => None,
+            };
             if held.is_none() {
                 let n: i64 = tx.query_row(
                     "SELECT COUNT(*) FROM queue_member_invites WHERE queue_id = ?1",
@@ -1445,13 +1470,28 @@ impl Store {
                     ));
                 }
             }
-            if held.as_deref() != Some(role.as_str()) {
-                tx.execute(
-                    "INSERT INTO queue_member_invites (id, queue_id, github_login, role, invited_by, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(queue_id, github_login) DO UPDATE SET role = excluded.role",
-                    params![new_ulid(), qid, login, role.as_str(), by, now],
-                )?;
+            let same = held
+                .as_ref()
+                .is_some_and(|(r, theirs)| *theirs && r == role.as_str());
+            let id = match &row {
+                Some(id) => id.clone(),
+                None => new_ulid(),
+            };
+            if !same {
+                match &row {
+                    Some(id) => tx.execute(
+                        "UPDATE queue_member_invites SET role = ?2, github_login = ?3,
+                                github_id = ?4, github_login_shown = ?5
+                          WHERE id = ?1",
+                        params![id, role.as_str(), login, account.id, shown],
+                    )?,
+                    None => tx.execute(
+                        "INSERT INTO queue_member_invites (id, queue_id, github_login, role,
+                             invited_by, created_at, github_id, github_login_shown)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        params![id, qid, login, role.as_str(), by, now, account.id, shown],
+                    )?,
+                };
                 let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
                     .with("op", "invite")
                     .with("member", login.as_str())
@@ -1459,8 +1499,8 @@ impl Store {
                 self.record_audit(tx, ctx, rec)?;
             }
             let invite = tx.query_row(
-                &format!("{INVITE_SELECT} WHERE queue_id = ?1 AND github_login = ?2"),
-                params![qid, login],
+                &format!("{INVITE_SELECT} WHERE id = ?1"),
+                params![id],
                 invite_row,
             )?;
             Ok(AddedByLogin::Invite(invite))
@@ -1511,13 +1551,14 @@ impl Store {
         })
     }
 
-    /// At a GitHub sign-in of login `login` as the person keyed `member`
-    /// ([`member_key`]), in `tx`: each invite waiting for the login
-    /// becomes their membership, as [`Store::add_member`] adds one from
-    /// the invite's adder (so they get its `access` item), and is gone.
-    /// An invite of a deleted queue, of the queue's maker, or of a queue
-    /// they are already a member of (whose role stays as it is) is just
-    /// gone. Returns how many became memberships.
+    /// At a GitHub sign-in of account `user` as the person keyed `member`
+    /// ([`member_key`]), in `tx`: each invite waiting for the account
+    /// ([`BINDS_TO`]: given to its ID, or before migration 77 to the login
+    /// it signs in with) becomes their membership, as [`Store::add_member`]
+    /// adds one from the invite's adder (so they get its `access` item),
+    /// and is gone. An invite of a deleted queue, of the queue's maker, or
+    /// of a queue they are already a member of (whose role stays as it is)
+    /// is just gone. Returns how many became memberships.
     ///
     /// # Errors
     /// Database errors.
@@ -1525,24 +1566,26 @@ impl Store {
         &self,
         tx: &Transaction<'_>,
         ctx: &AuditCtx,
-        login: &str,
+        user: &GitHubUser,
         member: &str,
     ) -> Result<usize> {
-        let login = login.to_ascii_lowercase();
+        let login = user.login.to_ascii_lowercase();
         let now = self.now();
         let waiting: Vec<(String, String, Option<String>)> = tx
-            .prepare(
+            .prepare(&format!(
                 "SELECT queue_id, role, invited_by FROM queue_member_invites
-                  WHERE github_login = ?1 ORDER BY created_at, id",
-            )?
-            .query_map(params![login], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                  WHERE {BINDS_TO} ORDER BY created_at, id"
+            ))?
+            .query_map(params![user.id, login], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         if waiting.is_empty() {
             return Ok(0);
         }
         tx.execute(
-            "DELETE FROM queue_member_invites WHERE github_login = ?1",
-            params![login],
+            &format!("DELETE FROM queue_member_invites WHERE {BINDS_TO}"),
+            params![user.id, login],
         )?;
         let mut bound = 0;
         for (qid, role, by) in waiting {

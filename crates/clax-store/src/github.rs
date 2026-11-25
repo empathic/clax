@@ -68,6 +68,28 @@ impl GitHubUser {
     }
 }
 
+/// The GitHub account a login named when access was given by that login
+/// (a share, a queue invite): GitHub's own answer for it (`GET
+/// /users/<login>`), which the server asks before the store keeps
+/// anything. A pending grant binds to this account, by `id`, at its
+/// sign-in, whatever its login is by then, and never to a later holder of
+/// the login.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubAccount {
+    /// The numeric user ID.
+    pub id: i64,
+    /// The login as GitHub spells it (any case; an `@` is dropped).
+    pub login: String,
+}
+
+/// The SQL condition a pending grant's row (with columns `github_id` and
+/// `github_login`) meets to bind to the account whose ID is `?1` and
+/// lowercased login `?2` at its sign-in: one given to the account's ID,
+/// or one given by login alone before migration 77 (`github_id` NULL,
+/// legacy) to the login it signs in with.
+pub(super) const BINDS_TO: &str =
+    "(github_id = ?1 OR (github_id IS NULL AND github_login = ?2))";
+
 /// The GitHub account linked to a viewer row, as People shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct GitHubLink {
@@ -127,7 +149,7 @@ fn linked(tx: &Transaction<'_>, github_id: i64) -> Result<Option<(String, bool, 
 
 /// Links `user` to viewer row `viewer_id` (moving the account's link, and
 /// refreshing its login, name and avatar), noting the sign-in, and binds
-/// the shares waiting for the account's login to that row
+/// the shares waiting for the account ([`BINDS_TO`]) to that row
 /// ([`super::shares::bind_github_shares`]) and its queue invites to its
 /// person, the owner's as the owner ([`Store::bind_queue_invites`],
 /// recorded under `ctx`). Returns how many shares it bound.
@@ -147,7 +169,7 @@ fn link(
              signed_in_at = excluded.signed_in_at",
         params![user.id, viewer_id, user.login, user.name, user.avatar_url, now],
     )?;
-    let shares = super::shares::bind_github_shares(tx, &user.login, viewer_id)?;
+    let shares = super::shares::bind_github_shares(tx, user, viewer_id)?;
     let (owner, public_id): (bool, String) = tx.query_row(
         "SELECT owner, public_id FROM viewers WHERE id = ?1",
         params![viewer_id],
@@ -158,7 +180,7 @@ fn link(
     } else {
         public_id.as_str()
     };
-    st.bind_queue_invites(tx, ctx, &user.login, member)?;
+    st.bind_queue_invites(tx, ctx, user, member)?;
     Ok(shares)
 }
 
@@ -210,14 +232,16 @@ fn new_person(
     Ok(id)
 }
 
-/// Whether a pending queue invite or artifact share names GitHub login
-/// `login` (any case): what lets a new account sign up on a local Clax.
-fn invited(tx: &Transaction<'_>, login: &str) -> Result<bool> {
+/// Whether a pending queue invite or artifact share would bind to GitHub
+/// account `user` ([`BINDS_TO`]): what lets a new account sign up on a
+/// local Clax.
+fn invited(tx: &Transaction<'_>, user: &GitHubUser) -> Result<bool> {
     Ok(tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM queue_member_invites WHERE github_login = ?1)
-             OR EXISTS (SELECT 1 FROM artifact_shares
-                         WHERE viewer_id IS NULL AND github_login = ?1)",
-        params![login.to_ascii_lowercase()],
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM queue_member_invites WHERE {BINDS_TO})
+                 OR EXISTS (SELECT 1 FROM artifact_shares WHERE viewer_id IS NULL AND {BINDS_TO})"
+        ),
+        params![user.id, user.login.to_ascii_lowercase()],
         |r| r.get(0),
     )?)
 }
@@ -337,9 +361,10 @@ impl Store {
     /// refreshed, or, at its first sign-in, a person made now with no
     /// rights of their own ([`Rights::default`]: what they reach is what is
     /// shared with them and the queues they are members of), only when a
-    /// pending queue invite or artifact share names its login. Either way
-    /// the shares and queue invites waiting for the login bind to that
-    /// person, as on a hosted Clax. Never the owner: no login makes the
+    /// pending queue invite or artifact share was given to the account
+    /// (by its ID, or, for one given before migration 77, its login:
+    /// [`BINDS_TO`]). Either way the shares and queue invites waiting for
+    /// the account bind to that person, as on a hosted Clax. Never the owner: no login makes the
     /// account the owner's here. Returns the person's public ID, a new
     /// `clax_viewer` cookie naming them (kept as its hash) and how they
     /// were found.
@@ -348,7 +373,7 @@ impl Store {
     /// (nothing changed) `github_owner_account` for an account linked to
     /// the owner's row; `github_blocked` for a blocked account or a revoked
     /// person's; `github_not_invited` for a new account no pending invite or
-    /// share names; `name_taken` when no name for a new person is free.
+    /// share binds to; `name_taken` when no name for a new person is free.
     pub fn github_sign_in_local(
         &self,
         ctx: &AuditCtx,
@@ -370,7 +395,7 @@ impl Store {
                     (viewer_id, GitHubOutcome::Returning)
                 }
                 None => {
-                    if !invited(tx, &user.login)? {
+                    if !invited(tx, user)? {
                         return Err(CoreError::invalid(
                             "github_not_invited",
                             format!(

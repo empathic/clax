@@ -2734,6 +2734,25 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
     CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
     CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;",
+    // 77: a pending share (`artifact_shares` with no `viewer_id`) and a
+    // queue invite (`queue_member_invites`) name the GitHub account the
+    // login named when access was given, by GitHub's numeric user ID
+    // (`github_id`), and keep the login as GitHub spelled it
+    // (`github_login_shown`); a sign-in binds them by that ID, not the
+    // login (`crate::shares`, `crate::queues`). Rows made before this
+    // migration keep both NULL: they still bind by login, and are listed
+    // as such (`legacy`).
+    //
+    // `queue_member_invites.github_id` is the migration's mark
+    // (`MARKS_AFTER_APP`).
+    "ALTER TABLE artifact_shares ADD COLUMN github_id INTEGER;
+    ALTER TABLE artifact_shares ADD COLUMN github_login_shown TEXT;
+    CREATE INDEX artifact_shares_of_github_id ON artifact_shares(github_id)
+        WHERE viewer_id IS NULL AND github_id IS NOT NULL;
+    ALTER TABLE queue_member_invites ADD COLUMN github_id INTEGER;
+    ALTER TABLE queue_member_invites ADD COLUMN github_login_shown TEXT;
+    CREATE INDEX queue_member_invites_by_github_id ON queue_member_invites(github_id)
+        WHERE github_id IS NOT NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2856,8 +2875,13 @@ pub const RESPONDERS_MIGRATION: u32 = INSTALLS_MIGRATION + 1;
 
 /// The migration that adds queue members waiting for their GitHub
 /// sign-in (`queue_member_invites`) and the inbox's `access` kind, as a
-/// schema version, and this build's last.
+/// schema version.
 pub const QUEUE_ACCESS_MIGRATION: u32 = RESPONDERS_MIGRATION + 1;
+
+/// The migration that binds a pending share and a queue invite by the
+/// GitHub account's numeric ID (`github_id`), as a schema version, and
+/// this build's last.
+pub const GITHUB_ID_MIGRATION: u32 = QUEUE_ACCESS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -3017,11 +3041,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`QUEUE_ACCESS_MIGRATION`]. They follow the app's in every
+/// [`GITHUB_ID_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 27] = [
+const MARKS_AFTER_APP: [Mark<'static>; 28] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -3049,6 +3073,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 27] = [
     Mark::Table("installs"),
     Mark::Table("queue_responders"),
     Mark::Table("queue_member_invites"),
+    Mark::Column("queue_member_invites", "github_id"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -6309,7 +6334,13 @@ mod tests {
             super::RESPONDERS_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 34].contains("CREATE TABLE queue_member_invites ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::QUEUE_ACCESS_MIGRATION);
+        assert_eq!(
+            super::GITHUB_ID_MIGRATION,
+            super::QUEUE_ACCESS_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 35]
+            .contains("ALTER TABLE queue_member_invites ADD COLUMN github_id INTEGER"));
+        assert_eq!(MIGRATIONS.len() as u32, super::GITHUB_ID_MIGRATION);
     }
 
     #[test]
@@ -6479,7 +6510,10 @@ mod tests {
             // The schema as it was at 67 (nothing of the migrations after
             // 68 either), with an artifact.
             c.execute_batch(
-                "DROP TABLE queue_member_invites;
+                "DROP INDEX artifact_shares_of_github_id;
+                 ALTER TABLE artifact_shares DROP COLUMN github_id;
+                 ALTER TABLE artifact_shares DROP COLUMN github_login_shown;
+                 DROP TABLE queue_member_invites;
                  DROP TABLE queue_responders;
                  DROP TABLE installs;
                  DROP TABLE queue_view_sessions;
@@ -6556,7 +6590,10 @@ mod tests {
             // The schema as it was at 70: the owner's queue, a person's
             // with a triage member, and a row the person's maker had.
             c.execute_batch(
-                "DROP TABLE queue_member_invites;
+                "DROP INDEX artifact_shares_of_github_id;
+                 ALTER TABLE artifact_shares DROP COLUMN github_id;
+                 ALTER TABLE artifact_shares DROP COLUMN github_login_shown;
+                 DROP TABLE queue_member_invites;
                  DROP TABLE queue_responders;
                  DROP TABLE installs;
                  DROP TABLE queue_view_sessions;
@@ -6612,7 +6649,10 @@ mod tests {
             // it), with an inbox item of each kind it took and a queue with
             // members.
             c.execute_batch(
-                "DROP TABLE queue_member_invites;
+                "DROP INDEX artifact_shares_of_github_id;
+                 ALTER TABLE artifact_shares DROP COLUMN github_id;
+                 ALTER TABLE artifact_shares DROP COLUMN github_login_shown;
+                 DROP TABLE queue_member_invites;
                  PRAGMA user_version = 75;",
             )
             .unwrap();
@@ -6739,7 +6779,85 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_76() {
+    fn migration_77_keeps_every_share_and_invite_and_leaves_the_old_ones_bound_by_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            // The schema as it was at 76, with a person's share, a pending
+            // share and a queue invite, each by login.
+            c.execute_batch(
+                "DROP INDEX artifact_shares_of_github_id;
+                 ALTER TABLE artifact_shares DROP COLUMN github_id;
+                 ALTER TABLE artifact_shares DROP COLUMN github_login_shown;
+                 DROP INDEX queue_member_invites_by_github_id;
+                 ALTER TABLE queue_member_invites DROP COLUMN github_id;
+                 ALTER TABLE queue_member_invites DROP COLUMN github_login_shown;
+                 PRAGMA user_version = 76;
+                 INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                 VALUES ('8r4m2nzy3c5v', 'Notes', 'x', 'x', 1, '1');
+                 INSERT INTO artifact_shares (id, artifact_id, viewer_id, github_login, access, created_at)
+                 VALUES ('s1', '8r4m2nzy3c5v', 'v_sam', 'sam-lee', 'editor', '2026-11-01'),
+                        ('s2', '8r4m2nzy3c5v', NULL, 'octo-cat', 'viewer', '2026-11-02');
+                 INSERT INTO queues (id, name, person, origins_json, created_at)
+                 VALUES ('q_sam', 'Sam''s', 'u_sam', '[]', '2026-11-02');
+                 INSERT INTO queue_member_invites (id, queue_id, github_login, role, invited_by, created_at)
+                 VALUES ('inv1', 'q_sam', 'octo-cat', 'triage', 'u_sam', '2026-11-03');",
+            )
+            .unwrap();
+        }
+        type Rows = (
+            Vec<(String, Option<String>, String, String)>,
+            Vec<(String, String, String)>,
+        );
+        let rows = |c: &Connection| -> Rows {
+            let shares = c
+                .prepare("SELECT id, viewer_id, github_login, access FROM artifact_shares ORDER BY id")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let invites = c
+                .prepare("SELECT id, github_login, role FROM queue_member_invites ORDER BY id")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            (shares, invites)
+        };
+        let was = rows(&Connection::open(home.db_path()).unwrap());
+        assert_eq!((was.0.len(), was.1.len()), (2, 1));
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(super::GITHUB_ID_MIGRATION, 77);
+        assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
+        assert_eq!(rows(&c), was, "every share and invite kept");
+        // Neither is given an account: they still wait by login (legacy).
+        let unbound: i64 = c
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM artifact_shares WHERE github_id IS NULL
+                                                          AND github_login_shown IS NULL)
+                      + (SELECT COUNT(*) FROM queue_member_invites WHERE github_id IS NULL
+                                                          AND github_login_shown IS NULL)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unbound, 3);
+        c.execute(
+            "INSERT INTO queue_member_invites (id, queue_id, github_login, role, created_at,
+                 github_id, github_login_shown)
+             VALUES ('inv2', 'q_sam', 'mona', 'admin', 'x', 583231, 'Mona')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_fresh_database_reaches_77() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -6774,6 +6892,7 @@ mod tests {
         assert_eq!(super::INSTALLS_MIGRATION, 74);
         assert_eq!(super::RESPONDERS_MIGRATION, 75);
         assert_eq!(super::QUEUE_ACCESS_MIGRATION, 76);
+        assert_eq!(super::GITHUB_ID_MIGRATION, 77);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
@@ -8378,7 +8497,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::QUEUE_ACCESS_MIGRATION);
+        assert_eq!(last, super::GITHUB_ID_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
