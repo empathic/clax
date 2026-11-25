@@ -762,6 +762,12 @@ impl TestServer {
         // requests arrive on.
         state.lan_host = bind.is_unspecified().then_some(IpAddr::V4(LAN_LOCAL));
         state.test_daemon = true;
+        // A gallery page's bootstrap block waits for its routes until the
+        // hang guard (the API's own timeout bounds it sooner), not the
+        // product's 300 ms: a loaded machine must not leave a field to the
+        // shell in a test that reads the block. Tests of the budget set
+        // their own with `spawn_with`.
+        state.gallery_boot_budget = crate::HANG;
         f(&mut state);
         state.audit_wake.install(&state.store);
         state.stream.listen(&state.events);
