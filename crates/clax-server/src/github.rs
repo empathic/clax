@@ -1,9 +1,19 @@
-//! GitHub sign-in on a hosted daemon: `/auth/github[?next=<path>]`
-//! ([`start`]) and [`CALLBACK_PATH`] ([`callback`]), a GitHub OAuth App's
-//! web flow with PKCE. The flow cookie keeps `next`, a path on the public
+//! GitHub sign-in: `/auth/github[?next=<path>]` ([`start`]) and
+//! [`CALLBACK_PATH`] ([`callback`]), a GitHub OAuth App's web flow with
+//! PKCE, on a hosted daemon ([`clax_http::hosted::Hosted::github`]) and on
+//! a local one with `[github]` ([`clax_http::github::LocalGitHub`];
+//! [`local_router`]). The flow cookie keeps `next`, a path on the
 //! origin ([`clax_http::site_access::safe_next`]: anything else is `/`),
 //! under its MAC, and a sign-in redirects there. The client the daemon
 //! holds is [`clax_http::github::GitHub`].
+//!
+//! On a local daemon the redirect names only one of `[github] origins`,
+//! the one whose authority is the request's `Host` (any other host answers
+//! 400, and the callback, whose flow cookie is host-only, returns to that
+//! same host). A sign-in makes the browser the account's person by a new
+//! `clax_viewer` cookie ([`clax_store::Store::github_sign_in_local`]):
+//! never the owner, with no rights of its own, and a person is made only
+//! for a login a pending queue invite or share names.
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -15,22 +25,91 @@ use clax_http::state::AppState;
 use clax_store::github::{GitHubOutcome, GitHubUser};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
-fn flow_cookie_name(h: &Hosted) -> &'static str {
-    if h.secure {
+/// One sign-in's site: the GitHub app, the origin the OAuth App returns
+/// to, and, on a hosted daemon, its hosted mode.
+struct Flow {
+    github: GitHub,
+    origin: String,
+    secure: bool,
+    hosted: Option<Arc<Hosted>>,
+}
+
+impl Flow {
+    /// The sign-in a request to `s` with `headers` runs: the hosted one, or
+    /// the local one on one of its origins; `Err` with the answer (404 when
+    /// GitHub sign-in is off, 400 on a host none of `[github] origins`
+    /// names).
+    fn of(s: &AppState, headers: &HeaderMap) -> Result<Flow, Response> {
+        if let Some(h) = &s.hosted {
+            let Some(g) = h.github.clone() else {
+                return Err(clax_http::error::ApiError::not_found().into_response());
+            };
+            return Ok(Flow {
+                github: g,
+                origin: h.origin.clone(),
+                secure: h.secure,
+                hosted: Some(h.clone()),
+            });
+        }
+        let Some(l) = &s.local_github else {
+            return Err(clax_http::error::ApiError::not_found().into_response());
+        };
+        let host = headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let Some(origin) = l.origin_for_host(host) else {
+            let first = l.origins.first().map_or("", String::as_str);
+            let f = Flow {
+                github: l.github.clone(),
+                origin: first.to_string(),
+                secure: false,
+                hosted: None,
+            };
+            return Err(failed(
+                &f,
+                StatusCode::BAD_REQUEST,
+                &format!("GitHub sign-in on this Clax starts at {first}/auth/github."),
+            ));
+        };
+        Ok(Flow {
+            github: l.github.clone(),
+            origin: origin.to_string(),
+            secure: origin.starts_with("https://"),
+            hosted: None,
+        })
+    }
+
+    fn redirect_uri(&self) -> String {
+        format!("{}{CALLBACK_PATH}", self.origin)
+    }
+}
+
+fn flow_cookie_name(f: &Flow) -> &'static str {
+    if f.secure {
         "__Host-clax_github"
     } else {
         "clax_github"
     }
 }
 
-fn flow_cookie(h: &Hosted, value: &str, max_age: i64) -> HeaderValue {
-    let secure = if h.secure { "; Secure" } else { "" };
+fn flow_cookie(f: &Flow, value: &str, max_age: i64) -> HeaderValue {
+    let secure = if f.secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
         "{}={value}; Path=/; Max-Age={max_age}; HttpOnly{secure}; SameSite=Lax",
-        flow_cookie_name(h)
+        flow_cookie_name(f)
     ))
     .expect("flow cookies are header-safe")
+}
+
+/// A local daemon's two GitHub sign-in routes (a hosted one mounts them in
+/// [`crate::hosted::router`]); both answer 404 while `[github]` is off.
+pub fn local_router() -> axum::Router<AppState> {
+    axum::Router::new()
+        .route("/auth/github", axum::routing::get(start))
+        .route(CALLBACK_PATH, axum::routing::get(callback))
 }
 
 /// The MAC of a flow cookie's `body` under the daemon token `token`.
@@ -41,12 +120,6 @@ fn flow_mac(token: &str, body: &str) -> String {
 /// The PKCE S256 challenge of `verifier`.
 fn challenge(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
-}
-
-fn github_of(s: &AppState) -> Option<(std::sync::Arc<Hosted>, GitHub)> {
-    let h = s.hosted.clone()?;
-    let g = h.github.clone()?;
-    Some((h, g))
 }
 
 /// Where a sign-in returns to: `next` when it is a path on the public
@@ -66,11 +139,14 @@ pub struct StartQuery {
 /// (see the module docs); 404 when GitHub sign-in is off.
 pub async fn start(
     State(s): State<AppState>,
+    headers: HeaderMap,
     q: Result<Query<StartQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
-    let Some((h, g)) = github_of(&s) else {
-        return clax_http::error::ApiError::not_found().into_response();
+    let f = match Flow::of(&s, &headers) {
+        Ok(f) => f,
+        Err(res) => return res,
     };
+    let g = &f.github;
     let next = q.ok().and_then(|Query(q)| q.next);
     let next = return_path(next.as_deref().unwrap_or("/"));
     let state = clax_core::secret::browser_code();
@@ -87,7 +163,7 @@ pub async fn start(
         .expect("the OAuth base is a URL");
     url.query_pairs_mut()
         .append_pair("client_id", &g.client_id)
-        .append_pair("redirect_uri", &format!("{}{CALLBACK_PATH}", h.origin))
+        .append_pair("redirect_uri", &f.redirect_uri())
         .append_pair("scope", "read:user")
         .append_pair("state", state.expose())
         .append_pair("code_challenge", &challenge(verifier.expose()))
@@ -99,7 +175,7 @@ pub async fn start(
     )
         .into_response();
     res.headers_mut()
-        .append(header::SET_COOKIE, flow_cookie(&h, &value, FLOW_TTL_SECS));
+        .append(header::SET_COOKIE, flow_cookie(&f, &value, FLOW_TTL_SECS));
     res.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res
@@ -116,11 +192,11 @@ pub struct CallbackQuery {
 /// cookie is this daemon's, live, and made for `state`.
 fn verified_flow(
     s: &AppState,
-    h: &Hosted,
+    f: &Flow,
     headers: &HeaderMap,
     state: &str,
 ) -> Option<(String, String)> {
-    let value = clax_http::hosted::cookie_value(headers, flow_cookie_name(h))?;
+    let value = clax_http::hosted::cookie_value(headers, flow_cookie_name(f))?;
     let (body, mac) = value.rsplit_once('.')?;
     let want = flow_mac(&s.token, body);
     if !clax_core::secret::constant_time_eq(mac.as_bytes(), want.as_bytes()) {
@@ -152,40 +228,47 @@ pub async fn callback(
     audit: clax_http::audit::DeferredAudit,
     Query(q): Query<CallbackQuery>,
 ) -> Response {
-    let Some((h, g)) = github_of(&s) else {
-        return clax_http::error::ApiError::not_found().into_response();
+    let f = match Flow::of(&s, &headers) {
+        Ok(f) => f,
+        Err(res) => return res,
     };
-    if h.attempt(Attempt::SignIn, &headers, &extensions).is_err() {
+    if let Some(h) = &f.hosted
+        && h.attempt(Attempt::SignIn, &headers, &extensions).is_err()
+    {
         return failed(
-            &h,
+            &f,
             StatusCode::TOO_MANY_REQUESTS,
             "Too many sign-ins from this address. Wait a minute, then try again.",
         );
     }
     if q.error.is_some() {
-        return failed(&h, StatusCode::FORBIDDEN, "GitHub did not sign you in.");
+        return failed(&f, StatusCode::FORBIDDEN, "GitHub did not sign you in.");
     }
     let (Some(code), Some(state)) = (q.code, q.state) else {
-        return failed(&h, StatusCode::BAD_REQUEST, "GitHub sent no sign-in code.");
+        return failed(&f, StatusCode::BAD_REQUEST, "GitHub sent no sign-in code.");
     };
-    let Some((verifier, next)) = verified_flow(&s, &h, &headers, &state) else {
+    let Some((verifier, next)) = verified_flow(&s, &f, &headers, &state) else {
         return failed(
-            &h,
+            &f,
             StatusCode::BAD_REQUEST,
             "This sign-in expired or was started in another browser.",
         );
     };
-    let user = match clax_rt::sendable(fetch_user(&g, &h, &code, &verifier)).await {
+    let user = match clax_rt::sendable(fetch_user(&f, &code, &verifier)).await {
         Ok(u) => u,
         Err(why) => {
             tracing::warn!(error = %why, "GitHub sign-in failed");
             return failed(
-                &h,
+                &f,
                 StatusCode::BAD_GATEWAY,
                 "GitHub could not confirm who you are.",
             );
         }
     };
+    let Some(h) = f.hosted.clone() else {
+        return local_sign_in(&s, &f, audit, user, next).await;
+    };
+    let g = &f.github;
     let owner_login = g.is_owner(&user.login);
     let id = user.id;
     let known = match s.store_call(move |st| st.github_known(id)).await {
@@ -194,7 +277,7 @@ pub async fn callback(
     };
     if !owner_login && !known && h.attempt(Attempt::SignUp, &headers, &extensions).is_err() {
         return failed(
-            &h,
+            &f,
             StatusCode::TOO_MANY_REQUESTS,
             "Too many new accounts from this address. Try again later.",
         );
@@ -217,14 +300,14 @@ pub async fn callback(
         Ok(x) => x,
         Err(e) if e.code == "github_blocked" => {
             return failed(
-                &h,
+                &f,
                 StatusCode::FORBIDDEN,
                 "This GitHub account may not sign in here.",
             );
         }
         Err(e) if e.code == "github_not_owner" => {
             return failed(
-                &h,
+                &f,
                 StatusCode::FORBIDDEN,
                 "Another GitHub account owns this Clax.",
             );
@@ -251,7 +334,67 @@ pub async fn callback(
     let mut res = (StatusCode::SEE_OTHER, [(header::LOCATION, next)]).into_response();
     let hs = res.headers_mut();
     hs.append(header::SET_COOKIE, h.session_cookie(&signed.session));
-    hs.append(header::SET_COOKIE, flow_cookie(&h, "", 0));
+    hs.append(header::SET_COOKIE, flow_cookie(&f, "", 0));
+    hs.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    hs.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    res
+}
+
+/// The callback's end on a local daemon: the browser becomes `user`'s
+/// person by a new `clax_viewer` cookie, replacing any it held
+/// ([`clax_store::Store::github_sign_in_local`]); no quickstart is seeded
+/// and no hosted session made. The owner is never signed in this way.
+async fn local_sign_in(
+    s: &AppState,
+    f: &Flow,
+    audit: clax_http::audit::DeferredAudit,
+    user: GitHubUser,
+    next: String,
+) -> Response {
+    let signed = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.github_sign_in_local(&ctx, &user)
+        })
+        .await;
+    let (public_id, cookie, outcome) = match signed {
+        Ok(x) => x,
+        Err(e) if e.code == "github_blocked" => {
+            return failed(
+                f,
+                StatusCode::FORBIDDEN,
+                "This GitHub account may not sign in here.",
+            );
+        }
+        Err(e) if e.code == "github_owner_account" => {
+            return failed(
+                f,
+                StatusCode::FORBIDDEN,
+                "This GitHub account is this Clax's owner's. The owner signs in on this machine, not with GitHub.",
+            );
+        }
+        Err(e) if e.code == "github_not_invited" => {
+            return failed(
+                f,
+                StatusCode::FORBIDDEN,
+                "Nobody here has added this GitHub account yet. Ask the person who runs this Clax to add your GitHub login, then sign in again.",
+            );
+        }
+        Err(e) => return e.into_response(),
+    };
+    if outcome == GitHubOutcome::New {
+        crate::routes::grants::announce(
+            s,
+            serde_json::json!({"what": "person_joined", "person": public_id}),
+        );
+    }
+    let mut res = (StatusCode::SEE_OTHER, [(header::LOCATION, next)]).into_response();
+    let hs = res.headers_mut();
+    hs.append(header::SET_COOKIE, clax_http::viewer::set_cookie(&cookie));
+    hs.append(header::SET_COOKIE, flow_cookie(f, "", 0));
     hs.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     hs.insert(
         header::REFERRER_POLICY,
@@ -286,14 +429,10 @@ fn timeout(r: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 }
 
 /// Exchanges `code` (with `verifier`) for a token and reads its account.
-async fn fetch_user(
-    g: &GitHub,
-    h: &Hosted,
-    code: &str,
-    verifier: &str,
-) -> Result<GitHubUser, String> {
+async fn fetch_user(f: &Flow, code: &str, verifier: &str) -> Result<GitHubUser, String> {
+    let g = &f.github;
     let http = reqwest::Client::new();
-    let redirect = format!("{}{CALLBACK_PATH}", h.origin);
+    let redirect = f.redirect_uri();
     let form = [
         ("client_id", g.client_id.as_str()),
         ("client_secret", g.client_secret.as_str()),
@@ -355,18 +494,27 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// The page a failed sign-in answers: `why`, a link to sign in again, the
-/// instance's Terms of Service and Privacy Policy when it shows them, and
-/// Clax's source on GitHub.
+/// The page a failed sign-in answers: `why`, a link to sign in again (and,
+/// on a hosted daemon, to its other ways), the instance's Terms of Service
+/// and Privacy Policy when it shows them, and Clax's source on GitHub.
 /// The flow cookie is cleared.
-fn failed(h: &Hosted, status: StatusCode, why: &str) -> Response {
-    let legal = h.legal.as_ref().map_or(String::new(), |l| {
-        format!(
-            "<a href=\"{}\">Terms of Service</a> · <a href=\"{}\">Privacy Policy</a> · ",
-            escape(l.terms_url()),
-            escape(l.privacy_url())
-        )
-    });
+fn failed(f: &Flow, status: StatusCode, why: &str) -> Response {
+    let others = if f.hosted.is_some() {
+        " · <a href=\"/signin\">Other ways to sign in</a>"
+    } else {
+        ""
+    };
+    let legal = f
+        .hosted
+        .as_ref()
+        .and_then(|h| h.legal.as_ref())
+        .map_or(String::new(), |l| {
+            format!(
+                "<a href=\"{}\">Terms of Service</a> · <a href=\"{}\">Privacy Policy</a> · ",
+                escape(l.terms_url()),
+                escape(l.privacy_url())
+            )
+        });
     let footer = format!(
         "<footer>{legal}<a href=\"https://github.com/empathic/clax\" target=\"_blank\" rel=\"noopener\">Source on GitHub</a></footer>"
     );
@@ -378,7 +526,7 @@ body{{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans
 main{{max-width:480px;margin:0 auto;padding:48px 16px}}section{{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px 24px}}\
 h1{{margin:0 0 10px;font-size:22px}}p{{margin:0 0 12px}}a{{color:var(--fg)}}\
 footer{{margin-top:16px;text-align:center;font-size:12.5px;color:var(--muted)}}footer a{{color:inherit}}</style></head>\
-<body><main><section><h1>Sign-in failed</h1><p>{}</p><p><a href=\"/auth/github\">Sign in again</a> · <a href=\"/signin\">Other ways to sign in</a></p></section>{}</main></body></html>",
+<body><main><section><h1>Sign-in failed</h1><p>{}</p><p><a href=\"/auth/github\">Sign in again</a>{others}</p></section>{}</main></body></html>",
         escape(why),
         footer
     );
@@ -389,7 +537,7 @@ footer{{margin-top:16px;text-align:center;font-size:12.5px;color:var(--muted)}}f
     )
         .into_response();
     res.headers_mut()
-        .append(header::SET_COOKIE, flow_cookie(h, "", 0));
+        .append(header::SET_COOKIE, flow_cookie(f, "", 0));
     res.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res

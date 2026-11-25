@@ -17,6 +17,7 @@ mod events;
 pub mod fake_host;
 pub mod fake_messages;
 mod fixture;
+pub mod github;
 pub mod mcp;
 pub mod opener;
 pub mod passkey;

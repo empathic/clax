@@ -4,71 +4,20 @@
 //! only what they made; a blocked account and a forged state are refused;
 //! sign-ups are rate limited and members' artifacts capped.
 
-use axum::extract::{Form, State};
-use axum::http::HeaderMap;
-use axum::routing::{get, post};
 use clax_core::working::ManualClock;
 use clax_testkit::TestServer;
+use clax_testkit::github::FakeGitHub;
 use reqwest::header::{COOKIE, HOST, LOCATION, ORIGIN, SET_COOKIE};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 const SECRET: &str = "the setup secret";
-
-/// The fake GitHub's accounts by code (`code-<id>`), and the verifier each
-/// token exchange sent.
-#[derive(Clone, Default)]
-struct Fake {
-    users: Arc<Mutex<HashMap<i64, Value>>>,
-    verifiers: Arc<Mutex<Vec<String>>>,
-}
-
-async fn access_token(
-    State(f): State<Fake>,
-    Form(form): Form<HashMap<String, String>>,
-) -> axum::Json<Value> {
-    assert_eq!(
-        form.get("client_id").map(String::as_str),
-        Some("the-client")
-    );
-    assert_eq!(
-        form.get("client_secret").map(String::as_str),
-        Some("the-client-secret")
-    );
-    f.verifiers
-        .lock()
-        .unwrap()
-        .push(form.get("code_verifier").cloned().unwrap_or_default());
-    let code = form.get("code").cloned().unwrap_or_default();
-    match code.strip_prefix("code-") {
-        Some(id) => {
-            axum::Json(json!({"access_token": format!("tok-{id}"), "token_type": "bearer"}))
-        }
-        None => axum::Json(json!({"error": "bad_verification_code"})),
-    }
-}
-
-async fn user(State(f): State<Fake>, headers: HeaderMap) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    let auth = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    assert!(headers.contains_key("user-agent"));
-    let id: Option<i64> = auth
-        .strip_prefix("Bearer tok-")
-        .and_then(|i| i.parse().ok());
-    match id.and_then(|i| f.users.lock().unwrap().get(&i).cloned()) {
-        Some(u) => axum::Json(u).into_response(),
-        None => axum::http::StatusCode::UNAUTHORIZED.into_response(),
-    }
-}
 
 struct Site {
     ts: TestServer,
     clock: Arc<ManualClock>,
-    fake: Fake,
+    fake: FakeGitHub,
     http: reqwest::Client,
     host: String,
 }
@@ -99,14 +48,8 @@ impl Site {
                 clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree(m))
             })
             .map(Arc::new);
-        let fake = Fake::default();
-        let app = axum::Router::new()
-            .route("/login/oauth/access_token", post(access_token))
-            .route("/user", get(user))
-            .with_state(fake.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let gh = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let fake = FakeGitHub::start("the-client", "the-client-secret").await;
+        let gh = fake.base.clone();
         let at = if before.is_some() {
             "2026-10-14T14:00:00Z"
         } else {
@@ -153,10 +96,7 @@ impl Site {
     }
 
     fn account(&self, id: i64, login: &str, name: Option<&str>) {
-        self.fake.users.lock().unwrap().insert(
-            id,
-            json!({"id": id, "login": login, "name": name, "avatar_url": format!("https://avatars.example/{id}")}),
-        );
+        self.fake.account(id, login, name);
     }
 
     fn get(&self, path: &str, cookie: Option<&str>) -> reqwest::RequestBuilder {
@@ -454,7 +394,7 @@ async fn github_signs_in_the_owner_and_makes_members_of_their_own_space() {
         .publish("Owner's plan", &[("index.html", "<h1>p</h1>")])
         .await;
     let owners = owners["artifact"]["id"].as_str().unwrap().to_string();
-    assert_eq!(site.fake.verifiers.lock().unwrap()[0].len(), 43);
+    assert_eq!(site.fake.verifiers()[0].len(), 43);
 
     // Anyone else is a new member, who publishes and sees only their own.
     site.account(2, "grace", Some("Grace Hopper"));

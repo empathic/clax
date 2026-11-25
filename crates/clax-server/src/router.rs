@@ -1040,11 +1040,12 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             .set_base_url_policy(clax_store::bot_settings::BaseUrlPolicy::Hosted);
     }
     // A hosted daemon's sign-in, sharing and agent-token routes, under the
-    // layers below as every route is.
+    // layers below as every route is; a local daemon's GitHub sign-in
+    // (404 while `[github]` is off).
     let mut r = if state.hosted.is_some() {
         r.merge(crate::hosted::router())
     } else {
-        r
+        r.merge(crate::github::local_router())
     };
     if let Some(tx) = shutdown {
         let tx = std::sync::Arc::new(tx);
