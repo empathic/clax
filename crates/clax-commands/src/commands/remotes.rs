@@ -123,8 +123,9 @@ fn session_among(
     })
 }
 
-/// The session `clax remote request` asks as ([`session_among`]).
-fn own_session(c: &Client) -> anyhow::Result<Option<String>> {
+/// The session `clax remote request` asks as ([`session_among`]), and
+/// `clax queue create` and the queue writes too when no flag names one.
+pub(crate) fn own_session(c: &Client) -> anyhow::Result<Option<String>> {
     let v = c.get("/api/sessions?live=true")?;
     let sessions = v["sessions"].as_array().cloned().unwrap_or_default();
     Ok(session_among(

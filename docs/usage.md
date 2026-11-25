@@ -149,7 +149,8 @@ clax comments reply <ID>#2 "Thanks"  # reply as you (- reads stdin); also resolv
 clax comments name "Alex"            # your name, in the CLI and every browser of yours
 clax versions <ID>                   # versions: label, publisher, time, threads addressed
 clax db get <ID> tasks t1            # the page database: get, list, query, set, update, delete, str-replace, batch
-clax queue create <name> --origin <ORIGIN> --write-env .env  # make a queue and its service grant; run by an agent, ask its person for one and wait
+clax queue create <name> --origin <ORIGIN> --write-env .env  # make a queue and its service grant; run by an agent, ask its person for one and wait (stderr names the request and its inbox address at once; exits 3 denied, 4 expired)
+clax queue create <name> --origin <ORIGIN> --note "why" --no-wait  # an agent: file the request and exit; --request <ID> [--no-wait] waits on it (or looks once) and takes the grant
 clax queue ls --queue <QID>          # a report queue's active reports (CLAX_QUEUE sets the queue; --state all for every state)
 clax queue show <report>             # one report: context, conversation, fixes; also clip, diagnostics
 clax queue claim <report> --session <SID>  # also renew, release, reply, fix --summary …, resolve --reason …

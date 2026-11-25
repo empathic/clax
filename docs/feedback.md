@@ -88,7 +88,27 @@ queue with you as its admin, and the agent receives its service grant
 once, which it appends to the env file it names (`write_env`, `--write-env`)
 as `CLAX_QUEUE`, `CLAX_QUEUE_TOKEN` and `CLAX_QUEUE_KEY`, keeping the
 secret out of the conversation. A request you leave expires after an
-hour. On a hosted Clax an agent with no plugin signs in with the device
+hour.
+
+`clax queue create` run by an agent says on stderr, as soon as the
+request is filed (`--json` too, whose stdout stays one object): the
+request's ID, that it waits for your approval, the inbox address where
+you answer it (`/inbox?queue_request=<id>`, with no login code in it),
+and when it expires. It then waits; stopping it leaves the request open,
+and `clax queue create --request <id>` waits again. `--no-wait` files it
+and exits 0; `--request <id> --no-wait` looks once, taking the grant if
+it was approved (the grant is handed over once, to the first look that
+finds it approved). Approved, it prints where to wire the app: the
+queue's page (its "Add it to your site" snippets), the overlay's
+`/_clax/overlay.js`, `.mjs` and `.d.ts` on this daemon, and the SDK
+package (`next_steps` under `--json`). It exits 3 when you deny the
+request and 4 when it expires or is cancelled. Run in a harness's shell
+whose session Clax knows (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`,
+`GROK_SESSION_ID`, or the harness process among its ancestors), the
+request names that agent; otherwise it reads "An agent", and `--note`
+says why.
+
+On a hosted Clax an agent with no plugin signs in with the device
 flow asking for `scope: ["queue.request"]` (`docs/contract.md`, "Queue
 requests"): its token can ask you for one queue and nothing else, and
 ends once it takes that request's answer, or after an hour.
