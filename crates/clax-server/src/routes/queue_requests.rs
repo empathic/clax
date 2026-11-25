@@ -17,10 +17,15 @@
 //!   most [`MAX_WAIT_SECS`]); an approved request whose grant was taken
 //!   also says `grant_taken: true`. A read changes nothing. The request's
 //!   person reads it too. 404 for anyone else.
-//! - `POST /api/queue-requests/<id>/take` (the agent that asked) → once
-//!   the request is answered, the answer: for an approved one the first
-//!   take also makes the queue's service grant, `{request, grant: {id,
-//!   name, created_at}, token, private_key}`, this once; later takes say
+//! - `POST /api/queue-requests/<id>/take [{public_key?}]` (the agent that
+//!   asked) → once the request is answered, the answer: for an approved
+//!   one the first take also makes the queue's service grant, `{request,
+//!   grant: {id, name, created_at}, token, private_key}`, this once. A take
+//!   that sends `public_key` (the agent's own Ed25519 public key, 32 bytes
+//!   in unpadded base64url) gets a grant of that key and an answer with no
+//!   `private_key` field at all; 400 `invalid_key` for any other value,
+//!   taking nothing, and 400 `invalid_json` for a body that is not
+//!   `{public_key?}`. An empty body is `{}`. Later takes say
 //!   `grant_taken: true`. A take ends a scoped grant. 409
 //!   `request_pending` while it waits; 404 for anyone else.
 //! - `GET /api/queue-requests[?status=]` (a person's or the owner's browser,
@@ -227,14 +232,35 @@ async fn mine(s: &AppState, id: &str, who: &Requester) -> Result<QueueRequest, A
         .ok_or_else(ApiError::not_found)
 }
 
+/// The body of a take: empty, or `{public_key?}`.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct TakeBody {
+    /// The agent's own Ed25519 public key, unpadded base64url, for a
+    /// grant whose private key never leaves it.
+    #[serde(default)]
+    public_key: Option<String>,
+}
+
 /// `POST /api/queue-requests/<id>/take`, as the module comment says.
 pub async fn take(
     State(s): State<AppState>,
     a: Agent<QueueRequestTake>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
+    raw: axum::body::Bytes,
 ) -> Result<Json<Value>, ApiError> {
     let id = path(p)?;
+    let b: TakeBody = if raw.iter().all(u8::is_ascii_whitespace) {
+        TakeBody::default()
+    } else {
+        serde_json::from_slice(&raw).map_err(|e| {
+            ApiError::bad_request(
+                "invalid_json",
+                format!("a take's body is empty or {{\"public_key\": \"…\"}}: {e}"),
+            )
+        })?
+    };
     let who = match requester(&a.caller) {
         Some(w) => w,
         None if matches!(a.caller, Caller::Anonymous) => return Err(ApiError::unauthorized()),
@@ -246,7 +272,9 @@ pub async fn take(
         }
     };
     let taken = s
-        .store_call(move |st| st.take_queue_request(&audit.resolve(st)?, &id, &who))
+        .store_call(move |st| {
+            st.take_queue_request(&audit.resolve(st)?, &id, &who, b.public_key.as_deref())
+        })
         .await?;
     if taken.request.status == Status::Pending {
         let mut err = ApiError::new(
@@ -262,9 +290,11 @@ pub async fn take(
         Some((grant, token, key)) => {
             v["grant"] = json!(grant);
             v["token"] = json!(token.expose());
-            v["private_key"] = json!(
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.pkcs8().expose())
-            );
+            if let Some(key) = key {
+                v["private_key"] = json!(
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.pkcs8().expose())
+                );
+            }
         }
         None if taken.request.status == Status::Approved => {
             v["grant_taken"] = json!(true);

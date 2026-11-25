@@ -13,9 +13,12 @@
 //! - **Approval.** The queue is made with the approver as its admin, as
 //!   their own `POST /api/queues` would make it. Nothing else is granted.
 //! - **The one take.** The agent's first take of an approved request makes
-//!   one service grant of the queue and hands it its token and Ed25519
-//!   private key, in that answer alone: neither is kept, and a later take
-//!   (or read) says it was taken. Reading a request changes nothing.
+//!   one service grant of the queue and hands it its token, in that answer
+//!   alone: it is not kept, and a later take (or read) says it was taken.
+//!   A take that sends the agent's own Ed25519 public key gets a grant of
+//!   that key, so its private key never leaves the agent; one without has
+//!   the take make the pair and hand over its private key with the token,
+//!   kept no more than it. Reading a request changes nothing.
 //! - **Queue-request tokens.** A device sign-in that asked for
 //!   [`QUEUE_REQUEST_SCOPE`] alone makes a token whose one right is a grant
 //!   on it from the approving person, `clax-queue-requests` `request`, with
@@ -155,9 +158,10 @@ pub struct Ask {
 #[derive(Debug)]
 pub struct Taken {
     pub request: QueueRequest,
-    /// The service grant made by this take, with its token and key: only
-    /// on the first take of an approved request.
-    pub grant: Option<(crate::queues::ServiceGrant, Secret, KeyPair)>,
+    /// The service grant made by this take, with its token and, for a take
+    /// that sent no public key, the key pair the take made: only on the
+    /// first take of an approved request.
+    pub grant: Option<(crate::queues::ServiceGrant, Secret, Option<KeyPair>)>,
 }
 
 const COLS: &str = "id, status, name, origins_json, reporters_see, note, agent, person, created_at,
@@ -565,14 +569,37 @@ impl Store {
     /// The asking agent `who` takes the answer to request `id`. The first
     /// take of an approved request whose queue is still there makes its
     /// service grant (named for the agent), recorded under `ctx`, and
-    /// hands it over in [`Taken::grant`]. A take of a decided request by a
+    /// hands it over in [`Taken::grant`]: a grant of `public_key` (an
+    /// Ed25519 public key in unpadded base64url,
+    /// [`clax_core::sig::encode_public`]) when given, whose private key the
+    /// agent keeps, else of a pair made here. A take of a decided request by a
     /// scoped grant ends that grant; a pending request is returned as it
     /// is, changing nothing. `who` must be the request's own grant, or, for a
     /// request of the owner's agents, an agent of the owner's.
     ///
     /// # Errors
-    /// `NotFound` for no such request of `who`'s.
-    pub fn take_queue_request(&self, ctx: &AuditCtx, id: &str, who: &Requester) -> Result<Taken> {
+    /// `invalid_key` for a `public_key` that is not 32 bytes in canonical
+    /// unpadded base64url, taking nothing; `NotFound` for no such request
+    /// of `who`'s.
+    pub fn take_queue_request(
+        &self,
+        ctx: &AuditCtx,
+        id: &str,
+        who: &Requester,
+        public_key: Option<&str>,
+    ) -> Result<Taken> {
+        let public_key = public_key
+            .map(|k| {
+                clax_core::sig::decode_public(k)
+                    .map(|p| clax_core::sig::encode_public(&p))
+                    .map_err(|_| {
+                        CoreError::invalid(
+                            "invalid_key",
+                            "public_key is an Ed25519 public key: its 32 bytes in unpadded base64url",
+                        )
+                    })
+            })
+            .transpose()?;
         self.with_tx(|tx| {
             let now = self.now();
             settle(self, tx, &now)?;
@@ -586,7 +613,18 @@ impl Store {
                 && crate::queues::queue_in(tx, qid)?.is_some()
             {
                 let name: String = format!("Requested by {}", r.agent).chars().take(120).collect();
-                let made = self.create_service_grant_in(tx, ctx, qid, name.trim(), None)?;
+                let made = match &public_key {
+                    Some(public) => {
+                        let (g, token) =
+                            self.insert_service_grant_in(tx, ctx, qid, name.trim(), None, public)?;
+                        (g, token, None)
+                    }
+                    None => {
+                        let (g, token, key) =
+                            self.create_service_grant_in(tx, ctx, qid, name.trim(), None)?;
+                        (g, token, Some(key))
+                    }
+                };
                 tx.execute(
                     "UPDATE queue_requests SET fetched_at = ?2, service_grant_id = ?3 WHERE id = ?1",
                     params![id, now, made.0.id],

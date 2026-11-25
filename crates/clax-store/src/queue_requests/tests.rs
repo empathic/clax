@@ -68,7 +68,7 @@ fn a_request_waits_for_its_person_who_approves_it_into_a_queue_of_theirs() {
     // Nothing is made before the answer, and a pending take takes nothing.
     assert!(st.queues_of(None).unwrap().is_empty());
     let t = st
-        .take_queue_request(DAEMON, &r.id, &owners_agent())
+        .take_queue_request(DAEMON, &r.id, &owners_agent(), None)
         .unwrap();
     assert!(t.grant.is_none());
     assert_eq!(t.request.status, Status::Pending);
@@ -87,9 +87,14 @@ fn a_request_waits_for_its_person_who_approves_it_into_a_queue_of_theirs() {
 
     // The agent's first take makes the one service grant; the next makes none.
     let t = st
-        .take_queue_request(DAEMON, &r.id, &owners_agent())
+        .take_queue_request(DAEMON, &r.id, &owners_agent(), None)
         .unwrap();
-    let (grant, token, _key) = t.grant.expect("the grant, once");
+    let (grant, token, key) = t.grant.expect("the grant, once");
+    let key = key.expect("a take without a public key hands over the pair it made");
+    assert_eq!(
+        grant.public_key,
+        clax_core::sig::encode_public(&key.public())
+    );
     assert!(
         token
             .expose()
@@ -98,7 +103,7 @@ fn a_request_waits_for_its_person_who_approves_it_into_a_queue_of_theirs() {
     assert_eq!(grant.name, "Requested by An agent");
     assert!(t.request.taken_at.is_some());
     let again = st
-        .take_queue_request(DAEMON, &r.id, &owners_agent())
+        .take_queue_request(DAEMON, &r.id, &owners_agent(), None)
         .unwrap();
     assert!(again.grant.is_none());
     assert_eq!(st.service_grants(&q.id).unwrap().len(), 1);
@@ -124,7 +129,7 @@ fn a_denied_request_makes_nothing() {
     assert_eq!(r.status, Status::Denied);
     assert!(r.decided_at.is_some());
     let t = st
-        .take_queue_request(DAEMON, &r.id, &owners_agent())
+        .take_queue_request(DAEMON, &r.id, &owners_agent(), None)
         .unwrap();
     assert!(t.grant.is_none());
     assert!(st.queues_of(None).unwrap().is_empty());
@@ -143,7 +148,10 @@ fn a_request_is_only_its_persons_to_answer_and_its_agents_to_read() {
         session_id: None,
     };
     assert_eq!(
-        code(st.take_queue_request(DAEMON, &r.id, &other).unwrap_err()),
+        code(
+            st.take_queue_request(DAEMON, &r.id, &other, None)
+                .unwrap_err()
+        ),
         "not_found"
     );
     assert_eq!(
@@ -251,8 +259,45 @@ fn a_queue_deleted_before_the_read_hands_over_no_grant() {
     let (_, q) = st.approve_queue_request(DAEMON, &r.id, None).unwrap();
     st.delete_queue(DAEMON, &q.id).unwrap();
     let t = st
-        .take_queue_request(DAEMON, &r.id, &owners_agent())
+        .take_queue_request(DAEMON, &r.id, &owners_agent(), None)
         .unwrap();
     assert!(t.grant.is_none());
     assert_eq!(t.request.status, Status::Approved);
+}
+
+#[test]
+fn a_take_with_its_own_public_key_gets_a_grant_of_that_key_and_no_private_key() {
+    let (_d, _c, st) = store();
+    let r = st
+        .request_queue(DAEMON, &owners_agent(), ask("Invoices"))
+        .unwrap();
+    let (_, q) = st.approve_queue_request(DAEMON, &r.id, None).unwrap();
+    // A key that is not an Ed25519 public key takes nothing.
+    let short = clax_core::secret::base64url(&[7u8; 31]);
+    let padded = format!("{}=", "A".repeat(43));
+    for bad in ["", "not base64!", short.as_str(), padded.as_str()] {
+        let e = st
+            .take_queue_request(DAEMON, &r.id, &owners_agent(), Some(bad))
+            .unwrap_err();
+        assert_eq!(code(e), "invalid_key", "{bad:?}");
+    }
+    assert!(st.service_grants(&q.id).unwrap().is_empty());
+    assert!(st.queue_request(&r.id).unwrap().unwrap().taken_at.is_none());
+
+    let mine = clax_core::sig::KeyPair::generate();
+    let public = clax_core::sig::encode_public(&mine.public());
+    let t = st
+        .take_queue_request(DAEMON, &r.id, &owners_agent(), Some(&public))
+        .unwrap();
+    let (grant, _token, key) = t.grant.expect("the grant, once");
+    assert!(
+        key.is_none(),
+        "the take makes no pair and hands over no private key"
+    );
+    assert_eq!(grant.public_key, public);
+    assert_eq!(st.service_grants(&q.id).unwrap()[0].public_key, public);
+    let again = st
+        .take_queue_request(DAEMON, &r.id, &owners_agent(), Some(&public))
+        .unwrap();
+    assert!(again.grant.is_none());
 }
