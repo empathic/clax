@@ -6812,6 +6812,8 @@ router), and a test fails when it differs:
 | `DELETE /api/queues/{qid}/installs/{iid}` | Denied | yes: 403 `not_for_agents` |
 | `PATCH /api/queues/{qid}/installs/{iid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}/members/pending/{id}` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/reports/{tid}/reopen` | Denied | yes: 403 `not_for_agents` |

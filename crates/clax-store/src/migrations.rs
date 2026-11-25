@@ -6431,6 +6431,8 @@ mod tests {
         assert_eq!(super::QUEUE_ACCESS_MIGRATION, 73);
         assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         assert!(super::has_column(&c, "queue_members", "github_login").unwrap());
+        // No queue here: the row only shows the columns and their CHECK.
+        c.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
         c.execute(
             "INSERT INTO queue_members (id, queue_id, github_login, role, created_at)
              VALUES ('qm1', '7q3k9mzx2b4t', 'octo-cat', 'triage', 'x')",

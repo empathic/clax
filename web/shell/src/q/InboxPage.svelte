@@ -120,7 +120,7 @@
   type CardKind = "question" | "approval" | "request";
   /** The `/inbox` query parameters naming a card to focus, and its kind. */
   const CARD_PARAMS: [string, CardKind][] = [["q", "question"], ["approval", "approval"], ["remote_request", "request"]];
-  const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes", remote_request: "Connect a Clax" };
+  const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes", remote_request: "Connect a Clax", access: "Access" };
   const fmt = (n: number | "10000+") => (n === "10000+" ? "10,000+" : n.toLocaleString("en-US"));
   /** Says what failed: `what` ("load the inbox"), and why. */
   const oops = (what: string) => (e: unknown) => { error = failureText(`Could not ${what}`, e); };
