@@ -126,7 +126,7 @@ describe("InboxPage", () => {
     expect(groups[0].querySelector(".irow .title")!.textContent).toBe("claude replied");
     expect(groups[1].querySelector<HTMLElement>(".gbody")!.hidden).toBe(true);
     expect(groups[1].querySelector(".gread")).toBeNull();
-    expect(calls.map(c => c.url)).toEqual(expect.arrayContaining(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]));
+    expect(calls.map(c => c.url)).toEqual(expect.arrayContaining(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request%2Cqueue_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]));
     // The quiet line opens in place: its newest read rows, then more of it.
     click(second);
     expect(second.getAttribute("aria-expanded")).toBe("true");
@@ -370,7 +370,7 @@ describe("InboxPage", () => {
     await vi.advanceTimersByTimeAsync(1);
     flush();
     expect(location.search).toBe("?search=dash");
-    expect(calls.slice(n).map(c => c.url)).toEqual([`/api/inbox?q=dash&kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200`, "/api/inbox?q=dash&group=artifact&rows=3"]);
+    expect(calls.slice(n).map(c => c.url)).toEqual([`/api/inbox?q=dash&kind=question%2Capproval%2Cconnection%2Cremote_request%2Cqueue_request&read=unread&limit=200`, "/api/inbox?q=dash&group=artifact&rows=3"]);
     await vi.advanceTimersByTimeAsync(0);
     flush();
     expect([...m.root.querySelectorAll(".irow")].map(r => r.getAttribute("data-item"))).toEqual(["IR"]);
@@ -436,7 +436,7 @@ describe("InboxPage", () => {
     expect(pages()).toEqual([]);
     handlers[0]({ type: "ready" });
     await pastDebounce();
-    expect(pages()).toEqual(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]);
+    expect(pages()).toEqual(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request%2Cqueue_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]);
     expect(m.root.querySelectorAll(".irow").length).toBeGreaterThan(0);
   });
 
@@ -573,6 +573,16 @@ describe("InboxPage", () => {
     const { m } = page();
     await settle();
     expect(document.activeElement).toBe(m.root.querySelector(".rcard"));
+  });
+
+  it("goes to the queue request's card for `?queue_request=`, focused", async () => {
+    history.replaceState(null, "", "/inbox?queue_request=01J9Q0000000000000000000QR");
+    stubRoutes({ "": [item("queue_request", { id: "IQR", seq: 6 }), R] });
+    const { m } = page();
+    await settle();
+    const card = m.root.querySelector(".qrcard")!;
+    expect(card.getAttribute("data-queue-request")).toBe("01J9Q0000000000000000000QR");
+    expect(document.activeElement).toBe(card);
   });
 
   it("filters by the approval, connection and ended kinds", async () => {

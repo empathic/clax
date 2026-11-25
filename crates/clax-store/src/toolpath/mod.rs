@@ -1654,6 +1654,21 @@ impl Event<'_> {
                 self.show("status"),
                 self.show("request_id")
             ),
+            Some(K::QueueRequestAsk) => format!(
+                "Asked for queue {} (request {})",
+                self.show("name"),
+                self.show("request_id")
+            ),
+            Some(K::QueueRequestAnswer) => format!(
+                "Answered {} to the request for a queue (request {})",
+                self.show("answer"),
+                self.show("request_id")
+            ),
+            Some(K::QueueRequestClose) => format!(
+                "Closed the request for a queue as {} (request {})",
+                self.show("status"),
+                self.show("request_id")
+            ),
             Some(K::ConfirmationAnswer) => format!(
                 "{} confirmation {} ({})",
                 if self.str("answer") == Some("approve") {

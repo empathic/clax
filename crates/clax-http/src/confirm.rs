@@ -133,6 +133,9 @@ pub enum Decision {
         #[serde(skip_serializing_if = "Option::is_none")]
         body: Option<Value>,
     },
+    /// Approving queue request `request_id`: a queue is made, and the
+    /// agent that asked receives its service grant.
+    ApproveQueueRequest { request_id: String },
     /// Approving machine request `grant_id` as a new person named `name`
     /// with `rights`.
     ApproveGrant {
@@ -428,6 +431,17 @@ pub fn words(st: &Store, d: &Value) -> clax_core::Result<String> {
             None => format!("open {}'s site to the world", title(&s("artifact_id"))?),
         },
         "approve_grant" => format!("connect a new machine as {}", s("name")),
+        "approve_queue_request" => {
+            let name = st
+                .queue_request(&s("request_id"))
+                .ok()
+                .flatten()
+                .map(|r| format!("“{}”", r.name))
+                .unwrap_or_else(|| "a report queue".into());
+            format!(
+                "make the report queue {name} an agent asked for, and give it the queue's service grant"
+            )
+        }
         "extension_mint" => "pair the Clax extension, which then acts as your browser".to_string(),
         "register_passkey" => "add a passkey that confirms these decisions from now on".to_string(),
         "set_rights" => "change a person's rights".to_string(),

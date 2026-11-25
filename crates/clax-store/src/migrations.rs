@@ -2535,6 +2535,80 @@ pub const MIGRATIONS: &[&str] = &[
         expires_at TEXT NOT NULL
     );
     CREATE INDEX queue_fix_tickets_by_fix ON queue_fix_tickets(thread_id, n);",
+    // 70: queue requests (`crate::queue_requests`): an agent's ask for a
+    // report queue, which its person approves or denies. A request names
+    // its approver (`person`, a public ID; NULL the owner), the agent's
+    // grant (NULL for the owner's agents) and session, what it asks for,
+    // and once approved the queue made and the service grant handed to the
+    // agent on its one read (`fetched_at`); no token or key is kept. A
+    // grant may be scoped (`grants.scope`, `queue.request` alone): a device
+    // sign-in that asked for that scope (`device_codes.scope`) makes it,
+    // with no rights (`narrow_json` `[]`) and an end of its own
+    // (`grants.scope_expires_at`). The inbox gains the requests' kind,
+    // `queue_request`, rebuilt as migration 60 rebuilt it, keeping every
+    // `seq`.
+    //
+    // `queue_requests` is the migration's mark (`MARKS_AFTER_APP`).
+    "CREATE TABLE queue_requests (
+        id TEXT PRIMARY KEY,
+        person TEXT,
+        grant_id TEXT,
+        session_id TEXT,
+        agent TEXT NOT NULL,
+        name TEXT NOT NULL,
+        origins_json TEXT NOT NULL,
+        reporters_see TEXT NOT NULL CHECK (reporters_see IN ('own', 'all')),
+        note TEXT,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'cancelled', 'expired')),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        decided_at TEXT,
+        queue_id TEXT,
+        service_grant_id TEXT,
+        fetched_at TEXT
+    );
+    CREATE INDEX queue_requests_by_person ON queue_requests(COALESCE(person, ''), created_at);
+    CREATE INDEX queue_requests_pending ON queue_requests(expires_at) WHERE status = 'pending';
+    CREATE INDEX queue_requests_by_grant ON queue_requests(grant_id) WHERE grant_id IS NOT NULL;
+    ALTER TABLE grants ADD COLUMN scope TEXT;
+    ALTER TABLE grants ADD COLUMN scope_expires_at TEXT;
+    ALTER TABLE device_codes ADD COLUMN scope TEXT;
+    CREATE TABLE inbox_items_70 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended', 'push', 'remote_request',
+                                           'queue_request')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_70 SELECT seq, id, kind, key, recipient, artifact_id, thread_id,
+        comment_id, version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+        created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_70 RENAME TO inbox_items;
+    CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2628,8 +2702,13 @@ pub const ANALYTICS_MIGRATION: u32 = CONTENT_SECURITY_POLICY_MIGRATION + 1;
 
 /// The migration that adds fixes checked on preview deployments
 /// (`queue_service_grants.origins_json`, `report_fixes.verified_origin`
-/// and `queue_fix_tickets`), as a schema version, and this build's last.
+/// and `queue_fix_tickets`), as a schema version.
 pub const PREVIEW_FIXES_MIGRATION: u32 = ANALYTICS_MIGRATION + 1;
+
+/// The migration that adds queue requests (`queue_requests`, scoped
+/// grants and the inbox's `queue_request` kind), as a schema version, and
+/// this build's last.
+pub const QUEUE_REQUESTS_MIGRATION: u32 = PREVIEW_FIXES_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2789,11 +2868,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`PREVIEW_FIXES_MIGRATION`]. They follow the app's in every
+/// [`QUEUE_REQUESTS_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 20] = [
+const MARKS_AFTER_APP: [Mark<'static>; 21] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2814,6 +2893,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 20] = [
     Mark::Column("artifacts", "content_security_policy"),
     Mark::Table("analytics_days"),
     Mark::Table("queue_fix_tickets"),
+    Mark::Table("queue_requests"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5890,7 +5970,12 @@ mod tests {
             super::ANALYTICS_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 27].contains("CREATE TABLE queue_fix_tickets ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(
+            super::QUEUE_REQUESTS_MIGRATION,
+            super::PREVIEW_FIXES_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 28].contains("CREATE TABLE queue_requests ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::QUEUE_REQUESTS_MIGRATION);
     }
 
     #[test]
@@ -6057,7 +6142,8 @@ mod tests {
         drop(Store::open(&home).unwrap());
         {
             let c = Connection::open(home.db_path()).unwrap();
-            // The schema as it was at 67, with an artifact.
+            // The schema as it was at 67 (without 68's analytics and 69's
+            // queue requests), with an artifact.
             c.execute_batch(
                 "ALTER TABLE queue_service_grants DROP COLUMN origins_json;
                  ALTER TABLE report_fixes DROP COLUMN verified_origin;
@@ -6068,6 +6154,10 @@ mod tests {
                  DROP TABLE analytics_timings;
                  DROP TABLE analytics_day_secrets;
                  DROP TABLE analytics_seen;
+                 DROP TABLE queue_requests;
+                 ALTER TABLE grants DROP COLUMN scope;
+                 ALTER TABLE grants DROP COLUMN scope_expires_at;
+                 ALTER TABLE device_codes DROP COLUMN scope;
                  INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
                  VALUES ('abcdefghjkmn', 'Plan', 'x', 'x', 1, '1');
                  PRAGMA user_version = 67;",
@@ -6076,7 +6166,7 @@ mod tests {
         }
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_REQUESTS_MIGRATION);
         let setting: String = c
             .query_row("SELECT analytics FROM artifacts", [], |r| r.get(0))
             .unwrap();
@@ -6142,7 +6232,8 @@ mod tests {
         assert_eq!(super::CONTENT_SECURITY_POLICY_MIGRATION, 67);
         assert_eq!(super::ANALYTICS_MIGRATION, 68);
         assert_eq!(super::PREVIEW_FIXES_MIGRATION, 69);
-        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(super::QUEUE_REQUESTS_MIGRATION, 70);
+        assert_eq!(user_version(&c), super::QUEUE_REQUESTS_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -6922,7 +7013,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_REQUESTS_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -7427,7 +7518,7 @@ mod tests {
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
+            assert_eq!(user_version(&c), super::QUEUE_REQUESTS_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -7435,8 +7526,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::PREVIEW_FIXES_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 69 after it are one later now"
+            super::QUEUE_REQUESTS_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 70 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -7455,7 +7546,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(user_version(&copied), super::QUEUE_REQUESTS_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -7469,7 +7560,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::PREVIEW_FIXES_MIGRATION + 1, schema, rows)
+            (super::QUEUE_REQUESTS_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7743,7 +7834,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(last, super::QUEUE_REQUESTS_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -8364,7 +8455,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_REQUESTS_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             run_indexes(&c),
@@ -8640,7 +8731,7 @@ mod tests {
         );
         drop(opened_after_the_runs(&home));
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_REQUESTS_MIGRATION);
         let before = every_row(&c);
         let set = |sql: &str| {
             c.execute(
@@ -8730,7 +8821,7 @@ mod tests {
             .query_row([], |r| r.get::<_, i64>(0))
             .unwrap();
         crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
-        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_REQUESTS_MIGRATION);
         let finished: i64 = c
             .prepare_cached("SELECT count(*) FROM bot_runs WHERE status = 'finished'")
             .unwrap()
@@ -9052,7 +9143,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_REQUESTS_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             rows_in(&c, &cols),
@@ -9312,7 +9403,7 @@ mod tests {
         drop(at_64_with_runs(&home));
         drop(opened_after_the_runs(&home));
         let mut c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_REQUESTS_MIGRATION);
         let (schema, rows) = (schema_of(&c), every_row(&c));
         let before = super::Numbering {
             migrations: &MIGRATIONS[..super::RUN_BINDINGS_MIGRATION as usize],
@@ -9323,7 +9414,7 @@ mod tests {
             matches!(
                 refused,
                 Err(clax_core::CoreError::SchemaNewer { found, known })
-                    if found == super::PREVIEW_FIXES_MIGRATION
+                    if found == super::QUEUE_REQUESTS_MIGRATION
                         && known == super::RUN_BINDINGS_MIGRATION
             ),
             "{refused:?}"

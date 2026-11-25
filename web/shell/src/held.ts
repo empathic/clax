@@ -41,7 +41,7 @@ export class Refused extends ApiError {
 
 /** The header that presents a confirmation's ID with the call it confirms:
  * an ID the daemon handed this shell, never a page's. */
-const CONFIRMATION_HEADER = "x-clax-confirmation";
+export const CONFIRMATION_HEADER = "x-clax-confirmation";
 
 /** `fetch(path, init)` for a decision this page made: when the daemon
  * holds it and passkeys are required, it is confirmed here with the

@@ -14,7 +14,10 @@
   // code it showed), naming the machine and the address it asked from, or
   // denies it (signed out, it offers GitHub sign-in where the instance has
   // it, returning to `/device?code=<code>`); when the sign-in names itself the Clax app (`client_kind`
-  // `clax-app`), it says the app may also manage the sharing of their apps. A code is redeemed only by
+  // `clax-app`), it says the app may also manage the sharing of their apps; when it asks only to
+  // request a report queue (scope `queue.request`), it says that instead of
+  // signing in or publishing as them, and that the queue itself is
+  // approved or denied in their inbox. A code is redeemed only by
   // the button, never by loading the page, so a link preview spends
   // nothing. Where the instance shows Terms of Service and a Privacy
   // Policy (`me.legal`), each button that signs this browser in says that
@@ -71,6 +74,8 @@
   let device = $state<api.DeviceRequest | null | false>(null);
   let decided = $state<"approved" | "denied" | null>(null);
   const isApp = $derived(device ? device.client_kind === "clax-app" : false);
+  // A token that may only ask the person for a report queue: no sign-in, no publishing.
+  const queueOnly = $derived(device ? !!device.scope?.includes("queue.request") : false);
   // Where the machine's Clax asked to be sent back to: its own loopback page.
   const back = $derived(device ? loopbackReturn(device.return_to) : null);
   // GitHub sign-in from the device page returns to it with its code
@@ -199,11 +204,21 @@
         {:else}
           <p>Another Clax asks to publish here as you. Sign in first: open a sign-in link from a device that is signed in, then come back to this page.</p>
         {/if}
+      {:else if decided === "approved" && queueOnly}
+        <p data-testid="device-queue-approved"><strong>{device ? device.client_name : "That Clax"}</strong> may now ask you for a report queue. Its request will wait in your inbox.{back ? " Going back to it…" : " You can close this tab."}</p>
+      {:else if decided === "denied" && queueOnly}
+        <p>Denied: it may not ask you for a report queue.{back ? " Going back to it…" : " You can close this tab."}</p>
       {:else if decided === "approved"}
         <p><strong>{device ? device.client_name : "That Clax"}</strong> is signed in as you. It shows in Settings under {isApp ? "Account, Devices" : "Agents & machines, Agent tokens"}, where you can revoke it.{back ? " Going back to it…" : " You can close this tab."}</p>
         <div class="acts"><a class="go" href={isApp ? "/settings/account#hd-h" : "/settings/agents#ht-h"}>Open Settings</a></div>
       {:else if decided === "denied"}
         <p>Denied: that Clax is not signed in.{back ? " Going back to it…" : " You can close this tab."}</p>
+      {:else if device && queueOnly}
+        <p><strong>{device.client_name}</strong>, from {device.peer_ip || "an unknown address"}, asks to request a report queue from you, <strong>{me.person.display_name ?? "you"}</strong>. Check that it shows the code <code>{deviceCode.trim().toUpperCase()}</code>.</p>
+        {#if !device.same_address}<p class="now" data-testid="other-address">It asked from another address than this browser's. Approve only if you started this yourself, just now, on that machine.</p>{/if}
+        <p class="hint" data-testid="device-queue">It gets a token that can only ask you for a report queue: you approve or deny the queue itself in your inbox. The token ends once that request is decided, or after an hour, and shows on People, where you can revoke it.</p>
+        <div class="acts"><button class="primary" type="button" disabled={busy} onclick={() => decide(true)}>Approve</button><button type="button" disabled={busy} onclick={() => decide(false)}>Deny</button></div>
+        {#if back}<p class="hint" data-testid="device-return">Approve, then go back to {new URL(back).host}.</p>{/if}
       {:else if device}
         <p><strong>{device.client_name}</strong>{isApp ? ", the Clax app," : ","} from {device.peer_ip || "an unknown address"}, asks to publish here as you, <strong>{me.person.display_name ?? "you"}</strong>. Check that it shows the code <code>{deviceCode.trim().toUpperCase()}</code>.</p>
         {#if !device.same_address}<p class="now" data-testid="other-address">It asked from another address than this browser's. Approve only if you started this sign-in yourself, just now, on that machine: anyone who sent you this link would publish as you.</p>{/if}

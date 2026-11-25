@@ -3,6 +3,7 @@
 // and its queue and report views, which alone load this module. Every
 // change is the browser's own session (`SameOrigin`), never the token. A
 // refusal throws `Refused` with the daemon's message and code.
+import type { QueueRequest } from "../api";
 import type { DiagLine, Queue, QueueRole, Report, ReportPage, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated } from "../../../sdk/src/types";
 
 /** What a listing of reports filters by: a state, or `active` (`open` or `claimed`). */
@@ -35,6 +36,9 @@ const e = encodeURIComponent;
 const q = (qid: string) => `/api/queues/${e(qid)}`;
 
 export const listQueues = () => call<{ queues: Queue[] }>("/api/queues");
+/** The pending queue requests the viewer answers (`GET /api/queue-requests?status=pending`),
+ * here so the Queues page lists them without loading the request card's module. */
+export const listPendingQueueRequests = () => call<{ requests: QueueRequest[] }>("/api/queue-requests?status=pending");
 export const createQueue = (f: QueueFields) => call<{ queue: Queue }>("/api/queues", "POST", f);
 export const updateQueue = (qid: string, f: Partial<QueueFields>) => call<{ queue: Queue }>(q(qid), "PATCH", f);
 export const deleteQueue = (qid: string) => call<unknown>(q(qid), "DELETE");

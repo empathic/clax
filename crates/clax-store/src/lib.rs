@@ -150,6 +150,7 @@ pub mod price_catalog;
 pub mod provider_failures;
 pub mod pushes;
 pub mod questions;
+pub mod queue_requests;
 pub mod queues;
 pub mod quickstart;
 pub mod reach;

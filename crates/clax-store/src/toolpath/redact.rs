@@ -433,6 +433,15 @@ fn body_class(kind: &str, field: &str) -> Class {
             "queue.preview",
             "queue_id" | "thread_id" | "n" | "origin" | "ticket_id" | "for_person",
         ) => Safe,
+        // A queue request (`crate::queue_requests`): the queue's name and
+        // the agent's note are its words; the rest is Clax's.
+        ("queue_request.ask", "name" | "note") => Text,
+        (
+            "queue_request.ask",
+            "request_id" | "origins" | "reporters_see" | "approver" | "grant_id",
+        ) => Safe,
+        ("queue_request.answer", "request_id" | "answer" | "queue_id") => Safe,
+        ("queue_request.close", "request_id" | "status") => Safe,
         ("confirmation.answer", "confirmation_id" | "decision" | "answer") => Safe,
         ("passkey.add", "credential_id" | "alg") => Safe,
         ("passkey.remove", "credential_id" | "reason") => Safe,

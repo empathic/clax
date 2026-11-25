@@ -74,6 +74,19 @@ On the instance, as the person who will administer the queue:
 The same steps as API calls are in `docs/prod.md`, "Feedback: clax.dev's
 own report queue".
 
+An agent setting this up for you cannot make the queue itself: it asks
+you for one (the `queue_request` tool, or `clax queue create <name>
+--origin <origin>…` run under a harness), naming the origins and why.
+The request waits in your inbox and on the Queues page; Approve makes the
+queue with you as its admin, and the agent receives its service grant
+once, which it appends to the env file it names (`write_env`, `--write-env`)
+as `CLAX_QUEUE`, `CLAX_QUEUE_TOKEN` and `CLAX_QUEUE_KEY`, keeping the
+secret out of the conversation. A request you leave expires after an
+hour. On a hosted Clax an agent with no plugin signs in with the device
+flow asking for `scope: ["queue.request"]` (`docs/contract.md`, "Queue
+requests"): its token can ask you for one queue and nothing else, and
+ends once it takes that request's answer, or after an hour.
+
 ### Preview deployments
 
 A preview deployment per branch or pull request has an origin of its own
@@ -845,6 +858,7 @@ instructions, and the tools say so.
 
 | | MCP tool | CLI |
 |---|---|---|
+| Ask your person for a queue | `queue_request {name, origins, note?, write_env?}` | `clax queue create <name> --origin <origin> [--write-env <path>]` |
 | Be woken by new and reopened reports | `queue_watch {queue}`, then `wait_for_feedback` | `clax queue follow <qid> --session <SID>` (one JSON line per event) |
 | List | `queue_list {queue, state?}` | `clax queue ls --queue <qid> [--state …]` |
 | Read one whole | `queue_get {queue, report_id}` (the latest screenshot attached, diagnostics inline) | `clax queue show <report> --json`, `clax queue clip`, `clax queue diagnostics` |

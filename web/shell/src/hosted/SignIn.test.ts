@@ -9,11 +9,11 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.rep
 const me = { origin: "https://clax.example", setup_open: false, signed_in: true, person: { public_id: "u_sam", display_name: "Sam", owner: false, guest: false } };
 const waiting = (kind: string | null) => ({ client_name: "Clax on Pixel", peer_ip: "203.0.113.9", client_kind: kind, created_at: "2026-10-22T10:00:00Z", expires_at: "2026-10-22T10:10:00Z", same_address: true });
 
-async function approvalPage(kind: string | null, owner = false, return_to: string | null = null) {
+async function approvalPage(kind: string | null, owner = false, return_to: string | null = null, scope: string[] | null = null) {
   history.replaceState(null, "", "/device?code=WXYZ-4821");
   stubFetch({
     "GET /api/hosted/me": { ...me, person: { ...me.person, owner } },
-    "GET /api/hosted/device/WXYZ-4821": { ...waiting(kind), return_to },
+    "GET /api/hosted/device/WXYZ-4821": { ...waiting(kind), return_to, scope },
     "POST /api/hosted/device/WXYZ-4821/approve": { token: { id: "t1" } },
     "POST /api/hosted/device/WXYZ-4821/deny": {},
   });
@@ -43,6 +43,35 @@ describe("the device approval page", () => {
     expect(text).toContain("It gets an agent token of yours: what it publishes is public as yours, within your rights.");
     expect(text).not.toContain("the Clax app");
     expect(text).not.toContain("change who can see or edit");
+  });
+});
+
+describe("a device asking only to request a report queue", () => {
+  const press = async (m: Awaited<ReturnType<typeof approvalPage>>, label: string) => {
+    [...m.root.querySelectorAll("button")].find(b => b.textContent === label)!.click();
+    await settle();
+  };
+
+  it("says it asks to request a report queue, never that it signs in or publishes as the person", async () => {
+    const m = await approvalPage(null, false, null, ["queue.request"]);
+    const text = m.root.textContent ?? "";
+    expect(text).toContain("Clax on Pixel, from 203.0.113.9, asks to request a report queue from you, Sam. Check that it shows the code WXYZ-4821.");
+    expect(m.root.querySelector('[data-testid="device-queue"]')!.textContent).toBe("It gets a token that can only ask you for a report queue: you approve or deny the queue itself in your inbox. The token ends once that request is decided, or after an hour, and shows on People, where you can revoke it.");
+    expect(text).not.toContain("publish");
+    expect(text).not.toContain("agent token");
+    await press(m, "Approve");
+    const after = m.root.textContent ?? "";
+    expect(after).toContain("Clax on Pixel may now ask you for a report queue. Its request will wait in your inbox.");
+    expect(after).not.toContain("is signed in as you");
+  });
+
+  it("keeps the whole sign-in's text without a scope", async () => {
+    const m = await approvalPage(null);
+    const text = m.root.textContent ?? "";
+    expect(text).toContain("Clax on Pixel, from 203.0.113.9, asks to publish here as you, Sam.");
+    expect(text).not.toContain("report queue");
+    await press(m, "Approve");
+    expect(m.root.textContent).toContain("Clax on Pixel is signed in as you.");
   });
 });
 
