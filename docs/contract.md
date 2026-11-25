@@ -7613,9 +7613,9 @@ All three routes need the token (401 `unauthorized` without it):
 Every page follows this contract so it renders well in the gallery, in light and
 dark mode, and on a phone:
 
-- A `<title>` element with a short name (two to four words). A new artifact
-  needs a title: pass `title` on the first publish or give the page a
-  non-empty `<title>`, which the tools then use.
+- A `<title>` element with a short name (two to four words). An artifact
+  published without `title` shows its page's `<title>` (else "Untitled")
+  until someone gives it a title of its own.
 - Colors and other design values are CSS custom properties (tokens) on `:root`.
 - Dark mode is provided twice, so both the system setting and the person's
   explicit choice work:
