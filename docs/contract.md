@@ -1637,8 +1637,12 @@ app's versions with the bundle each carries.
   {github_login, role}`) go to the GitHub account the login names when
   they are made, never to the login: the daemon asks GitHub (`GET
   /users/<login>` at the GitHub OAuth App's API base, with its client ID
-  and secret) before it keeps anything, and keeps the account's numeric
-  ID. An account that has signed in here (matched by that ID) is given
+  and secret, and again without them when GitHub refuses them: the
+  endpoint is public) before it keeps anything, and keeps the account's
+  numeric ID. `PUT …/shares {id, access}` changes the access of the share
+  with that ID alone (404 for none) and asks GitHub nothing, so a
+  waiting share keeps the account, or legacy login, it was given to; the
+  sharing dialog changes access this way. An account that has signed in here (matched by that ID) is given
   the access at once; any other's waits, and binds at that account's
   first GitHub sign-in under whatever login it has by then. A login
   renamed and taken by someone else carries nothing to them. The login is

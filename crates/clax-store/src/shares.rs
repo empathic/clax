@@ -987,7 +987,10 @@ mod tests {
     #[test]
     fn a_legacy_share_waits_by_login_is_flagged_and_sharing_again_ties_it_to_the_account() {
         let (_d, st, _sam) = hosted();
-        let (a, b) = (artifact(&st, None), artifact(&st, None));
+        let (a, b) = (
+            artifact(&st, None).as_str().to_string(),
+            artifact(&st, None).as_str().to_string(),
+        );
         // Rows as a build before migration 77 left them: by login alone.
         st.with_tx(|tx| {
             for (id, aid) in [("s_a", &a), ("s_b", &b)] {
