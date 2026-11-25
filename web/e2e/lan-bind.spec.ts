@@ -2,7 +2,8 @@
 // macOS one on any address but loopback, unless CLAX_E2E_LAN=1, since its
 // firewall asks about each new test binary that listens there; on Linux
 // (CI) none.
-import { expect, lanBindSkip, test } from "./fixtures";
+import { expect, test } from "./fixtures";
+import { lanBindSkip } from "./lan-bind";
 
 test("a LAN daemon skips on macOS unless CLAX_E2E_LAN=1, and runs elsewhere", () => {
   for (const bind of [undefined, "127.0.0.1", "::1", "localhost"]) expect(lanBindSkip(bind, "darwin", {})).toBeNull();

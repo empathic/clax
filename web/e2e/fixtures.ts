@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { lanBindSkip } from "./lan-bind";
 import { advance, fence, quietEval, until } from "./time";
 
 export { fence, until } from "./time";
@@ -356,19 +357,6 @@ export async function startDaemon(opts: StartOpts = {}) {
 }
 
 type StartOpts = { config?: string; home?: string; port?: number; bind?: string; env?: Record<string, string>; args?: string[] };
-
-/** Why a daemon on `bind` is not started on `platform`, or null when it is.
- * macOS's Application Firewall asks whether `clax` may accept incoming
- * connections when a binary it has not been told about listens on any
- * address but loopback, and each build of the test binary is a new one: a
- * test of a person on the LAN (`0.0.0.0`) would ask at every run. On macOS
- * such a test skips, saying so, unless `CLAX_E2E_LAN=1` says the developer
- * will answer it; elsewhere (CI's Linux) it runs. */
-export function lanBindSkip(bind: string | undefined, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | null {
-  if (bind === undefined || bind === "127.0.0.1" || bind === "::1" || bind === "localhost") return null;
-  if (platform !== "darwin" || env.CLAX_E2E_LAN === "1") return null;
-  return `a daemon on ${bind} makes macOS's firewall ask whether clax may accept incoming connections; set CLAX_E2E_LAN=1 to run this test and answer it`;
-}
 
 /** Whether another process listens on `[::1]` at `port` (false on a machine without IPv6). */
 export function v6Taken(port: number): Promise<boolean> {

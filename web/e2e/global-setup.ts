@@ -9,6 +9,7 @@ import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import daemonSetup from "./daemon-setup";
+import { lanBindSkip } from "./lan-bind";
 
 const web = fileURLToPath(new URL("..", import.meta.url));
 
@@ -40,6 +41,10 @@ function inputsHash(): string {
 
 export default function globalSetup() {
   daemonSetup();
+  // The list reporter shows a skipped test without its reason: the LAN
+  // tests' skip on macOS is said once here.
+  const lan = lanBindSkip("0.0.0.0", process.platform, process.env);
+  if (lan) process.stderr.write(`Tests of a person on the LAN skip: ${lan}.\n`);
 
   // A test build made already (Bazel's //web:dist_e2e) is used as it is.
   if (process.env.CLAX_E2E_WEB_DIST) {
