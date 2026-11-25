@@ -152,3 +152,83 @@ async fn write_routes_require_bearer_token() {
         .unwrap();
     assert_eq!(res.status(), 401);
 }
+
+/// `POST /api/artifacts` with no credential and `headers`: the status and
+/// the error's message.
+async fn refused_with(ts: &TestServer, headers: &[(&str, &str)]) -> (u16, String) {
+    let mut req = ts
+        .client
+        .post(format!("{}/api/artifacts", ts.base))
+        .json(&serde_json::json!({}));
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let res = req.send().await.unwrap();
+    let status = res.status().as_u16();
+    let body: serde_json::Value = res.json().await.unwrap_or_default();
+    (
+        status,
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+#[tokio::test]
+async fn no_credential_tells_a_program_what_works_and_a_browser_to_ask_its_agent() {
+    let ts = TestServer::spawn().await;
+    // A program (an agent's curl) is pointed at the CLI and the open paths.
+    let (s, m) = refused_with(&ts, &[]).await;
+    assert_eq!(s, 401);
+    assert_eq!(m, clax_http::local_trust::NO_CREDENTIAL_FOR_PROGRAMS);
+    for part in [
+        "`clax` CLI",
+        "`clax queue create --help`",
+        "/.well-known/clax",
+        "/_clax/overlay.d.ts",
+    ] {
+        assert!(m.contains(part), "{part}: {m}");
+    }
+    assert!(!m.contains("ask your agent"), "{m}");
+    // A browser's fetch keeps the wording for its person.
+    let (s, m) = refused_with(
+        &ts,
+        &[
+            ("sec-fetch-mode", "cors"),
+            ("sec-fetch-site", "same-origin"),
+        ],
+    )
+    .await;
+    assert_eq!(s, 401);
+    assert_eq!(m, clax_http::local_trust::NO_CREDENTIAL_FOR_PEOPLE);
+    // Every path the message names answers without a credential.
+    for p in [
+        "/.well-known/clax",
+        "/healthz",
+        "/_clax/overlay.js",
+        "/_clax/overlay.mjs",
+        "/_clax/overlay.d.ts",
+    ] {
+        let res = ts
+            .client
+            .get(format!("{}{p}", ts.base))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(res.status().as_u16(), 401, "{p}");
+    }
+}
+
+#[tokio::test]
+async fn a_hosted_instance_says_nothing_new_without_a_credential() {
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-29T10:00:00Z"));
+    let ts = TestServer::spawn_hosted(clock, None).await;
+    for headers in [&[][..], &[("sec-fetch-mode", "cors")][..]] {
+        let (s, m) = refused_with(&ts, headers).await;
+        assert!((400..500).contains(&s), "{s} {m}");
+        assert_ne!(m, clax_http::local_trust::NO_CREDENTIAL_FOR_PROGRAMS);
+        assert!(!m.contains("`clax` CLI"), "{m}");
+        assert!(!m.contains("overlay"), "{m}");
+    }
+}

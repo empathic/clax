@@ -837,12 +837,34 @@ fn refuse(method: &Method, path: &str, headers: &HeaderMap) -> Response {
         )
             .into_response();
     }
-    ApiError::new(
-        StatusCode::UNAUTHORIZED,
-        "no_credential",
-        "this needs a credential: ask your agent to open Clax, or run `clax open` (`clax login` for a link)",
-    )
-    .into_response()
+    let message = if from_browser(headers) {
+        NO_CREDENTIAL_FOR_PEOPLE
+    } else {
+        NO_CREDENTIAL_FOR_PROGRAMS
+    };
+    ApiError::new(StatusCode::UNAUTHORIZED, "no_credential", message).into_response()
+}
+
+/// `no_credential`'s message to a browser's request (a page's `fetch`):
+/// its reader is a person, who has an agent or a terminal.
+pub const NO_CREDENTIAL_FOR_PEOPLE: &str = "this needs a credential: ask your agent to open Clax, or run `clax open` (`clax login` for a link)";
+
+/// `no_credential`'s message to any other caller: most often an agent's
+/// `curl`, which is told what reaches the daemon from this machine. It
+/// names nothing of this daemon's (what the caller reached is the port).
+pub const NO_CREDENTIAL_FOR_PROGRAMS: &str = "this needs a credential, which the `clax` CLI on this machine carries: \
+     use the CLI rather than calling the API directly (`clax --help`; `clax status` says what it reaches; \
+     `clax queue create --help` asks your person for a report queue). \
+     Without a credential, GET /.well-known/clax says what this is, /healthz whether it runs, \
+     and /_clax/overlay.js, /_clax/overlay.mjs and /_clax/overlay.d.ts are the report overlay and its types";
+
+/// Whether `headers` are a browser's: it sends `Sec-Fetch-*` metadata on
+/// every request it makes (fetch, XHR, navigation), which programs such as
+/// `curl` and the CLI do not.
+fn from_browser(headers: &HeaderMap) -> bool {
+    ["sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest"]
+        .iter()
+        .any(|h| headers.contains_key(*h))
 }
 
 /// Middleware of a local daemon, before every route: a request that

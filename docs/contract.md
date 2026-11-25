@@ -11962,7 +11962,14 @@ was made; and a run's end, sent until it is acknowledged.
   artifact sites, whose access decides each request), the login route
   (`GET /login`), and the invite and connect flows (`/connect/...`,
   `/join/...`, `/api/grants...`), which carry codes and signatures of their
-  own. Anything else answers 401 `no_credential`; a browser's page load
+  own. Anything else answers 401 `no_credential`, whose message is for
+  its reader: to a browser's request (one with `Sec-Fetch-*` headers)
+  "ask your agent to open Clax, or run `clax open` (`clax login` for a
+  link)"; to any other caller (an agent's `curl`) that the `clax` CLI on
+  this machine carries a credential (`clax --help`, `clax status`, `clax
+  queue create --help`), and which paths answer without one
+  (`/.well-known/clax`, `/healthz`, `/_clax/overlay.js`, `.mjs`, `.d.ts`),
+  naming nothing of the daemon's own. A browser's page load
   (`GET` accepting `text/html`) gets a page instead: "Open Clax through your
   agent or terminal: ask your agent to open Clax, or run `clax open`
   (`clax login` for a link)". So reaching the port
