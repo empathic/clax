@@ -2135,3 +2135,59 @@ async fn a_reports_repliers_are_no_participants_of_its_artifact() {
         .unwrap();
     assert_eq!(card["participants"]["people"], json!([]), "{card}");
 }
+
+/// To someone who is no member of its queue, the generic thread routes
+/// answer a report's thread as they answer a thread ID that is not there:
+/// 404, naming no queue. Its members' agents are told it is a report
+/// (`the_generic_thread_routes_refuse_a_report_and_leave_it_out_of_listings`).
+#[tokio::test]
+async fn the_generic_thread_routes_answer_a_non_member_as_for_no_thread() {
+    let q = setup().await;
+    let bob = q.ts.person("Bob").await;
+    let qid =
+        q.ts.store
+            .create_queue(
+                &AuditCtx::DAEMON,
+                Some(&bob.public_id),
+                NewQueue {
+                    name: "Bob's".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+    let r = file_into(&q.ts, &qid, None).await;
+    let aid = r.artifact.id.clone();
+    let a = q.session("a").await;
+    let unknown = "01J0000000000000000000000B";
+    for (m, tail, body) in [
+        (
+            "POST",
+            "/comments",
+            json!({"body": "on it", "author_kind": "agent"}),
+        ),
+        ("POST", "/resolve", json!({"as": "agent"})),
+        ("GET", "", json!(null)),
+        ("GET", "/clip", json!(null)),
+        ("DELETE", "?as=agent", json!(null)),
+    ] {
+        let path = format!("/api/artifacts/{aid}/threads/{}{tail}", r.id);
+        let none = format!("/api/artifacts/{aid}/threads/{unknown}{tail}");
+        for (who, (s, v), (s2, v2)) in [
+            (
+                "the owner's agent",
+                q.agent(Some(&a), m, &path, body.clone()).await,
+                q.agent(Some(&a), m, &none, body.clone()).await,
+            ),
+            (
+                "the owner",
+                q.owner(m, &path, body.clone()).await,
+                q.owner(m, &none, body.clone()).await,
+            ),
+        ] {
+            assert_eq!(s, 404, "{who} {m} {path}: {v}");
+            assert_eq!((s, &v), (s2, &v2), "{who} {m} {path}: as for no thread");
+        }
+    }
+}

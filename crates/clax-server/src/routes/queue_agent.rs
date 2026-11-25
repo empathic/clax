@@ -75,7 +75,7 @@ use serde_json::{Value, json};
 
 /// The person a caller acts as on a queue (`Some(None)`: the owner), or
 /// `None` for a caller who is no one's (a guest's cookie, no credential).
-fn queue_person(c: &Caller) -> Option<Option<String>> {
+pub(crate) fn queue_person(c: &Caller) -> Option<Option<String>> {
     match c {
         Caller::Owner { .. } | Caller::OwnerAgent { .. } => Some(None),
         Caller::PersonAgent { person, .. } => Some(person.clone()),

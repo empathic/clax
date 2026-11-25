@@ -4803,7 +4803,8 @@ without `thread_id`) leave reports out, and every route of one thread
 (`GET`, `DELETE`, `/clip`, `/comments`, `/resolve`, `/reopen`, `/send`,
 `/handoff`, and so `comments_read` with its `thread_id`, `comments_reply`
 and `comments_resolve`) answers 409 `queue_report` for a report, its `error`
-naming the report's `queue_id`. A comment on a report that is delivered to
+naming the report's `queue_id`, to a member of its queue and their agents;
+to anyone else it answers 404 as for a thread that is not there. A comment on a report that is delivered to
 an agent (`wait_for_feedback`, a notice) carries `queue_id`, and its text
 names the queue tools to answer it with.
 

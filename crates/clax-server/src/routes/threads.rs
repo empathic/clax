@@ -238,17 +238,30 @@ fn refuse_send_comments_off(st: &Store, id: &ArtifactId, resolves: bool) -> clax
     Ok(())
 }
 
+/// The person a caller acts as on a queue
+/// ([`super::queue_agent::queue_person`]): whom [`thread_of`] tells which
+/// queue a report is of.
+type QueueWho = Option<Option<String>>;
+
 /// The thread `tid` if it belongs to the live artifact `id`. Every route
 /// here reads or writes a thread through it, so a queue's report, which
-/// only its queue's routes read and write, is refused at every one.
+/// only its queue's routes read and write, is refused at every one: to a
+/// member of its queue (`who`) as a report, to anyone else as a thread
+/// that is not there, so nothing tells them the queue or the report.
 ///
 /// # Errors
-/// `NotFound`; [`CoreError::QueueReport`] (409 `queue_report`, naming the
-/// queue) for a report.
-fn thread_of(st: &Store, id: &ArtifactId, tid: &str) -> clax_core::Result<Thread> {
+/// `NotFound`, for a report too unless `who` is a member of its queue;
+/// [`CoreError::QueueReport`] (409 `queue_report`, naming the queue) for a
+/// member.
+fn thread_of(st: &Store, id: &ArtifactId, tid: &str, who: &QueueWho) -> clax_core::Result<Thread> {
     match st.get_thread(tid)? {
         Some(t) if t.artifact_id == id.as_str() => match t.queue_id {
-            Some(queue_id) => Err(CoreError::QueueReport { queue_id }),
+            Some(queue_id) => match who {
+                Some(p) if st.queue_role(&queue_id, p.as_deref())?.is_some() => {
+                    Err(CoreError::QueueReport { queue_id })
+                }
+                _ => Err(CoreError::NotFound),
+            },
             None => Ok(t),
         },
         _ => Err(CoreError::NotFound),
@@ -295,6 +308,7 @@ pub async fn approves_first(
             )
         })?;
     let id = parse_id(&path(p)?)?;
+    let on_queue = super::queue_agent::queue_person(&d.caller(&s).await?);
     let q = q
         .map(|Query(q)| q)
         .map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -316,7 +330,7 @@ pub async fn approves_first(
         .store_call(move |st| {
             let threads = ids
                 .iter()
-                .map(|tid| thread_of(st, &id, tid))
+                .map(|tid| thread_of(st, &id, tid, &on_queue))
                 .collect::<clax_core::Result<Vec<_>>>()?;
             Ok(json!({"approves_first": st.approves_first(&id, &threads, asker.as_deref())?}))
         })
@@ -465,13 +479,14 @@ pub async fn get(
 ) -> Result<Json<Value>, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    let on_queue = super::queue_agent::queue_person(&a.caller);
     let with_path = a.holds_token();
     let codex = s.feedback_ctx().codex_push();
     let vf = VisFor::of(&a.caller, &s);
     let view = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
-            vis.filter_thread(st, &thread_of(st, &id, &tid)?, codex, with_path)
+            vis.filter_thread(st, &thread_of(st, &id, &tid, &on_queue)?, codex, with_path)
         })
         .await?;
     Ok(Json(json!({"thread": view})))
@@ -487,12 +502,13 @@ pub async fn clip(
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    let on_queue = super::queue_agent::queue_person(&a.caller);
     let vf = VisFor::of(&a.caller, &s);
     let bytes = s
         .store_call_async(move |st| async move {
             let st = &*st;
             let vis = vf.build(st)?;
-            let t = thread_of(st, &id, &tid)?;
+            let t = thread_of(st, &id, &tid, &on_queue)?;
             if !t.has_clip {
                 return Err(CoreError::NotFound);
             }
@@ -694,7 +710,7 @@ pub(crate) async fn create_thread_keyed_now(
     {
         Keyed::Made(t) => t,
         Keyed::Before { thread_id, .. } => {
-            let t = thread_of(st, id, &thread_id)?;
+            let t = thread_of(st, id, &thread_id, &None)?;
             if t.status != "open" || t.sent_to_agent {
                 publish_thread(ctx, st, &t);
                 return Ok((t, Vec::new()));
@@ -1037,6 +1053,7 @@ pub async fn comment(
     let (aid, tid) = path(p)?;
     let reads = a.read_rights();
     let id = parse_id(&aid)?;
+    let on_queue = super::queue_agent::queue_person(&a.caller);
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     refuse_unlinked(&s, &tid).await?;
     let b = body(req)?;
@@ -1094,7 +1111,7 @@ pub async fn comment(
     let o = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
-            let t = thread_of(st, &id, &tid)?;
+            let t = thread_of(st, &id, &tid, &on_queue)?;
             let was_resolved = t.status == "resolved";
             let mut touched = Touched::default();
             let mut unresolved = Vec::new();
@@ -1111,7 +1128,7 @@ pub async fn comment(
                         "this Idempotency-Key made a comment on another thread",
                     ));
                 }
-                thread_of(st, &id, &tid)?
+                thread_of(st, &id, &tid, &on_queue)?
                     .comments
                     .into_iter()
                     .find(|c| c.id == cid)
@@ -1227,7 +1244,7 @@ pub async fn comment(
                 comment: json!(c),
             });
             apply(&ctx, st, &touched);
-            let t = thread_of(st, &id, &tid)?;
+            let t = thread_of(st, &id, &tid, &on_queue)?;
             publish_thread(&ctx, st, &t);
             // A person's reply reopened it: its open questions move back in.
             if was_resolved && t.status == "open" {
@@ -1340,6 +1357,7 @@ pub async fn send(
 ) -> Result<Json<Value>, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    let on_queue = super::queue_agent::queue_person(&a.caller);
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let page = clax_http::agent::page_marker(&a.caller, &headers)?;
     let live_page = s.live_ids.contains(id.as_str());
@@ -1364,7 +1382,7 @@ pub async fn send(
         .store_call(move |st| {
             let vis = vf.build(st)?;
             refuse_send_comments_off(st, &id, may_resolve)?;
-            if thread_of(st, &id, &tid)?.status == "resolved" {
+            if thread_of(st, &id, &tid, &on_queue)?.status == "resolved" {
                 return Err(CoreError::invalid(
                     "thread_resolved",
                     "a resolved thread cannot be sent; add a comment to reopen it",
@@ -1420,6 +1438,7 @@ async fn send_to_bot(
     })?;
     let ctx = s.feedback_ctx();
     let vf = VisFor::of(caller, s);
+    let on_queue = super::queue_agent::queue_person(caller);
     let bot = s.bot.clone();
     let (views, run) = s
         .store_call(move |st| {
@@ -1437,7 +1456,7 @@ async fn send_to_bot(
             )?;
             let threads = tids
                 .iter()
-                .map(|t| thread_of(st, &id, t))
+                .map(|t| thread_of(st, &id, t, &on_queue))
                 .collect::<clax_core::Result<Vec<_>>>()?;
             let views = vis.filter_threads(st, &threads, ctx.codex_push(), with_path)?;
             Ok((views, super::bot::run_view(st, &run)?))
@@ -1525,6 +1544,7 @@ pub async fn handoff(
         .await?
         .ok_or_else(ApiError::not_found)?;
     let id = a.named_artifact(&s, &aid).await?;
+    let on_queue = super::queue_agent::queue_person(&a.caller);
     a.also_needs(&s, (clax_core::rights::RightType::Comments, "reply"), &id)
         .await?;
     if b.to.is_some() {
@@ -1549,7 +1569,7 @@ pub async fn handoff(
                 }
                 None => return Err(CoreError::NotFound),
             }
-            thread_of(st, &id, &tid)?;
+            thread_of(st, &id, &tid, &on_queue)?;
             st.check_may_hand_off(&tid, &sid)?;
             let audit = audit.for_session(st, &sid)?;
             let to = match b.to.as_deref() {
@@ -1592,6 +1612,7 @@ pub async fn send_batch(
     req: Result<Json<BatchBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
+    let on_queue = super::queue_agent::queue_person(&a.caller);
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let b = body(req)?;
     sees_threads(&a, &s, &id).await?;
@@ -1632,7 +1653,7 @@ pub async fn send_batch(
             let sent = r
                 .sent
                 .iter()
-                .map(|tid| thread_of(st, &id, tid))
+                .map(|tid| thread_of(st, &id, tid, &on_queue))
                 .collect::<clax_core::Result<Vec<_>>>()?;
             let public = thread_event_views(st, &sent, ctx.codex_push())?;
             for (t, view) in sent.iter().zip(&public) {
@@ -1683,6 +1704,7 @@ pub async fn resolve(
     let (aid, tid) = path(p)?;
     let reads = a.read_rights();
     let id = parse_id(&aid)?;
+    let on_queue = super::queue_agent::queue_person(&a.caller);
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     refuse_unlinked(&s, &tid).await?;
     let agent = acting_as(&raw)?;
@@ -1699,7 +1721,7 @@ pub async fn resolve(
     let o = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
-            let t = thread_of(st, &id, &tid)?;
+            let t = thread_of(st, &id, &tid, &on_queue)?;
             let mut touched = Touched::default();
             let mut resolver: Option<Session> = None;
             let by = if agent {
@@ -1825,6 +1847,7 @@ pub async fn reopen(
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    let on_queue = super::queue_agent::queue_person(&a.caller);
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     refuse_unlinked(&s, &tid).await?;
     let agent = acting_as(&raw)?;
@@ -1842,7 +1865,7 @@ pub async fn reopen(
     let o = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
-            let t = thread_of(st, &id, &tid)?;
+            let t = thread_of(st, &id, &tid, &on_queue)?;
             if agent {
                 agent_session(st, &session, grant.as_deref())?;
                 if !t.sent_to_agent {
@@ -1885,6 +1908,7 @@ pub async fn delete(
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    let on_queue = super::queue_agent::queue_person(&a.caller);
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let agent = agent_as(q.as_.as_deref())?;
@@ -1901,7 +1925,7 @@ pub async fn delete(
     let o = s
         .store_call_async(move |st| async move {
             let st = &*st;
-            let t = thread_of(st, &id, &tid)?;
+            let t = thread_of(st, &id, &tid, &on_queue)?;
             if agent {
                 agent_session(st, &session, grant.as_deref())?;
                 if !t.sent_to_agent {
