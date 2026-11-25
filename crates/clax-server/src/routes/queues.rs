@@ -423,7 +423,9 @@ fn maker_of(st: &Store, qid: &str) -> clax_core::Result<String> {
 /// `admin`), then in the order they were added. `name` is the person's
 /// display name, or `null`; `owner` marks the owner, whose `public_id` is
 /// their viewer's (`*owner` before they have one). `pending` are the
-/// GitHub logins added who have not signed in here yet, oldest first.
+/// GitHub logins added who have not signed in here yet, oldest first;
+/// `github_logins` says whether people sign in here with GitHub (a hosted
+/// Clax), so whether adding by login is worth offering.
 pub async fn members(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -448,7 +450,10 @@ pub async fn members(
             Ok((members, st.queue_invites(&qid)?))
         })
         .await?;
-    Ok(Json(json!({ "members": members, "pending": pending })))
+    let github_logins = s.hosted.is_some();
+    Ok(Json(
+        json!({ "members": members, "pending": pending, "github_logins": github_logins }),
+    ))
 }
 
 /// `PUT /api/queues/<qid>/members` body.

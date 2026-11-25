@@ -307,17 +307,34 @@ describe("Queues", () => {
     type(m.root.querySelector('input[name="person"]'), "m");
     type(m.root.querySelector('input[name="person"]'), "zz");
     await settle();
-    expect(m.root.querySelector(".pick [role=status]")!.textContent).toContain("No one connected to this Clax goes by that name. Add @zz by their GitHub login");
+    expect(m.root.querySelector(".pick [role=status]")!.textContent).toContain("Only the owner and connected people can be added");
+    // A local Clax has no GitHub sign-in: nothing is offered by login.
+    expect([...m.root.querySelectorAll("button")].some(b => b.textContent?.startsWith("Add @"))).toBe(false);
     answer({ people: [{ public_id: "p9", name: "Mo" }] });
     await settle();
     expect(m.root.querySelector('[data-found="p9"]')).toBeNull();
+  });
+
+  it("offers a login the search finds no one by, where people sign in with GitHub", async () => {
+    stubFetch(routes({
+      "GET /api/queues/q1/members": { members: [], pending: [], github_logins: true },
+      "GET /api/queues/q1/people?q=zz": { people: [] },
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    type(m.root.querySelector('input[name="person"]'), "zz");
+    await settle();
+    expect(m.root.querySelector(".pick [role=status]")!.textContent).toContain("No one connected to this Clax goes by that name. Add @zz by their GitHub login");
+    expect([...m.root.querySelectorAll("button")].some(b => b.textContent === "Add @zz")).toBe(true);
   });
 
   it("adds a teammate by @github-login, lists one waiting for their GitHub sign-in, and removes it after confirming", async () => {
     let pending: unknown[] = [];
     const members = [{ public_id: "p1", name: "Alex", role: "admin", maker: true, owner: false }];
     const calls = stubFetch(routes({
-      "GET /api/queues/q1/members": () => ({ members, pending }),
+      "GET /api/queues/q1/members": () => ({ members, pending, github_logins: true }),
       "PUT /api/queues/q1/members": (b: { github_login: string; role: string }) => {
         pending = [{ id: "i1", github_login: b.github_login, role: b.role, created_at: "2026-11-25T10:00:00Z" }];
         return [201, { invite: pending[0] }];
@@ -341,7 +358,7 @@ describe("Queues", () => {
     await settle();
     expect(calls.find(c => c.method === "PUT")).toMatchObject({ url: "/api/queues/q1/members", body: { github_login: "octo-cat", role: "admin" } });
     const row = m.root.querySelector('[data-pending="octo-cat"]')!;
-    expect(row.querySelector(".who")!.textContent).toBe("@octo-catwaiting for their GitHub sign-in");
+    expect(row.querySelector(".who")!.textContent).toBe("@octo-cat · waiting for their GitHub sign-in");
     expect(row.querySelector(".fixed")!.textContent).toBe("Admin");
     expect(m.root.querySelector(".part [role=status].hint")!.textContent).toBe("@octo-cat becomes a member when they first sign in here with GitHub.");
     expect((m.root.querySelector('input[name="person"]') as HTMLInputElement).value).toBe("");
@@ -353,6 +370,7 @@ describe("Queues", () => {
 
   it("offers no add for text that is no GitHub login, and adds one signed in here as a member at once", async () => {
     const calls = stubFetch(routes({
+      "GET /api/queues/q1/members": { members: [], pending: [], github_logins: true },
       "PUT /api/queues/q1/members": [201, { member: { public_id: "p7", name: "Sam", role: "triage", maker: false, owner: false } }],
     }));
     const m = mount(Queues, {});

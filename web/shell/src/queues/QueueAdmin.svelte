@@ -9,7 +9,8 @@
   // and the people connected to this Clax (`GET
   // /api/queues/<qid>/people`), choosing one, and a role; adding a member
   // already there changes their role. A search answered after a later one
-  // was asked is dropped. A teammate is added by GitHub login too: text
+  // was asked is dropped. On a hosted Clax (where people sign in with
+  // GitHub) a teammate is added by GitHub login too: text
   // that starts with `@`, or a login the search finds no one by, offers
   // "Add @login" (`PUT /api/queues/<qid>/members`); one who has signed in
   // here is a member at once, anyone else is listed as waiting for their
@@ -48,12 +49,16 @@
   const patterns = $derived(p.queue.origins.filter(o => o.includes("*")));
 
   let pending = $state<api.PendingMember[]>([]);
+  // Whether people sign in here with GitHub (a hosted Clax): adding by
+  // login is offered only then.
+  let byLogin = $state(false);
   // What the last add did, said to a screen reader too.
   let memberNote = $state<string | null>(null);
-  const loadMembers = () => api.listMembers(qid).then(b => { members = b.members; pending = b.pending ?? []; }, x => { memberErr = `Could not load the members: ${refusal(x)}`; });
+  const loadMembers = () => api.listMembers(qid).then(b => { members = b.members; pending = b.pending ?? []; byLogin = b.github_logins === true; }, x => { memberErr = `Could not load the members: ${refusal(x)}`; });
   /** The GitHub login the text offers to add: any login after `@`, or a
-   * login the search found no one by. */
-  const login = $derived(find.trim().startsWith("@") || found?.length === 0 ? api.githubLogin(find) : null);
+   * login the search found no one by; none where no one signs in with
+   * GitHub. */
+  const login = $derived(byLogin && (find.trim().startsWith("@") || found?.length === 0) ? api.githubLogin(find) : null);
   const loadGrants = () => api.listGrants(qid).then(b => { grants = b.grants; }, x => { grantErr = `Could not load the service grants: ${refusal(x)}`; });
 
   const nameOf = (m: { name?: string | null; owner?: boolean; public_id: string }) => m.name ?? (m.owner ? "The owner" : m.public_id);
@@ -61,7 +66,7 @@
     find = text; chosen = null;
     const n = ++asked;
     // `@login` names a GitHub account, not someone to find by name.
-    if (!text.trim() || text.trim().startsWith("@")) { found = null; return; }
+    if (!text.trim() || (byLogin && text.trim().startsWith("@"))) { found = null; return; }
     try {
       const b = await api.searchPeople(qid, text.trim());
       if (n === asked) found = b.people;
@@ -205,7 +210,7 @@
       <ul class="lines" aria-label="Waiting for their GitHub sign-in">
         {#each pending as w (w.id)}
           <li class="line" data-pending={w.github_login}>
-            <span class="who">@{w.github_login}<span class="key">waiting for their GitHub sign-in</span></span>
+            <span class="who">@{w.github_login}<span class="key">{" · waiting for their GitHub sign-in"}</span></span>
             <span class="fixed">{w.role === "admin" ? "Admin" : "Triage"}</span>
             <button type="button" class="ghost danger" aria-label={`Remove @${w.github_login}`} onclick={() => void removeWaiting(w)}>Remove</button>
           </li>
@@ -215,7 +220,7 @@
     <form class="add" onsubmit={addMember}>
       <div class="field pick">
         <label for={`qa-find-${qid}`}>Add a person</label>
-        <input id={`qa-find-${qid}`} name="person" autocomplete="off" spellcheck="false" placeholder="Name, public ID or @github-login" value={find} oninput={e => void search(e.currentTarget.value)} />
+        <input id={`qa-find-${qid}`} name="person" autocomplete="off" spellcheck="false" placeholder={byLogin ? "Name, public ID or @github-login" : "Name or public ID"} value={find} oninput={e => void search(e.currentTarget.value)} />
         {#if found?.length}
           <ul class="found" aria-label="People found">
             {#each found as f (f.public_id)}
@@ -230,8 +235,10 @@
           </ul>
         {:else if found && login}
           <p class="none" role="status">No one connected to this Clax goes by that name. Add @{login} by their GitHub login: they become a member when they first sign in here with GitHub.</p>
-        {:else if found}
+        {:else if found && byLogin}
           <p class="none" role="status">No one connected to this Clax goes by that name. Add a teammate by their GitHub login, as @login, or the owner invites people in Settings › People.</p>
+        {:else if found}
+          <p class="none" role="status">No one connected to this Clax goes by that name. Only the owner and connected people can be added; the owner invites people in Settings › People.</p>
         {:else if login}
           <p class="none" role="status">Add @{login} by their GitHub login: someone who has signed in here is a member at once, anyone else when they first sign in with GitHub.</p>
         {/if}

@@ -95,7 +95,10 @@ export const verify = (qid: string, tid: string, note?: string) => call<{ report
 export const reopen = (qid: string, tid: string, body: string) => call<{ report: Report }>(`${r(qid, tid)}/reopen`, "POST", { body });
 /** A teammate added by GitHub login who has not signed in here yet: their membership waits for that sign-in. */
 export type PendingMember = { id: string; github_login: string; role: QueueRole; created_at: string };
-export const listMembers = (qid: string) => call<{ members: QueueMember[]; pending?: PendingMember[] }>(`${q(qid)}/members`);
+/** The queue's members, the logins waiting for their sign-in, and whether
+ * people sign in here with GitHub (a hosted Clax), so whether adding by
+ * login is offered. */
+export const listMembers = (qid: string) => call<{ members: QueueMember[]; pending?: PendingMember[]; github_logins?: boolean }>(`${q(qid)}/members`);
 /** `text` as a GitHub login (a leading `@` dropped, lowercased), or null
  * when it is not one: 1 to 39 letters, digits or hyphens, not starting with
  * a hyphen. */

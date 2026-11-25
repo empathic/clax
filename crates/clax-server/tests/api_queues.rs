@@ -389,6 +389,10 @@ async fn members_are_added_by_github_login_at_once_or_pending_and_told_in_their_
     assert_eq!(s, 204, "{v}");
     let (_, v) = browser(&w.ts, &w.owner, Method::GET, &members, None).await;
     assert_eq!(v["pending"], json!([]));
+    assert_eq!(
+        v["github_logins"], false,
+        "a local Clax has no GitHub sign-in"
+    );
 
     for (login, want) in [("-nope", "invalid_login"), ("a b", "invalid_login")] {
         let (s, v) = browser(
