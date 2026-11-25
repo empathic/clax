@@ -162,6 +162,66 @@ fn link(
     Ok(shares)
 }
 
+/// Makes a person for `user` in `tx`, with `rights`, named after the
+/// account (the first of [`name_candidates`] free), and links the account
+/// to it ([`link`]). Returns its viewer row's ID.
+///
+/// # Errors
+/// `name_taken` when no name is free.
+fn new_person(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    user: &GitHubUser,
+    rights: &Rights,
+) -> Result<String> {
+    let mut name = None;
+    for candidate in name_candidates(user) {
+        match super::people::check_person_name(tx, &candidate, None) {
+            Ok(n) => {
+                name = Some(n);
+                break;
+            }
+            Err(e) if matches!(code_of(&e), Some("name_taken" | "invalid_name")) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let Some(name) = name else {
+        return Err(CoreError::invalid(
+            "name_taken",
+            format!("no name for {} is free here", user.login),
+        ));
+    };
+    let id = new_ulid();
+    tx.execute(
+        "INSERT INTO viewers (id, public_id, display_name, created_at, person, rights_json)
+         VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+        params![
+            id,
+            new_public_id(),
+            name,
+            st.now(),
+            super::people::write_rights(rights)
+        ],
+    )?;
+    // A new person: not `*unconnected` (multi-person M14, M17).
+    st.visibility_changed();
+    link(st, tx, ctx, user, &id)?;
+    Ok(id)
+}
+
+/// Whether a pending queue invite or artifact share names GitHub login
+/// `login` (any case): what lets a new account sign up on a local Clax.
+fn invited(tx: &Transaction<'_>, login: &str) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM queue_member_invites WHERE github_login = ?1)
+             OR EXISTS (SELECT 1 FROM artifact_shares
+                         WHERE viewer_id IS NULL AND github_login = ?1)",
+        params![login.to_ascii_lowercase()],
+        |r| r.get(0),
+    )?)
+}
+
 /// The names a new person for `user` may take, in order: the profile's
 /// name, the login, both, and the login numbered.
 fn name_candidates(user: &GitHubUser) -> Vec<String> {
@@ -254,7 +314,6 @@ impl Store {
             return Ok((signed, GitHubOutcome::Owner));
         }
         self.with_tx(|tx| {
-            let now = self.now();
             if let Some((viewer_id, _, is_blocked)) = linked(tx, user.id)? {
                 if is_blocked {
                     return Err(blocked());
@@ -266,40 +325,71 @@ impl Store {
                 let signed = self.signed_in(tx, ctx, &viewer_id, SignInVia::GitHub, &extra)?;
                 return Ok((signed, GitHubOutcome::Returning));
             }
-            let mut name = None;
-            for candidate in name_candidates(user) {
-                match super::people::check_person_name(tx, &candidate, None) {
-                    Ok(n) => {
-                        name = Some(n);
-                        break;
-                    }
-                    Err(e) if matches!(code_of(&e), Some("name_taken" | "invalid_name")) => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            let Some(name) = name else {
-                return Err(CoreError::invalid(
-                    "name_taken",
-                    format!("no name for {} is free here", user.login),
-                ));
-            };
-            let id = new_ulid();
-            tx.execute(
-                "INSERT INTO viewers (id, public_id, display_name, created_at, person, rights_json)
-                 VALUES (?1, ?2, ?3, ?4, 1, ?5)",
-                params![
-                    id,
-                    new_public_id(),
-                    name,
-                    now,
-                    super::people::write_rights(&member_rights())
-                ],
-            )?;
-            // A new person: not `*unconnected` (multi-person M14, M17).
-            self.visibility_changed();
-            link(self, tx, ctx, user, &id)?;
+            let id = new_person(self, tx, ctx, user, &member_rights())?;
             let signed = self.signed_in(tx, ctx, &id, SignInVia::GitHub, &extra)?;
             Ok((signed, GitHubOutcome::New))
+        })
+    }
+
+    /// Signs a local Clax's browser in as GitHub account `user`'s person
+    /// (`[github]`; the hosted sign-in is [`Store::github_sign_in`]):
+    /// the person the account is linked to, its login, name and avatar
+    /// refreshed, or, at its first sign-in, a person made now with no
+    /// rights of their own ([`Rights::default`]: what they reach is what is
+    /// shared with them and the queues they are members of), only when a
+    /// pending queue invite or artifact share names its login. Either way
+    /// the shares and queue invites waiting for the login bind to that
+    /// person, as on a hosted Clax. Never the owner: no login makes the
+    /// account the owner's here. Returns the person's public ID, a new
+    /// `clax_viewer` cookie naming them (kept as its hash) and how they
+    /// were found.
+    ///
+    /// # Errors
+    /// (nothing changed) `github_owner_account` for an account linked to
+    /// the owner's row; `github_blocked` for a blocked account or a revoked
+    /// person's; `github_not_invited` for a new account no pending invite or
+    /// share names; `name_taken` when no name for a new person is free.
+    pub fn github_sign_in_local(
+        &self,
+        ctx: &AuditCtx,
+        user: &GitHubUser,
+    ) -> Result<(String, clax_core::secret::Secret, GitHubOutcome)> {
+        self.with_tx(|tx| {
+            let (viewer_id, outcome) = match linked(tx, user.id)? {
+                Some((_, true, _)) => {
+                    return Err(CoreError::invalid(
+                        "github_owner_account",
+                        "this GitHub account is linked to the owner, who does not sign in with GitHub on a local Clax",
+                    ));
+                }
+                Some((_, _, true)) => return Err(blocked()),
+                Some((viewer_id, false, false)) => {
+                    if link(self, tx, ctx, user, &viewer_id)? > 0 {
+                        self.visibility_changed();
+                    }
+                    (viewer_id, GitHubOutcome::Returning)
+                }
+                None => {
+                    if !invited(tx, &user.login)? {
+                        return Err(CoreError::invalid(
+                            "github_not_invited",
+                            format!(
+                                "no queue invite or share here names {}: only an added GitHub login signs up on a local Clax",
+                                user.login
+                            ),
+                        ));
+                    }
+                    let id = new_person(self, tx, ctx, user, &Rights::default())?;
+                    (id, GitHubOutcome::New)
+                }
+            };
+            let public_id: String = tx.query_row(
+                "SELECT public_id FROM viewers WHERE id = ?1",
+                params![viewer_id],
+                |r| r.get(0),
+            )?;
+            let cookie = super::viewers::issue_cookie_in(self, tx, &viewer_id)?;
+            Ok((public_id, cookie, outcome))
         })
     }
 

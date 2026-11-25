@@ -104,8 +104,11 @@ export interface ReportComment {
 
 /** A live claim on a report. */
 export interface ReportClaim {
+  /** The claiming session's name, or its harness. */
   holder_name: string;
   expires_at: string;
+  /** On a member's read, the person whose agent holds the claim; absent for the owner's agents and on a reporter's read. */
+  person_name?: string;
 }
 
 /** `Report`: a thread filed into a queue, on an external artifact. */

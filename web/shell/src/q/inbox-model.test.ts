@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { approvalCard, item, view } from "./fixtures";
 import { inboxQuery } from "./api";
 import { filterFromUrl, filterToUrl } from "./inbox-filter";
-import { itemText, itemTitle, newestSeq } from "./inbox-model";
+import { itemText, itemTitle, newestSeq, nothingWaitsText } from "./inbox-model";
 import { notificationText } from "./notify";
 
 describe("inbox model", () => {
@@ -108,6 +108,14 @@ describe("inbox model", () => {
     const t = notificationText(item("published", { artifact: { id: "x", title: "Sales\u202e\u0000 board", kind: "html", page_url: null } }));
     expect(t.title).toBe("claude published Sales board");
     expect(notificationText(item("published", { published: { description: "y".repeat(180) } })).body).toBe("y".repeat(180));
+  });
+});
+
+describe("nothingWaitsText", () => {
+  it("names how many unread items are under All items, and only that nothing waits when none is", () => {
+    expect(nothingWaitsText(0)).toBe("Nothing waits on you.");
+    expect(nothingWaitsText(1)).toBe("Nothing waits on you. 1 unread item is under All items.");
+    expect(nothingWaitsText(1200)).toBe("Nothing waits on you. 1,200 unread items are under All items.");
   });
 });
 

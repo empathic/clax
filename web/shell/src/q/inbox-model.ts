@@ -12,6 +12,17 @@ import { queueRequestLine } from "./queue-request-line";
  * shown; 0 when none was shown, which marks nothing. */
 export const newestSeq = (items: readonly InboxItem[]): number => items.reduce((n, i) => Math.max(n, i.seq), 0);
 
+/** What Waiting on you says when nothing waits on the reader, with
+ * `unread` items still unread elsewhere: those are notices (an `access`
+ * "added you to a queue", a version, a finished agent), which wait on no
+ * one and so are not listed here, but the reader is told they are under
+ * All items rather than that the inbox is empty. */
+export function nothingWaitsText(unread: number): string {
+  if (!(unread > 0)) return "Nothing waits on you.";
+  const n = unread === 1 ? "1 unread item is" : `${unread.toLocaleString("en-US")} unread items are`;
+  return `Nothing waits on you. ${n} under All items.`;
+}
+
 const pageOf = (i: InboxItem): string => i.artifact?.title ?? "a deleted page";
 
 /** A person as an approval names them, the owner marked as such (the

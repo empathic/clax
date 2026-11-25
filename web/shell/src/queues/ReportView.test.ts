@@ -227,6 +227,27 @@ describe("ReportView", () => {
     expect(calls.find(c => c.method === "POST")).toEqual({ url: `${R}/comments`, method: "POST", body: { body: "On it" } });
     expect(box.value).toBe("");
     expect([...m.root.querySelectorAll(".convo .cm .body")].map(b => b.textContent)).toEqual(["On it"]);
+    // Said beside the reply box, not in Actions, and focus is on the reply as it landed.
+    expect(m.root.querySelector('form.reply [role="status"]')!.textContent).toBe("Replied.");
+    expect(m.root.querySelector('.acts [role="status"]')!.textContent).toBe("");
+    expect(document.activeElement).toBe(m.root.querySelector('.convo .cm[data-id="c2"]'));
+  });
+
+  it("names whose agent holds a claim when the agent is a person's", async () => {
+    const claim = { holder_name: "claude", person_name: "Mia", expires_at: "2026-10-29T08:30:00Z" };
+    let current: Report = report(1);
+    stubFetch({ [`GET ${R}`]: () => ({ report: current }) });
+    const s = fakeStream();
+    const m = mount(ReportView, { qid: "q1", tid: "t1", queue: QUEUE, nav: () => {}, zone: "UTC", locale: "en-US", stream: s.stream as never });
+    s.send({ type: "ready", topic: "queue:q1" });
+    await settle();
+    current = report(1, { state: "claimed", claim });
+    s.send({ type: "report", topic: "queue:q1", report_id: "t1", state: "claimed" });
+    await settle();
+    expect(m.root.querySelector(".by .claim")!.textContent).toContain("claimed by Mia's agent (claude) until");
+    expect(m.root.querySelector('[aria-live="polite"].sr')!.textContent).toBe("Now claimed by Mia's agent (claude).");
+    click(button(m.root, "Release claim"));
+    expect(m.root.querySelector("form.af")!.textContent).toContain("Ends the claim of Mia's agent (claude) now");
   });
 
   it("keeps verify's note and reopen's text apart", async () => {
@@ -301,7 +322,7 @@ describe("ReportView", () => {
     await settle();
     click(button(m.root, "Release claim"));
     const f = m.root.querySelector("form.af")!;
-    expect(f.textContent).toContain("Ends Claude Code's claim now");
+    expect(f.textContent).toContain("Ends the claim of Claude Code now");
     expect(calls.some(c => c.method === "POST")).toBe(false);
     type(f.querySelector('textarea[name="note"]'), " Stuck since Monday ");
     submit(m.root);

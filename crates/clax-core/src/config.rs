@@ -79,7 +79,7 @@ pub const DEFAULT_PORT: u16 = 7480;
 /// The tables only `config.toml` sets: a variable naming one is ignored,
 /// with a warning. Hosted mode decides who can reach the daemon, too much
 /// to switch on, or break, from an inherited environment.
-pub const FILE_ONLY_TABLES: &[&str] = &["hosted"];
+pub const FILE_ONLY_TABLES: &[&str] = &["hosted", "github"];
 
 /// `vars` with every pair that is not UTF-8 dropped: what the
 /// configuration reads from an environment, which may hold any bytes
@@ -1154,6 +1154,74 @@ impl HomeConfig {
             as_title,
             state_dir,
             confirm_to: confirm.then_some(confirm_to),
+        }))
+    }
+
+    /// `[github]`: GitHub sign-in on a local Clax (a hosted one sets it in
+    /// `[hosted]`): `client_id` (a GitHub OAuth App's), `client_secret_env`
+    /// (the environment variable its secret is read from at start,
+    /// [`GITHUB_CLIENT_SECRET_ENV`] when absent; the secret is never in a
+    /// file), `origins` (the origins the OAuth App's callback URL may name,
+    /// each `https://`, or `http://` on localhost; absent, the daemon's own
+    /// `http://localhost:<port>`), and, for tests, `api_base` and
+    /// `oauth_base`. `None` without the table, or with a blank `client_id`.
+    /// Read from config.toml only ([`FILE_ONLY_TABLES`]).
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file and the key when
+    /// `[github]` is not a table, has an unknown key or a mistyped value,
+    /// names an origin [`hosted_origin`] refuses, an empty
+    /// `client_secret_env`, or is set beside `[hosted]`. The daemon does
+    /// not start on it.
+    pub fn github(&self) -> Result<Option<LocalGitHubConfig>> {
+        if self.value("github").is_none() {
+            return Ok(None);
+        }
+        let t: GitHubTable = self.table("github")?;
+        let bad = |key: &str, what: String| self.bad(&format!("github.{key}"), "[github]", what);
+        if self.value("hosted").is_some() {
+            return Err(self.bad(
+                "github",
+                "[github]",
+                "is for a local Clax: a hosted one sets github_client_id in [hosted]".to_string(),
+            ));
+        }
+        let Some(client_id) = t
+            .client_id
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+        else {
+            return Ok(None);
+        };
+        let client_secret_env = t
+            .client_secret_env
+            .unwrap_or_else(|| GITHUB_CLIENT_SECRET_ENV.into());
+        if client_secret_env.trim().is_empty() {
+            return Err(bad(
+                "client_secret_env",
+                "client_secret_env is empty".into(),
+            ));
+        }
+        let mut origins = Vec::new();
+        for o in t.origins.unwrap_or_default() {
+            let Some(n) = hosted_origin(&o) else {
+                return Err(bad(
+                    "origins",
+                    format!(
+                        "each origin must be an https:// origin with no path, or http:// on localhost, 127.0.0.1 or [::1], not \"{o}\""
+                    ),
+                ));
+            };
+            if !origins.contains(&n) {
+                origins.push(n);
+            }
+        }
+        Ok(Some(LocalGitHubConfig {
+            client_id,
+            client_secret_env,
+            origins,
+            api_base: t.api_base,
+            oauth_base: t.oauth_base,
         }))
     }
 
@@ -2249,6 +2317,29 @@ pub struct GitHubConfig {
 
 /// [`GitHubConfig::client_secret_env`] when absent.
 pub const GITHUB_CLIENT_SECRET_ENV: &str = "GITHUB_CLIENT_SECRET";
+
+/// `[github]`, from [`HomeConfig::github`]: GitHub sign-in on a local Clax.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalGitHubConfig {
+    pub client_id: String,
+    /// The environment variable the client secret is read from.
+    pub client_secret_env: String,
+    /// The origins a sign-in may start and return on, normalized; empty for
+    /// the daemon's own `http://localhost:<port>`.
+    pub origins: Vec<String>,
+    pub api_base: Option<String>,
+    pub oauth_base: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubTable {
+    client_id: Option<String>,
+    client_secret_env: Option<String>,
+    origins: Option<Vec<String>>,
+    api_base: Option<String>,
+    oauth_base: Option<String>,
+}
 
 /// [`HostedConfig::setup_secret_env`] when absent.
 pub const SETUP_SECRET_ENV: &str = "CLAX_SETUP_SECRET";
@@ -3586,6 +3677,57 @@ mod tests {
                 "{t}: {e}"
             );
         }
+    }
+
+    #[test]
+    fn a_local_clax_turns_github_sign_in_on_with_a_github_table() {
+        assert_eq!(with("").github().unwrap(), None);
+        assert_eq!(
+            with("[github]\nclient_id = \" \"\n").github().unwrap(),
+            None
+        );
+        assert_eq!(
+            with("[github]\nclient_id = \"Iv1.abc\"\n")
+                .github()
+                .unwrap(),
+            Some(LocalGitHubConfig {
+                client_id: "Iv1.abc".into(),
+                client_secret_env: GITHUB_CLIENT_SECRET_ENV.into(),
+                origins: vec![],
+                api_base: None,
+                oauth_base: None,
+            })
+        );
+        let c = with(
+            "[github]\nclient_id = \"x\"\nclient_secret_env = \"MY_GH\"\norigins = [\"https://box.tail1.ts.net/\", \"http://localhost:7480\", \"https://box.tail1.ts.net\"]\napi_base = \"http://127.0.0.1:9\"\noauth_base = \"http://127.0.0.1:9\"\n",
+        )
+        .github()
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.client_secret_env, "MY_GH");
+        assert_eq!(
+            c.origins,
+            vec!["https://box.tail1.ts.net", "http://localhost:7480"]
+        );
+        assert_eq!(c.api_base.as_deref(), Some("http://127.0.0.1:9"));
+        for bad in [
+            "[github]\nclient_id = \"x\"\nclient_secret = \"s\"\n",
+            "[github]\nclient_id = \"x\"\norigins = [\"http://box.example\"]\n",
+            "[github]\nclient_id = \"x\"\norigins = [\"https://box.example/path\"]\n",
+            "[github]\nclient_id = \"x\"\nclient_secret_env = \" \"\n",
+            "github = 3\n",
+            "[github]\nclient_id = \"x\"\n[hosted]\npublic_origin = \"https://clax.example\"\n",
+        ] {
+            let e = with(bad).github().unwrap_err().to_string();
+            assert!(e.contains("[github]"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn github_is_read_from_the_file_only() {
+        let c = under("", &[("CLAX_GITHUB__CLIENT_ID", "x")]);
+        assert_eq!(c.github().unwrap(), None);
+        assert_eq!(c.ignored_env(), ["CLAX_GITHUB__CLIENT_ID"]);
     }
 
     #[test]

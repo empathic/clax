@@ -337,6 +337,26 @@ The same page is a hosted Clax's landing page: a visitor who is not signed in an
 
 `app_links` and `stores` concern the Clax app, and every key is optional. `apple_team_id` (10 uppercase letters and digits, the team that signs the app) serves `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`; `android_package` and `android_sha256` (the signing certificate's SHA-256 fingerprint, 32 hex bytes joined by `:`), given together, serve `/.well-known/assetlinks.json`. With them, a Get in Clax link (`/a/<id>/get`) opens in the Clax app on iPhone, iPad and Android; without them those files are 404 and the link opens the get page in the browser. `stores.ios` and `stores.android`, `https://` URLs, are offered on that page to someone without the app. App links work only for the domains the app's build declares, clax.dev alone; any other hosted Clax's get page offers Open in Clax (`clax:get?url=…`, on every platform) and Download .clax. The Cloudflare Worker reads the same settings from `APPLE_TEAM_ID`, `ANDROID_PACKAGE`, `ANDROID_SHA256`, `IOS_STORE_URL` and `ANDROID_STORE_URL` (`crates/clax-worker/README.md`).
 
+### GitHub sign-in on a local Clax
+
+A queue admin can add a teammate by GitHub login (Queues, Manage, "Add @login"). The login becomes a member at that person's first GitHub sign-in here, so on a local Clax the Manage panel offers it, and `PUT /api/queues/<qid>/members {github_login}` accepts it, only with GitHub sign-in on (409 `github_sign_in_off` otherwise, and nothing is kept). To turn it on, make a GitHub OAuth App (GitHub, Settings, Developer settings, OAuth Apps, New OAuth App) whose Authorization callback URL is the origin people open Clax on plus `/auth/github/callback`:
+
+- this machine: `http://localhost:7480/auth/github/callback` (your `[serve] port`);
+- through `tailscale serve`: `https://<machine>.<tailnet>.ts.net/auth/github/callback`, with that name in `[serve] trusted_hosts`.
+
+Then name the app in `config.toml` (file only; a `CLAX_GITHUB__*` variable is ignored) and give the daemon its client secret in an environment variable, never in a file:
+
+```toml
+[github]
+client_id = "Ov23li..."                     # the OAuth App's Client ID
+client_secret_env = "GITHUB_CLIENT_SECRET"   # the variable holding its secret; this is the default
+origins = ["http://localhost:7480"]          # the callback URL's origin; default http://localhost:<port>
+```
+
+Start the daemon with the secret in that variable (for example `GITHUB_CLIENT_SECRET="$(op read op://...)" clax serve`). Unset or empty, sign-in stays off and the log says so; a mistyped table, an origin that is neither `https://` nor `http://` on localhost, or `[github]` beside `[hosted]` stops the daemon. `/auth/github` then signs a browser in: it answers only on a host one of `origins` names (400 elsewhere, so the redirect never names an address GitHub was not told about), keeps the OAuth `state` and PKCE verifier in a short-lived, MACed, host-only cookie, and the callback refuses a `state` that is not that cookie's (400). An OAuth App allows one callback URL, so use one app per origin.
+
+What it grants: the browser becomes the account's person, by its `clax_viewer` cookie, and nothing more. Only a login someone added (a pending queue invite) can sign up; any other account is refused (403) and nothing is made. A new person has no rights of their own: they reach the queues they are members of and what is shared with them (and, like any connected person, may make queues of their own while the queues' "members create" switch is on, as it is by default on a local Clax), and are not the owner, whatever their login (an account linked to the owner, from a home that was once hosted, is refused). The owner keeps signing in on this machine. With `[serve] tailscale_identity = true`, a request through `tailscale serve` is the viewer its tailnet login names, whatever cookie it holds, so a GitHub sign-in on the tailnet name changes nothing there: use it on a tailnet name only with `tailscale_identity` off.
+
 ### Settings
 
 The gear at the end of the gallery's header opens Settings (`/settings`):

@@ -431,7 +431,7 @@ test("the triage views stay current: a filing, an agent's claim and a person's r
     // The owner frees the claim, after confirming, with a note for triage.
     await owner.getByRole("button", { name: "Release claim" }).click();
     const confirm = owner.locator("form.af");
-    await expect(confirm).toContainText("claim now");
+    await expect(confirm).toContainText("Ends the claim of");
     await confirm.locator("textarea[name=note]").fill("Stuck since Monday");
     await confirm.getByRole("button", { name: "Release claim" }).click();
     await expect(owner.locator(".rh .state")).toHaveText("Open");
@@ -473,7 +473,13 @@ test("a member added to a queue by name gets the Queues link; while members may 
     await card.getByRole("list", { name: "People found" }).getByRole("button", { name: /Mia/ }).click();
     await card.getByRole("button", { name: "Add member" }).click();
     await expect(card.locator("li.line[data-member]")).toHaveCount(2);
-    await expect(card.locator("li.line[data-member]").nth(1)).toContainText("Mia");
+    const miaRow = card.locator("li.line[data-member]").nth(1);
+    await expect(miaRow).toContainText("Mia");
+    // Mia's rights here read no comments, so the panel says she cannot read the reports yet.
+    const cannot = "Mia cannot read this queue's reports until the owner lets them read comments, in Settings › People.";
+    await expect(card.getByRole("status").filter({ hasText: "Added Mia." })).toContainText(cannot);
+    await expect(miaRow.locator(".cant")).toHaveText(cannot);
+    await expect(miaRow.getByRole("button", { name: "Remove Mia" })).toBeVisible();
 
     await mia.reload();
     // The Queues link, beside Reports (same gate, same class).
@@ -482,6 +488,22 @@ test("a member added to a queue by name gets the Queues link; while members may 
     await expect(mia.locator(".qcard .role").first()).toHaveText("Triage");
     await expect(mia.getByRole("button", { name: "New queue" })).toHaveCount(0);
     await expect(mia.getByText("An administrator makes new queues on this Clax.")).toBeVisible();
+    // Her reports are refused until the owner lets her read comments; then she opens them.
+    await mia.getByRole("link", { name: "Reports in Team reports" }).click();
+    await expect(mia.getByRole("alert")).toContainText("do not let you read (clax-comments)");
+    const miaId = await miaRow.getAttribute("data-member");
+    await owner.evaluate(async pid => {
+      const r = await fetch(`/api/people/${pid}/rights`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ rights: [{ type: "clax-comments", actions: ["read", "reply"], locations: ["*"] }] }) });
+      if (!r.ok) throw new Error(`rights: ${r.status} ${await r.text()}`);
+    }, miaId);
+    await mia.reload();
+    await expect(mia.getByRole("tablist", { name: "Reports by state" })).toBeVisible();
+    await expect(mia.getByRole("tabpanel")).toContainText("No active reports.");
+    await expect(mia.getByRole("alert")).toHaveCount(0);
+    await mia.goto(`${origin}/queues`);
+    await owner.reload();
+    await owner.locator("li.qcard", { has: owner.getByRole("heading", { name: "Team reports" }) }).getByRole("button", { name: "Manage" }).click();
+    await expect(owner.locator('li.line[data-member] .cant')).toHaveCount(0);
 
     // The owner lets members make queues in Settings; Mia then may.
     await owner.goto(`${origin}/settings/report-queues`);

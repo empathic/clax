@@ -166,7 +166,7 @@ describe("Queues", () => {
     click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
     await settle();
     expect(m.root.querySelector('[data-grant="sg1"]')!.textContent).not.toContain("previews:");
-    expect(m.root.querySelector('[data-grant="sg2"] .limit')!.textContent).toBe(`previews: ${PREVIEW}`);
+    expect(m.root.querySelector('[data-grant="sg2"] .limit')!.textContent).toBe(` · previews: ${PREVIEW}`);
     const only = m.root.querySelector<HTMLInputElement>('input[name="previews_only"]')!;
     expect(only.closest("label")!.textContent).toContain(`Previews only: mint only for ${PREVIEW}`);
     type(m.root.querySelector('input[name="grant_name"]'), "previews");
@@ -212,6 +212,88 @@ describe("Queues", () => {
     expect(calls.some(c => c.method === "DELETE" && c.url === "/api/queues/q1/members/p2")).toBe(true);
   });
 
+  it("speaks a member row's parts apart and names whom each Remove and Revoke acts on", async () => {
+    stubFetch(routes({
+      "GET /api/queues/q1/service-grants": { grants: [{ id: "g1", queue_id: "q1", name: "prod backend", public_key: "k", created_at: "2026-11-02T10:00:00Z" }] },
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    const who = (pid: string) => m.root.querySelector(`[data-member="${pid}"] .who`)!.textContent;
+    expect(who("p1")).toBe("Alex · made this queue");
+    expect(who("p2")).toBe("Mia · p2");
+    expect(m.root.querySelector('[data-member="p2"] button')!.getAttribute("aria-label")).toBe("Remove Mia");
+    expect(m.root.querySelector('[data-member="p2"] select')!.getAttribute("aria-label")).toBe("Role of Mia");
+    expect(m.root.querySelector('[data-grant="g1"] .who')!.textContent).toBe("prod backend · made 2026-11-02");
+    expect(m.root.querySelector('[data-grant="g1"] button')!.getAttribute("aria-label")).toBe("Revoke prod backend");
+  });
+
+  it("says each member change in the status line, replacing the last, and warns of a member who cannot read reports", async () => {
+    let members = [
+      { public_id: "p1", name: "Alex", role: "admin", maker: true, owner: false, reads_reports: true },
+      { public_id: "p2", name: "Mia", role: "triage", maker: false, owner: false, reads_reports: true },
+    ];
+    stubFetch(routes({
+      "GET /api/queues/q1/members": () => ({ members }),
+      "GET /api/queues/q1/people?q=le": { people: [{ public_id: "p3", name: "Lee", avatar_url: null, owner: false }] },
+      "PUT /api/queues/q1/members/p3": () => { members = [...members, { public_id: "p3", name: "Lee", role: "triage", maker: false, owner: false, reads_reports: false }]; return {}; },
+      "PUT /api/queues/q1/members/p2": () => { members = members.map(x => (x.public_id === "p2" ? { ...x, role: "admin" } : x)); return {}; },
+      "DELETE /api/queues/q1/members/p2": () => { members = members.filter(x => x.public_id !== "p2"); return {}; },
+    }));
+    vi.stubGlobal("confirm", () => true);
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    const status = () => m.root.querySelector(".part [role=status].hint")!.textContent;
+    const find = m.root.querySelector<HTMLInputElement>('input[name="person"]')!;
+    type(find, "le");
+    await settle();
+    click(m.root.querySelector('[data-found="p3"] button'));
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Add member"));
+    await settle();
+    const cant = "Lee cannot read this queue's reports until the owner lets them read comments, in Settings › People.";
+    expect(status()).toBe(`Added Lee. ${cant}`);
+    expect(m.root.querySelector('[data-member="p3"] .cant')!.textContent).toBe(cant);
+    expect(m.root.querySelector('[data-member="p2"] .cant')).toBeNull();
+    // The next search empties it: nothing stale is left.
+    type(find, "x");
+    expect(status()).toBe("");
+    type(find, "");
+    await settle();
+    await flush(() => { const s = m.root.querySelector<HTMLSelectElement>('[data-member="p2"] select')!; s.value = "admin"; s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    expect(status()).toBe("Mia is now Admin.");
+    // A removal says so, and focus, gone with the row, goes to Add a person.
+    const remove = m.root.querySelector<HTMLButtonElement>('[aria-label="Remove Mia"]')!;
+    remove.focus();
+    click(remove);
+    await settle();
+    expect(m.root.querySelector('[data-member="p2"]')).toBeNull();
+    expect(status()).toBe("Removed Mia.");
+    expect(document.activeElement).toBe(find);
+  });
+
+  it("says a waiting login's removal and puts focus on Add a person", async () => {
+    let pending = [{ id: "i1", github_login: "octo-cat", role: "triage", created_at: "2026-11-25T10:00:00Z" }];
+    stubFetch(routes({
+      "GET /api/queues/q1/members": () => ({ members: [], pending, github_logins: true }),
+      "DELETE /api/queues/q1/members/pending/i1": () => { pending = []; return {}; },
+    }));
+    vi.stubGlobal("confirm", () => true);
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    const remove = m.root.querySelector<HTMLButtonElement>('[aria-label="Remove @octo-cat"]')!;
+    remove.focus();
+    click(remove);
+    await settle();
+    expect(m.root.querySelector(".part [role=status].hint")!.textContent).toBe("Removed @octo-cat's invitation.");
+    expect(document.activeElement).toBe(m.root.querySelector('input[name="person"]'));
+  });
+
   it("names who answers the queue, in order: adds an agent through a grant, moves one up, removes one", async () => {
     let saved: unknown[] = [];
     const calls = stubFetch(routes({
@@ -234,7 +316,7 @@ describe("Queues", () => {
       { kind: "bot", profile: { instructions: "", tier: "quick", tools: [] } },
       { kind: "agent", name: "work-changeling-queue-agent", service_grant_id: "g1", escalate_after_secs: 1800 },
     ] });
-    expect(list()).toEqual(["ClaxBot (quick)", "work-changeling-queue-agentthrough changelist-clax-queue · next asked after 30 min"].map((t, i) => (i === 0 ? `First: ${t}` : t)));
+    expect(list()).toEqual(["ClaxBot (quick)", "work-changeling-queue-agent · through changelist-clax-queue · next asked after 30 min"].map((t, i) => (i === 0 ? `First: ${t}` : t)));
     click(m.root.querySelector('[aria-label="Move work-changeling-queue-agent up"]'));
     await settle();
     expect((saved[0] as { name: string }).name).toBe("work-changeling-queue-agent");

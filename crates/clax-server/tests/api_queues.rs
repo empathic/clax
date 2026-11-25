@@ -51,7 +51,12 @@ struct World {
 }
 
 async fn world() -> World {
-    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    world_with(|_| {}).await
+}
+
+/// [`world`] with its daemon's state set up by `f`.
+async fn world_with(f: impl FnOnce(&mut clax_http::state::AppState)) -> World {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), f).await;
     let sam_client = ts.connect_person("Sam", "clax:collaborator").await;
     let v = ts.store.viewer_of_grant(&sam_client.grant_id()).unwrap();
     let sam = format!("clax_viewer={}", ts.browser_cookie(&v.id));
@@ -249,11 +254,11 @@ async fn members_hold_the_role_an_admin_gives_them() {
     assert_eq!(s, 200, "{v}");
     let owner = w.ts.store.owner().unwrap().unwrap();
     let maker = json!({"public_id": owner.public_id, "name": owner.display_name,
-                       "role": "admin", "maker": true, "owner": true});
+                       "role": "admin", "maker": true, "owner": true, "reads_reports": true});
     assert_eq!(
         v["members"],
         json!([maker, {"public_id": w.sam_public, "name": "Sam", "role": "triage",
-                        "maker": false, "owner": false}]),
+                        "maker": false, "owner": false, "reads_reports": true}]),
         "the maker first, as its admin"
     );
     let (_, v) = browser(&w.ts, &w.sam, Method::GET, "/api/queues", None).await;
@@ -340,7 +345,8 @@ async fn members_hold_the_role_an_admin_gives_them() {
 /// their inbox.
 #[tokio::test]
 async fn members_are_added_by_github_login_at_once_or_pending_and_told_in_their_inbox() {
-    let w = world().await;
+    let gh = clax_testkit::github::FakeGitHub::start("id", "secret").await;
+    let w = world_with(move |s| gh.turn_on(s)).await;
     let qid = make_queue(&w, &w.owner, "Bugs").await;
     let members = format!("/api/queues/{qid}/members");
     let add = |login: &str, role: &str| json!({"github_login": login, "role": role});
@@ -390,8 +396,8 @@ async fn members_are_added_by_github_login_at_once_or_pending_and_told_in_their_
     let (_, v) = browser(&w.ts, &w.owner, Method::GET, &members, None).await;
     assert_eq!(v["pending"], json!([]));
     assert_eq!(
-        v["github_logins"], false,
-        "a local Clax has no GitHub sign-in"
+        v["github_logins"], true,
+        "a local Clax with [github] signs people in with GitHub"
     );
 
     for (login, want) in [("-nope", "invalid_login"), ("a b", "invalid_login")] {
@@ -432,7 +438,8 @@ async fn members_are_added_by_github_login_at_once_or_pending_and_told_in_their_
     assert_eq!(s, 201, "{v}");
     assert_eq!(
         v["member"],
-        json!({"public_id": mia, "name": "Mia", "role": "triage", "maker": false, "owner": false})
+        json!({"public_id": mia, "name": "Mia", "role": "triage", "maker": false, "owner": false,
+               "reads_reports": true})
     );
 
     // Sam, added by public ID, is told in their inbox; a role change is no
@@ -611,7 +618,7 @@ async fn the_owner_oversees_every_queue_and_joins_one_like_anyone() {
     assert_eq!(
         v["members"][1],
         json!({"public_id": owner.public_id, "name": owner.display_name,
-               "role": "triage", "maker": false, "owner": true})
+               "role": "triage", "maker": false, "owner": true, "reads_reports": true})
     );
     let (_, v) = browser(&w.ts, &w.owner, Method::GET, "/api/queues", None).await;
     assert_eq!(

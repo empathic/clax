@@ -24,14 +24,17 @@
   // its state still allows it, and says politely what someone else
   // changed. Its back link returns to the queue view on the tab it came
   // from.
-  import { onMount } from "svelte";
+  // A reply's confirmation is said beside the reply box, and focus moves to
+  // the reply as it landed in the conversation. A claim names whose agent
+  // holds it when the agent is a person's (`claimHolder`).
+  import { onMount, tick } from "svelte";
   import type { EventStream } from "../stream";
   import { relativeTime } from "../format";
   import * as api from "./api";
   import ContextCard from "./ContextCard.svelte";
   import Diagnostics from "./Diagnostics.svelte";
   import FixHistory from "./FixHistory.svelte";
-  import { REASON_LABEL, STATE_LABEL, TABS, anchorText, httpUrl, noteOf, queueHref, queueTopic, refusal, reporterName, stateTone } from "./model";
+  import { REASON_LABEL, STATE_LABEL, TABS, anchorText, claimHolder, httpUrl, noteOf, queueHref, queueTopic, refusal, reporterName, stateTone } from "./model";
 
   const p: { qid: string; tid: string; queue?: api.Queue | null; nav: (e: MouseEvent) => void; stream?: EventStream; zone?: string; locale?: string } = $props();
   let report = $state<api.Report | null>(null);
@@ -47,6 +50,9 @@
   let reopenBody = $state("");
   let releaseNote = $state("");
   let replyText = $state("");
+  // The last reply's confirmation, said beside the reply box.
+  let replied = $state("");
+  let root: HTMLElement | undefined = $state();
   // What someone else changed, said politely.
   let notice = $state("");
   // The clip: fitted, or at 1× or 2× its size on the reporter's screen.
@@ -78,7 +84,7 @@
 
   /** What changed between `was` and `now`, as a sentence; "" for nothing said. */
   function changed(was: api.Report, now: api.Report): string {
-    if (now.state !== was.state) return now.state === "claimed" && now.claim ? `Now claimed by ${now.claim.holder_name}.` : `Now ${(STATE_LABEL[now.state] ?? now.state).toLowerCase()}.`;
+    if (now.state !== was.state) return now.state === "claimed" && now.claim ? `Now claimed by ${claimHolder(now.claim)}.` :`Now ${(STATE_LABEL[now.state] ?? now.state).toLowerCase()}.`;
     const added = now.comments.filter(c => !was.comments.some(w => w.id === c.id));
     if (added.length === 1) return `New reply from ${added[0].author_name}.`;
     if (added.length) return `${added.length} new replies.`;
@@ -111,7 +117,7 @@
   // A release that found no claim left (`released: false`) says so instead of `done`.
   async function act(done: string, fn: () => Promise<{ report: api.Report; released?: boolean }>): Promise<boolean> {
     if (busy) return false;
-    busy = true; err = null; status = "";
+    busy = true; err = null; status = ""; replied = "";
     try {
       const answer = await fn();
       turn++;
@@ -167,7 +173,14 @@
     e.preventDefault();
     const body = replyText.trim();
     if (!body) return;
-    if (await act("Replied.", () => api.reply(p.qid, p.tid, body))) replyText = "";
+    const before = new Set(report?.comments.map(c => c.id) ?? []);
+    if (!(await act("", () => api.reply(p.qid, p.tid, body)))) return;
+    replyText = "";
+    replied = "Replied.";
+    // Focus goes to the reply where it landed, the conversation's newest.
+    await tick();
+    const id = report?.comments.filter(c => !before.has(c.id)).pop()?.id;
+    if (id) [...(root?.querySelectorAll<HTMLElement>(".convo .cm") ?? [])].find(el => el.dataset.id === id)?.focus();
   }
 
   onMount(() => {
@@ -182,7 +195,7 @@
   });
 </script>
 
-<article class="rview" aria-labelledby="rv-h">
+<article class="rview" aria-labelledby="rv-h" bind:this={root}>
   <p class="back"><a href={back} onclick={p.nav}>{p.queue?.name ?? "Queue"}</a></p>
   {#if loadErr}<p class="err" role="alert">{loadErr}</p>{/if}
   {#if r}
@@ -197,7 +210,7 @@
       {#if profile?.email}<span class="muted">{profile.email}</span>{/if}
       {#if github}<a href={github} target="_blank" rel="noopener noreferrer">@{profile?.github}</a>{/if}
       · <time datetime={r.created_at} title={r.created_at}>{relativeTime(r.created_at)}</time>
-      {#if r.claim && r.state === "claimed"}· <span class="claim">claimed by {r.claim.holder_name} until <time datetime={r.claim.expires_at}>{new Date(r.claim.expires_at).toLocaleTimeString(p.locale, { timeStyle: "short", timeZone: p.zone })}</time></span>{/if}
+      {#if r.claim && r.state === "claimed"}· <span class="claim">claimed by {claimHolder(r.claim)} until <time datetime={r.claim.expires_at}>{new Date(r.claim.expires_at).toLocaleTimeString(p.locale, { timeStyle: "short", timeZone: p.zone })}</time></span>{/if}
     </p>
 
     <div class="cols">
@@ -236,7 +249,7 @@
           {#if conversation.length}
             <ol>
               {#each conversation as c (c.id)}
-                <li class={["cm", c.author_kind]} data-id={c.id}>
+                <li class={["cm", c.author_kind]} data-id={c.id} tabindex="-1">
                   <header><b>{c.author_name}</b> <span class="muted">{c.author_kind === "reporter" ? "reporter" : c.author_kind === "agent" ? "agent" : ""}</span>{#if c.triage_only}<span class="only">Triage only</span>{/if} <time class="muted" datetime={c.created_at} title={c.created_at}>{relativeTime(c.created_at)}</time></header>
                   <p class="body">{c.body}</p>
                   {#if c.has_clip}<img class="cclip" src={api.commentClipUrl(p.qid, p.tid, c.id)} alt={`The clip ${c.author_name} sent with this`} loading="lazy" />{/if}
@@ -254,6 +267,7 @@
             <label for="rv-reply">Reply</label>
             <textarea id="rv-reply" rows="3" placeholder="The reporter sees your reply." bind:value={replyText}></textarea>
             <button type="submit" class="primary" disabled={busy || !replyText.trim()}>Reply</button>
+            <p class="stat" role="status">{replied}</p>
           </form>
         </section>
       </div>
@@ -303,7 +317,7 @@
             </form>
           {:else if shown === "release" && r.claim}
             <form class="af" onsubmit={release}>
-              <p class="muted">Ends {r.claim.holder_name}'s claim now: its next renew or fix is refused, and it is told. The report is open for anyone to take.</p>
+              <p class="muted">Ends the claim of {claimHolder(r.claim)} now: its next renew or fix is refused, and it is told. The report is open for anyone to take.</p>
               <label>Note <textarea name="note" rows="2" placeholder="Optional: why. Triage and the agent see it, the reporter does not." bind:value={releaseNote}></textarea></label>
               <span class="row"><button type="submit" class="primary" disabled={busy}>Release claim</button><button type="button" class="ghost" onclick={() => { form = null; }}>Cancel</button></span>
             </form>

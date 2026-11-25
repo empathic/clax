@@ -736,12 +736,16 @@ pub fn local_path(next: &str) -> bool {
 
 /// The paths a local daemon serves a request with no credential on its
 /// own host: [`crate::auth::open_without_credential`]'s, the login route
-/// ([`LOGIN_PATH`]), and the invite and connect flows, which carry codes
+/// ([`LOGIN_PATH`]), the invite and connect flows, which carry codes
 /// and signatures of their own: `/connect/…`, `/join/…`, and
-/// `/api/grants…`.
+/// `/api/grants…`, and GitHub sign-in (`/auth/github` and
+/// [`crate::github::CALLBACK_PATH`], which answer 404 without `[github]`
+/// and check their own `state`).
 pub fn open_to_anyone(path: &str) -> bool {
     crate::auth::open_without_credential(path)
         || path == LOGIN_PATH
+        || path == "/auth/github"
+        || path == crate::github::CALLBACK_PATH
         || path.starts_with("/connect/")
         || path.starts_with("/join/")
         || path == "/api/grants"
@@ -1383,6 +1387,8 @@ mod tests {
             "/join/abc",
             "/api/grants",
             "/api/grants/g1/continue",
+            "/auth/github",
+            "/auth/github/callback",
         ] {
             assert!(open_to_anyone(p), "{p}");
         }
@@ -1394,6 +1400,8 @@ mod tests {
             "/api/grantsx",
             "/login/x",
             "/mcp",
+            "/auth/githubx",
+            "/auth/github/other",
         ] {
             assert!(!open_to_anyone(p), "{p}");
         }

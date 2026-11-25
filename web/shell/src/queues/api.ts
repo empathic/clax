@@ -22,7 +22,9 @@ export type { DiagLine, Install, InstallConfig, Queue, QueueRole, Report, Report
 export type QueueFields = { name: string; origins: string[]; reporters_see: ReportersSee };
 /** A queue's member, by public ID, with the name the daemon knows them by:
  * its maker (always admin) first, and the owner marked. */
-export type QueueMember = { public_id: string; name?: string | null; role: QueueRole; maker?: boolean; owner?: boolean };
+export type QueueMember = { public_id: string; name?: string | null; role: QueueRole; maker?: boolean; owner?: boolean;
+  /** False for a member whose rights here do not read comments: refused the queue's reports until the owner gives them that right. */
+  reads_reports?: boolean };
 /** Someone a queue's admin may add, as the people search finds them. */
 export type PersonMatch = { public_id: string; name?: string | null; avatar_url?: string | null; owner?: boolean };
 /** Whether members who administer nothing make report queues, and where that comes from (`default`, `db`). */

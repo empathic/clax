@@ -263,6 +263,28 @@ impl Core {
             (None, Ok(c)) => c.sign()?.map(Arc::new),
             _ => None,
         };
+        // `[github]`: GitHub sign-in on a local daemon, its client secret
+        // read from the variable it names. A bad table stops the daemon; a
+        // secret that is unset leaves sign-in off, logged.
+        state.local_github = match (&state.hosted, &config) {
+            (None, Ok(c)) => match c.github()? {
+                Some(g) => {
+                    let l = clax_http::github::LocalGitHub::from_config(&g, port, &|var| {
+                        std::env::var(var).ok()
+                    });
+                    match &l {
+                        Some(l) => tracing::info!(origins = ?l.origins, "GitHub sign-in is on"),
+                        None => tracing::warn!(
+                            variable = %g.client_secret_env,
+                            "[github] is set but its client secret variable is unset or empty: GitHub sign-in stays off"
+                        ),
+                    }
+                    l.map(Arc::new)
+                }
+                None => None,
+            },
+            _ => None,
+        };
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
         state.bot = Arc::new(local_bot(&state, cfg.catalog_url));

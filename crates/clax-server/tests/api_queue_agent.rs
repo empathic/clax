@@ -542,6 +542,26 @@ async fn a_persons_agent_triages_as_its_person_and_loses_its_lease_with_its_memb
     );
     let (s, v) = call("POST", q.report("/claim"), Some(json!({}))).await;
     assert_eq!((s, &v["report"]["state"]), (200, &json!("claimed")), "{v}");
+    // The claim names the agent's session and the person it acts for.
+    assert_eq!(v["report"]["claim"]["holder_name"], "claude", "{v}");
+    assert_eq!(v["report"]["claim"]["person_name"], "Sam", "{v}");
+    let (_, v) = q.agent(None, "GET", &q.report(""), json!(null)).await;
+    assert_eq!(v["report"]["claim"]["person_name"], "Sam", "{v}");
+    // A reporter's read of it does not say whose agent it is.
+    let mine =
+        q.ts.store
+            .report(
+                &q.qid,
+                &q.tid,
+                clax_store::queues::Visibility::Reporter("emp-1"),
+            )
+            .unwrap()
+            .unwrap();
+    let claim = mine.claim.expect("claimed");
+    assert_eq!(
+        (claim.holder_name.as_str(), claim.person_name),
+        ("claude", None)
+    );
     let (s, v) = call(
         "POST",
         q.report("/comments"),
