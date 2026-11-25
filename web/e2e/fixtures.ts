@@ -340,8 +340,14 @@ const HELD = 'exec 3<&0; (cat <&3; kill -TERM $$) >/dev/null 2>&1 & exec "$@" </
  * `localhost` resolves to `::1` first, and another process (a Bazel server)
  * may listen on `[::1]` at the port the system gave the daemon on
  * `127.0.0.1`, where every request to `http://localhost:<port>` would reach
- * it: a daemon on such a port is stopped and another started. */
+ * it: a daemon on such a port is stopped and another started.
+ * On macOS a daemon on any address but loopback is skipped before it
+ * starts unless `CLAX_E2E_LAN=1` ([`lanBindSkip`]). */
 export async function startDaemon(opts: StartOpts = {}) {
+  // Only a test's own daemons name a bind (no worker fixture's does), so
+  // the skip is the test's.
+  const skip = lanBindSkip(opts.bind, process.platform, process.env);
+  if (opts.bind !== undefined) test.skip(skip !== null, skip ?? "");
   for (let tries = 1; ; tries++) {
     const d = await startOnce(opts);
     if (d) return d;
@@ -350,6 +356,19 @@ export async function startDaemon(opts: StartOpts = {}) {
 }
 
 type StartOpts = { config?: string; home?: string; port?: number; bind?: string; env?: Record<string, string>; args?: string[] };
+
+/** Why a daemon on `bind` is not started on `platform`, or null when it is.
+ * macOS's Application Firewall asks whether `clax` may accept incoming
+ * connections when a binary it has not been told about listens on any
+ * address but loopback, and each build of the test binary is a new one: a
+ * test of a person on the LAN (`0.0.0.0`) would ask at every run. On macOS
+ * such a test skips, saying so, unless `CLAX_E2E_LAN=1` says the developer
+ * will answer it; elsewhere (CI's Linux) it runs. */
+export function lanBindSkip(bind: string | undefined, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | null {
+  if (bind === undefined || bind === "127.0.0.1" || bind === "::1" || bind === "localhost") return null;
+  if (platform !== "darwin" || env.CLAX_E2E_LAN === "1") return null;
+  return `a daemon on ${bind} makes macOS's firewall ask whether clax may accept incoming connections; set CLAX_E2E_LAN=1 to run this test and answer it`;
+}
 
 /** Whether another process listens on `[::1]` at `port` (false on a machine without IPv6). */
 export function v6Taken(port: number): Promise<boolean> {
