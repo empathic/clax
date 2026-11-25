@@ -37,6 +37,7 @@ pub struct WebMcpReadThreadArgs {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use schemars::schema_for;
