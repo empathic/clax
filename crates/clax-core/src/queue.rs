@@ -418,8 +418,14 @@ fn is_false(b: &bool) -> bool {
 /// A live claim on a report: who holds it, until when.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claim {
+    /// The claiming session's name, or its harness.
     pub holder_name: String,
     pub expires_at: String,
+    /// When the claiming session is a person's agent, that person's
+    /// display name, so a member sees whose agent holds the report; only
+    /// on a member's read, never a reporter's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person_name: Option<String>,
 }
 
 /// A report: a thread filed through a queue (§7).
@@ -492,6 +498,9 @@ impl Report {
     pub fn for_reporter(mut self) -> Self {
         self.comments.retain(|c| !c.triage_only);
         self.reporter_profile = None;
+        if let Some(c) = &mut self.claim {
+            c.person_name = None;
+        }
         self
     }
 }

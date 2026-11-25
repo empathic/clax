@@ -477,14 +477,20 @@ struct Current {
     expires_at: String,
     live: bool,
     holder_name: String,
+    /// The display name of the person the claiming session is an agent of
+    /// (`sessions.person`); `None` for the owner's agents and a person
+    /// with no name.
+    person_name: Option<String>,
 }
 
 fn current_in(c: &Connection, tid: &str, now: &str) -> Result<Option<Current>> {
     Ok(c.query_row(
         "SELECT c.session_id, c.lease_id, c.fence, c.expires_at,
             c.expires_at > ?2 AND s.ended_at IS NULL AND s.id IS NOT NULL AND NOT c.released,
-            COALESCE(s.name, s.harness, 'an agent')
+            COALESCE(s.name, s.harness, 'an agent'),
+            NULLIF(TRIM(v.display_name), '')
          FROM queue_claims c LEFT JOIN sessions s ON s.id = c.session_id
+         LEFT JOIN viewers v ON s.person IS NOT NULL AND v.public_id = s.person
          WHERE c.thread_id = ?1 ORDER BY c.fence DESC LIMIT 1",
         params![tid, now],
         |r| {
@@ -495,6 +501,7 @@ fn current_in(c: &Connection, tid: &str, now: &str) -> Result<Option<Current>> {
                 expires_at: r.get(3)?,
                 live: r.get(4)?,
                 holder_name: r.get(5)?,
+                person_name: r.get(6)?,
             })
         },
     )
@@ -802,6 +809,8 @@ fn reports_of(
             .map(|cur| Claim {
                 holder_name: cur.holder_name,
                 expires_at: cur.expires_at,
+                // Whose agent holds it is the members' to know alone.
+                person_name: cur.person_name.filter(|_| with_profile),
             });
         let state = state_of(&row.status, row.phase.as_deref(), claim.is_some());
         let mut fixes = fixes_in(c, &artifact.artifact_id, &row.id)?;
