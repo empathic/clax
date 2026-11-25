@@ -1,6 +1,10 @@
 # Zero-capability sessions: one GNAP grant model for every permission
 
-Date: 2026-11-17. Status: design, for the owner's review. Not built.
+Date: 2026-11-17. Status: design, for the owner's review. Stage 2
+(`clax-queues`, and the queue-request token on the same grants) is built
+on `feat/token-queue-rights`; the rest is not. The owner's decision: this
+GNAP-style model unifies every authorization in Clax, every credential it
+issues included ("One grant model for every credential" below).
 Every choice marked **(call)** was made without the owner and is theirs to
 overturn; the questions left open are qualifier records on this file
 tagged `status:needs-decision`.
@@ -60,6 +64,29 @@ of grants, evaluated one way.
 - Stale allowance. No cache, socket, lease or watch outlives the revoke
   of what it was granted under.
 
+## One grant model for every credential
+
+This model is the target for every credential Clax issues, not only for
+sessions and tokens: each is a holder whose capabilities are exactly the
+union of its live grants, evaluated by one code path, revoked through it,
+and journaled by it. Nothing keeps a second mechanism beside it once its
+credential has moved. Where each stands once the `token-queue-rights`
+stack (stage 2) lands:
+
+| Credential | On the model | Where its check lives now | What moving it takes |
+|---|---|---|---|
+| Agent tokens' and connected machines' queue rights (`clax-queues`) | Yes | `clax_store::grant_raises` (`grant_elevations`), checked by `queue_agent::queue_right` | — |
+| The queue-request token (`scope: ["queue.request"]`) | Yes, but for two remnants | its grant of `clax-queue-requests` `request` in `grant_elevations`, with `expires_at`; the route needs in `clax_http::agent` | The person's grant that gives every other agent `request` is computed in `clax_store::people::grant_caller_in`, and the routes whose need names no right are kept from the token by `verify_bearer`'s `person_gives` check and `SESSION_ROUTES`. Both go once each person's grant to an agent is issued as stored template grants and those routes carry rights (stage 3). |
+| Queue service grants (`cxq_`, previews-only ones included) | No | `clax_http::reporter::ServiceCaller`; its origins in `queue_service_grants.origins_json` (`clax_store::queues::create_service_grant_in`) | A `clax-queues` `mint-reporter` grant from the queue's admin to the service holder, its previews-only origins as the grant's locations or a condition on it; revoking it in the grant store, and the reporter tokens it minted re-evaluated as its children. |
+| Fix tickets (`cxf_`) | No | `clax_http::reporter::FixTicketCaller`, `clax_store::queues::previews` | A child grant of the proposing session's `clax-queues` `fix`, conveying `attach-preview` at one fix of one report, ending with the fix's verdict or 14 days; issued and revoked through the grant store, so a revoked proposer's tickets end with it. |
+| Reporter tokens (`cxr_`) | No | `clax_http::reporter::ReporterCaller` | A child grant of the service grant (`report` at its queue, the reporter and origin as its holder), so revoking the service grant ends them at once instead of at their 900-second expiry. |
+| Webhook signing secrets (`whsec_`) | No | `clax_core::webhook::signature`, `clax_store::queues::webhooks::create_webhook` | Not an inbound credential: Clax signs with it. Moving it means recording each endpoint as a grant of the queue's report events to an outside holder, issued and revoked by the queue's admins in the grant store, the secret its proof; delivery reads that grant before each send. |
+| The members' queue-making switch (`queues.members_create`) | No | `clax_server::routes::queues::members_create` | A template grant of `clax-queues` `create` from the administrators to every connected person (`members_of:<instance>`), set and revoked on the admin page instead of a setting. |
+| Instance administration (the owner and admins: admin pages, queue oversight) | No | `clax_http::bot::may_admin`, `clax_server::routes::queues::oversees` | `clax-admin` grants from the owner to each administrator, and oversight as their `clax-queues` grants at `*` in the browser template alone, so their agents still get nothing from it. |
+
+Each "No" row is recorded at its check as a qualifier `concern` tagged
+`status:deferred`.
+
 ## What exists (verified in the code)
 
 Request order: `crates/clax-server/src/router.rs` `wrap` runs the queue
@@ -88,11 +115,12 @@ What the inventory turned up that this design must fix or carry:
 | Held sockets re-verify their session only on reopen; room sockets fix their db level at open. | `crates/clax-http/src/identity.rs` `reopen` |
 | `cxs_` names both an agent session secret and a hosted browser cookie; the Worker's stand-in git token is `cxm_…`, the grant manage prefix. | `crates/clax-core/src/secret.rs:22`, `crates/clax-store/src/hosted.rs:54`, `crates/clax-worker/src/repos/tokens.rs:165` |
 | Owner browser logins, extension credential mint and revoke, reporter-token mint and device approvals write no audit record. | `crates/clax-core/src/audit/mod.rs` `kinds!` |
-| `feat/token-queue-rights` points at main (`72bd4e8ca`) with no commits yet; no `clax-queues` type exists. This design fixes the type's shape so that branch lands as stage 2. | `git log feat/token-queue-rights` |
+| `feat/token-queue-rights` builds `clax-queues` (stage 2): grants on a token in `grant_elevations` (migration 74), zero by default, each read within its granter's and the token's person's queue membership, and leases and watches swept on loss. The queue-request token (a device sign-in with `scope: ["queue.request"]`, migration 70) is a token of that model there too, holding `clax-queue-requests` `request` as its one grant. | `crates/clax-store/src/grant_raises.rs`, `crates/clax-server/src/routes/queue_agent.rs` `queue_right` |
+| Queue membership now lists each queue's maker as its admin, and the owner as a member under `*owner` (migration 71); the owner and the instance's administrators oversee every queue in their browser without being members, and their agents get nothing from it. Whether a connected person may make a queue is the administrators' `queues.members_create` switch. | `crates/clax-store/src/queues.rs` `role_in`, `crates/clax-server/src/routes/queues.rs` `oversees`, `members_create` |
 
 ### Inventory of authorization paths
 
-43 paths. "Proving grant" names the edge that proves the access under
+48 paths. "Proving grant" names the edge that proves the access under
 this design; "L"/"H" mark local-only and hosted-only paths. Rows 3, 41
 and 43 are a condition, holder-proof hygiene and diagnostics, listed for
 completeness.
@@ -142,6 +170,11 @@ completeness.
 | 41 | Host, DNS-rebind, CSRF, origin checks | — | Refuse wrong `Host`, cross-origin writes, signed requests with cookies | stays as holder-proof hygiene | — | — |
 | 42 | No credential | — | `healthz`, `/.well-known/clax`, `/_clax/*`, content by ID, site hosts | `clax-artifacts` `read` for content by ID (open question) | maker → `bearers_of:<artifact ID>`, or none | — |
 | 43 | Worker diagnostics | `CLAX_TOKEN` while `CLAX_DIAG_ROUTES=1` | `/_diag/*` | `clax-admin` `diag` | root → deployment holder | redeploy |
+| 44 | Queue-request token (H) | `cxa_` from a device sign-in with `scope: ["queue.request"]`, one hour | Ask its person for one queue, read and take the answer, keep an MCP session | `clax-queue-requests` `request` | approver → token (built: `grant_elevations` with `expires_at`) | expiry, the take, People |
+| 45 | Fix ticket | `cxf_`, 14 days or the fix's verdict | Attach one preview deployment's origin to one fix | `clax-queues` `attach-preview` at one fix | proposing session → ticket (parent) | verdict, expiry |
+| 46 | Queue oversight | owner or admin role, browser only | Read, triage and administer every queue, member or not | `clax-queues` at `*`, browser template only | owner → admin | owner |
+| 47 | Members' queue making | `queues.members_create` setting | A connected person who administers nothing makes a queue | `clax-queues` `create` | administrators → `members_of:<instance>` | administrators |
+| 48 | Queue webhook secret | `whsec_`, held by Clax, signs outbound deliveries | A queue's report events reach an outside endpoint | `clax-queues` `events` to an outside holder | queue admin → endpoint | queue admin, queue deletion |
 
 ## The model
 
@@ -165,7 +198,8 @@ completeness.
 | `clax-comments` | `read` `write` `reply` `resolve` `send` `watch` | as above | today's type |
 | `clax-db` | `read` `write`, `level` | as above | today's type |
 | `clax-ask` | `ask` | none | today's type |
-| `clax-queues` | `report` `read` `triage` `claim` `fix` `verify` `manage` `mint-reporter` **(call: to be aligned with `feat/token-queue-rights`)** | queue IDs, `*` | queue membership roles, service and reporter credentials |
+| `clax-queues` | built: `read` `claim` `reply` `fix` `resolve` (each implies `read`; `feat/token-queue-rights`); to come with the credentials not yet on the model: `report` `verify` `manage` `create` `mint-reporter` `attach-preview` `events` | queue IDs, `*` | queue membership roles, service, reporter and fix-ticket credentials, the members' queue-making switch, webhook endpoints |
+| `clax-queue-requests` | built: `request` | none | the `queue.request` device scope |
 | `clax-sessions` | `register` `read` `end` | `own` | the daemon token's and a grant's right to register sessions |
 | `clax-views` | `inbox` `threads` `stream` `people` `audit` `events` `drafts` `jobs` | none | the `not_for_agents` denials (browser views) |
 | `clax-live` | `read` `comment` `rules` `join` | origins, `*` | the extension gateway's route list, live-page visibility |
@@ -369,7 +403,7 @@ after a shadow run. Rolling a stage back flips its switch; grants stay.
 |---|---|
 | 0. Grant store and evaluator, shadow | Add the store, the evaluator and the access routes. Every request computes both decisions and counts differences per route and type (`/api/access/shadow`, owner only); the old decision answers. No behaviour changes. |
 | 1. Backfill | One migration issues, as `grant.issue` with `event: migration` and actor `system:migration`, exactly what today's code implies (table below). Shadow differences must reach zero before stage 2. |
-| 2. `clax-queues` | The first type built zero-by-default with union evaluation, on `feat/token-queue-rights`. That branch adopts this design's grant store, the type's shape above, and member, service and reporter grants as graph grants; leases and queue watches are swept on loss of `claim`, closing today's gap where a narrowing leaves them. |
+| 2. `clax-queues` | The first type built zero-by-default with union evaluation, on `feat/token-queue-rights`: grants on a token, each within its granter's and the token's person's queue membership, with leases and queue watches swept on loss of `claim` or `read`, closing today's gap where a narrowing leaves them. The queue-request token moves onto the same grants there (`clax-queue-requests`). Member, service, reporter and fix-ticket grants as graph grants are left to later stages ("One grant model for every credential"). |
 | 3. `clax-artifacts`, `clax-comments`, `clax-db`, `clax-ask` for connected persons' agents | Sessions stop starting at the bound; each is reached by its machine's template (backfilled as the person's rights within the machine's narrowing). Narrowing becomes editing the template or a session's grant; raises become grants. |
 | 4. `clax-views` | The `not_for_agents` and `forbidden` classes of the route table become `clax-views` and `clax-people` checks; the generated route table gains a `Needs` column naming the access instead of the class. |
 | 5. The owner's local machine | The daemon token and local sessions move to the local template. Highest lockout risk: shipped last of the request paths, after a release of shadow running on the owner's own home. |
