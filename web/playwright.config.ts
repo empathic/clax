@@ -50,13 +50,14 @@ export default defineConfig({
   projects: [
     { name: "gesture", testMatch: /gesture\.spec\.ts$/, workers: Math.ceil(workers * 5 / 8) },
     { name: "chrome-overlay", testMatch: /chrome-overlay\.spec\.ts$/ },
-    { name: "shots", testMatch: /app-shots\.spec\.ts$/ },
+    // (and e2e/walkthrough-shared-queues.spec.ts, a user story of shared queues).
+    { name: "shots", testMatch: /(app-shots|walkthrough-shared-queues)\.spec\.ts$/ },
     // Report queues end to end: a hosted daemon, a deployer's site on
     // another origin and the overlay it embeds (e2e/queues.spec.ts), the
     // feedback loop from capture to verified (e2e/feedback-loop.spec.ts),
     // and the shell reporting problems with Clax into its own queue
     // (e2e/feedback.spec.ts).
-    { name: "queues", testMatch: /(queues|feedback-loop|feedback)\.spec\.ts$/ },
+    { name: "queues", testMatch: /(queues|feedback-loop|feedback)\.spec\.ts$/, testIgnore: /walkthrough-shared-queues\.spec\.ts$/ },
     { name: "rest", testIgnore: /(gesture|chrome-overlay|app-shots|queues|feedback-loop|feedback)\.spec\.ts$/ },
   ],
   reporter: "list",
