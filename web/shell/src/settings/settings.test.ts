@@ -5,7 +5,7 @@ import { flush, mount } from "../test/svelte";
 import type { Ctx } from "./screens";
 
 // The browser's context is given, not asked: each test names who it is.
-let who: Ctx = { hosted: false, owner: true, member: true, admin: false, bot: false };
+let who: Ctx = { hosted: false, owner: true, member: true, admin: false, bot: false, queues: false, mayMakeQueues: true };
 vi.mock("./context", () => ({ context: () => Promise.resolve(who) }));
 const { default: Settings } = await import("./Settings.svelte");
 const { default: Palette } = await import("./Palette.svelte");
@@ -16,7 +16,7 @@ const type = (el: HTMLInputElement, text: string) => flush(() => { el.value = te
 const press = (el: Element, key: string) => flush(() => { el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
 const options = (root: ParentNode) => [...root.querySelectorAll("[role=option]")].map(o => o.querySelector(".t")!.textContent);
 
-beforeEach(() => { who = { hosted: false, owner: true, member: true, admin: false, bot: false }; history.replaceState(null, "", "/settings"); });
+beforeEach(() => { who = { hosted: false, owner: true, member: true, admin: false, bot: false, queues: false, mayMakeQueues: true }; history.replaceState(null, "", "/settings"); });
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 describe("Settings", () => {
@@ -27,7 +27,7 @@ describe("Settings", () => {
     expect(m.root.querySelector("h2")!.textContent).toBe("Settings");
     expect([...m.root.querySelectorAll(".stg-over h3")].map(h => h.textContent)).toEqual(["You", "People", "System"]);
     const cards = [...m.root.querySelectorAll<HTMLAnchorElement>(".stg-cards a")];
-    expect(cards.map(a => a.getAttribute("href"))).toEqual(["/settings/agents", "/settings/confirmations", "/settings/people", "/settings/config", "/settings/remotes", "/settings/audit"]);
+    expect(cards.map(a => a.getAttribute("href"))).toEqual(["/settings/agents", "/settings/confirmations", "/settings/people", "/settings/config", "/settings/report-queues", "/settings/remotes", "/settings/audit"]);
     expect(cards[2].textContent).toContain("Who is connected to this Clax");
     expect(document.title).toBe("Settings · Clax");
   });
@@ -77,7 +77,7 @@ describe("Settings", () => {
   });
 
   it("shows the overview, saying so, for a screen this browser may not open", async () => {
-    who = { hosted: true, owner: false, member: true, admin: false, bot: false };
+    who = { hosted: true, owner: false, member: true, admin: false, bot: false, queues: false, mayMakeQueues: false };
     history.replaceState(null, "", "/settings/provider");
     stubFetch({});
     const m = mount(Settings, {});
@@ -87,7 +87,7 @@ describe("Settings", () => {
   });
 
   it("shows the screen named instead of one that is not this browser's, at that screen's address", async () => {
-    who = { hosted: false, owner: false, member: true, admin: false, bot: false };
+    who = { hosted: false, owner: false, member: true, admin: false, bot: false, queues: false, mayMakeQueues: false };
     history.replaceState(null, "", "/settings/people?x=1");
     stubFetch({
       "GET /api/people/me": { person: { public_id: "p1", display_name: "Sam", owner: false, rights: [] }, grants: [], agents: [] },
@@ -100,7 +100,7 @@ describe("Settings", () => {
   });
 
   it("tells a browser that is no member's that Settings are not its", async () => {
-    who = { hosted: false, owner: false, member: false, admin: false, bot: false };
+    who = { hosted: false, owner: false, member: false, admin: false, bot: false, queues: false, mayMakeQueues: false };
     history.replaceState(null, "", "/settings/agents");
     stubFetch({});
     const m = mount(Settings, {});
@@ -110,7 +110,7 @@ describe("Settings", () => {
   });
 
   it("ends its navigation and its overview with Sign out on a hosted Clax, which ends the session", async () => {
-    who = { hosted: true, owner: false, member: true, admin: false, bot: false };
+    who = { hosted: true, owner: false, member: true, admin: false, bot: false, queues: false, mayMakeQueues: false };
     const calls = stubFetch({ "POST /api/hosted/signout": {} });
     const m = mount(Settings, {});
     await settle();
@@ -120,14 +120,14 @@ describe("Settings", () => {
   });
 
   it("says why when signing out is refused, and has no Sign out on a Clax on this machine", async () => {
-    who = { hosted: true, owner: false, member: true, admin: false, bot: false };
+    who = { hosted: true, owner: false, member: true, admin: false, bot: false, queues: false, mayMakeQueues: false };
     stubFetch({ "POST /api/hosted/signout": [403, { error: { code: "forbidden", message: "the public origin did not send this" } }] });
     const m = mount(Settings, {});
     await settle();
     click([...m.root.querySelectorAll<HTMLButtonElement>(".stg-over button")].find(b => b.textContent === "Sign out")!);
     await vi.waitFor(() => expect(m.root.querySelector(".stg-out [role=alert]")?.textContent).toBe("The public origin did not send this."));
     m.unmount();
-    who = { hosted: false, owner: true, member: true, admin: false, bot: false };
+    who = { hosted: false, owner: true, member: true, admin: false, bot: false, queues: false, mayMakeQueues: false };
     const local = mount(Settings, {});
     await settle();
     expect(local.root.querySelector(".stg-out")).toBeNull();
@@ -151,7 +151,7 @@ describe("Settings' search dialog", () => {
     const field = m.root.querySelector<HTMLInputElement>("[role=combobox]")!;
     expect(document.activeElement).toBe(field);
     expect(m.root.querySelector("[role=dialog]")!.getAttribute("aria-modal")).toBe("true");
-    expect(options(m.root)).toEqual(["Agents & machines", "Confirmations", "People", "Configuration", "Remotes", "Audit log", "Queues", "Tags"]);
+    expect(options(m.root)).toEqual(["Agents & machines", "Confirmations", "People", "Configuration", "Report queues", "Remotes", "Audit log", "Queues", "Tags"]);
     press(field, "ArrowDown");
     press(field, "ArrowDown");
     expect(m.root.querySelector("[aria-selected=true] .t")!.textContent).toBe("People");

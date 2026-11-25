@@ -349,18 +349,26 @@ pub(crate) fn queue_in(c: &Connection, qid: &str) -> Result<Option<QueueRow>> {
     .optional()?)
 }
 
-/// `person`'s role on queue `q` (`None`: the owner): its maker's is admin.
+/// The owner's key in `queue_members.person`: a connected person's is
+/// their public ID, which never starts with `*`.
+pub const OWNER_MEMBER: &str = clax_core::visibility::OWNER;
+
+/// `person`'s key in `queue_members` (`None`: the owner, [`OWNER_MEMBER`]).
+#[must_use]
+pub fn member_key(person: Option<&str>) -> &str {
+    person.unwrap_or(OWNER_MEMBER)
+}
+
+/// `person`'s role on queue `q` (`None`: the owner): its maker's is admin,
+/// whatever its row says.
 fn role_in(c: &Connection, q: &QueueRow, person: Option<&str>) -> Result<Option<Role>> {
     if q.person.as_deref() == person {
         return Ok(Some(Role::Admin));
     }
-    let Some(p) = person else {
-        return Ok(None);
-    };
     let role: Option<String> = c
         .query_row(
             "SELECT role FROM queue_members WHERE queue_id = ?1 AND person = ?2",
-            params![q.id, p],
+            params![q.id, member_key(person)],
             |r| r.get(0),
         )
         .optional()?;
@@ -1016,6 +1024,12 @@ impl Store {
                 now
             ],
         )?;
+        // Its maker is listed among its members, as its admin.
+        tx.execute(
+            "INSERT INTO queue_members (queue_id, person, role, created_at)
+             VALUES (?1, ?2, 'admin', ?3)",
+            params![id, member_key(person), now],
+        )?;
         let rec = queue_record(AuditKind::QueueCreate, &now, &id)
             .with("name", name)
             .with("origins", origins.to_vec())
@@ -1034,16 +1048,39 @@ impl Store {
             let rows: Vec<QueueRow> = c
                 .prepare_cached(&format!(
                     "{QUEUE_SELECT} WHERE deleted_at IS NULL AND (person IS ?1
-                       OR (?1 IS NOT NULL AND id IN (SELECT queue_id FROM queue_members WHERE person = ?1)))
+                       OR id IN (SELECT queue_id FROM queue_members WHERE person = ?2))
                      ORDER BY created_at, id"
                 ))?
-                .query_map(params![person], queue_row)?
+                .query_map(params![person, member_key(person)], queue_row)?
                 .collect::<rusqlite::Result<_>>()?;
             let mut out = Vec::with_capacity(rows.len());
             for q in rows {
                 if let Some(role) = role_in(c, &q, person)? {
                     out.push(q.view(role));
                 }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Every live queue, oldest first, as an administrator of the instance
+    /// reads it: each with `person`'s role (`None`: the owner) where they
+    /// are a member, else admin, and whether they are a member.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn every_queue(&self, person: Option<&str>) -> Result<Vec<(Queue, bool)>> {
+        self.with_read(|c| {
+            let rows: Vec<QueueRow> = c
+                .prepare_cached(&format!(
+                    "{QUEUE_SELECT} WHERE deleted_at IS NULL ORDER BY created_at, id"
+                ))?
+                .query_map([], queue_row)?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut out = Vec::with_capacity(rows.len());
+            for q in rows {
+                let role = role_in(c, &q, person)?;
+                out.push((q.view(role.unwrap_or(Role::Admin)), role.is_some()));
             }
             Ok(out)
         })
@@ -1140,17 +1177,20 @@ impl Store {
         })
     }
 
-    /// Sets `person`'s role on queue `qid` (`None` removes them), recorded
-    /// as `queue.update {queue_id, op: "member", member, role}` (`role`
-    /// null for a removal); a change to nothing records nothing. The
-    /// queue's maker is its admin whatever this says. A removal releases
+    /// Sets the role on queue `qid` of the person whose member key is
+    /// `person` ([`member_key`]: a public ID, or [`OWNER_MEMBER`] for the
+    /// owner; `None` removes them), recorded as `queue.update {queue_id,
+    /// op: "member", member, role}` (`role` null for a removal); a change
+    /// to nothing records nothing. The queue's maker stays its admin and
+    /// is refused here. A removal releases
     /// every live lease the person's sessions hold on the queue's reports,
     /// each recorded as `queue.release {queue_id, thread_id, session,
     /// lease_id, reason: "member_removed"}`, clears those threads'
     /// owner, and ends the person's sessions' watches of the queue.
     ///
     /// # Errors
-    /// [`CoreError::NotAMember`] for no such queue.
+    /// [`CoreError::NotAMember`] for no such queue; `queue_maker` for its
+    /// maker.
     pub fn set_member(
         &self,
         ctx: &AuditCtx,
@@ -1161,6 +1201,12 @@ impl Store {
         let now = self.now();
         self.with_tx(|tx| {
             let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            if member_key(q.person.as_deref()) == person {
+                return Err(CoreError::invalid(
+                    "queue_maker",
+                    "a queue's maker stays its admin",
+                ));
+            }
             let before: Option<String> = tx
                 .query_row(
                     "SELECT role FROM queue_members WHERE queue_id = ?1 AND person = ?2",
@@ -1188,13 +1234,13 @@ impl Store {
                 .with("member", person)
                 .with("role", role.map(Role::as_str));
             self.record_audit(tx, ctx, rec)?;
-            if role.is_none() && q.person.as_deref() != Some(person) {
+            if role.is_none() {
                 self.release_person_in(tx, ctx, qid, person, &now)?;
                 // Its sessions no longer watch the queue.
                 tx.execute(
                     "DELETE FROM queue_watches WHERE queue_id = ?1
-                       AND session_id IN (SELECT id FROM sessions WHERE person = ?2)",
-                    params![qid, person],
+                       AND session_id IN (SELECT id FROM sessions WHERE COALESCE(person, ?3) = ?2)",
+                    params![qid, person, OWNER_MEMBER],
                 )?;
             }
             Ok(())
@@ -1216,10 +1262,10 @@ impl Store {
                 "SELECT c.thread_id, c.session_id, c.lease_id, t.artifact_id
                  FROM queue_claims c JOIN sessions s ON s.id = c.session_id
                  JOIN threads t ON t.id = c.thread_id
-                 WHERE c.queue_id = ?1 AND s.person = ?2 AND NOT c.released
+                 WHERE c.queue_id = ?1 AND COALESCE(s.person, ?3) = ?2 AND NOT c.released
                  ORDER BY c.thread_id, c.session_id",
             )?
-            .query_map(params![qid, person], |r| {
+            .query_map(params![qid, person, OWNER_MEMBER], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1248,8 +1294,9 @@ impl Store {
         Ok(())
     }
 
-    /// Queue `qid`'s members other than its maker, by public ID, with
-    /// their roles, in the order they were added.
+    /// Queue `qid`'s members, its maker among them, by member key
+    /// ([`member_key`]: a public ID, or [`OWNER_MEMBER`]), with their
+    /// roles, in the order they were added (the maker's first).
     ///
     /// # Errors
     /// Database errors.
@@ -1258,9 +1305,10 @@ impl Store {
             let rows: Vec<(String, String)> = c
                 .prepare_cached(
                     "SELECT person, role FROM queue_members WHERE queue_id = ?1
-                     ORDER BY created_at, person",
+                     ORDER BY person = (SELECT COALESCE(person, ?2) FROM queues WHERE id = ?1) DESC,
+                       created_at, person",
                 )?
-                .query_map(params![qid], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .query_map(params![qid, OWNER_MEMBER], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?;
             Ok(rows
                 .into_iter()
@@ -2156,8 +2204,8 @@ impl Store {
                      WHERE s.id = ?1 AND q.deleted_at IS NULL
                        AND (q.person IS s.person
                             OR EXISTS (SELECT 1 FROM queue_members qm
-                                       WHERE qm.queue_id = q.id AND qm.person = s.person)))",
-                params![sid, ids, expires_at, now],
+                                       WHERE qm.queue_id = q.id AND qm.person = COALESCE(s.person, ?5))))",
+                params![sid, ids, expires_at, now, OWNER_MEMBER],
             )?)
         })
     }
@@ -2293,7 +2341,8 @@ impl Store {
     /// What a change to report `tid` of queue `qid` tells the queue's
     /// topic: the report's state now, and the recipient keys of the
     /// queue's members (empty for the owner, a connected person's public
-    /// ID), its maker first; `None` for no such live queue or report.
+    /// ID), its maker first, and the owner's, who oversees every queue;
+    /// `None` for no such live queue or report.
     ///
     /// # Errors
     /// Database errors.
@@ -2311,7 +2360,12 @@ impl Store {
             let s = standing_in(c, tid)?;
             let claimed = current_in(c, tid, &now)?.is_some_and(|cur| cur.live);
             let state = state_of(&s.status, s.phase.as_deref(), claimed);
+            // The owner's browser oversees every queue, so the owner is
+            // always told.
             let mut members = vec![q.person.clone().unwrap_or_default()];
+            if !members.contains(&String::new()) {
+                members.push(String::new());
+            }
             let rows: Vec<String> = c
                 .prepare_cached(
                     "SELECT person FROM queue_members WHERE queue_id = ?1 ORDER BY created_at, person",
@@ -2319,6 +2373,7 @@ impl Store {
                 .query_map(params![qid], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             for p in rows {
+                let p = if p == OWNER_MEMBER { String::new() } else { p };
                 if !members.contains(&p) {
                     members.push(p);
                 }

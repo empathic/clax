@@ -2,9 +2,13 @@
 
 <script lang="ts">
   // The Queues page (`/queues`, spec 2026-10-27-clax-sdk-design §5.3, §6.2):
-  // every report queue the viewer is a member of, with its origins, what
-  // its reporters see, the viewer's role and its reports counted by state.
-  // New queue makes one (the maker is its admin). A queue's admin edits it
+  // every report queue the viewer is a member of (for the owner and the
+  // instance's administrators, every queue, those they are no member of
+  // marked), with its origins, what its reporters see, the viewer's role
+  // and its reports counted by state. New queue makes one (the maker is
+  // its admin); where this browser may not make one (`GET
+  // /api/viewers/me`'s `queues.may_make`), a line says who does instead.
+  // A queue's admin edits it
   // in place, deletes it after confirming, and opens Manage for its members
   // and service grants (`QueueAdmin`). A refused change says why until the
   // next one. The list is fetched again after each change and when the
@@ -28,9 +32,11 @@
 
   /** `onready`: called once the page shows its first data (the queues, or why they did not load). */
   const p: { stream?: EventStream; onready?: () => void } = $props();
-  let queues = $state<api.Queue[] | null>(null);
   // The pending requests for a queue as listed, each kept, decided, until the list is fetched again.
   let requests = $state<QueueRequest[]>([]);
+  let queues = $state<api.ListedQueue[] | null>(null);
+  // Whether New queue shows: until the daemon says otherwise, it does (the daemon refuses a queue it does not allow).
+  let mayMake = $state(true);
   let counts = $state<Record<string, Counts | "failed">>({});
   let loadError = $state<string | null>(null);
   let error = $state<string | null>(null);
@@ -60,6 +66,7 @@
   }
 
   async function load() {
+    void api.queueAccess().then(a => { mayMake = a.may_make; }, () => {});
     try {
       queues = (await api.listQueues()).queues;
       loadError = null;
@@ -131,9 +138,10 @@
     <h2 id="queues-h">Queues</h2>
     {#if queues}<span class="qc">{queues.length}</span>{/if}
     <span class="sp"></span>
-    {#if editing !== "new"}<button type="button" class="primary" onclick={() => open("new")}>New queue</button>{/if}
+    {#if editing !== "new" && mayMake}<button type="button" class="primary" onclick={() => open("new")}>New queue</button>{/if}
   </header>
   <p class="qsub">A queue collects reports filed from your sites' pages, for people and their agents to triage.</p>
+  {#if !mayMake}<p class="qsub qpolicy">An administrator makes new queues on this Clax. You can triage the queues you're added to.</p>{/if}
   {#if loadError || error}<p class="qerr" role="alert">{error ?? loadError}</p>{/if}
   <p class="qstat" role="status">{status}</p>
   {#if requests.length}
@@ -155,6 +163,7 @@
             <header class="qrow">
               <h3><a href={queueHref(q.id)} onclick={nav}>{q.name}</a></h3>
               <span class="role">{q.role === "admin" ? "Admin" : "Triage"}</span>
+              {#if q.member === false}<span class="role" title="You oversee this queue as an administrator of this Clax">Not a member</span>{/if}
               <span class="sp"></span>
               {#if q.role === "admin"}
                 <span class="acts">
@@ -177,7 +186,7 @@
       {/each}
     </ul>
   {:else if queues}
-    <p class="qnone">There are no queues yet. Make one with New queue.</p>
+    <p class="qnone">{mayMake ? "There are no queues yet. Make one with New queue." : "You aren't a member of any queue yet."}</p>
   {:else if !loadError}
     <p class="qnone">Loading…</p>
   {/if}

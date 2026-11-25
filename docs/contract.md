@@ -2627,7 +2627,12 @@ artifact is its maker's own, so its live seat is reserved for them (see
 "Live seats and spectators"): a person who is a spectator on another
 artifact starts one, and writes and sends its brief, as anyone does.
 `GET /api/viewers/me` says whether this browser may, in `may_create`,
-and the gallery shows the tile only then.
+and the gallery shows the tile only then. Its `queues` (`{member,
+may_make}`) says how many report queues the browser's person made or is
+a member of and whether they may make one ("Report queue routes",
+Administering a queue); the shell shows Queues in its header and
+Settings only to the owner, a member of a queue, and anyone who may make
+one.
 
 The tile opens a dialog asking for a name (the title) and a description
 (the brief). Where ClaxBot is on for the person, the dialog's "ClaxBot
@@ -4421,6 +4426,41 @@ A deployer's app files reports into a queue and its reporters give their
 verdict on fixes through the reporter routes; the queue's triage members
 and their agents work them through the triage routes.
 
+**Administering a queue.** A queue's admins, in their browser (or the
+owner by hand), never an agent (403 `not_for_agents`), make and change it,
+its members and its service grants:
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /api/queues` | | `{queues: [{id, name, origins, reporters_see, created_at, role, member}]}`, oldest first: the queues the caller made or is a member of; for the owner and the instance's administrators, every live queue, `role` `admin` and `member` false where they are no member (an agent's `queue_list` reads its person's queues alone, without `member`) |
+| `POST /api/queues` | `{name, origins?, reporters_see?}` | 201 `{queue}`: the caller is its maker, listed first among its members as `admin`; a connected person who administers nothing makes one only while `queues.members_create` is on (below), else 403 `queues_admin_only` |
+| `PATCH /api/queues/<qid>`, `DELETE /api/queues/<qid>` | `{name?, origins?, reporters_see?}` | `{queue}`; 204 |
+| `GET /api/queues/<qid>/members` | | `{members: [{public_id, name, role, maker, owner}]}`: the maker first (`maker` true, always `admin`), then in the order they were added; `owner` marks the owner, whose `public_id` is their viewer's (`*owner` before they have one) |
+| `PUT /api/queues/<qid>/members/<public_id>`, `DELETE` the same | `{role}` (`admin` or `triage`) | 204: adds a connected, unrevoked person, or the owner (`*owner` or the owner's public ID), or changes their role; removes one. 404 `not_found` for anyone else; 400 `queue_maker` for the maker, who stays its admin |
+| `GET /api/queues/<qid>/people?q=<text>` | | `{people: [{public_id, name, avatar_url, owner}]}`: at most 20 of the people an admin may add, the owner first, then by name: the owner and the connected, unrevoked people (a hosted Clax's members) whose name holds `q` ignoring case, or whose public ID is `q`; `avatar_url` their linked GitHub account's. Nothing else of a person (`GET /api/people` stays the owner's). A blank `q` finds no one; one over 100 characters is 400 `invalid_argument` |
+| `GET /api/queues/<qid>/service-grants`, `POST` the same `{name}`, `DELETE …/<gid>` | | as in "Report queue routes" below |
+
+The owner and the instance's administrators (the owner and the people the
+owner makes admin, as ClaxBot's admin pages name them) oversee every
+queue in their browser: each queue is theirs to read, triage and
+administer as an admin's, member or not, and the owner's browser streams
+are told of every queue's report changes. Their agents work only the
+queues they are members of, so the owner adds themselves to a member's
+queue to have their agents triage it. Anyone else's queue they are no
+member of answers 404 `not_a_member`, as an unknown one does; a triage
+member's change is 403 `not_queue_admin`.
+
+`GET /api/admin/queues` → `{members_create, source}` and `PUT
+/api/admin/queues {members_create: true|false|null}` (the owner and
+administrators; 403 `forbidden` for anyone else): whether a connected
+person who administers nothing may make a report queue, the
+`queues.members_create` instance setting. With no value set (`null` puts
+it back, `source` `default`) it is on for a local Clax, whose members are
+people its owner connected, and off for a hosted one; `source` is `db`
+once an administrator sets it. A change is recorded as `admin.settings
+{fields: ["queues.members_create"], values}`. It governs making a queue
+alone: existing queues, their admins and their members keep working.
+
 **States.** A report is `open` (waiting for someone: filed, released, its
 lease lapsed, or reopened), `claimed` (an agent's session holds its
 lease), `fix_proposed` (a fix waits for the reporter's verdict; the thread
@@ -4884,7 +4924,7 @@ person answers in their browser (`crates/clax-server/src/routes/queue_requests.r
 | `GET /api/queue-requests/<id>[?wait=<s>]` | the agent that asked (its grant; any agent of the owner's for the owner's agents' requests), or the request's person | `{request}`, as soon as it is not pending or after `wait` seconds (at most 60), and `grant_taken: true` once an approved request's grant was taken. A read changes nothing. 404 for anyone else |
 | `POST /api/queue-requests/<id>/take` | the agent that asked (403 `not_an_agent` for a person) | once the request is answered, `{request}`; the first take of an approved one also carries `grant: {id, name, created_at}`, `token` (`cxq_…`) and `private_key` (as `POST /api/queues/<qid>/service-grants` gives them): the service grant is made by that take, named `Requested by <agent>`, and neither secret is kept; later takes carry `grant_taken: true`. A take ends a scoped token. 409 `request_pending` (with `request` in `error`) while it waits; 404 for anyone else |
 | `GET /api/queue-requests[?status=]` | the person's browser, or the owner by hand | `{requests}`: those the caller answers, newest first, at most 200; `status` one of `pending`, `approved`, `denied`, `cancelled`, `expired` (400 `invalid_query` for another) |
-| `POST /api/queue-requests/<id>/approve` | the person's browser (403 `browser_required` for the token by hand; agents refused), same origin | `{request, queue}`: the queue is made with the person as its admin, nothing else granted. While an agent of the owner's is live a local daemon may hold it for a confirmation (202 `confirmation_pending`, "Confirming decisions") |
+| `POST /api/queue-requests/<id>/approve` | the person's browser (403 `browser_required` for the token by hand; agents refused), same origin | `{request, queue}`: the queue is made with the person as its admin, nothing else granted. A connected person who administers nothing approves only while `queues.members_create` is on, as for `POST /api/queues`: else 403 `queues_admin_only`, and the request stays pending. While an agent of the owner's is live a local daemon may hold it for a confirmation (202 `confirmation_pending`, "Confirming decisions") |
 | `POST /api/queue-requests/<id>/deny` | as approve, with no confirmation | `{request}` |
 
 Deciding a request no longer pending is 409 `request_closed`, with
@@ -6592,6 +6632,8 @@ router), and a test fails when it differs:
 | `PUT /api/admin/provider/key` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/provider/models` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/provider/test` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/admin/queues` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/queues` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/shutdown` | Denied | no |
 | `GET /api/admin/usage` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/web` | Denied | yes: 403 `not_for_agents` |
@@ -6753,6 +6795,7 @@ router), and a test fails when it differs:
 | `GET /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/people` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/reports/{tid}/reopen` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/reports/{tid}/verify` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |

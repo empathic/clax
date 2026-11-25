@@ -2,9 +2,14 @@
 
 <script lang="ts">
   // A queue's members and service grants, for its admins. A member is a
-  // person by public ID, at admin (changes the queue, makes service
-  // grants) or triage (reads and works its reports); adding a member
-  // already there changes their role. A new service grant's token and
+  // person, at admin (changes the queue, makes service grants) or triage
+  // (reads and works its reports). The queue's maker is listed first, as
+  // its admin, and can be neither changed nor removed. A person is added
+  // by finding them by name (or by their whole public ID) among the owner
+  // and the people connected to this Clax (`GET
+  // /api/queues/<qid>/people`), choosing one, and a role; adding a member
+  // already there changes their role. A search answered after a later one
+  // was asked is dropped. A new service grant's token and
   // private key are shown here once, each with Copy, under a warning that
   // they are not shown again; Done forgets them. Revoking a grant, after
   // confirming, ends every reporter token it minted. A queue that lists
@@ -22,7 +27,10 @@
   let grants = $state<api.ServiceGrant[] | null>(null);
   let memberErr = $state<string | null>(null);
   let grantErr = $state<string | null>(null);
-  let pid = $state("");
+  let find = $state("");
+  let found = $state<api.PersonMatch[] | null>(null);
+  let chosen = $state<api.PersonMatch | null>(null);
+  let asked = 0;
   let role = $state<api.QueueRole>("triage");
   let grantName = $state("");
   let previewsOnly = $state(false);
@@ -36,12 +44,24 @@
   const loadMembers = () => api.listMembers(qid).then(b => { members = b.members; }, x => { memberErr = `Could not load the members: ${refusal(x)}`; });
   const loadGrants = () => api.listGrants(qid).then(b => { grants = b.grants; }, x => { grantErr = `Could not load the service grants: ${refusal(x)}`; });
 
+  const nameOf = (m: { name?: string | null; owner?: boolean; public_id: string }) => m.name ?? (m.owner ? "The owner" : m.public_id);
+  async function search(text: string) {
+    find = text; chosen = null;
+    const n = ++asked;
+    if (!text.trim()) { found = null; return; }
+    try {
+      const b = await api.searchPeople(qid, text.trim());
+      if (n === asked) found = b.people;
+    } catch (x) {
+      if (n === asked) { found = []; memberErr = `Could not search: ${refusal(x)}`; }
+    }
+  }
+  const pick = (m: api.PersonMatch) => { chosen = m; find = nameOf(m); found = null; };
   async function addMember(e: Event) {
     e.preventDefault();
-    const id = pid.trim();
-    if (!id) return;
+    if (!chosen) return;
     memberErr = null;
-    try { await api.setMember(qid, id, role); pid = ""; } catch (x) { memberErr = refusal(x); }
+    try { await api.setMember(qid, chosen.public_id, role); chosen = null; find = ""; found = null; } catch (x) { memberErr = refusal(x); }
     await loadMembers();
   }
   async function changeRole(m: api.QueueMember, r: api.QueueRole) {
@@ -50,7 +70,7 @@
     await loadMembers();
   }
   async function removeMember(m: api.QueueMember) {
-    if (!confirm(`Remove ${m.name ?? m.public_id} from ${p.queue.name}?`)) return;
+    if (!confirm(`Remove ${nameOf(m)} from ${p.queue.name}?`)) return;
     memberErr = null;
     try { await api.removeMember(qid, m.public_id); } catch (x) { memberErr = refusal(x); }
     await loadMembers();
@@ -83,21 +103,43 @@
       <ul class="lines">
         {#each members as m (m.public_id)}
           <li class="line" data-member={m.public_id}>
-            <span class="who">{m.name ?? m.public_id}{#if m.name}<span class="key">{m.public_id}</span>{/if}</span>
-            <select aria-label={`Role of ${m.name ?? m.public_id}`} value={m.role} onchange={e => void changeRole(m, e.currentTarget.value as api.QueueRole)}>
-              <option value="triage">Triage</option><option value="admin">Admin</option>
-            </select>
-            <button type="button" class="ghost danger" onclick={() => void removeMember(m)}>Remove</button>
+            <span class="who">{nameOf(m)}{#if m.maker}<span class="key">made this queue</span>{:else if m.name}<span class="key">{m.public_id}</span>{/if}</span>
+            {#if m.maker}
+              <span class="fixed">Admin</span>
+            {:else}
+              <select aria-label={`Role of ${nameOf(m)}`} value={m.role} onchange={e => void changeRole(m, e.currentTarget.value as api.QueueRole)}>
+                <option value="triage">Triage</option><option value="admin">Admin</option>
+              </select>
+              <button type="button" class="ghost danger" onclick={() => void removeMember(m)}>Remove</button>
+            {/if}
           </li>
         {/each}
       </ul>
     {:else if members}
-      <p class="none">No members besides you.</p>
+      <p class="none">No members yet.</p>
     {/if}
     <form class="add" onsubmit={addMember}>
-      <label class="field">Public ID <input name="public_id" autocomplete="off" spellcheck="false" value={pid} oninput={e => { pid = e.currentTarget.value; }} /></label>
+      <div class="field pick">
+        <label for={`qa-find-${qid}`}>Add a person</label>
+        <input id={`qa-find-${qid}`} name="person" autocomplete="off" spellcheck="false" placeholder="Name or public ID" value={find} oninput={e => void search(e.currentTarget.value)} />
+        {#if found?.length}
+          <ul class="found" aria-label="People found">
+            {#each found as f (f.public_id)}
+              {@const there = members?.some(m => m.public_id === f.public_id)}
+              <li data-found={f.public_id}>
+                <button type="button" class="ghost" disabled={there} onclick={() => pick(f)}>
+                  {#if f.avatar_url}<img class="av" src={f.avatar_url} alt="" width="20" height="20" referrerpolicy="no-referrer" />{/if}
+                  <span>{nameOf(f)}</span><span class="key">{there ? "already a member" : f.public_id}</span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {:else if found}
+          <p class="none" role="status">No one connected to this Clax goes by that name. Only the owner and connected people can be added; the owner invites people in Settings › People.</p>
+        {/if}
+      </div>
       <label class="field">Role <select value={role} onchange={e => { role = e.currentTarget.value as api.QueueRole; }}><option value="triage">Triage</option><option value="admin">Admin</option></select></label>
-      <button type="submit" disabled={!pid.trim()}>Add member</button>
+      <button type="submit" disabled={!chosen}>Add member</button>
     </form>
     <p class="hint">Triage reads and works the queue's reports; admin also changes the queue and its service grants.</p>
     {#if memberErr}<p class="err" role="alert">{memberErr}</p>{/if}
@@ -151,6 +193,12 @@
   .add { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; margin-top: 6px; }
   .field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); min-width: 0; }
   .field input { width: 220px; max-width: 100%; }
+  .pick { position: relative; }
+  .found { list-style: none; margin: 4px 0 0; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); max-width: 320px; }
+  .found button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; justify-content: flex-start; text-align: left; color: var(--fg); }
+  .found .av { border-radius: 50%; flex: none; }
+  .fixed { color: var(--muted); font-size: 13px; }
+  @media (pointer: coarse) { .found button { min-height: 44px; } }
   .hint, .none { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
   .err { margin: 6px 0 0; color: var(--danger); font-size: 13px; }
   button.danger { color: var(--danger); }

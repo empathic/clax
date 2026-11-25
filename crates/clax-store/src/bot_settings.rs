@@ -14,6 +14,12 @@
 //! default token rates (`default_rates.*`, milli-credits per million
 //! tokens, for a model with neither a cost line nor a catalog listing) and
 //! `require_explicit_price` (only cost lines price a model).
+//!
+//! The instance's own settings live here too ([`Setting::is_instance`]):
+//! `queues.members_create`, whether a member who is no administrator may
+//! make a report queue. Its default is `null`, which the daemon reads as
+//! on for a local Clax and off for a hosted one. A change to one is
+//! recorded as `admin.settings {fields[], values{key: value}}`.
 
 use super::Store;
 use super::roles::set_by;
@@ -96,6 +102,7 @@ settings! {
     WebFetchUrlRule = "web.fetch.url_rule", UrlRule, "sourced";
     WebFetchAllowlist = "web.fetch.allowlist", Hosts, Vec::<String>::new();
     WebCloudflareAccountId = "web.cloudflare.account_id", AccountId, "";
+    QueuesMembersCreate = "queues.members_create", Bool, None::<bool>;
 }
 
 /// What a setting's value is.
@@ -173,6 +180,12 @@ impl Setting {
                 | Setting::DefaultRateOutput
                 | Setting::RequireExplicitPrice
         )
+    }
+
+    /// Whether it is one of the instance's own settings rather than
+    /// ClaxBot's: a change to it is recorded as `admin.settings`.
+    pub fn is_instance(self) -> bool {
+        matches!(self, Setting::QueuesMembersCreate)
     }
 
     /// `value` as the setting stores it.
@@ -709,8 +722,13 @@ impl Store {
             changed.dedup();
             let provider: Vec<&str> = changed
                 .iter()
-                .filter(|s| !s.is_pricing())
+                .filter(|s| !s.is_pricing() && !s.is_instance())
                 .map(|s| s.key())
+                .collect();
+            let instance: Vec<Setting> = changed
+                .iter()
+                .copied()
+                .filter(|s| s.is_instance())
                 .collect();
             // The stored instance key was set for the old URL: a new one
             // is not sent it until an admin enters the key again.
@@ -729,7 +747,10 @@ impl Store {
             }
             if !provider.is_empty() {
                 let mut values = serde_json::Map::new();
-                for s in changed.iter().filter(|s| !s.is_pricing()) {
+                for s in changed
+                    .iter()
+                    .filter(|s| !s.is_pricing() && !s.is_instance())
+                {
                     values.insert(s.key().into(), stored_in(tx, *s)?);
                 }
                 let mut rec = AuditRecord::new(AuditKind::AdminProvider, now.clone())
@@ -738,6 +759,17 @@ impl Store {
                 if key_cleared {
                     rec = rec.with("key_cleared", true);
                 }
+                self.record_audit(tx, ctx, rec)?;
+            }
+            if !instance.is_empty() {
+                let mut values = serde_json::Map::new();
+                for s in &instance {
+                    values.insert(s.key().into(), stored_in(tx, *s)?);
+                }
+                let fields: Vec<&str> = instance.iter().map(|s| s.key()).collect();
+                let rec = AuditRecord::new(AuditKind::AdminSettings, now.clone())
+                    .with("fields", fields)
+                    .with("values", Value::Object(values));
                 self.record_audit(tx, ctx, rec)?;
             }
             let mut pricing = serde_json::Map::new();

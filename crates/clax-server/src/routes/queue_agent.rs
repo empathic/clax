@@ -85,7 +85,8 @@ fn queue_person(c: &Caller) -> Option<Option<String>> {
 }
 
 /// 404 `not_a_member` unless the caller of `a` acts as a member of queue
-/// `qid` (either role reads, claims and writes reports).
+/// `qid` (either role reads, claims and writes reports), or oversees every
+/// queue in their browser ([`super::queues::oversees`]).
 async fn member<N: Need>(s: &AppState, a: &Agent<N>, qid: &str) -> Result<(), ApiError> {
     member_as(s, &a.caller, qid).await
 }
@@ -96,10 +97,20 @@ pub(crate) async fn member_as(s: &AppState, c: &Caller, qid: &str) -> Result<(),
         return Err(CoreError::NotAMember.into());
     };
     let qid = qid.to_string();
-    let role = s
-        .store_call(move |st| st.queue_role(&qid, person.as_deref()))
+    let c = c.clone();
+    let member = s
+        .store_call(move |st| {
+            if st.queue_role(&qid, person.as_deref())?.is_some() {
+                return Ok(true);
+            }
+            Ok(super::queues::oversees(st, &c) && st.queue(&qid)?.is_some())
+        })
         .await?;
-    role.map(|_| ()).ok_or_else(|| CoreError::NotAMember.into())
+    if member {
+        Ok(())
+    } else {
+        Err(CoreError::NotAMember.into())
+    }
 }
 
 /// The live session an agent caller acts from: 400 `no_session` without

@@ -48,6 +48,7 @@
     confirmations: { load: () => import("./Confirmations.svelte") },
     roles: admin("people"), provider: admin("provider"), web: admin("web"), pricing: admin("pricing"), usage: admin("usage"),
     config: { load: () => import("../bot/SettingsPage.svelte") },
+    "report-queues": { load: () => import("./QueuePolicy.svelte") },
     remotes: { load: () => import("./Remotes.svelte") },
     audit: { load: () => import("../bot/AuditPage.svelte") },
   };

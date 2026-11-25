@@ -1312,10 +1312,20 @@ async fn a_request_signed_by_the_sdk_vector_verifies() {
     let ts = TestServer::spawn_with_clock(clock).await;
     assert_eq!(ts.store.now_utc().timestamp(), 1_760_000_000);
     let made = queue(&ts, ReportersSee::Own);
-    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let mut db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
     db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
-    db.execute("UPDATE queues SET id = 'q1' WHERE id = ?1", [&made])
+    // The maker's member row names the queue too: both are renamed in one
+    // transaction, the foreign key checked at its commit.
+    let tx = db.transaction().unwrap();
+    tx.execute_batch("PRAGMA defer_foreign_keys = ON").unwrap();
+    tx.execute("UPDATE queues SET id = 'q1' WHERE id = ?1", [&made])
         .unwrap();
+    tx.execute(
+        "UPDATE queue_members SET queue_id = 'q1' WHERE queue_id = ?1",
+        [&made],
+    )
+    .unwrap();
+    tx.commit().unwrap();
     let (grant, _, _) = ts
         .store
         .create_service_grant(&AuditCtx::DAEMON, "q1", "app")

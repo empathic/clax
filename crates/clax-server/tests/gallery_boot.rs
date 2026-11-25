@@ -634,6 +634,18 @@ async fn a_hosted_member_gets_their_reach_and_the_owner_theirs() {
         .as_str()
         .unwrap()
         .to_string();
+    // The feedback config makes the owner's own feedback queue on its first
+    // ask, which `GET /api/viewers/me` counts in `queues.member`: asked
+    // first, the block and the route after it count the same queues.
+    at(
+        &ts,
+        reqwest::Method::GET,
+        "/_app/feedback/config",
+        Some(&owner),
+    )
+    .send()
+    .await
+    .unwrap();
 
     let (b, html) = hosted_block(&ts, "/", &owner).await;
     hosted_fields(&ts, &b, &owner).await;

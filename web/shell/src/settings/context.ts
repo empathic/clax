@@ -9,12 +9,13 @@ let asked: Promise<Ctx> | null = null;
 const json = <T>(url: string): Promise<T | null> => fetch(url).then(r => (r.ok ? r.json() as Promise<T> : null), () => null);
 
 /** This browser's context: whether the Clax is hosted, and whether the
- * browser is the owner's, a member's, an admin's, with ClaxBot or without. */
+ * browser is the owner's, a member's, an admin's, with ClaxBot or without,
+ * a member of a report queue, and whether it may make one. */
 export function context(): Promise<Ctx> {
   asked ??= Promise.all([
     getToken().catch(() => null),
     json<{ person?: { owner?: boolean } | null }>("/api/hosted/me"),
-    json<{ viewer?: { person?: boolean; person_revoked_at?: string } | null }>("/api/viewers/me"),
+    json<{ viewer?: { person?: boolean; person_revoked_at?: string } | null; queues?: { member?: number; may_make?: boolean } }>("/api/viewers/me"),
     myBot(),
   ]).then(async ([token, hosted, me, bot]) => {
     const owner = !!token || !!hosted?.person?.owner;
@@ -25,6 +26,8 @@ export function context(): Promise<Ctx> {
       member: owner || !!hosted?.person || (!!v?.person && !v.person_revoked_at),
       admin: isAdmin(await myRole(bot)),
       bot: !!bot,
+      queues: (me?.queues?.member ?? 0) > 0,
+      mayMakeQueues: owner || me?.queues?.may_make === true,
     };
   });
   return asked;

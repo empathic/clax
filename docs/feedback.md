@@ -41,7 +41,11 @@ tools". This guide says how the parts fit together.
 - **The queue** lives on a Clax instance (clax.dev, or one you host). Its
   admin creates it on the Queues page (`/queues`), names the origins your
   pages are served from, and chooses whether a reporter sees only their
-  own reports or every report in the queue.
+  own reports or every report in the queue. The owner and the instance's
+  administrators always may; other members may while Settings › Report
+  queues ("Members may make report queues") is on, which it is by default
+  on a Clax on your own machine and is not on a hosted one. The owner and
+  administrators see every queue on the instance.
 - **The service grant** is your backend's credential for the queue: a
   `cxq_` token and an Ed25519 private key, shown once when the admin makes
   it (Queues page, Manage, "Create service grant"). Keep it in your
@@ -65,7 +69,9 @@ On the instance, as the person who will administer the queue:
    development if you want reports from there; a pattern covers preview
    deployments, below), and pick who reporters see
    ("Their own reports" is the usual choice).
-2. Manage, add the people who triage (Members), then "Create service
+2. Manage, add the people who triage (Members: find each by name among
+   the people connected to the instance, and pick Triage or Admin; you,
+   the queue's maker, are listed first as its admin), then "Create service
    grant". Copy the token and the private key into your backend's secrets,
    for example `CLAX_QUEUE`, `CLAX_QUEUE_TOKEN` and `CLAX_QUEUE_KEY`.
    They are shown once; make a new grant to rotate, then delete the old
