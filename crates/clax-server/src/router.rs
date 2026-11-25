@@ -9,7 +9,7 @@ use crate::routes::{
     client_imports, confirmations, connect, content, discovery, docs, drafts, extension, feedback,
     git_token, grants, health, inbox, jobs, live, live_layers, login, mcp_http, passkeys, people,
     perf, permissions, questions, queue_agent, queue_reporter, queue_requests, queues, remote_apps,
-    remote_artifacts, remote_requests, remotes, resolve, room, sample, sessions, settings,
+    remote_artifacts, remote_requests, remotes, resolve, room, sample, sessions, settings, setup,
     site_signin, sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers,
     watches, working,
 };
@@ -843,6 +843,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/.well-known/assetlinks.json", get(get_page::assetlinks))
         // What this Clax is, for any caller (`clax_http::hosted::OWN_PAGES`).
         .route("/.well-known/clax", get(discovery::get))
+        // How an agent sets up an app's bug reports here, for any caller
+        // (`clax_http::hosted::OWN_PAGES`, `clax_http::auth::open_without_credential`).
+        .route("/setup/feedback", get(setup::feedback))
         // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
         .route("/_clax/{*path}", get(shell::static_file))

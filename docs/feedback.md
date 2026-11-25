@@ -93,6 +93,35 @@ flow asking for `scope: ["queue.request"]` (`docs/contract.md`, "Queue
 requests"): its token can ask you for one queue and nothing else, and
 ends once it takes that request's answer, or after an hour.
 
+### Set up from one prompt
+
+A coding agent with nothing of Clax installed (a shell, URL fetching and
+npm) can do this whole guide from one prompt naming the instance's setup
+page:
+
+```
+Set up Clax feedback for this app: https://<instance>/setup/feedback
+```
+
+`GET /setup/feedback` answers Markdown written for agents, with the
+instance's origin filled in, and `/.well-known/clax` links to it
+(`setup.feedback`). Its text is [`setup-feedback.md`](setup-feedback.md):
+the steps in order, the exact calls of the scoped device sign-in and the
+queue request (above), where the grant goes, and pointers into this
+guide's recipes. The same steps are one command of the SDK package:
+
+```
+npx @empathic/clax-client-sdk setup --instance https://<instance> --name "<app>" \
+  --origin https://app.example.com --origin "https://app-pr-*.fly.dev" [--write-env .env]
+```
+
+which prints the sign-in's link and code for you to approve, asks you for
+the queue, waits (up to an hour) for your answer, and writes `CLAX_QUEUE`,
+`CLAX_QUEUE_TOKEN` and `CLAX_QUEUE_KEY` to the env file (made owner-only
+if new; lines of those names replaced), printing only that it wrote them.
+A local daemon has no device sign-in: there an agent runs `clax queue
+create` instead, as the page says.
+
 ### Preview deployments
 
 A preview deployment per branch or pull request has an origin of its own

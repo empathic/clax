@@ -1026,6 +1026,7 @@ fn every_route() -> Vec<(String, String, bool)> {
             "room" => include_str!("../src/routes/room.rs"),
             "sample" => include_str!("../src/routes/sample.rs"),
             "sessions" => include_str!("../src/routes/sessions.rs"),
+            "setup" => include_str!("../src/routes/setup.rs"),
             "shell" => include_str!("../src/shell/mod.rs"),
             "sites" => include_str!("../src/routes/sites.rs"),
             "stream" => include_str!("../src/routes/stream.rs"),

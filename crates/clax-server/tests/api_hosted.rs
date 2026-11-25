@@ -10413,3 +10413,133 @@ async fn an_ordinary_agent_token_asks_too_and_a_denial_is_read() {
     let (s, _) = site.ask_queue(&token, "Second").await;
     assert_eq!(s, 201);
 }
+
+/// The queue tools a setup and a fixer use answer over a hosted Clax's
+/// `/mcp` with an agent token: `queue_request` asks the token's person for
+/// a queue and, once they approve it in their browser, hands the service
+/// grant over in the result (no `write_env` on another machine's Clax);
+/// then `queue_watch`, `queue_claim` and `queue_fix` work that queue's
+/// report as the person's agent.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_queue_tools_answer_over_the_mcp_endpoint_with_an_agent_token() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let rights = json!([{"type": "clax-comments", "actions": ["read", "reply", "watch"], "locations": ["*"]}]);
+    let (sam, _) = site.person_with(&owner, "Sam", rights).await;
+    // Sam approves a queue request below, which makes a queue.
+    let (s, v) = site
+        .put(&owner, "/api/admin/queues", json!({"members_create": true}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .post(
+            &sam,
+            "/api/hosted/agent-tokens",
+            json!({"label": "sam-laptop"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mut agent = TokenAgent {
+        site: &site,
+        token: v["token"].as_str().unwrap().to_string(),
+        session: None,
+    };
+    assert_eq!(agent.initialize("fixer").await, 200);
+
+    // On another machine's Clax the tools write no file.
+    let (s, r) = agent
+        .call(
+            "queue_request",
+            json!({"name": "Invoices", "origins": ["https://app.example.com"], "write_env": "/tmp/.env"}),
+        )
+        .await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, "invalid_args"), "{r}");
+
+    // Asked, the call waits while Sam approves the request in the browser.
+    let ask = agent.call(
+        "queue_request",
+        json!({"name": "Invoices", "origins": ["https://app.example.com"], "note": "setup", "timeout_s": 60}),
+    );
+    let approve = async {
+        let id = clax_testkit::until("Sam's pending queue request", || async {
+            let (_, v) = site.get(&sam, "/api/queue-requests?status=pending").await;
+            v["requests"][0]["id"].as_str().map(String::from)
+        })
+        .await;
+        let (s, v) = site
+            .post(
+                &sam,
+                &format!("/api/queue-requests/{id}/approve"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        v["queue"]["id"].as_str().unwrap().to_string()
+    };
+    let ((s, r), qid) = clax_testkit::within("queue_request answered", async {
+        tokio::join!(ask, approve)
+    })
+    .await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+    let v = tool_json(&r);
+    assert_eq!(v["status"], "approved", "{v}");
+    assert_eq!(v["request"]["queue_id"], qid.as_str(), "{v}");
+    assert!(
+        v["token"].as_str().is_some_and(|t| t.starts_with("cxq_")),
+        "{v}"
+    );
+    assert!(v["private_key"].is_string(), "{v}");
+
+    // The fixer's tools on that queue.
+    let (s, r) = agent.call("queue_watch", json!({"queue": qid})).await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+    assert_eq!(tool_json(&r)["watching"], true, "{r}");
+    let tok = clax_store::queues::ReporterToken {
+        queue_id: qid.clone(),
+        service_grant_id: "g1".into(),
+        reporter_id: "emp-1".into(),
+        origin: "https://app.example.com".into(),
+        public_key: String::new(),
+        expires_at: "2099-01-01T00:00:00.000Z".into(),
+        profile: None,
+    };
+    let tid = site
+        .ts
+        .store
+        .file_report(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &qid,
+            Some(&tok),
+            clax_store::queues::ExternalScope::Maker,
+            clax_store::queues::NewReport {
+                external_id: Some("page:total".into()),
+                url: "https://app.example.com/invoices/7".into(),
+                title: "Invoice 7".into(),
+                anchor: serde_json::from_value(clax_testkit::element_anchor()).unwrap(),
+                body: "The total is wrong".into(),
+                author_name: "emp-1".into(),
+                metadata: Value::Null,
+                revision: None,
+                clip: None,
+                context: None,
+                server: None,
+                diagnostics: None,
+            },
+        )
+        .unwrap()
+        .id;
+    let (s, r) = agent
+        .call("queue_claim", json!({"queue": qid, "report_id": tid}))
+        .await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+    assert_eq!(tool_json(&r)["report"]["state"], "claimed", "{r}");
+    let (s, r) = agent
+        .call(
+            "queue_fix",
+            json!({"queue": qid, "report_id": tid, "summary": "Summed the lines again",
+                   "url": "https://github.com/acme/app/pull/7"}),
+        )
+        .await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+    assert_eq!(tool_json(&r)["report"]["state"], "fix_proposed", "{r}");
+}

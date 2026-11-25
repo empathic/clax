@@ -5,7 +5,7 @@
 
 use axum::Json;
 use axum::extract::State;
-use clax_core::discovery::{DevicePaths, Discovery};
+use clax_core::discovery::{DevicePaths, Discovery, SetupPaths};
 use clax_http::agent::DeniedToGrants;
 use clax_http::error::ApiError;
 use clax_http::state::AppState;
@@ -34,17 +34,27 @@ pub const CONTRACT_VERSION: &str = "1";
 ///   `approve`, `token`).
 /// - `capabilities`: `queues` (report queues) and `db` (artifacts' app
 ///   data).
+/// - `setup`: the paths of the setup instructions for agents: `feedback`,
+///   `/setup/feedback` (`super::setup`).
 pub async fn get(
     State(s): State<AppState>,
     _d: DeniedToGrants,
 ) -> Result<Json<Discovery>, ApiError> {
+    Ok(Json(describe(&s)))
+}
+
+/// What `GET /.well-known/clax` says of this Clax ([`get`]).
+pub fn describe(s: &AppState) -> Discovery {
     let common = Discovery {
         contract_version: CONTRACT_VERSION.into(),
         api: "/api".into(),
         capabilities: vec!["queues".into(), "db".into()],
+        setup: Some(SetupPaths {
+            feedback: super::setup::FEEDBACK_PATH.into(),
+        }),
         ..Discovery::default()
     };
-    Ok(Json(match &s.hosted {
+    match &s.hosted {
         Some(h) => {
             let mut sign_in = vec!["invite", "sign_in_link", "device"];
             if h.github.is_some() {
@@ -72,5 +82,5 @@ pub async fn get(
             sign_in: vec!["invite".into(), "reporter_token".into()],
             ..common
         },
-    }))
+    }
 }

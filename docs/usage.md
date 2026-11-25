@@ -860,7 +860,11 @@ the overlay's other dependencies bundled, and declarations under
 `/_clax/overlay.js`) and `@empathic/clax-client-sdk/service`
 (`ServiceClient` and `ClaxError`, for a backend only, also built as one
 CommonJS file, `service.cjs`, under a `require` condition, with `.d.cts`
-declarations). Its license is LGPL-2.1-only, that of `web/sdk`,
+declarations). It has one executable, `clax-client-sdk` (`cli.js`, from
+`web/sdk/src/cli.ts`), which `npx @empathic/clax-client-sdk setup` runs:
+it asks a person on a hosted Clax for a report queue and writes its
+service grant to an env file (`web/sdk/src/setup.ts`; `docs/feedback.md`,
+"Set up from one prompt"). Its license is LGPL-2.1-only, that of `web/sdk`,
 `web/overlay` and `web/bridge`.
 
 - `just web` builds it beside the web build (`//web:dist_sdk` under Bazel,
