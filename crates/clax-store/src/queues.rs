@@ -117,6 +117,42 @@ pub struct ServiceGrant {
     pub created_at: String,
 }
 
+/// The most invites ([`QueueInvite`]) one queue holds at once.
+pub const MAX_QUEUE_INVITES: usize = 100;
+
+/// A queue member added by GitHub login, waiting for that account's first
+/// sign-in here ([`Store::add_member_by_login`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct QueueInvite {
+    pub id: String,
+    /// Lowercased.
+    pub github_login: String,
+    pub role: Role,
+    pub created_at: String,
+}
+
+const INVITE_SELECT: &str = "SELECT id, github_login, role, created_at FROM queue_member_invites";
+
+fn invite_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueInvite> {
+    let role: String = r.get(2)?;
+    Ok(QueueInvite {
+        id: r.get(0)?,
+        github_login: r.get(1)?,
+        role: Role::parse(&role).unwrap_or(Role::Triage),
+        created_at: r.get(3)?,
+    })
+}
+
+/// What [`Store::add_member_by_login`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AddedByLogin {
+    /// The login's person is a member now, by member key ([`member_key`]),
+    /// at this role.
+    Member(String, Role),
+    /// The login waits for its first GitHub sign-in.
+    Invite(QueueInvite),
+}
+
 /// The name of the queue a hosted instance makes for its own feedback
 /// ([`Store::own_feedback`]).
 pub const OWN_FEEDBACK_QUEUE: &str = "clax-feedback";
@@ -1171,6 +1207,10 @@ impl Store {
                 "DELETE FROM queue_reporter_tokens WHERE queue_id = ?1",
                 params![qid],
             )?;
+            tx.execute(
+                "DELETE FROM queue_member_invites WHERE queue_id = ?1",
+                params![qid],
+            )?;
             let rec = queue_record(AuditKind::QueueUpdate, &now, qid).with("op", "delete");
             self.record_audit(tx, ctx, rec)?;
             Ok(())
@@ -1200,51 +1240,296 @@ impl Store {
     ) -> Result<()> {
         let now = self.now();
         self.with_tx(|tx| {
-            let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
-            if member_key(q.person.as_deref()) == person {
-                return Err(CoreError::invalid(
-                    "queue_maker",
-                    "a queue's maker stays its admin",
-                ));
-            }
-            let before: Option<String> = tx
+            self.set_member_in(tx, ctx, qid, person, role, &now)
+                .map(drop)
+        })
+    }
+
+    /// [`Store::set_member`] in `tx`, at `now`. Returns whether `person`
+    /// is newly a member: they had no row, and have one now.
+    fn set_member_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        qid: &str,
+        person: &str,
+        role: Option<Role>,
+        now: &str,
+    ) -> Result<bool> {
+        let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+        if member_key(q.person.as_deref()) == person {
+            return Err(CoreError::invalid(
+                "queue_maker",
+                "a queue's maker stays its admin",
+            ));
+        }
+        let before: Option<String> = tx
+            .query_row(
+                "SELECT role FROM queue_members WHERE queue_id = ?1 AND person = ?2",
+                params![qid, person],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if before.as_deref() == role.map(Role::as_str) {
+            return Ok(false);
+        }
+        match role {
+            Some(r) => tx.execute(
+                "INSERT INTO queue_members (queue_id, person, role, created_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(queue_id, person) DO UPDATE SET role = excluded.role",
+                params![qid, person, r.as_str(), now],
+            )?,
+            None => tx.execute(
+                "DELETE FROM queue_members WHERE queue_id = ?1 AND person = ?2",
+                params![qid, person],
+            )?,
+        };
+        let rec = queue_record(AuditKind::QueueUpdate, now, qid)
+            .with("op", "member")
+            .with("member", person)
+            .with("role", role.map(Role::as_str));
+        self.record_audit(tx, ctx, rec)?;
+        if role.is_none() {
+            self.release_person_in(tx, ctx, qid, person, now)?;
+            // Its sessions no longer watch the queue.
+            tx.execute(
+                "DELETE FROM queue_watches WHERE queue_id = ?1
+                   AND session_id IN (SELECT id FROM sessions WHERE COALESCE(person, ?3) = ?2)",
+                params![qid, person, OWNER_MEMBER],
+            )?;
+        }
+        Ok(before.is_none() && role.is_some())
+    }
+
+    /// Adds the person whose member key is `person` to queue `qid` at
+    /// `role`, or changes their role, as [`Store::set_member`] does, on
+    /// behalf of the member keyed `by` (the admin adding them). Someone
+    /// newly a member, other than `by` themself, gets an `access` inbox
+    /// item ([`super::inbox::note_queue_access`]); a role change gets none.
+    /// Returns whether they are newly a member.
+    ///
+    /// # Errors
+    /// As [`Store::set_member`].
+    pub fn add_member(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        person: &str,
+        role: Role,
+        by: &str,
+    ) -> Result<bool> {
+        let now = self.now();
+        self.with_tx(|tx| self.add_member_in(tx, ctx, qid, person, role, by, &now))
+    }
+
+    /// [`Store::add_member`] in `tx`, at `now`.
+    #[allow(clippy::too_many_arguments)]
+    fn add_member_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        qid: &str,
+        person: &str,
+        role: Role,
+        by: &str,
+        now: &str,
+    ) -> Result<bool> {
+        let new = self.set_member_in(tx, ctx, qid, person, Some(role), now)?;
+        if new && person != by {
+            let name = queue_in(tx, qid)?.map(|q| q.name).unwrap_or_default();
+            super::inbox::note_queue_access(tx, qid, &name, person, role.as_str(), by, now)?;
+        }
+        Ok(new)
+    }
+
+    /// Adds GitHub login `login` (an optional `@` dropped, lowercased:
+    /// [`crate::shares::github_login`]) to queue `qid` at `role`, on behalf
+    /// of the member keyed `by`. A login a GitHub account here has signed
+    /// in with names that account's person (the owner's as
+    /// [`OWNER_MEMBER`]), added at once as [`Store::add_member`] does;
+    /// any other waits as an invite, one per queue and login (an invite
+    /// already there takes `role`), until that account's first GitHub
+    /// sign-in makes it a membership ([`Store::bind_queue_invites`]). An
+    /// invite is recorded as `queue.update {queue_id, op: "invite", member:
+    /// <login>, role}`; one already at `role` records nothing.
+    ///
+    /// # Errors
+    /// `invalid_login`; [`CoreError::NotAMember`] for no such queue;
+    /// `queue_maker` for the login of its maker; [`CoreError::NotFound`]
+    /// for the login of a blocked account or a revoked person;
+    /// `limit_reached` past [`MAX_QUEUE_INVITES`] invites.
+    pub fn add_member_by_login(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        login: &str,
+        role: Role,
+        by: &str,
+    ) -> Result<AddedByLogin> {
+        let login = super::shares::github_login(login)?;
+        let now = self.now();
+        self.with_tx(|tx| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let known: Option<(bool, bool, bool, String)> = tx
                 .query_row(
-                    "SELECT role FROM queue_members WHERE queue_id = ?1 AND person = ?2",
-                    params![qid, person],
+                    "SELECT v.owner, v.person,
+                            v.person_revoked_at IS NOT NULL OR gi.blocked_at IS NOT NULL, v.public_id
+                       FROM github_identities gi JOIN viewers v ON v.id = gi.viewer_id
+                      WHERE lower(gi.login) = ?1 ORDER BY gi.signed_in_at DESC LIMIT 1",
+                    params![login],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?;
+            let key = match known {
+                Some((true, _, _, _)) => Some(OWNER_MEMBER.to_string()),
+                Some((false, true, false, pid)) => Some(pid),
+                Some(_) => return Err(CoreError::NotFound),
+                None => None,
+            };
+            if let Some(key) = key {
+                self.add_member_in(tx, ctx, qid, &key, role, by, &now)?;
+                return Ok(AddedByLogin::Member(key, role));
+            }
+            let held: Option<String> = tx
+                .query_row(
+                    "SELECT role FROM queue_member_invites WHERE queue_id = ?1 AND github_login = ?2",
+                    params![qid, login],
                     |r| r.get(0),
                 )
                 .optional()?;
-            if before.as_deref() == role.map(Role::as_str) {
-                return Ok(());
-            }
-            match role {
-                Some(r) => tx.execute(
-                    "INSERT INTO queue_members (queue_id, person, role, created_at)
-                     VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT(queue_id, person) DO UPDATE SET role = excluded.role",
-                    params![qid, person, r.as_str(), now],
-                )?,
-                None => tx.execute(
-                    "DELETE FROM queue_members WHERE queue_id = ?1 AND person = ?2",
-                    params![qid, person],
-                )?,
-            };
-            let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
-                .with("op", "member")
-                .with("member", person)
-                .with("role", role.map(Role::as_str));
-            self.record_audit(tx, ctx, rec)?;
-            if role.is_none() {
-                self.release_person_in(tx, ctx, qid, person, &now)?;
-                // Its sessions no longer watch the queue.
-                tx.execute(
-                    "DELETE FROM queue_watches WHERE queue_id = ?1
-                       AND session_id IN (SELECT id FROM sessions WHERE COALESCE(person, ?3) = ?2)",
-                    params![qid, person, OWNER_MEMBER],
+            if held.is_none() {
+                let n: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM queue_member_invites WHERE queue_id = ?1",
+                    params![qid],
+                    |r| r.get(0),
                 )?;
+                if n as usize >= MAX_QUEUE_INVITES {
+                    return Err(CoreError::invalid(
+                        "limit_reached",
+                        format!(
+                            "a queue has at most {MAX_QUEUE_INVITES} members waiting for their sign-in"
+                        ),
+                    ));
+                }
+            }
+            if held.as_deref() != Some(role.as_str()) {
+                tx.execute(
+                    "INSERT INTO queue_member_invites (id, queue_id, github_login, role, invited_by, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(queue_id, github_login) DO UPDATE SET role = excluded.role",
+                    params![new_ulid(), qid, login, role.as_str(), by, now],
+                )?;
+                let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
+                    .with("op", "invite")
+                    .with("member", login.as_str())
+                    .with("role", role.as_str());
+                self.record_audit(tx, ctx, rec)?;
+            }
+            let invite = tx.query_row(
+                &format!("{INVITE_SELECT} WHERE queue_id = ?1 AND github_login = ?2"),
+                params![qid, login],
+                invite_row,
+            )?;
+            Ok(AddedByLogin::Invite(invite))
+        })
+    }
+
+    /// Queue `qid`'s invites waiting for their GitHub sign-in, oldest
+    /// first.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn queue_invites(&self, qid: &str) -> Result<Vec<QueueInvite>> {
+        self.with_read(|c| {
+            Ok(c.prepare_cached(&format!(
+                "{INVITE_SELECT} WHERE queue_id = ?1 ORDER BY created_at, id"
+            ))?
+            .query_map(params![qid], invite_row)?
+            .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Removes queue `qid`'s invite `id`, recorded as `queue.update
+    /// {queue_id, op: "invite", member: <login>, role: null}`; no such
+    /// invite changes nothing.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue.
+    pub fn delete_queue_invite(&self, ctx: &AuditCtx, qid: &str, id: &str) -> Result<()> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let login: Option<String> = tx
+                .query_row(
+                    "DELETE FROM queue_member_invites WHERE id = ?1 AND queue_id = ?2
+                     RETURNING github_login",
+                    params![id, qid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(login) = login {
+                let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
+                    .with("op", "invite")
+                    .with("member", login)
+                    .with("role", Option::<&str>::None);
+                self.record_audit(tx, ctx, rec)?;
             }
             Ok(())
         })
+    }
+
+    /// At a GitHub sign-in of login `login` as the person keyed `member`
+    /// ([`member_key`]), in `tx`: each invite waiting for the login
+    /// becomes their membership, as [`Store::add_member`] adds one from
+    /// the invite's adder (so they get its `access` item), and is gone.
+    /// An invite of a deleted queue, of the queue's maker, or of a queue
+    /// they are already a member of (whose role stays as it is) is just
+    /// gone. Returns how many became memberships.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub(crate) fn bind_queue_invites(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        login: &str,
+        member: &str,
+    ) -> Result<usize> {
+        let login = login.to_ascii_lowercase();
+        let now = self.now();
+        let waiting: Vec<(String, String, Option<String>)> = tx
+            .prepare(
+                "SELECT queue_id, role, invited_by FROM queue_member_invites
+                  WHERE github_login = ?1 ORDER BY created_at, id",
+            )?
+            .query_map(params![login], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        if waiting.is_empty() {
+            return Ok(0);
+        }
+        tx.execute(
+            "DELETE FROM queue_member_invites WHERE github_login = ?1",
+            params![login],
+        )?;
+        let mut bound = 0;
+        for (qid, role, by) in waiting {
+            let Some(q) = queue_in(tx, &qid)? else {
+                continue;
+            };
+            let Some(role) = Role::parse(&role) else {
+                continue;
+            };
+            if member_key(q.person.as_deref()) == member || role_in(tx, &q, Some(member))?.is_some()
+            {
+                continue;
+            }
+            let by = by.unwrap_or_else(|| OWNER_MEMBER.to_string());
+            if self.add_member_in(tx, ctx, &qid, member, role, &by, &now)? {
+                bound += 1;
+            }
+        }
+        Ok(bound)
     }
 
     /// Releases every unreleased lease the sessions of `person` hold on

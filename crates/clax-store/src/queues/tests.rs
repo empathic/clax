@@ -2377,4 +2377,240 @@ fn own_feedback_is_made_once_kept_and_remade_when_gone() {
     assert_eq!(queues[0].id, remade.queue_id);
 }
 
+fn gh(id: i64, login: &str) -> crate::github::GitHubUser {
+    crate::github::GitHubUser {
+        id,
+        login: login.into(),
+        name: None,
+        avatar_url: None,
+    }
+}
+
+/// The `access` items of `recipient` (`None`: the owner), oldest first.
+fn access_items(st: &Store, recipient: Option<&str>) -> Vec<serde_json::Value> {
+    let mut rows = st
+        .inbox_list(&crate::inbox::InboxQuery {
+            recipient: recipient.map(str::to_string),
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap()
+        .0;
+    rows.reverse();
+    rows.into_iter()
+        .filter(|i| i.kind == crate::inbox::Kind::Access)
+        .map(|i| i.detail.unwrap())
+        .collect()
+}
+
+fn code_of<T: std::fmt::Debug>(r: clax_core::Result<T>) -> String {
+    match r {
+        Err(CoreError::Invalid { code, .. }) => code.to_string(),
+        Err(CoreError::NotFound) => "not_found".into(),
+        Err(CoreError::NotAMember) => "not_a_member".into(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// An admin adds a teammate by GitHub login: one who has signed in here is
+/// a member at once, anyone else waits as an invite until their first
+/// GitHub sign-in; either way they get one `access` item, however often
+/// they are added again.
+#[test]
+fn a_login_is_a_member_at_once_or_at_its_first_sign_in_with_one_access_item() {
+    let (_d, st) = store();
+    st.hosted_setup(DAEMON, "Ada").unwrap();
+    let (sam, _) = st.github_sign_in(DAEMON, &gh(7, "sam-lee"), false).unwrap();
+    let sam = sam.who.viewer.public_id;
+    let qid = queue(&st, ReportersSee::Own);
+    let owner = super::OWNER_MEMBER;
+
+    // Signed in here: a member at once, by their person.
+    assert_eq!(
+        st.add_member_by_login(DAEMON, &qid, "@Sam-Lee", Role::Triage, owner)
+            .unwrap(),
+        super::AddedByLogin::Member(sam.clone(), Role::Triage)
+    );
+    assert_eq!(st.queue_role(&qid, Some(&sam)).unwrap(), Some(Role::Triage));
+    st.add_member_by_login(DAEMON, &qid, "sam-lee", Role::Admin, owner)
+        .unwrap();
+    assert_eq!(st.queue_role(&qid, Some(&sam)).unwrap(), Some(Role::Admin));
+    assert_eq!(
+        access_items(&st, Some(&sam)),
+        [json!({"queue_id": qid, "role": "triage", "by": null})],
+        "one item, for the add, not the role change"
+    );
+
+    // Not signed in here yet: an invite, which takes a new role.
+    let super::AddedByLogin::Invite(inv) = st
+        .add_member_by_login(DAEMON, &qid, "@Octo-Cat", Role::Triage, owner)
+        .unwrap()
+    else {
+        panic!("an invite")
+    };
+    assert_eq!(
+        (inv.github_login.as_str(), inv.role),
+        ("octo-cat", Role::Triage)
+    );
+    let again = st
+        .add_member_by_login(DAEMON, &qid, "octo-cat", Role::Admin, owner)
+        .unwrap();
+    assert!(
+        matches!(&again, super::AddedByLogin::Invite(i) if i.id == inv.id && i.role == Role::Admin)
+    );
+    st.add_member_by_login(DAEMON, &qid, "octo-cat", Role::Admin, owner)
+        .unwrap();
+    assert_eq!(st.queue_invites(&qid).unwrap().len(), 1);
+    let invites: Vec<_> = audit(&st, "queue.update")
+        .into_iter()
+        .filter(|r| r["op"] == "invite")
+        .collect();
+    assert_eq!(
+        invites.len(),
+        2,
+        "a re-add at the same role records nothing"
+    );
+    assert_eq!(
+        (&invites[0]["member"], &invites[0]["role"]),
+        (&json!("octo-cat"), &json!("triage"))
+    );
+    assert_eq!(
+        code_of(st.add_member_by_login(DAEMON, &qid, "-nope", Role::Triage, owner)),
+        "invalid_login"
+    );
+
+    // Their first sign-in makes the invite their membership.
+    let (octo, _) = st
+        .github_sign_in(DAEMON, &gh(9, "Octo-Cat"), false)
+        .unwrap();
+    let octo = octo.who.viewer.public_id;
+    assert_eq!(st.queue_role(&qid, Some(&octo)).unwrap(), Some(Role::Admin));
+    assert!(st.queue_invites(&qid).unwrap().is_empty());
+    assert_eq!(
+        access_items(&st, Some(&octo)),
+        [json!({"queue_id": qid, "role": "admin", "by": null})]
+    );
+    // Removed and added again: no second item.
+    st.set_member(DAEMON, &qid, &octo, None).unwrap();
+    st.add_member_by_login(DAEMON, &qid, "octo-cat", Role::Triage, owner)
+        .unwrap();
+    assert_eq!(access_items(&st, Some(&octo)).len(), 1);
+
+    // The owner's login: the owner, keyed `*owner`, is the maker of their
+    // own queue and a member of Sam's, with the item addressed to them.
+    st.github_sign_in(DAEMON, &gh(1, "ada-gh"), true).unwrap();
+    assert_eq!(
+        code_of(st.add_member_by_login(DAEMON, &qid, "ada-gh", Role::Triage, owner)),
+        "queue_maker"
+    );
+    let sams = st
+        .create_queue(
+            DAEMON,
+            Some(&sam),
+            NewQueue {
+                name: "Sam's".into(),
+                origins: vec![],
+                reporters_see: ReportersSee::Own,
+            },
+        )
+        .unwrap()
+        .id;
+    assert_eq!(
+        st.add_member_by_login(DAEMON, &sams, "ada-gh", Role::Triage, &sam)
+            .unwrap(),
+        super::AddedByLogin::Member(owner.to_string(), Role::Triage)
+    );
+    assert_eq!(
+        access_items(&st, None),
+        [json!({"queue_id": sams, "role": "triage", "by": sam})]
+    );
+}
+
+/// Adding a member by public ID tells a new member too, never the admin
+/// who adds themself, and not a role change.
+#[test]
+fn adding_a_member_by_public_id_tells_them_once() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let owner = super::OWNER_MEMBER;
+    assert!(
+        st.add_member(DAEMON, &qid, "u_ana", Role::Triage, owner)
+            .unwrap()
+    );
+    assert!(
+        !st.add_member(DAEMON, &qid, "u_ana", Role::Admin, owner)
+            .unwrap()
+    );
+    assert_eq!(
+        access_items(&st, Some("u_ana")),
+        [json!({"queue_id": qid, "role": "triage", "by": null})]
+    );
+    assert!(
+        st.add_member(DAEMON, &qid, "u_bo", Role::Admin, "u_bo")
+            .unwrap()
+    );
+    assert!(
+        access_items(&st, Some("u_bo")).is_empty(),
+        "not for oneself"
+    );
+    assert_eq!(
+        code_of(st.add_member(DAEMON, &qid, owner, Role::Triage, owner)),
+        "queue_maker"
+    );
+}
+
+/// An invite is removed by its ID; one of a queue that is gone, or of a
+/// queue the person already belongs to, is just gone at their sign-in,
+/// which never fails over one.
+#[test]
+fn an_invite_is_removed_or_dropped_at_sign_in_without_failing_it() {
+    let (_d, st) = store();
+    st.hosted_setup(DAEMON, "Ada").unwrap();
+    let owner = super::OWNER_MEMBER;
+    let (a, b, c) = (
+        queue(&st, ReportersSee::Own),
+        queue(&st, ReportersSee::Own),
+        queue(&st, ReportersSee::Own),
+    );
+    let inv = |q: &str| match st
+        .add_member_by_login(DAEMON, q, "mia", Role::Triage, owner)
+        .unwrap()
+    {
+        super::AddedByLogin::Invite(i) => i,
+        other => panic!("{other:?}"),
+    };
+    let ia = inv(&a);
+    inv(&b);
+    inv(&c);
+    st.delete_queue_invite(DAEMON, &a, &ia.id).unwrap();
+    st.delete_queue_invite(DAEMON, &a, &ia.id).unwrap();
+    assert!(st.queue_invites(&a).unwrap().is_empty());
+    let removed: Vec<_> = audit(&st, "queue.update")
+        .into_iter()
+        .filter(|r| r["op"] == "invite" && r["role"].is_null())
+        .collect();
+    assert_eq!(removed.len(), 1, "a second removal records nothing");
+    // A queue gone under its invite (as a deletion by hand would leave it).
+    st.with_tx(|tx| {
+        tx.execute("UPDATE queues SET deleted_at = 'x' WHERE id = ?1", [&b])?;
+        Ok(())
+    })
+    .unwrap();
+    let (mia, _) = st.github_sign_in(DAEMON, &gh(11, "mia"), false).unwrap();
+    let mia = mia.who.viewer.public_id;
+    assert_eq!(st.queue_role(&a, Some(&mia)).unwrap(), None);
+    assert_eq!(st.queue_role(&c, Some(&mia)).unwrap(), Some(Role::Triage));
+    assert!(st.queue_invites(&b).unwrap().is_empty());
+    assert_eq!(access_items(&st, Some(&mia)).len(), 1);
+    // A deleted queue drops its invites.
+    inv_for(&st, &c, "zed");
+    st.delete_queue(DAEMON, &c).unwrap();
+    assert!(st.queue_invites(&c).unwrap().is_empty());
+}
+
+fn inv_for(st: &Store, qid: &str, login: &str) {
+    st.add_member_by_login(DAEMON, qid, login, Role::Triage, super::OWNER_MEMBER)
+        .unwrap();
+}
+
 mod previews;

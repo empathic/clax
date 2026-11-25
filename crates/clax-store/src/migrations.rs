@@ -2621,6 +2621,62 @@ pub const MIGRATIONS: &[&str] = &[
         SELECT id, COALESCE(person, '*owner'), 'admin', created_at FROM queues WHERE true
         ON CONFLICT (queue_id, person) DO UPDATE SET role = 'admin';
     CREATE INDEX queue_members_in_order ON queue_members(queue_id, created_at, person);",
+    // 72 (`QUEUE_ACCESS_MIGRATION`): a queue's members added by GitHub
+    // login before anyone here has signed in with it (`crate::queues`):
+    // one invite per queue and login (lowercased, as
+    // `crate::shares::github_login` gives it), with the role it gives and
+    // who added it (a member key), until that account's first GitHub
+    // sign-in makes it a `queue_members` row. The inbox gains the kind that
+    // tells a person they were added to a queue, `access`, rebuilt as
+    // migration 70 rebuilt it, keeping every `seq`.
+    //
+    // `queue_member_invites` is the migration's mark (`MARKS_AFTER_APP`).
+    "CREATE TABLE queue_member_invites (
+        id TEXT PRIMARY KEY,
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        github_login TEXT NOT NULL CHECK (github_login <> '' AND github_login = lower(github_login)),
+        role TEXT NOT NULL CHECK (role IN ('admin', 'triage')),
+        invited_by TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (queue_id, github_login)
+    );
+    CREATE INDEX queue_member_invites_by_login ON queue_member_invites(github_login);
+    CREATE TABLE inbox_items_access (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended', 'push', 'remote_request',
+                                           'queue_request', 'access')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_access SELECT seq, id, kind, key, recipient, artifact_id, thread_id,
+        comment_id, version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+        created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_access RENAME TO inbox_items;
+    CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2722,8 +2778,13 @@ pub const PREVIEW_FIXES_MIGRATION: u32 = ANALYTICS_MIGRATION + 1;
 pub const QUEUE_REQUESTS_MIGRATION: u32 = PREVIEW_FIXES_MIGRATION + 1;
 
 /// The migration that lists each queue's maker among its members and lets
-/// the owner be one, as a schema version, and this build's last.
+/// the owner be one, as a schema version.
 pub const QUEUE_MAKERS_MIGRATION: u32 = QUEUE_REQUESTS_MIGRATION + 1;
+
+/// The migration that adds queue members waiting for their GitHub
+/// sign-in (`queue_member_invites`) and the inbox's `access` kind, as a
+/// schema version, and this build's last.
+pub const QUEUE_ACCESS_MIGRATION: u32 = QUEUE_MAKERS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2883,11 +2944,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`QUEUE_MAKERS_MIGRATION`]. They follow the app's in every
+/// [`QUEUE_ACCESS_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 22] = [
+const MARKS_AFTER_APP: [Mark<'static>; 23] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2910,6 +2971,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 22] = [
     Mark::Table("queue_fix_tickets"),
     Mark::Table("queue_requests"),
     Mark::Index("queue_members_in_order"),
+    Mark::Table("queue_member_invites"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5996,7 +6058,12 @@ mod tests {
             super::QUEUE_REQUESTS_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 29].contains("CREATE INDEX queue_members_in_order"));
-        assert_eq!(MIGRATIONS.len() as u32, super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(
+            super::QUEUE_ACCESS_MIGRATION,
+            super::QUEUE_MAKERS_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 30].contains("CREATE TABLE queue_member_invites ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::QUEUE_ACCESS_MIGRATION);
     }
 
     #[test]
@@ -6166,7 +6233,8 @@ mod tests {
             // The schema as it was at 67 (without 68's analytics and 69's
             // queue requests), with an artifact.
             c.execute_batch(
-                "DROP INDEX queue_members_in_order;
+                "DROP TABLE queue_member_invites;
+                 DROP INDEX queue_members_in_order;
                  ALTER TABLE queue_service_grants DROP COLUMN origins_json;
                  ALTER TABLE report_fixes DROP COLUMN verified_origin;
                  DROP TABLE queue_fix_tickets;
@@ -6188,7 +6256,7 @@ mod tests {
         }
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         let setting: String = c
             .query_row("SELECT analytics FROM artifacts", [], |r| r.get(0))
             .unwrap();
@@ -6235,7 +6303,8 @@ mod tests {
             // The schema as it was at 70: the owner's queue, a person's
             // with a triage member, and a row the person's maker had.
             c.execute_batch(
-                "DROP INDEX queue_members_in_order;
+                "DROP TABLE queue_member_invites;
+                 DROP INDEX queue_members_in_order;
                  INSERT INTO queues (id, name, person, origins_json, created_at)
                  VALUES ('q_owner', 'Mine', NULL, '[]', '2026-11-01'),
                         ('q_sam', 'Sam''s', 'u_sam', '[]', '2026-11-02');
@@ -6248,7 +6317,7 @@ mod tests {
         }
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         let rows: Vec<(String, String, String, String)> = c
             .prepare(
                 "SELECT queue_id, person, role, created_at FROM queue_members
@@ -6269,6 +6338,143 @@ mod tests {
                 row("q_sam", "u_ana", "triage", "2026-11-03"),
                 row("q_sam", "u_sam", "admin", "2026-11-04"),
             ]
+        );
+    }
+
+    #[test]
+    fn the_queue_access_migration_keeps_every_inbox_item_and_member_and_takes_invites() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            // The schema as it was just before `QUEUE_ACCESS_MIGRATION` (the
+            // inbox as migration 70 made it), with an inbox item of each
+            // kind it took and a queue with members.
+            c.execute_batch(&format!(
+                "DROP TABLE queue_member_invites;
+                 PRAGMA user_version = {};",
+                super::QUEUE_ACCESS_MIGRATION - 1
+            ))
+            .unwrap();
+            c.execute_batch(
+                &MIGRATIONS[super::QUEUE_REQUESTS_MIGRATION as usize - 1][MIGRATIONS
+                    [super::QUEUE_REQUESTS_MIGRATION as usize - 1]
+                    .find("CREATE TABLE inbox_items_70")
+                    .unwrap()..],
+            )
+            .unwrap();
+            for (n, kind) in [
+                "reply",
+                "version",
+                "published",
+                "question",
+                "finished",
+                "approval",
+                "connection",
+                "ended",
+                "push",
+                "remote_request",
+                "queue_request",
+            ]
+            .iter()
+            .enumerate()
+            {
+                c.execute(
+                    "INSERT INTO inbox_items (seq, id, kind, key, recipient, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'x')",
+                    rusqlite::params![
+                        n as i64 + 10,
+                        format!("i{n}"),
+                        kind,
+                        format!("k{n}"),
+                        (n % 2 == 0).then_some("u_sam")
+                    ],
+                )
+                .unwrap();
+            }
+            assert!(
+                c.execute(
+                    "INSERT INTO inbox_items (id, kind, key, created_at) VALUES ('ia', 'access', 'ka', 'x')",
+                    [],
+                )
+                .is_err(),
+                "the inbox before takes no access item"
+            );
+            c.execute_batch(
+                "INSERT INTO queues (id, name, person, origins_json, created_at)
+                 VALUES ('q_sam', 'Sam''s', 'u_sam', '[]', '2026-11-02');
+                 INSERT INTO queue_members (queue_id, person, role, created_at)
+                 VALUES ('q_sam', 'u_sam', 'admin', '2026-11-02'),
+                        ('q_sam', 'u_ana', 'triage', '2026-11-03'),
+                        ('q_sam', '*owner', 'triage', '2026-11-04');",
+            )
+            .unwrap();
+        }
+        // The inbox's `(seq, kind, key, recipient)` and the members'
+        // `(person, role)`.
+        type Items = Vec<(i64, String, String, Option<String>)>;
+        let before = |c: &Connection| -> (Items, Vec<(String, String)>) {
+            let items = c
+                .prepare("SELECT seq, kind, key, recipient FROM inbox_items ORDER BY seq")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let members = c
+                .prepare("SELECT person, role FROM queue_members ORDER BY created_at")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            (items, members)
+        };
+        let was = before(&Connection::open(home.db_path()).unwrap());
+        assert_eq!(was.0.len(), 11);
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
+        assert_eq!(before(&c), was, "every item and member kept");
+        c.execute(
+            "INSERT INTO inbox_items (id, kind, key, recipient, created_at)
+             VALUES ('ia', 'access', 'access:queue:q_sam@u_ana', 'u_ana', 'x')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO queue_member_invites (id, queue_id, github_login, role, invited_by, created_at)
+             VALUES ('inv1', 'q_sam', 'octo-cat', 'triage', 'u_sam', 'x')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            c.execute(
+                "INSERT INTO queue_member_invites (id, queue_id, github_login, role, created_at)
+                 VALUES ('inv2', 'q_sam', 'octo-cat', 'admin', 'x')",
+                [],
+            )
+            .is_err(),
+            "one invite per queue and login"
+        );
+        assert!(
+            c.execute(
+                "INSERT INTO queue_member_invites (id, queue_id, github_login, role, created_at)
+                 VALUES ('inv3', 'q_sam', 'Octo', 'triage', 'x')",
+                [],
+            )
+            .is_err(),
+            "a login is lowercased"
+        );
+        assert!(
+            c.execute(
+                "INSERT INTO queue_member_invites (id, queue_id, github_login, role, created_at)
+                 VALUES ('inv4', 'q_sam', 'octo', 'viewer', 'x')",
+                [],
+            )
+            .is_err(),
+            "the role is admin or triage"
         );
     }
 
@@ -6303,7 +6509,8 @@ mod tests {
         assert_eq!(super::PREVIEW_FIXES_MIGRATION, 69);
         assert_eq!(super::QUEUE_REQUESTS_MIGRATION, 70);
         assert_eq!(super::QUEUE_MAKERS_MIGRATION, 71);
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(super::QUEUE_ACCESS_MIGRATION, 72);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -7083,7 +7290,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -7581,14 +7788,15 @@ mod tests {
         // the feedback loop's to 61, the price catalog's to 62, the web lines' to 63,
         // the run bindings' to 64, the surfaces' to 65, the key problem's
         // to 66, the Content Security Policy's to 67, analytics' to 68, the
-        // preview fixes' to 69, the queue requests' to 70 and the queue makers' to 71.
+        // preview fixes' to 69, the queue requests' to 70, the queue makers' to 71
+        // and the queue access's to 72.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+            assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -7596,8 +7804,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::QUEUE_MAKERS_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 71 after it are one later now"
+            super::QUEUE_ACCESS_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 72 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -7616,7 +7824,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&copied), super::QUEUE_ACCESS_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -7630,7 +7838,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::QUEUE_MAKERS_MIGRATION + 1, schema, rows)
+            (super::QUEUE_ACCESS_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7904,7 +8112,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(last, super::QUEUE_ACCESS_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -8525,7 +8733,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             run_indexes(&c),
@@ -8801,7 +9009,7 @@ mod tests {
         );
         drop(opened_after_the_runs(&home));
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         let before = every_row(&c);
         let set = |sql: &str| {
             c.execute(
@@ -8891,7 +9099,7 @@ mod tests {
             .query_row([], |r| r.get::<_, i64>(0))
             .unwrap();
         crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         let finished: i64 = c
             .prepare_cached("SELECT count(*) FROM bot_runs WHERE status = 'finished'")
             .unwrap()
@@ -9213,7 +9421,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             rows_in(&c, &cols),
@@ -9473,7 +9681,7 @@ mod tests {
         drop(at_64_with_runs(&home));
         drop(opened_after_the_runs(&home));
         let mut c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         let (schema, rows) = (schema_of(&c), every_row(&c));
         let before = super::Numbering {
             migrations: &MIGRATIONS[..super::RUN_BINDINGS_MIGRATION as usize],
@@ -9484,7 +9692,7 @@ mod tests {
             matches!(
                 refused,
                 Err(clax_core::CoreError::SchemaNewer { found, known })
-                    if found == super::QUEUE_MAKERS_MIGRATION
+                    if found == super::QUEUE_ACCESS_MIGRATION
                         && known == super::RUN_BINDINGS_MIGRATION
             ),
             "{refused:?}"
