@@ -477,7 +477,8 @@ test("another machine's Clax signs in by device code: the page names it, warns w
       if (q.get("group") === "artifact") return r.fulfill({ json: { groups: none ? [] : [{ artifact_id: item.artifact.id, artifact: item.artifact, total: 1, unread: 1, newest_at: item.created_at, items: [item], next_cursor: null }], next_cursor: null, unread: 1 } });
       return r.fulfill({ json: { items: none ? [] : [item], next_cursor: null, unread: 1 } });
     });
-    await owner.goto(`${origin}/inbox`);
+    // All items, where the groups are (the inbox opens on Waiting on you).
+    await owner.goto(`${origin}/inbox?view=all`);
     await expect(owner.locator(`.igroup[data-group="${item.artifact.id}"] .gtitle`)).toHaveText("Tide tables");
     await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("https://clax.example refused v4");
     await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("someone published there since");

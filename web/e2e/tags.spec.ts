@@ -259,7 +259,8 @@ test("the inbox's Tags filter keeps the items about artifacts carrying every tag
   await makeTag(d, "design", "purple");
   await tagArtifact(d, alpha, ["q4", "design"]);
   await tagArtifact(d, beta, ["q4"]);
-  await page.goto(`${d.base}/inbox`);
+  // All items, where the pages' groups are (the inbox opens on Waiting on you).
+  await page.goto(`${d.base}/inbox?view=all`);
   const inbox = page.locator(".inbox");
   await expect(inbox.getByRole("button", { name: /^Alpha page/ })).toBeVisible();
   await expect(inbox.getByRole("button", { name: /^Beta page/ })).toBeVisible();

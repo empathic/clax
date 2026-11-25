@@ -452,17 +452,17 @@ addEventListener("keydown", () => { parent.focus(); const t = performance.now();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
     const send = page.getByRole("button", { name: /^Send to / });
-    await expect.poll(() => tabsFromPin(send)).toBe(14);
+    await expect.poll(() => tabsFromPin(send)).toBe(15);
     await frame.locator("#a").click();
     // No stop mounted late, after the count above.
-    expect(await tabsFromPin(send)).toBe(14);
-    // What looks like a sixteen-field form: Smith, Jones, Unit, City, Zone,
-    // Box, Code, Main, Lot, Apt, Zip, Ward, Ref, Pike, Elm, New York. Its
+    expect(await tabsFromPin(send)).toBe(15);
+    // What looks like a seventeen-field form: Smith, Jones, Unit, City, Zone,
+    // Box, Code, Main, Lot, Apt, Zip, Ward, Ref, Pike, Elm, Oak, New York. Its
     // Tabs walk the pin, the drawer's four layouts, Hide threads and its
-    // edge, New comment, Send N unsent, the sidebar's selected tab and its
-    // "1 needs you", the card's box, its head and Resolve, so the Space in
-    // "New York" lands on Send.
-    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Tab", ..."Unit", "Tab", ..."City", "Tab", ..."Zone", "Tab", ..."Box", "Tab", ..."Code", "Tab", ..."Main", "Tab", ..."Lot", "Tab", ..."Apt", "Tab", ..."Zip", "Tab", ..."Ward", "Tab", ..."Ref", "Tab", ..."Pike", "Tab", ..."Elm", "Tab", ..."New", "Space", ..."York"], 0);
+    // edge, New comment, the "Send new comments to" box, Send N unsent, the
+    // sidebar's selected tab and its "1 needs you", the card's box, its head
+    // and Resolve, so the Space in "New York" lands on Send.
+    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Tab", ..."Unit", "Tab", ..."City", "Tab", ..."Zone", "Tab", ..."Box", "Tab", ..."Code", "Tab", ..."Main", "Tab", ..."Lot", "Tab", ..."Apt", "Tab", ..."Zip", "Tab", ..."Ward", "Tab", ..."Ref", "Tab", ..."Pike", "Tab", ..."Elm", "Tab", ..."Oak", "Tab", ..."New", "Space", ..."York"], 0);
     await expect(page.locator(".act-hint").filter({ hasText: /^Click to send$/ })).toHaveCount(1);
     expect(await threadState(artifact.id, t.id)).toMatchObject({ status: "open", sent_to_agent: false });
   });
@@ -476,18 +476,18 @@ addEventListener("keydown", () => { parent.focus(); const t = performance.now();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
     const reply = page.getByRole("textbox", { name: "Reply" });
-    await expect.poll(() => tabsFromPin(reply)).toBe(15);
+    await expect.poll(() => tabsFromPin(reply)).toBe(16);
     await frame.locator("#a").click();
     // No stop mounted late, after the count above.
-    expect(await tabsFromPin(reply)).toBe(15);
+    expect(await tabsFromPin(reply)).toBe(16);
     const writes = threadWrites(page, artifact.id);
     // The pin, the drawer's four layouts, Hide threads and its edge, New
-    // comment, the sidebar's selected tab and its "1 needs you", the card's
-    // box, its head, Resolve, the Send button and its
-    // target menu (no agent is running to take the thread, so it may be
-    // sent on), then the Reply field: the Escape a page can coax ("Esc to
-    // close") clears nothing.
-    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Escape", "Tab", ..."Unit", "Tab", ..."City", "Tab", ..."Zone", "Tab", ..."Box", "Tab", ..."Code", "Tab", ..."Ref", "Tab", ..."Ward", "Tab", ..."Main", "Tab", ..."Apt", "Tab", ..."Flat", "Tab", ..."Lane", "Tab", ..."Town", "Tab", ..."Pike", "Tab", ..."Elm", "Tab", ..."pwd", "Space", ..."hunter2", "Enter"], 0);
+    // comment, the "Send new comments to" box, the sidebar's selected tab
+    // and its "1 needs you", the card's box, its head, Resolve, the Send
+    // button and its target menu (no agent is running to take the thread,
+    // so it may be sent on), then the Reply field: the Escape a page can
+    // coax ("Esc to close") clears nothing.
+    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Escape", "Tab", ..."Unit", "Tab", ..."City", "Tab", ..."Zone", "Tab", ..."Box", "Tab", ..."Code", "Tab", ..."Ref", "Tab", ..."Ward", "Tab", ..."Main", "Tab", ..."Apt", "Tab", ..."Flat", "Tab", ..."Lane", "Tab", ..."Town", "Tab", ..."Pike", "Tab", ..."Elm", "Tab", ..."Oak", "Tab", ..."pwd", "Space", ..."hunter2", "Enter"], 0);
     await settle(page);
     expect(writes()).toEqual([]);
     const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; comments: unknown[] }[] };
@@ -519,12 +519,12 @@ addEventListener("keydown", () => { parent.focus(); const t = performance.now();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
     const send = page.getByRole("button", { name: /^Send to / });
-    await expect.poll(() => tabsFromPin(send)).toBe(14);
+    await expect.poll(() => tabsFromPin(send)).toBe(15);
     await frame.locator("#b").click();
     await page.keyboard.press("Tab");
     await expect(page.locator("button.thread-pin")).toBeFocused();
     // On through the drawer's four layouts, Hide threads and its edge, New
-    // comment, Send N unsent, the sidebar's selected tab and its "1 needs
+    // comment, the "Send new comments to" box, Send N unsent, the sidebar's selected tab and its "1 needs
     // you", the card's box, its head and Resolve, until Send has focus; the
     // count of stops between bounds the walk.
     const stops = await tabsFromPin(send);

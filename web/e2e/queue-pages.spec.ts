@@ -34,7 +34,7 @@ test("a queue and each of its reports are pages of their own, live", async ({ br
 
     // The index links each queue to its own page.
     await owner.reload();
-    await owner.getByRole("link", { name: "Changeling feedback" }).click();
+    await owner.getByRole("link", { name: "Changeling feedback", exact: true }).click();
     await owner.waitForURL(`${d.base}/queues/${made.qid}`);
     await expect(owner).toHaveTitle("Changeling feedback · Clax");
     await expect(owner.getByRole("heading", { name: "Changeling feedback" })).toBeVisible();

@@ -168,7 +168,7 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await owner.screenshot({ path: shotPath(info, "queues-page"), fullPage: true });
 
     // The queue's view lists it under Resolved, and its report view shows the conversation.
-    await card.getByRole("link", { name: "Leave app reports" }).click();
+    await card.getByRole("link", { name: "Leave app reports", exact: true }).click();
     await expect(owner).toHaveURL(new RegExp(`/queues/${qid}$`));
     await expect(owner.getByText("No active reports.")).toBeVisible();
     await owner.getByRole("tab", { name: "Resolved" }).click();
@@ -207,10 +207,10 @@ test("the overlay's host has no style attribute, and the page's !important rules
     // The page's own rules, through a constructed sheet its policy allows.
     const host = await emp1.evaluate(() => {
       const sheet = new CSSStyleSheet();
-      sheet.replaceSync(`clax-overlay { display: none !important; position: static !important; visibility: hidden !important; opacity: 0 !important; z-index: 0 !important; width: 50vw !important; }
+      sheet.replaceSync(`feedback-overlay { display: none !important; position: static !important; visibility: hidden !important; opacity: 0 !important; z-index: 0 !important; width: 50vw !important; }
         * { letter-spacing: 0.5em !important; pointer-events: auto !important; }`);
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-      const el = [...document.querySelectorAll("clax-overlay")].find(h => h.shadowRoot?.querySelector(".launcher"))!;
+      const el = [...document.querySelectorAll("feedback-overlay")].find(h => h.shadowRoot?.querySelector(".launcher"))!;
       const cs = getComputedStyle(el);
       return {
         style: el.getAttribute("style"),
@@ -476,7 +476,8 @@ test("a member added to a queue by name gets the Queues link; while members may 
     await expect(card.locator("li.line[data-member]").nth(1)).toContainText("Mia");
 
     await mia.reload();
-    await mia.locator("a.queues-link").click();
+    // The Queues link, beside Reports (same gate, same class).
+    await mia.locator('a.queues-link[href="/queues"]').click();
     await expect(mia.getByRole("heading", { name: "Team reports" })).toBeVisible();
     await expect(mia.locator(".qcard .role").first()).toHaveText("Triage");
     await expect(mia.getByRole("button", { name: "New queue" })).toHaveCount(0);

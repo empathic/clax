@@ -70,7 +70,8 @@ test("a card that closes with focus keeps it, and the block around it takes it w
 test("/inbox lists the unread items, opens one and marks it read, and keeps its search in the URL", async ({ page, freshDaemon: d }) => {
   const s = await registerSession(d.base, d.token);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Sales dashboard", PAGE);
-  await page.goto(`${d.base}/inbox`);
+  // All items: the grouped list (the inbox opens on Waiting on you).
+  await page.goto(`${d.base}/inbox?view=all`);
   // Its row, under the page's heading.
   const group = page.locator(`.inbox .igroup[data-group="${artifact.id}"]`);
   await expect(group.locator(".gtitle")).toHaveText("Sales dashboard");

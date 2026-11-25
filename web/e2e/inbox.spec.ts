@@ -57,7 +57,8 @@ test("lists each page once: new ones open and bold, the rest folded, the Unread 
   const tid = await threadAsOwner(d.base, d.token, sales, "make the chart bigger");
   for (const n of [1, 2, 3, 4]) await replyAsAgent(d.base, d.token, s.id, sales, tid, `Reply ${n} on the chart`);
 
-  await page.goto(`${d.base}/inbox`);
+  // All items: the grouped list (the inbox opens on Waiting on you).
+  await page.goto(`${d.base}/inbox?view=all`);
   const inbox = page.locator(".inbox");
   const group = (key: string) => inbox.locator(`.igroup[data-group="${key}"]`);
   const titles = inbox.locator(".igroup .gtitle");
