@@ -264,6 +264,7 @@ async fn serves_the_tools_and_registers_the_harness_session() {
             "queue_release",
             "queue_renew",
             "queue_reply",
+            "queue_request",
             "queue_resolve",
             "queue_watch",
             "read",
@@ -419,7 +420,7 @@ async fn a_daemon_that_cannot_start_is_reported_as_unreachable() {
     std::fs::write(dir.path().join("ax"), "not a directory").unwrap();
     let mut shim = Shim::start_in(dir, None).await;
 
-    assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 42);
+    assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 43);
     let r = within("the tool's answer", shim.call("list", json!({}))).await;
     let (v, is_error) = body(&r);
     assert!(is_error, "{v}");

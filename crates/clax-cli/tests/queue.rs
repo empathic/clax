@@ -495,3 +495,109 @@ fn follow_prints_each_filed_report_as_a_json_line() {
     let st = f.child.wait().unwrap();
     assert!(st.success(), "--once exits 0 after the line");
 }
+
+#[test]
+fn create_by_hand_makes_the_queue_and_writes_its_grant_to_write_env() {
+    let d = Daemon::start();
+    let env = d.dir.path().join("app.env");
+    let out = d.run(&[
+        "queue",
+        "create",
+        "Invoices",
+        "--origin",
+        "https://invoices.example.com",
+        "--write-env",
+        env.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        !stdout.contains("cxq_"),
+        "the token stays out of stdout: {stdout}"
+    );
+    let written = std::fs::read_to_string(&env).unwrap();
+    let lines: Vec<&str> = written.lines().collect();
+    assert_eq!(lines.len(), 3, "{written}");
+    let qid = lines[0].strip_prefix("CLAX_QUEUE=").unwrap();
+    assert!(lines[1].starts_with("CLAX_QUEUE_TOKEN=cxq_"), "{written}");
+    assert!(lines[2].starts_with("CLAX_QUEUE_KEY="), "{written}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&env).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    let v = d.queue_json(&["ls", "--queue", qid]);
+    assert_eq!(v["reports"], json!([]), "{v}");
+}
+
+#[test]
+fn create_as_an_agent_files_a_request_and_takes_the_grant_once_approved() {
+    let d = Daemon::start();
+    let agent = |args: &[&str]| {
+        clax(&d.home())
+            .env("CLAX_CHANNEL", "agent")
+            .arg("queue")
+            .arg("create")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    // Filed, not made: the request waits for the owner.
+    let out = agent(&[
+        "Invoices",
+        "--origin",
+        "https://invoices.example.com",
+        "--note",
+        "for the invoices app",
+        "--no-wait",
+        "--json",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"], "pending", "{v}");
+    let id = v["request_id"].as_str().unwrap().to_string();
+    let store = d.store();
+    assert_eq!(
+        store.queues_of(None).map(|q| q.len()).ok(),
+        Some(1),
+        "only the daemon's own queue"
+    );
+    store
+        .approve_queue_request(&AuditCtx::DAEMON, &id, None)
+        .unwrap();
+
+    let env = d.dir.path().join("agent.env");
+    let out = agent(&[
+        "Invoices",
+        "--request",
+        &id,
+        "--write-env",
+        env.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.starts_with("approved: queue "), "{stdout}");
+    assert!(!stdout.contains("cxq_"), "{stdout}");
+    let written = std::fs::read_to_string(&env).unwrap();
+    assert!(written.contains("\nCLAX_QUEUE_TOKEN=cxq_"), "{written}");
+
+    // Read again, the grant was taken.
+    let out = agent(&["Invoices", "--request", &id]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("handed over before"), "{stdout}");
+    assert!(!stdout.contains("cxq_"), "{stdout}");
+}

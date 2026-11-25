@@ -1,6 +1,6 @@
 // Test fixtures for the question card and the inbox: a question view with
 // one question of each kind, and an inbox item of each kind.
-import type { InboxApproval, InboxItem, InboxKind, QuestionView } from "../api";
+import type { InboxApproval, InboxItem, InboxKind, QueueRequest, QuestionView } from "../api";
 
 export const AGENT = { handle: "a_1f3a00", harness: "claude", project: "clax" };
 
@@ -95,6 +95,9 @@ export function item(kind: InboxKind, over: Partial<InboxItem> = {}): InboxItem 
           reason: "to read the launch plan", status: "open", remote_id: null, expires_at: "2026-10-08T09:17:03.120Z", askers: 1 },
       });
       break;
+    case "queue_request":
+      Object.assign(base, { agent: null, artifact: null, url: `/inbox?queue_request=${queueRequest().id}`, queue_request: queueRequest() });
+      break;
     case "ended":
       Object.assign(base, { url: "/inbox", ended: { name: "clax-claude", reason: "idle", text: "clax-claude ended · released 1 thread · withdrew 1 question", questions: 1, requests: 0,
         threads: [{ id: "01J9R0000000000000000000T1", artifact_id: "7q3k9mzx2b4t", title: "Quarterly Review", url: "/a/7q3k9mzx2b4t?thread=01J9R0000000000000000000T1" }] } });
@@ -116,6 +119,20 @@ export function approvalCard(over: Partial<InboxApproval> = {}): InboxApproval {
       { id: "c1", body: "The goals table needs a Q4 column.", created_at: "2026-10-07T09:12:00.000Z", author_name: "Mia", by_agent: false },
     ] },
     via_page: null,
+    ...over,
+  };
+}
+
+/** A pending queue request from Claude Code, for the owner: a queue
+ * "Site feedback" over two origins whose reporters see their own reports,
+ * expiring an hour after it was made; `over` replaces fields. */
+export function queueRequest(over: Partial<QueueRequest> = {}): QueueRequest {
+  return {
+    id: "01J9Q0000000000000000000QR", status: "pending",
+    name: "Site feedback", origins: ["https://app.example", "https://staging.app.example"], reporters_see: "own",
+    note: "for the beta testers' bug reports", agent: "Claude Code", person: null,
+    created_at: "2026-10-07T09:12:03.120Z", expires_at: "2026-10-07T10:12:03.120Z", decided_at: null,
+    queue_id: null,
     ...over,
   };
 }

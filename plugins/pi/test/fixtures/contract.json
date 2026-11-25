@@ -927,6 +927,16 @@
         "idempotentHint": true,
         "openWorldHint": false
       }
+    },
+    {
+      "name": "queue_request",
+      "description": "Ask your person for a report queue (the Clax SDK's reports from an app land in one); you cannot make one yourself. Pass `name`, `origins` (the app's origins, with a pattern such as `https://app-pr-*.example.com` for previews), optionally `reporters_see` (`own`, the default, or `all`) and a `note` saying why. Your person approves or denies it in Clax, where the request opens; this call waits for the answer (`timeout_s`), and with `call_again: true` call again with `request_id` alone. Once approved the queue is your person's, and its service grant (the token and Ed25519 private key the app's backend mints reporter tokens with) is handed to you once: pass `write_env` (an absolute path, such as the app's `.env`) to have it appended there as CLAX_QUEUE, CLAX_QUEUE_TOKEN and CLAX_QUEUE_KEY, and the result says only that it wrote them. Never put the token or key in a reply, a commit or a page.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
     }
   ]
 }

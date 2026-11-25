@@ -233,7 +233,7 @@ impl From<CoreError> for ApiError {
                 code:
                     code @ ("name_taken" | "tag_exists" | "name_locked" | "key_in_use" | "not_pending"
                     | "already_issued" | "not_issued" | "owner_answered" | "answer_closed"
-                    | "not_on_lan" | "request_closed"),
+                    | "not_on_lan" | "request_closed" | "request_exists"),
                 message,
             } => ApiError::new(StatusCode::CONFLICT, code, message),
             CoreError::Invalid {

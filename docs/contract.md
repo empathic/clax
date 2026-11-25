@@ -14,7 +14,7 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Forty-two tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+Forty-three tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 `tag` and `tags` (see "Tags"), `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
@@ -26,7 +26,7 @@ public Clax"), and the data tools `db_get`, `db_list`,
 `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`,
 `db_batch` (see "Runtime capabilities"), and the report queue tools
 `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`,
-`queue_resolve`, `queue_get`, `queue_fix` and `queue_watch` (see "Report queue tools"). The MCP implementation lives in
+`queue_resolve`, `queue_get`, `queue_fix`, `queue_watch` and `queue_request` (see "Report queue tools"). The MCP implementation lives in
 `crates/clax-mcp` and is served two ways:
 
 - the stdio shim `clax mcp --agent <claude|codex|grok>`, which a harness
@@ -45,7 +45,7 @@ public Clax"), and the data tools `db_get`, `db_list`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same forty-two tools in TypeScript against the daemon's REST API, with the same
+the same forty-three tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -1134,17 +1134,20 @@ already. A hosted daemon answers these routes, and the push routes, 404.
 **The public side's device sign-in** (a hosted daemon; the Worker serves
 the same routes):
 
-- `POST /api/hosted/device/code {client_name, client_kind?}` (no
+- `POST /api/hosted/device/code {client_name, client_kind?, scope?}` (no
   credential, no `Origin` needed) → `{device_code, user_code,
   verification_uri, verification_uri_complete, expires_at, expires_in,
-  interval}`. Codes last 600 s and are used once; at most 5 sign-ins per
+  interval}`. `scope` is `["queue.request"]` or absent (400 `invalid_args`
+  for any other, or beside `client_kind`): a scoped sign-in's token may
+  only ask its person for a report queue ("Queue requests"), and the
+  approval page says so instead of signing the machine in as them. Codes last 600 s and are used once; at most 5 sign-ins per
   client address a minute (429 `rate_limited`), and 1,000 waiting in all
   (400 `limit_reached`). `client_kind` is `clax-app` (the Clax app) or
   absent; any other is 400 `invalid_args`.
 - `GET /device[?code=<user code>]`: the approval page, the shell's; it
   names the machine and its address, and the person it signs in as.
 - `GET /api/hosted/device/<user code>` (a member's browser) →
-  `{client_name, peer_ip, client_kind, created_at, expires_at,
+  `{client_name, peer_ip, client_kind, scope, created_at, expires_at,
   same_address}` (`same_address`: the sign-in asked from this browser's
   address; the page warns when it did not; `client_kind` `clax-app` or
   null); `POST
@@ -1158,7 +1161,8 @@ the same routes):
   the public origin's `Origin`. Rate-limited as sign-in codes are.
 - `POST /api/hosted/device/token {device_code}` (the machine) → once
   approved, `{token, token_type: "Bearer", grant_id, person: {public_id,
-  display_name}, origin, mcp_url}`, this once. Before that 400
+  display_name}, origin, mcp_url}`, this once; a scoped sign-in's also
+  carries `scope` and `expires_at`, its grant's end. Before that 400
   `authorization_pending`; 400 `slow_down` for a poll sooner than `interval`
   after the last; 400 `access_denied` once denied (or the token revoked
   before the poll); 400 `expired_token` for a code unknown, expired or
@@ -4361,6 +4365,7 @@ the copy's remote, the link holds the copy's address alone.
 | `queue_resolve` | `queue`, `report_id`, optional `reason` (`fixed`, `duplicate`, `wontfix`, `cannot_reproduce` or `other`, the default) | `{report}`, resolved with `resolve_reason`; `claim_required`, `lease_lost` or `thread_taken` |
 | `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after`, `preview` | `{report}`, and with `preview: true` the fix's `ticket` ("Fix tickets"), `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix`, `not_claimable` or `no_preview_origins` |
 | `queue_watch` | `queue`, optional `stop` | `{queue, watching: true, wake}` (`POST /api/queues/<queue>/watch`; `wake` as `watch` gives it), or with `stop: true` `{queue, watching: false}` (`DELETE`) |
+| `queue_request` | `name` and `origins` (optional `reporters_see`, `note`) to ask, or `request_id` alone to keep waiting; optional `timeout_s`, `write_env` (an absolute path on the tools' machine; refused on the remote MCP endpoint) | `{request_id, status, request, call_again}` (`POST /api/queue-requests`, then `GET /api/queue-requests/<id>?wait=` until answered or the wait ends, then `POST …/take`; the card opens in the person's browser), and once approved `grant` with either `wrote` and `variables` (`CLAX_QUEUE`, `CLAX_QUEUE_TOKEN`, `CLAX_QUEUE_KEY` appended to `write_env`, made 0600 if missing) or `token`, `private_key` and `secret`; `grant_taken` when an earlier take took it ("Queue requests") |
 
 #### Report queue tools
 
@@ -4864,6 +4869,50 @@ or thread is gone), `no_session` (`watch` and `wait_for_feedback` through
 sent). Through a session, replies and resolves on a thread that was not sent
 to the agent are not errors: the result carries `guidance` and nothing
 changes.
+
+#### Queue requests
+
+No agent makes a queue: `POST /api/queues` and the service-grant routes
+refuse every agent. An agent asks its person for one instead, and the
+person answers in their browser (`crates/clax-server/src/routes/queue_requests.rs`,
+`crates/clax-store/src/queue_requests.rs`). The `queue_request` tool and
+`clax queue create`, run by an agent, use these routes.
+
+| Route | Who | Answer |
+|---|---|---|
+| `POST /api/queue-requests {name, origins?, reporters_see?, note?}` | any agent: the owner's (the daemon token naming a session or the agent channel), a connected person's, an agent token's, a scoped token's | 201 `{request}`, pending; the fields as `POST /api/queues` checks them (400 `invalid_name`, `invalid_origin`), `note` at most 500 characters (400 `invalid_args`); 403 `not_an_agent` for a person or the owner by hand; 409 `request_exists` for a scoped token that asked once; 429 `limit_reached` with five of the agent's requests pending |
+| `GET /api/queue-requests/<id>[?wait=<s>]` | the agent that asked (its grant; any agent of the owner's for the owner's agents' requests), or the request's person | `{request}`, as soon as it is not pending or after `wait` seconds (at most 60), and `grant_taken: true` once an approved request's grant was taken. A read changes nothing. 404 for anyone else |
+| `POST /api/queue-requests/<id>/take` | the agent that asked (403 `not_an_agent` for a person) | once the request is answered, `{request}`; the first take of an approved one also carries `grant: {id, name, created_at}`, `token` (`cxq_…`) and `private_key` (as `POST /api/queues/<qid>/service-grants` gives them): the service grant is made by that take, named `Requested by <agent>`, and neither secret is kept; later takes carry `grant_taken: true`. A take ends a scoped token. 409 `request_pending` (with `request` in `error`) while it waits; 404 for anyone else |
+| `GET /api/queue-requests[?status=]` | the person's browser, or the owner by hand | `{requests}`: those the caller answers, newest first, at most 200; `status` one of `pending`, `approved`, `denied`, `cancelled`, `expired` (400 `invalid_query` for another) |
+| `POST /api/queue-requests/<id>/approve` | the person's browser (403 `browser_required` for the token by hand; agents refused), same origin | `{request, queue}`: the queue is made with the person as its admin, nothing else granted. While an agent of the owner's is live a local daemon may hold it for a confirmation (202 `confirmation_pending`, "Confirming decisions") |
+| `POST /api/queue-requests/<id>/deny` | as approve, with no confirmation | `{request}` |
+
+Deciding a request no longer pending is 409 `request_closed`, with
+`request` in `error`; another person's request is 404. A request is
+`{id, status, name, origins, reporters_see, note, agent, person,
+created_at, expires_at, decided_at, queue_id}`: `agent` the asking
+session's client name or harness, else its grant's machine name; `person`
+the approver's public ID, `null` for the owner. A pending request expires
+an hour after it was made (or with its scoped token, if sooner); ending
+the asking grant (revoked on People, `DELETE /api/hosted/agent-token`,
+expiry) cancels its pending requests. The person is told by an inbox item
+of kind `queue_request` (`queue_request`: the request, `null` once gone;
+`url` `/inbox?queue_request=<id>`), read once the request stops waiting;
+the Queues page lists pending ones too. Audit: `queue_request.ask`,
+`queue_request.answer` (with `queue.create`), `queue_request.close`
+(expired, cancelled), and the take's grant as `queue.update` (`op`
+`grant`).
+
+**A token for asking alone.** A device sign-in with `scope:
+["queue.request"]` ("The public side's device sign-in") makes a grant with
+no rights whose token reaches `POST /api/queue-requests`, `GET
+/api/queue-requests/<id>`, the session routes the remote MCP endpoint
+keeps its session by (`POST /api/sessions`, `GET` and `PATCH
+/api/sessions/<id>`), `POST /api/queue-requests/<id>/take`, `/mcp` (whose tools' requests are checked the same
+way) and `DELETE /api/hosted/agent-token`; every other route answers 403
+`forbidden`. It makes one request, and ends (its token 401) once its agent
+has taken that request's answer, an hour after it was approved, or when
+revoked on People, whichever comes first.
 
 ### Working
 
@@ -6486,6 +6535,9 @@ router), and a test fails when it differs:
 | `GET /api/sessions/{id}/where-to-ask` | Own | `clax-ask` `ask` | 2 MiB | yes |
 | `POST /api/sessions/{id}/terminal` | Own | none | 2 MiB | yes |
 | `GET /api/queues` | Own | none | 2 MiB | yes |
+| `POST /api/queue-requests` | Own | none | 2 MiB | yes |
+| `GET /api/queue-requests/{id}` | Own | none | 2 MiB | yes |
+| `POST /api/queue-requests/{id}/take` | Own | none | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports` | Own | `clax-comments` `read` | 2 MiB | yes |
 | `POST /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `DELETE /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
@@ -6692,6 +6744,9 @@ router), and a test fails when it differs:
 | `POST /api/questions/{qid}/decline` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/pull` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/release` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queue-requests` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queue-requests/{id}/approve` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queue-requests/{id}/deny` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}` | Denied | yes: 403 `not_for_agents` |
 | `PATCH /api/queues/{qid}` | Denied | yes: 403 `not_for_agents` |

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flush, mount } from "../test/svelte";
 import { settle, stubFetch } from "../people/fixtures";
+import { queueRequest } from "../q/fixtures";
 import Queues from "./Queues.svelte";
 
 const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], reporters_see: "own", created_at: "2026-10-27T10:00:00Z", role: "admin" };
@@ -114,5 +115,42 @@ describe("Queues", () => {
     click(m.root.querySelector('[data-member="p2"] button'));
     await settle();
     expect(calls.some(c => c.method === "DELETE" && c.url === "/api/queues/q1/members/p2")).toBe(true);
+  });
+
+  it("shows no Requests section without pending requests, or when the daemon has no such route", async () => {
+    for (const extra of [{ "GET /api/queue-requests?status=pending": { requests: [] } }, {}]) {
+      const calls = stubFetch(routes(extra));
+      const m = mount(Queues, {});
+      await settle();
+      expect(calls.some(c => c.url === "/api/queue-requests?status=pending")).toBe(true);
+      expect(m.root.querySelector(".qreqs")).toBeNull();
+      expect(m.root.querySelector(".qerr")).toBeNull();
+      expect(m.root.querySelector('[data-id="q1"]')).not.toBeNull();
+      document.body.replaceChildren();
+    }
+  });
+
+  it("lists pending requests above the queues, and an approval lists the queues again with the new one", async () => {
+    const made = { ...QUEUE, id: "q9", name: "Site feedback" };
+    let approvedYet = false;
+    const calls = stubFetch(routes({
+      "GET /api/queues": () => ({ queues: approvedYet ? [QUEUE, made] : [QUEUE] }),
+      "GET /api/queues/q9/reports": { reports: [], next: null },
+      "GET /api/queue-requests?status=pending": { requests: [queueRequest()] },
+      [`POST /api/queue-requests/${queueRequest().id}/approve`]: () => { approvedYet = true; return { request: queueRequest({ status: "approved", queue_id: "q9" }), queue: made }; },
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    const sec = m.root.querySelector(".qreqs")!;
+    expect(sec.querySelector("h3")!.textContent).toBe("Requests");
+    expect(sec.compareDocumentPosition(m.root.querySelector(".qlist")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sec.querySelector(".qrcard .chead > span")!.textContent).toBe("Claude Code asks for a report queue “Site feedback”");
+    const lists = () => calls.filter(c => c.url === "/api/queues").length;
+    const before = lists();
+    click([...sec.querySelectorAll("button")].find(b => b.textContent === "Approve"));
+    await settle();
+    expect(lists()).toBe(before + 1);
+    expect(sec.querySelector(".outcome")!.textContent).toContain("Approved: the queue is made");
+    expect(m.root.querySelector('[data-id="q9"] h3')!.textContent).toBe("Site feedback");
   });
 });

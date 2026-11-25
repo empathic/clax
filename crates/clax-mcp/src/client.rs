@@ -25,6 +25,10 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+/// The longest `wait` one read of a queue request asks the daemon for
+/// (`clax_server::routes::queue_requests::MAX_WAIT_SECS`).
+pub const QUEUE_REQUEST_MAX_WAIT_S: u64 = 60;
+
 /// The agent-channel marker's header (spec §16): an agent channel's every
 /// request says `agent`.
 pub const CHANNEL_HEADER: &str = "x-clax-channel";
@@ -1673,6 +1677,64 @@ impl DaemonClient {
                 .timeout(deadline)
         })
         .await
+    }
+
+    /// `POST /api/queue-requests {name, origins, reporters_see?, note?}`:
+    /// `{request}`, waiting for the caller's person.
+    pub async fn queue_request(&self, body: &Value) -> Result<Value> {
+        self.json(|c| {
+            c.request(reqwest::Method::POST, "/api/queue-requests")
+                .json(body)
+        })
+        .await
+    }
+
+    /// `GET /api/queue-requests/<id>?wait=<wait_s>`: `{request}` (and
+    /// `grant_taken` once its grant was taken), changing nothing; the
+    /// deadline is `wait_s` plus 10 s.
+    pub async fn queue_request_wait(&self, id: &str, wait_s: u64) -> Result<Value> {
+        let q = [("wait", wait_s.to_string())];
+        let deadline = Duration::from_secs(wait_s + 10);
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!("/api/queue-requests/{}", encode_segment(id)),
+            )
+            .query(&q)
+            .timeout(deadline)
+        })
+        .await
+    }
+
+    /// `POST /api/queue-requests/<id>/take`: the answer to a request no
+    /// longer pending, with the queue's service grant (`grant`, `token`,
+    /// `private_key`) on the first take of an approved one.
+    pub async fn queue_request_take(&self, id: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("/api/queue-requests/{}/take", encode_segment(id)),
+            )
+            .json(&json!({}))
+        })
+        .await
+    }
+
+    /// Waits on queue request `id` for up to `total_s` seconds, in
+    /// [`Self::queue_request_wait`] polls of at most
+    /// [`QUEUE_REQUEST_MAX_WAIT_S`]: the last poll's answer, once the
+    /// request is not pending or the time is up.
+    pub async fn queue_request_wait_up_to(&self, id: &str, total_s: u64) -> Result<Value> {
+        let started = clax_rt::time::Instant::now();
+        loop {
+            let left = total_s.saturating_sub(started.elapsed().as_secs());
+            let v = self
+                .queue_request_wait(id, left.min(QUEUE_REQUEST_MAX_WAIT_S))
+                .await?;
+            if v["request"]["status"] != "pending" || left <= QUEUE_REQUEST_MAX_WAIT_S {
+                return Ok(v);
+            }
+        }
     }
 
     /// Waits on connection request `id` for up to `total_s` seconds, in

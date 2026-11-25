@@ -1282,9 +1282,14 @@ struct DeviceCodeBody {
     /// sign-in is decided.
     #[serde(default)]
     return_to: Option<String>,
+    /// What the token may do, when less than its person's rights:
+    /// `["queue.request"]` alone (ask the person for a report queue,
+    /// [`clax_store::queue_requests`]).
+    #[serde(default)]
+    scope: Option<Vec<String>>,
 }
 
-/// `POST /api/hosted/device/code {client_name, client_kind?, return_to?}`
+/// `POST /api/hosted/device/code {client_name, client_kind?, return_to?, scope?}`
 /// (another machine's Clax, no credential) → `{device_code, user_code, verification_uri,
 /// verification_uri_complete, expires_at, expires_in, interval}`: starts a
 /// device sign-in ([`clax_store::device`]). The machine shows the
@@ -1292,9 +1297,11 @@ struct DeviceCodeBody {
 /// signed-in member approves it, then polls `POST
 /// /api/hosted/device/token` every `interval` seconds. Rate-limited per
 /// client; 400 `invalid_args` for a bad name, a `client_kind` other
-/// than `clax-app` or a `return_to` that is not a loopback page
-/// ([`clax_http::loopback::loopback_return`]), 400 `limit_reached` with too
-/// many waiting.
+/// than `clax-app`, a `return_to` that is not a loopback page
+/// ([`clax_http::loopback::loopback_return`]) or a `scope` other than
+/// `["queue.request"]` (or beside a `client_kind`), 400 `limit_reached`
+/// with too many waiting. A scoped sign-in's token holds a grant of that
+/// scope alone: no rights, the scope's routes, and an end of its own.
 async fn device_code(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1322,14 +1329,30 @@ async fn device_code(
             )
         })?),
     };
+    let scope = match b.scope.as_deref() {
+        None => None,
+        Some([one])
+            if one == clax_store::queue_requests::QUEUE_REQUEST_SCOPE
+                && b.client_kind.is_none() =>
+        {
+            Some(one.clone())
+        }
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                "scope is [\"queue.request\"] or absent, and names no client_kind",
+            ));
+        }
+    };
     let peer = h.client(&headers, &extensions).to_string();
     let start = s
         .store_call(move |st| {
-            st.start_device_kind(
+            st.start_device_scoped(
                 &b.client_name,
                 &peer,
                 b.client_kind.as_deref(),
                 return_to.as_deref(),
+                scope.as_deref(),
             )
         })
         .await?;
@@ -1357,7 +1380,8 @@ struct DeviceTokenBody {
 /// `POST /api/hosted/device/token {device_code}` (the machine) → once the
 /// sign-in is approved, `{token, token_type, grant_id, person: {public_id,
 /// display_name}, origin, mcp_url}`, this once: an agent token of the
-/// person who approved it. Before that, 400 `authorization_pending`; 400
+/// person who approved it; a scoped sign-in's also carries `scope` (its
+/// one scope, in an array) and `expires_at`, its grant's end. Before that, 400 `authorization_pending`; 400
 /// `slow_down` for a poll sooner than `interval` after the last; 400
 /// `access_denied` once denied (or the token revoked before this poll);
 /// 400 `expired_token` for an unknown, expired or spent code.
@@ -1395,23 +1419,29 @@ async fn device_token(
             grant_id,
             person,
             person_name,
-        } => Ok(no_store(
-            Json(json!({
+            scope,
+        } => {
+            let mut v = json!({
                 "token": token.expose(),
                 "token_type": "Bearer",
                 "grant_id": grant_id,
                 "person": {"public_id": person, "display_name": person_name},
                 "origin": h.origin,
                 "mcp_url": h.url(crate::routes::mcp_http::PATH),
-            }))
-            .into_response(),
-        )),
+            });
+            if let Some((scope, ends)) = scope {
+                v["scope"] = json!([scope]);
+                v["expires_at"] = json!(ends);
+            }
+            Ok(no_store(Json(v).into_response()))
+        }
     }
 }
 
 /// `GET /api/hosted/device/<user code>` (a member's browser) →
-/// `{client_name, peer_ip, client_kind, return_to, created_at, expires_at,
-/// same_address}`: the machine a waiting sign-in names, and its kind
+/// `{client_name, peer_ip, client_kind, return_to, scope, created_at,
+/// expires_at, same_address}`: the machine a waiting sign-in names, the
+/// scope it asked for (`["queue.request"]`, else `null`), and its kind
 /// (`clax-app` for the Clax app, whose token may manage the sharing of
 /// the person's artifacts; else `null`), the loopback page it asked to
 /// send its person to once decided (`return_to`, else `null`), for its

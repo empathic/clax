@@ -341,7 +341,7 @@ fn queue_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueRow> {
 const QUEUE_SELECT: &str =
     "SELECT id, name, person, origins_json, reporters_see, created_at FROM queues";
 
-fn queue_in(c: &Connection, qid: &str) -> Result<Option<QueueRow>> {
+pub(crate) fn queue_in(c: &Connection, qid: &str) -> Result<Option<QueueRow>> {
     Ok(c.prepare_cached(&format!(
         "{QUEUE_SELECT} WHERE id = ?1 AND deleted_at IS NULL"
     ))?
@@ -386,7 +386,7 @@ pub(crate) fn session_is_member_in(c: &Connection, qid: &str, sid: &str) -> Resu
     }
 }
 
-fn normalize_origins(origins: &[String]) -> Result<Vec<String>> {
+pub(crate) fn normalize_origins(origins: &[String]) -> Result<Vec<String>> {
     if origins.len() > clax_core::queue::MAX_QUEUE_ORIGINS {
         return Err(CoreError::invalid(
             "invalid_origin",
@@ -993,7 +993,7 @@ impl Store {
 
     /// [`Store::create_queue`] in `tx`, of a checked `name` and normalized
     /// `origins`.
-    fn create_queue_in(
+    pub(crate) fn create_queue_in(
         &self,
         tx: &Transaction<'_>,
         ctx: &AuditCtx,
@@ -1311,7 +1311,7 @@ impl Store {
 
     /// [`Store::create_service_grant_for`] in `tx`, of a checked `name`
     /// and normalized `origins`.
-    fn create_service_grant_in(
+    pub(crate) fn create_service_grant_in(
         &self,
         tx: &Transaction<'_>,
         ctx: &AuditCtx,
