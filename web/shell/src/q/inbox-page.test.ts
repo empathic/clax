@@ -670,7 +670,7 @@ describe("InboxPage, Waiting on you", () => {
     // The Activity chip picks the notices that wait on no one.
     click(m.root.querySelector(".vbtn.activity")!);
     await settle();
-    expect(location.search).toBe("?kind=version,published,finished,ended,push");
+    expect(location.search).toBe("?kind=version,published,finished,ended,push,access");
     click(waiting);
     await settle();
     expect(location.search).toBe("");

@@ -7,9 +7,9 @@ import type { InboxFilter, InboxKind } from "../api";
 import { tagsFromUrl, withTags } from "../view/tags-model";
 
 /** The kinds the inbox page filters by. */
-export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished", "approval", "connection", "ended", "push", "remote_request", "queue_request"];
+export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished", "approval", "connection", "ended", "push", "remote_request", "queue_request", "access"];
 /** The kinds the Activity filter picks: notices that wait on no one. */
-export const ACTIVITY_KINDS: readonly InboxKind[] = ["version", "published", "finished", "ended", "push"];
+export const ACTIVITY_KINDS: readonly InboxKind[] = ["version", "published", "finished", "ended", "push", "access"];
 
 const PARAMS = ["search", "unread", "kind", "artifact", "agent", "since", "until"] as const;
 

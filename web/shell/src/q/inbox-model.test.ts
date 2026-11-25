@@ -17,6 +17,16 @@ describe("inbox model", () => {
     expect(itemTitle(item("finished"))).toBe("claude finished on Quarterly Review");
   });
 
+  it("titles being added to a queue by who added them, the queue and the role", () => {
+    expect(itemTitle(item("access"))).toBe("Sam added you to App reports as triage");
+    expect(itemText(item("access"))).toBe("You can triage its reports");
+    const admin = { queue_id: "q", queue_name: null, role: "admin" as const, by: null };
+    expect(itemTitle(item("access", { access: admin, gone: true }))).toBe("Someone added you to a deleted queue as admin");
+    expect(itemText(item("access", { access: admin }))).toBe("You can manage the queue and its members");
+    expect(itemTitle(item("access", { access: undefined }))).toBe("You were added to a report queue");
+    expect(item("access").url).toBe("/queues");
+  });
+
   it("titles a refused automatic push by its public Clax and version", () => {
     const push = { n: 4, origin: "https://clax.example", code: "remote_moved", message: "the public copy is at version 5", url: "https://clax.example/a/k3m9q2w8x1ab" };
     expect(itemTitle(item("push", { push }))).toBe("https://clax.example refused v4 of Quarterly Review");

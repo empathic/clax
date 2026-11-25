@@ -224,7 +224,11 @@ export type QuestionLink = {
   answered_there: boolean; unlinked: boolean;
 };
 
-export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push" | "remote_request" | "queue_request";
+export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push" | "remote_request" | "queue_request" | "access";
+/** An `access` item's: the report queue its reader was added to (its name
+ * now, null once it is gone), at which role, and who added them (by name;
+ * null when they have none). */
+export type InboxAccess = { queue_id: string; queue_name: string | null; role: "admin" | "triage"; by: string | null };
 /** A `connection` item's grant: a request waiting for the owner, or a
  * machine that connected with an invite (`person` once it has one). */
 export type InboxConnection = {
@@ -315,6 +319,8 @@ export type InboxItem = {
   remote_request?: InboxRemoteRequest;
   /** `queue_request`: an agent asks the reader for a report queue; null once the request is gone. */
   queue_request?: QueueRequest | null;
+  /** `access`: the reader was added to a report queue. */
+  access?: InboxAccess;
   gone: boolean;
   /** Where opening the item leads (a path on the daemon). */
   url: string;
