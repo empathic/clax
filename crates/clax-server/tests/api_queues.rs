@@ -454,7 +454,12 @@ async fn a_service_grant_is_shown_once_and_its_revocation_ends_its_reporter_toke
     let listed = v["grants"][0].as_object().unwrap();
     let mut keys: Vec<&str> = listed.keys().map(String::as_str).collect();
     keys.sort_unstable();
-    assert_eq!(keys, ["created_at", "id", "name"]);
+    assert_eq!(keys, ["created_at", "id", "name", "origins"]);
+    assert_eq!(
+        listed["origins"],
+        Value::Null,
+        "a production grant has no origin limit"
+    );
     assert!(!v.to_string().contains(&token));
 
     // It mints a reporter token, which its revocation ends.

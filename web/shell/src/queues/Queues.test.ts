@@ -67,6 +67,39 @@ describe("Queues", () => {
     expect(m.root.textContent).not.toContain("cxq_secret");
   });
 
+  it("limits a new service grant to the queue's preview patterns, and names a limited grant's origins", async () => {
+    const PREVIEW = "https://app-pr-*.fly.dev";
+    const queue = { ...QUEUE, origins: ["https://app.example", PREVIEW] };
+    const made = { grant: { id: "sg2", name: "previews", origins: [PREVIEW], created_at: "2026-10-27T11:00:00Z" }, token: "cxq_p", private_key: "MC4p" };
+    const calls = stubFetch(routes({
+      "GET /api/queues": { queues: [queue] },
+      "GET /api/queues/q1/service-grants": { grants: [{ id: "sg1", name: "prod", origins: null, created_at: "2026-10-26T11:00:00Z" }, made.grant] },
+      "POST /api/queues/q1/service-grants": made,
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    expect(m.root.querySelector('[data-grant="sg1"]')!.textContent).not.toContain("previews:");
+    expect(m.root.querySelector('[data-grant="sg2"] .limit')!.textContent).toBe(`previews: ${PREVIEW}`);
+    const only = m.root.querySelector<HTMLInputElement>('input[name="previews_only"]')!;
+    expect(only.closest("label")!.textContent).toContain(`Previews only: mint only for ${PREVIEW}`);
+    type(m.root.querySelector('input[name="grant_name"]'), "previews");
+    click(only);
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Create service grant"));
+    await settle();
+    expect(calls.find(c => c.method === "POST")).toMatchObject({ url: "/api/queues/q1/service-grants", body: { name: "previews", origins: [PREVIEW] } });
+  });
+
+  it("offers no previews-only grant on a queue without an origin pattern", async () => {
+    stubFetch(routes());
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    expect(m.root.querySelector('input[name="previews_only"]')).toBeNull();
+  });
+
   it("adds a member by public ID at a role, and removes one after confirming", async () => {
     const calls = stubFetch(routes({ "PUT /api/queues/q1/members/p3": {}, "DELETE /api/queues/q1/members/p2": {} }));
     vi.stubGlobal("confirm", () => true);

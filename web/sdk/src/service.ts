@@ -1,14 +1,19 @@
 // A deployer's backend (spec 2026-10-27 §5.3): it holds a queue service
-// grant in its secrets and mints reporter tokens for its own users. Runs
+// grant in its secrets and mints reporter tokens for its own users; a
+// preview deployment's backend also attaches its origin to the fix it
+// carries, with that fix's ticket. Runs
 // in Node 20 or later, a Worker or any runtime with WebCrypto Ed25519, as
 // an ES module or, through the package's `require` condition, CommonJS; it
 // is never shipped to a page, which would hand out the grant.
-import type { ReporterProfile, ReporterToken, ReporterTokenRequest } from "./types";
-import { checkInstance, queuePath, readJson, sendSigned, Timing, type Fetch } from "./client";
+import type { PreviewAttached, PreviewAttachment, ReporterProfile, ReporterToken, ReporterTokenRequest } from "./types";
+import { BACKOFF_S, checkInstance, ClaxError, errorCode, queuePath, readJson, sendSigned, Timing, type Fetch } from "./client";
 import { fromBase64url, importPkcs8Signer, type Signer } from "./sign";
 
 export { ClaxError } from "./client";
-export type { ClaxErrorCode, QueueErrorCode, ReporterProfile, ReporterToken, ReporterTokenRequest, SdkErrorCode } from "./types";
+export type { ClaxErrorCode, FixTicket, PreviewAttached, PreviewAttachment, QueueErrorCode, ReporterProfile, ReporterToken, ReporterTokenRequest, SdkErrorCode } from "./types";
+
+/** A fix ticket's parts: `cxf_<queue ID>.<report ID>.<fix number>.<secret>`. */
+const TICKET = /^cxf_([^./]+)\.([^./]+)\.([1-9]\d*)\.[\w-]+$/;
 
 export interface ServiceOptions {
   /** The instance's origin, such as `https://clax.example.com`: Clax is
@@ -68,5 +73,49 @@ export class ServiceClient {
       fetch: this.opts.fetch ?? ((input, init) => globalThis.fetch(input, init)),
     }, this.timing);
     return readJson<ReporterToken>(res);
+  }
+
+  /** Attaches this preview deployment to the fix its ticket was issued
+   * for (`a.ticket`, the `CLAX_FIX_TICKET` the fixing agent set): the
+   * fix's `verify_url` becomes `a.origin` and `a.path` (default `/`), and
+   * the reporter is told a preview of the fix is ready:
+   * `POST /api/queues/<queue>/reports/<report>/fixes/<n>/preview`. Take
+   * `a.origin` from the deployment's own configuration, never from a
+   * request. The ticket is the call's only credential (this client's
+   * grant is not used), and its only right: 403 `wrong_origin` for an
+   * origin none of the queue's patterns matches, 401 `token_expired`
+   * once the fix has its verdict or 14 days have passed. Attaching the
+   * URL the fix names already changes nothing (`changed: false`), so a
+   * redeploy may call it again. Retried on 429 `limit_reached` and 503
+   * `busy` as the signed calls are; a `TypeError` for a ticket of
+   * another queue, or that is no ticket. */
+  async attachPreview(a: PreviewAttachment): Promise<PreviewAttached> {
+    const m = TICKET.exec(a.ticket.trim());
+    if (!m) throw new TypeError("attachPreview: ticket is not a fix ticket (cxf_<queue>.<report>.<n>.<secret>)");
+    const [, queue, report, n] = m;
+    if (queue !== this.opts.queue) throw new TypeError(`attachPreview: the ticket is of queue ${queue}, not ${this.opts.queue}`);
+    const body: { origin: string; path?: string } = { origin: a.origin };
+    if (a.path !== undefined) body.path = a.path;
+    const url = new URL(queuePath(queue, "reports", report, "fixes", n, "preview"), this.opts.instance).href;
+    const fetch = this.opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    const init: RequestInit = {
+      method: "POST",
+      headers: { authorization: `Clax-Fix ${a.ticket.trim()}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+      credentials: "omit",
+    };
+    for (let backoffs = 0; ; backoffs++) {
+      let res: Response;
+      try {
+        res = await fetch(url, init);
+      } catch (e) {
+        throw new ClaxError("network", e instanceof Error ? e.message : String(e), 0);
+      }
+      const code = res.status === 429 || res.status === 503 ? await errorCode(res) : "";
+      const retry = (res.status === 429 && code === "limit_reached") || (res.status === 503 && code === "busy");
+      if (!retry || backoffs >= BACKOFF_S.length) return readJson<PreviewAttached>(res);
+      const base = BACKOFF_S[backoffs] * 1000;
+      await this.timing.sleep(base + base * Math.min(Math.max(this.timing.random(), 0), 1) / 4);
+    }
   }
 }

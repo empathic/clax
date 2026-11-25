@@ -78,10 +78,15 @@ own report queue".
 
 A preview deployment per branch or pull request has an origin of its own
 (`https://pathbase-pr-538.fly.dev`, `https://pathbase-pr-539.fly.dev`, …).
-List one origin pattern for all of them, `https://pathbase-pr-*.fly.dev`,
-beside your exact origins. A `*` beside other characters stands for one or
-more letters, digits and `-` within its label, never a `.`, so this
-pattern matches `https://pathbase-pr-538.fly.dev` and not
+Three things let a preview take reports, show a fix to the person who
+reported it, and take their verdict there, without any preview holding a
+secret that reaches production.
+
+**One pattern for every preview.** List one origin pattern for all of
+them, `https://pathbase-pr-*.fly.dev`, beside your exact origins. A `*`
+beside other characters stands for one or more letters, digits and `-`
+within its label, never a `.`, so this pattern matches
+`https://pathbase-pr-538.fly.dev` and not
 `https://pathbase-pr-1.evil.fly.dev`, `https://pathbase-pr-.fly.dev` or
 another scheme or port. A label that is only `*` stands for one or more
 whole labels: `https://*.preview.example.com` matches
@@ -91,14 +96,67 @@ A pattern can be as broad as you want, up to `https://*` for every
 filing still needs a reporter token your backend minted for one exact
 origin.
 
-Each preview's backend still mints for its own exact origin (the page's,
-never the pattern), and the token is bound to it: a page on another
-`fly.dev` name the pattern also matches cannot use it, and without your
-service grant it cannot mint one of its own. So take the origin from the
-deployment's own configuration, never from the request: a token route
-that mints for whatever origin a caller names would mint for that other
-page too. `docs/contract.md` ("Report queue routes", Origins) has the
-whole rule.
+**A service grant limited to previews.** On the Queues page, **Manage,
+Create service grant** with **Previews only** ticked makes a grant that
+mints reporter tokens for the queue's patterns alone (`POST
+/api/queues/<qid>/service-grants {name, origins: [<pattern>]}`). Give that
+grant to your preview environments and keep the production grant for
+production: a preview's secrets then mint nothing for your production
+origin (403 `wrong_origin`). Each preview's backend mints for its own
+exact origin (the page's, never the pattern), and the token is bound to
+it: a page on another `fly.dev` name the pattern also matches cannot use
+it. So take the origin from the deployment's own configuration, never
+from the request: a token route that mints for whatever origin a caller
+names would mint for that other page too.
+
+**A fix ticket for each fix.** When an agent fixes a report in a pull
+request, it proposes the fix with `preview: true` (`queue_fix`, or `clax
+queue fix --preview`) and gets back the fix's ticket, `cxf_…`, once. It
+sets it on that pull request's preview environment as
+`CLAX_FIX_TICKET`. When the preview deploys, its backend attaches its own
+origin to the fix:
+
+```ts
+import { ServiceClient } from "@empathic/clax-client-sdk/service";
+
+// The preview grant, from the preview environment's secrets.
+const service = new ServiceClient({ instance: "https://clax.example.com", queue: "<queue ID>", token: grant.token, privateKey: grant.private_key });
+if (process.env.CLAX_FIX_TICKET) {
+  // The deployment's own origin, from its configuration (here Fly's app name).
+  await service.attachPreview({
+    ticket: process.env.CLAX_FIX_TICKET,
+    origin: `https://${process.env.FLY_APP_NAME}.fly.dev`,
+    path: "/orders/7", // optional: where to check it
+  });
+}
+```
+
+Clax sets the fix's `verify_url` to that origin (and path), tells the
+reporter a preview of the fix is ready (a comment on their report, which
+their badge counts), and records `queue.preview`: "Preview <origin>
+attached to fix <n> of report <ID>, ticket issued by <agent> for
+<person>". The ticket can do nothing else: it reads no report, mints no
+token, gives no verdict, and attaches only an origin one of the queue's
+patterns matches, so a leaked ticket points one fix at one preview at
+most. It ends after 14 days, or as soon as the fix has its verdict
+(verified or rejected), whichever comes first; the agent's next fix of
+the report gets a new ticket. Attaching again on a redeploy changes
+nothing.
+
+**The reporter checks it on the preview.** The overlay on a preview asks
+Clax, with the reporter's own token, whether any of their reports has a
+fix whose `verify_url` is on this origin (the token's, never one the page
+names: `ReporterClient.previews()`). If one has, it shows "This preview
+has a fix for your report" with **It's fixed**, **Still broken** and
+**Add a note…**, the same verify, reopen and comment routes. A verdict
+given on a preview counts: the report is verified, and triage sees the
+origin it was verified on beside the verdict. The reporter must be the
+same on both origins: `reporter_id` is your app's stable user ID, which a
+preview signed in against the production identity provider keeps. A
+preview with no sign-in has no reporter, and shows the banner to nobody.
+
+`docs/contract.md` ("Report queue routes": Origins, Grants limited to
+some origins, Fix tickets, Previews) has the whole rule.
 
 ## 2. The token route in your backend
 

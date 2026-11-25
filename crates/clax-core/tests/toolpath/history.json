@@ -4313,6 +4313,40 @@
     "registered_by": "u_4be1q8"
    },
    "backfilled": false
+  },
+  {
+   "seq": 128,
+   "at": "2026-10-06T14:09:37.128Z",
+   "kind": "queue.preview",
+   "actor": {
+    "type": "fix_ticket",
+    "queue_id": "01JBQQ00000000000000000001",
+    "ticket_id": "01JBFT00000000000000000001"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": "01JB9T00000000000000000001",
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "lan",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "queue_id": "01JBQQ00000000000000000001",
+    "thread_id": "01JB9T00000000000000000001",
+    "n": 1,
+    "origin": "https://app-pr-538.fly.dev",
+    "url": "https://app-pr-538.fly.dev/orders/7",
+    "ticket_id": "01JBFT00000000000000000001",
+    "issued_by": "claude",
+    "for_person": "owner"
+   },
+   "backfilled": false
   }
  ]
 }

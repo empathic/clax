@@ -230,6 +230,9 @@ pub fn actor_string(actor: &Actor, clax_version: &str) -> String {
         Actor::Service { grant_id, .. } => {
             format!("tool:clax-service/{}", actor_segment(grant_id))
         }
+        Actor::FixTicket { ticket_id, .. } => {
+            format!("tool:clax-fix-ticket/{}", actor_segment(ticket_id))
+        }
         Actor::System { .. } => format!("tool:clax/{}", actor_segment(clax_version)),
         Actor::Bot { on_behalf_of } => format!(
             "agent:claxbot/{}",
@@ -359,6 +362,16 @@ pub fn actor_def(actor: &Actor, install: &str, clax_commit: &str, opts: &Redacti
             "name": "Report queue service",
             "identities": [
                 identity("clax-queue-grant", grant_id),
+                identity("clax-queue", &format!("{install}/{queue_id}")),
+            ],
+        }),
+        Actor::FixTicket {
+            queue_id,
+            ticket_id,
+        } => json!({
+            "name": "Preview deployment",
+            "identities": [
+                identity("clax-fix-ticket", ticket_id),
                 identity("clax-queue", &format!("{install}/{queue_id}")),
             ],
         }),
@@ -1616,6 +1629,14 @@ impl Event<'_> {
             Some(K::QueueFix) => format!("Proposed fix {} on report {}", self.show("n"), thread()),
             Some(K::QueueVerify) => format!("Verified the fix on report {}", thread()),
             Some(K::QueueReopen) => format!("Reopened report {}", thread()),
+            Some(K::QueuePreview) => format!(
+                "Preview {} attached to fix {} of report {}, ticket issued by {} for {}",
+                self.show("origin"),
+                self.show("n"),
+                thread(),
+                self.show("issued_by"),
+                self.show("for_person")
+            ),
             Some(K::RemoteRequestAsk) => format!(
                 "Asked to connect to {} (request {})",
                 self.show("origin"),

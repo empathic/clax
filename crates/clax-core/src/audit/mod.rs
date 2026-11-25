@@ -144,6 +144,7 @@ kinds! {
     QueueFix = "queue.fix",
     QueueVerify = "queue.verify",
     QueueReopen = "queue.reopen",
+    QueuePreview = "queue.preview",
     RemoteRequestAsk = "remote_request.ask",
     RemoteRequestAnswer = "remote_request.answer",
     RemoteRequestClose = "remote_request.close",
@@ -263,6 +264,13 @@ pub enum Actor {
     Service {
         queue_id: String,
         grant_id: String,
+    },
+    /// A preview deployment, through the fix ticket an agent or a triage
+    /// person was issued for one fix of one report: the queue and the
+    /// ticket's ID (never its token).
+    FixTicket {
+        queue_id: String,
+        ticket_id: String,
     },
 }
 
@@ -865,6 +873,7 @@ mod tests {
             "queue.fix",
             "queue.verify",
             "queue.reopen",
+            "queue.preview",
             "remote_request.ask",
             "remote_request.answer",
             "remote_request.close",
@@ -979,6 +988,13 @@ mod tests {
                 json!({"type":"viewer","public_id":"u_77c0"}),
             ),
             (Actor::Anonymous, json!({"type":"anonymous"})),
+            (
+                Actor::FixTicket {
+                    queue_id: "q1".into(),
+                    ticket_id: "t1".into(),
+                },
+                json!({"type":"fix_ticket","queue_id":"q1","ticket_id":"t1"}),
+            ),
             (
                 Actor::Bot {
                     on_behalf_of: "u_77c0".into(),

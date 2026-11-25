@@ -12,11 +12,18 @@
 // for the cookie's user, bound to the key the overlay sends and to the
 // site's own origin. Until `grant` hands it the service grant, the backend
 // answers 503.
+//
+// A site started with a `host` (such as `pr-538.localhost`, which the
+// browser takes to the loopback address) stands in for a preview
+// deployment of the site on its own origin: its backend attaches that
+// origin to the fix its ticket names (`attachPreview`), as a preview
+// deployment's does when it starts with `CLAX_FIX_TICKET`.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { ClaxError } from "../../sdk/src/client";
 import { ServiceClient } from "../../sdk/src/service";
+import type { PreviewAttached } from "../../sdk/src/types";
 import { freePort } from "../hosted-helpers";
 
 /** The service grant the queue's admin made, as the Queues page shows it once. */
@@ -28,10 +35,14 @@ export interface Grant {
 
 /** A running deployer site. */
 export interface DeployerSite {
-  /** `http://127.0.0.1:<port>`: another origin than the instance's `localhost`. */
+  /** `http://127.0.0.1:<port>` (or `http://<host>:<port>`): another
+   * origin than the instance's `localhost`. */
   origin: string;
   /** Hands the backend its service grant. */
   grant(g: Grant): void;
+  /** Attaches this site's origin, at `path`, to the fix `ticket` was
+   * issued for, through the backend's `ServiceClient`. */
+  attachPreview(ticket: string, path?: string): Promise<PreviewAttached>;
   /** The reporter IDs the backend minted a token for, in order. */
   minted: string[];
   stop(): Promise<void>;
@@ -75,10 +86,11 @@ function json(res: ServerResponse, status: number, v: unknown): void {
   res.end(JSON.stringify(v));
 }
 
-/** Starts the site for the Clax instance at `instance` (its origin). */
-export async function startDeployerSite(instance: string): Promise<DeployerSite> {
+/** Starts the site for the Clax instance at `instance` (its origin), on
+ * the loopback address, named `host` (default `127.0.0.1`) in its origin. */
+export async function startDeployerSite(instance: string, opts: { host?: string } = {}): Promise<DeployerSite> {
   const port = await freePort();
-  const origin = `http://127.0.0.1:${port}`;
+  const origin = `http://${opts.host ?? "127.0.0.1"}:${port}`;
   const minted: string[] = [];
   let service: { client: ServiceClient; queue: string } | null = null;
 
@@ -141,6 +153,10 @@ export async function startDeployerSite(instance: string): Promise<DeployerSite>
     minted,
     grant(g) {
       service = { client: new ServiceClient({ instance, queue: g.queue, token: g.token, privateKey: g.privateKey }), queue: g.queue };
+    },
+    attachPreview(ticket, path) {
+      if (!service) throw new Error("no service grant yet");
+      return service.client.attachPreview({ ticket, origin, path });
     },
     stop: () => new Promise<void>(resolve => {
       server.closeAllConnections();

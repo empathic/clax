@@ -9,7 +9,7 @@
 //! - `GET /api/queues/<qid>/members` → `{members}`; `PUT
 //!   /api/queues/<qid>/members/<public_id> {role}`, `DELETE` the same.
 //! - `GET /api/queues/<qid>/service-grants` → `{grants}`; `POST
-//!   /api/queues/<qid>/service-grants {name}` → `{grant, token,
+//!   /api/queues/<qid>/service-grants {name, origins?}` → `{grant, token,
 //!   private_key}`, shown once; `DELETE
 //!   /api/queues/<qid>/service-grants/<gid>`.
 //!
@@ -313,7 +313,7 @@ pub async fn delete_member(
 }
 
 /// `GET /api/queues/<qid>/service-grants` → `{grants: [{id, name,
-/// created_at}]}`: an admin reads the queue's unrevoked service grants,
+/// origins, created_at}]}`: an admin reads the queue's unrevoked service grants,
 /// oldest first; never their tokens or keys.
 pub async fn grants(
     State(s): State<AppState>,
@@ -334,14 +334,23 @@ pub async fn grants(
 #[serde(deny_unknown_fields)]
 pub struct GrantBody {
     name: String,
+    #[serde(default)]
+    origins: Option<Vec<String>>,
 }
 
-/// `POST /api/queues/<qid>/service-grants {name}` → 201 `{grant: {id,
-/// name, created_at}, token, private_key}`: an admin makes a service grant.
+/// `POST /api/queues/<qid>/service-grants {name, origins?}` → 201
+/// `{grant: {id, name, origins, created_at}, token, private_key}`: an
+/// admin makes a service grant. With `origins` (some of the queue's
+/// origins and patterns, as it lists them) the grant mints reporter tokens
+/// only for an origin one of them allows: a grant limited to the queue's
+/// preview pattern is what preview deployments hold, so none holds one
+/// that mints for the production site. `origins` is `null` on a grant of
+/// every origin the queue allows.
 /// `token` (`cxq_…`) and `private_key` (the Ed25519 key's PKCS#8 v2
 /// document, unpadded base64url) are in this answer alone: Clax keeps the
 /// token's SHA-256 and the public key. 400 `invalid_name` for a blank name
-/// or one over 120 characters.
+/// or one over 120 characters; 400 `invalid_origin` for an empty
+/// `origins`, or one the queue does not list.
 pub async fn create_grant(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -356,7 +365,9 @@ pub async fn create_grant(
     let b = body(req)?;
     admin_of(&s, &qid, person).await?;
     let (grant, token, key) = s
-        .store_call(move |st| st.create_service_grant(&ctx, &qid, &b.name))
+        .store_call(move |st| {
+            st.create_service_grant_for(&ctx, &qid, &b.name, b.origins.as_deref())
+        })
         .await?;
     let private_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.pkcs8().expose());
     Ok((

@@ -34,6 +34,12 @@ pub const REPORT_PAGE: usize = 50;
 pub const SERVICE_TOKEN_PREFIX: &str = "cxq_";
 /// The prefix of a reporter token.
 pub const REPORTER_TOKEN_PREFIX: &str = "cxr_";
+/// The prefix of a fix ticket: what a preview deployment of one proposed
+/// fix holds to attach its origin to that fix, and nothing else.
+pub const FIX_TICKET_PREFIX: &str = "cxf_";
+/// How long a fix ticket lasts at most, in seconds (14 days); it ends
+/// sooner when its fix is no longer waiting for a verdict.
+pub const FIX_TICKET_SECS: i64 = 14 * 86_400;
 /// A comment's `author_kind` in a report view when a reporter wrote it.
 pub const AUTHOR_REPORTER: &str = "reporter";
 

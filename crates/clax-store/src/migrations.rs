@@ -2508,6 +2508,33 @@ pub const MIGRATIONS: &[&str] = &[
         path TEXT NOT NULL,
         PRIMARY KEY (day, visitor, path)
     ) WITHOUT ROWID;",
+    // 69: fixes checked on preview deployments (`crate::queues`): the
+    // origins a service grant may mint reporter tokens for
+    // (`queue_service_grants.origins_json`, a JSON list of some of its
+    // queue's origins and patterns; NULL for every one the queue allows),
+    // the origin a reporter verified a fix from
+    // (`report_fixes.verified_origin`), and fix tickets: each bound to one
+    // fix of one report, the queue's origin patterns when it was issued,
+    // who issued it and for whom, kept as its token's SHA-256, until
+    // `expires_at` or its fix's verdict.
+    //
+    // `queue_fix_tickets` is the migration's mark (`MARKS_AFTER_APP`).
+    "ALTER TABLE queue_service_grants ADD COLUMN origins_json TEXT;
+    ALTER TABLE report_fixes ADD COLUMN verified_origin TEXT;
+    CREATE TABLE queue_fix_tickets (
+        id TEXT PRIMARY KEY,
+        token_sha256 TEXT NOT NULL UNIQUE,
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        n INTEGER NOT NULL,
+        origins_json TEXT NOT NULL,
+        issuer_name TEXT NOT NULL,
+        issuer_session_id TEXT,
+        issuer_person TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    );
+    CREATE INDEX queue_fix_tickets_by_fix ON queue_fix_tickets(thread_id, n);",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2596,8 +2623,13 @@ pub const KEY_PROBLEM_MIGRATION: u32 = SURFACES_MIGRATION + 1;
 pub const CONTENT_SECURITY_POLICY_MIGRATION: u32 = KEY_PROBLEM_MIGRATION + 1;
 
 /// The migration that adds site analytics (`artifacts.analytics` and the
-/// `analytics_*` tables), as a schema version, and this build's last.
+/// `analytics_*` tables), as a schema version.
 pub const ANALYTICS_MIGRATION: u32 = CONTENT_SECURITY_POLICY_MIGRATION + 1;
+
+/// The migration that adds fixes checked on preview deployments
+/// (`queue_service_grants.origins_json`, `report_fixes.verified_origin`
+/// and `queue_fix_tickets`), as a schema version, and this build's last.
+pub const PREVIEW_FIXES_MIGRATION: u32 = ANALYTICS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2757,11 +2789,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`ANALYTICS_MIGRATION`]. They follow the app's in every
+/// [`PREVIEW_FIXES_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 19] = [
+const MARKS_AFTER_APP: [Mark<'static>; 20] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2781,6 +2813,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 19] = [
     Mark::Column("sealed_secrets", "last_problem_json"),
     Mark::Column("artifacts", "content_security_policy"),
     Mark::Table("analytics_days"),
+    Mark::Table("queue_fix_tickets"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5852,7 +5885,12 @@ mod tests {
             super::CONTENT_SECURITY_POLICY_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 26].contains("CREATE TABLE analytics_days ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::ANALYTICS_MIGRATION);
+        assert_eq!(
+            super::PREVIEW_FIXES_MIGRATION,
+            super::ANALYTICS_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 27].contains("CREATE TABLE queue_fix_tickets ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::PREVIEW_FIXES_MIGRATION);
     }
 
     #[test]
@@ -6021,7 +6059,10 @@ mod tests {
             let c = Connection::open(home.db_path()).unwrap();
             // The schema as it was at 67, with an artifact.
             c.execute_batch(
-                "ALTER TABLE artifacts DROP COLUMN analytics;
+                "ALTER TABLE queue_service_grants DROP COLUMN origins_json;
+                 ALTER TABLE report_fixes DROP COLUMN verified_origin;
+                 DROP TABLE queue_fix_tickets;
+                 ALTER TABLE artifacts DROP COLUMN analytics;
                  DROP TABLE analytics_days;
                  DROP TABLE analytics_dims;
                  DROP TABLE analytics_timings;
@@ -6035,7 +6076,7 @@ mod tests {
         }
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
         let setting: String = c
             .query_row("SELECT analytics FROM artifacts", [], |r| r.get(0))
             .unwrap();
@@ -6100,7 +6141,8 @@ mod tests {
         assert_eq!(super::KEY_PROBLEM_MIGRATION, 66);
         assert_eq!(super::CONTENT_SECURITY_POLICY_MIGRATION, 67);
         assert_eq!(super::ANALYTICS_MIGRATION, 68);
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(super::PREVIEW_FIXES_MIGRATION, 69);
+        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -6880,7 +6922,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -7377,14 +7419,15 @@ mod tests {
         // approvals' to 58, the queues' to 59, the browser login's to 60,
         // the feedback loop's to 61, the price catalog's to 62, the web lines' to 63,
         // the run bindings' to 64, the surfaces' to 65, the key problem's
-        // to 66, the Content Security Policy's to 67 and analytics' to 68.
+        // to 66, the Content Security Policy's to 67, analytics' to 68 and the
+        // preview fixes' to 69.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+            assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -7392,8 +7435,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::ANALYTICS_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 68 after it are one later now"
+            super::PREVIEW_FIXES_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 69 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -7412,7 +7455,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&copied), super::PREVIEW_FIXES_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -7426,7 +7469,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::ANALYTICS_MIGRATION + 1, schema, rows)
+            (super::PREVIEW_FIXES_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7700,7 +7743,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::ANALYTICS_MIGRATION);
+        assert_eq!(last, super::PREVIEW_FIXES_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -8321,7 +8364,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             run_indexes(&c),
@@ -8597,7 +8640,7 @@ mod tests {
         );
         drop(opened_after_the_runs(&home));
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
         let before = every_row(&c);
         let set = |sql: &str| {
             c.execute(
@@ -8687,7 +8730,7 @@ mod tests {
             .query_row([], |r| r.get::<_, i64>(0))
             .unwrap();
         crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
         let finished: i64 = c
             .prepare_cached("SELECT count(*) FROM bot_runs WHERE status = 'finished'")
             .unwrap()
@@ -9009,7 +9052,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             rows_in(&c, &cols),
@@ -9269,7 +9312,7 @@ mod tests {
         drop(at_64_with_runs(&home));
         drop(opened_after_the_runs(&home));
         let mut c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::ANALYTICS_MIGRATION);
+        assert_eq!(user_version(&c), super::PREVIEW_FIXES_MIGRATION);
         let (schema, rows) = (schema_of(&c), every_row(&c));
         let before = super::Numbering {
             migrations: &MIGRATIONS[..super::RUN_BINDINGS_MIGRATION as usize],
@@ -9280,7 +9323,7 @@ mod tests {
             matches!(
                 refused,
                 Err(clax_core::CoreError::SchemaNewer { found, known })
-                    if found == super::ANALYTICS_MIGRATION
+                    if found == super::PREVIEW_FIXES_MIGRATION
                         && known == super::RUN_BINDINGS_MIGRATION
             ),
             "{refused:?}"

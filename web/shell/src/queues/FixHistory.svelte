@@ -5,7 +5,8 @@
   // §6.2, §6.3): each with its number, what became of it, who proposed it
   // and when, its summary, its links (the change, the commit, the release
   // it ships in, where and when the reporter checks it) and, once given,
-  // the verdict with its note and the release it was given on. A link is
+  // the verdict with its note, the release it was given on and the origin
+  // the reporter verified it from (a preview deployment's). A link is
   // one only when it is http or https.
   import type { FixAttempt } from "../../../sdk/src/types";
   import { relativeTime } from "../format";
@@ -43,7 +44,7 @@
           {#if f.verdict_at}
             <p class="verdict">
               {f.outcome === "verified" ? "Verified" : "Still broken"}
-              <time datetime={f.verdict_at} title={f.verdict_at}>{relativeTime(f.verdict_at)}</time>{#if f.verdict_context?.release?.version}, on {f.verdict_context.release.version}{/if}{#if f.verdict_note}: <q>{f.verdict_note}</q>{/if}
+              <time datetime={f.verdict_at} title={f.verdict_at}>{relativeTime(f.verdict_at)}</time>{#if f.verdict_context?.release?.version}, on {f.verdict_context.release.version}{/if}{#if f.outcome === "verified" && f.verified_origin}, verified on {f.verified_origin}{/if}{#if f.verdict_note}: <q>{f.verdict_note}</q>{/if}
             </p>
           {/if}
         </li>
