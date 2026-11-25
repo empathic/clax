@@ -135,8 +135,10 @@ macro_rules! attention_sql {
 }
 
 /// People of `arts`: each viewer who wrote a comment on one of its threads,
-/// with the latest version they viewed there. Ordered by artifact, then by
-/// when the viewer first appeared.
+/// with the latest version they viewed there. A queue's reports are left
+/// out: who wrote on one is its queue's members' to know, not every reader
+/// of its external artifact's. Ordered by artifact, then by when the
+/// viewer first appeared.
 macro_rules! people_sql {
     ($arts:expr) => {
         concat!(
@@ -148,7 +150,7 @@ macro_rules! people_sql {
                       FROM arts a
                      CROSS JOIN threads t ON t.artifact_id = a.id
                      CROSS JOIN comments c ON c.thread_id = t.id
-                     WHERE +c.author_public_id IS NOT NULL) x
+                     WHERE +c.author_public_id IS NOT NULL AND t.queue_id IS NULL) x
              CROSS JOIN viewers v INDEXED BY viewers_public_id ON v.public_id = x.p
               LEFT JOIN viewer_seen s ON s.viewer_id = v.id AND s.artifact_id = x.aid
              ORDER BY x.aid, v.created_at"

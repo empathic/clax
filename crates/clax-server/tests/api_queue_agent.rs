@@ -2088,3 +2088,50 @@ async fn a_queue_not_shared_with_the_owner_reaches_none_of_their_streams() {
         }
     }
 }
+
+/// Who replied to a report of a queue not shared with the owner is not
+/// named to the owner among its external artifact's participants, in the
+/// gallery or the artifact's own read; its maker's replies are theirs.
+#[tokio::test]
+async fn a_reports_repliers_are_no_participants_of_its_artifact() {
+    let q = setup().await;
+    let bob = q.ts.person("Bob").await;
+    let qid =
+        q.ts.store
+            .create_queue(
+                &AuditCtx::DAEMON,
+                Some(&bob.public_id),
+                NewQueue {
+                    name: "Bob's".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+    let r = file_into(&q.ts, &qid, None).await;
+    let aid = r.artifact.id.clone();
+    let (s, v) = q
+        .browser(
+            &bob.cookie,
+            "POST",
+            &format!("/api/queues/{qid}/reports/{}/comments", r.id),
+            json!({"body": "Bob's reply"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let (s, v) = q
+        .owner("GET", &format!("/api/artifacts/{aid}"), Value::Null)
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifact"]["participants"]["people"], json!([]), "{v}");
+    let (s, v) = q.owner("GET", "/api/artifacts", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    let card = v["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == aid.as_str())
+        .unwrap();
+    assert_eq!(card["participants"]["people"], json!([]), "{card}");
+}
