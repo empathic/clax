@@ -888,10 +888,12 @@ impl Store {
         Ok(self.bearer_grant_scoped(token)?.map(|(g, _)| g))
     }
 
-    /// [`Store::bearer_grant`] with the grant's scope
-    /// ([`crate::queue_requests::QUEUE_REQUEST_SCOPE`], or `None` for an
-    /// ordinary grant). A scoped grant past its end holds none.
-    pub fn bearer_grant_scoped(&self, token: &str) -> Result<Option<(String, Option<String>)>> {
+    /// [`Store::bearer_grant`] with whether its person gives the grant its
+    /// rights: `false` for a queue-request token
+    /// ([`crate::grant_raises::request_grant_in`]), whose one grant to ask
+    /// for a queue is all it holds. A queue-request token past that grant's
+    /// end holds none.
+    pub fn bearer_grant_scoped(&self, token: &str) -> Result<Option<(String, bool)>> {
         if !token.starts_with(AGENT_TOKEN_PREFIX) {
             return Ok(None);
         }
@@ -899,9 +901,13 @@ impl Store {
         let now = self.now();
         self.with_read(|c| {
             Ok(c.query_row(
-                "SELECT g.id, g.scope FROM grant_tokens t JOIN grants g ON g.id = t.grant_id
+                "SELECT g.id, NOT EXISTS (SELECT 1 FROM grant_elevations e
+                                            WHERE e.grant_id = g.id AND e.expires_at IS NOT NULL)
+                   FROM grant_tokens t JOIN grants g ON g.id = t.grant_id
                  WHERE t.sha256 = ?1 AND t.revoked_at IS NULL AND g.status = 'approved'
-                   AND g.bearer = 1 AND (g.scope_expires_at IS NULL OR g.scope_expires_at > ?2)",
+                   AND g.bearer = 1
+                   AND NOT EXISTS (SELECT 1 FROM grant_elevations e WHERE e.grant_id = g.id
+                                     AND e.expires_at IS NOT NULL AND e.expires_at <= ?2)",
                 params![hash, now],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )

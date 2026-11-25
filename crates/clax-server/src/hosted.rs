@@ -1318,8 +1318,10 @@ struct DeviceCodeBody {
 /// than `clax-app`, a `return_to` that is not a loopback page
 /// ([`clax_http::loopback::loopback_return`]) or a `scope` other than
 /// `["queue.request"]` (or beside a `client_kind`), 400 `limit_reached`
-/// with too many waiting. A scoped sign-in's token holds a grant of that
-/// scope alone: no rights, the scope's routes, and an end of its own.
+/// with too many waiting. A scoped sign-in's token holds none of its
+/// person's rights and one grant from the approver,
+/// `clax-queue-requests` `request`, with an end of its own
+/// (`clax_store::grant_raises`).
 async fn device_code(
     State(s): State<AppState>,
     headers: HeaderMap,

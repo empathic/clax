@@ -1747,9 +1747,24 @@ mod agents {
             ("POST", "/api/sessions/{id}/tool-call-ids", Own, None),
             // Report queues (spec 2026-10-27-clax-sdk-design §7).
             ("GET", "/api/queues", Own, None),
-            ("POST", "/api/queue-requests", Own, None),
-            ("GET", "/api/queue-requests/{id}", Own, None),
-            ("POST", "/api/queue-requests/{id}/take", Own, None),
+            (
+                "POST",
+                "/api/queue-requests",
+                Own,
+                Some((QueueRequests, "request")),
+            ),
+            (
+                "GET",
+                "/api/queue-requests/{id}",
+                Own,
+                Some((QueueRequests, "request")),
+            ),
+            (
+                "POST",
+                "/api/queue-requests/{id}/take",
+                Own,
+                Some((QueueRequests, "request")),
+            ),
             (
                 "GET",
                 "/api/queues/{qid}/reports",

@@ -286,12 +286,32 @@ need!(ToolCallIdReport, None, Own, DEFAULT_LIMIT);
 // rights decide each (its triage members and their agents); the right
 // below is held somewhere, as a path without an artifact asks.
 need!(QueuesList, None, Own, DEFAULT_LIMIT);
-// Queue requests (`clax_store::queue_requests`): any agent may ask its
-// person for a queue and read its own request's answer; no right is
-// checked, as none makes a queue.
-need!(QueueRequestAsk, None, Own, DEFAULT_LIMIT);
-need!(QueueRequestGet, None, Own, DEFAULT_LIMIT);
-need!(QueueRequestTake, None, Own, DEFAULT_LIMIT);
+// Queue requests (`clax_store::queue_requests`): asking one's person for a
+// queue, reading that request and taking its answer need
+// `clax-queue-requests` `request`, which every agent of a person holds by
+// its person's grant and a queue-request token holds alone
+// (`clax_store::grant_raises`).
+need!(
+    QueueRequestAsk,
+    QueueRequests,
+    "request",
+    Own,
+    DEFAULT_LIMIT
+);
+need!(
+    QueueRequestGet,
+    QueueRequests,
+    "request",
+    Own,
+    DEFAULT_LIMIT
+);
+need!(
+    QueueRequestTake,
+    QueueRequests,
+    "request",
+    Own,
+    DEFAULT_LIMIT
+);
 need!(QueueReportsList, Comments, "read", Own, DEFAULT_LIMIT);
 need!(QueueWatch, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(QueueUnwatch, Comments, "watch", Own, DEFAULT_LIMIT);
@@ -1499,7 +1519,11 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
                 .get::<crate::hosted::HostedRequest>()
                 .and_then(|h| h.member.clone()),
         };
-        if let (Some(m), Some((kind, action))) = (&member, N::RIGHT) {
+        // A zero-default type is held by grants alone, never by a person's
+        // reach, which the caller's rights already read.
+        if let (Some(m), Some((kind, action))) = (&member, N::RIGHT)
+            && !kind.zero_by_default()
+        {
             let artifact = raw_artifact
                 .as_deref()
                 .map(|a| ArtifactId::parse(a).map_err(|_| ApiError::not_found()))
@@ -2011,35 +2035,34 @@ fn check_head(s: &AppState, parts: &Parts) -> Result<GrantHead, Refusal> {
 #[derive(Clone, Debug)]
 pub struct BearerGrant {
     pub grant_id: String,
-    /// The grant's scope ([`clax_store::queue_requests::QUEUE_REQUEST_SCOPE`]),
-    /// for a grant that may reach [`SCOPED_ROUTES`] alone.
-    pub scope: Option<String>,
+    /// Whether its person gives the grant its rights: false for a
+    /// queue-request token, whose one grant to ask for a queue is all it
+    /// holds ([`clax_store::grant_raises::request_grant_in`]), so it reaches
+    /// no route whose need names no right but [`SESSION_ROUTES`].
+    pub person_gives: bool,
 }
 
-/// The routes an agent token of a scoped grant reaches, by method and
-/// route pattern, beside the remote MCP endpoint (whose tools' requests
-/// come back through this layer, each checked here) and
-/// [`crate::hosted::SELF_REVOKE_PATH`]: asking for a queue, reading
-/// that request and taking its answer, and the session routes the MCP endpoint registers and
-/// keeps its session by. Every other route refuses it 403 `forbidden`.
-pub const SCOPED_ROUTES: &[(&str, &str)] = &[
-    ("POST", "/api/queue-requests"),
-    ("GET", "/api/queue-requests/{id}"),
-    ("POST", "/api/queue-requests/{id}/take"),
+/// The routes whose need names no right that a token its person gives
+/// nothing (a queue-request token, [`BearerGrant::person_gives`]) still
+/// reaches, by method and route pattern: the session routes the remote MCP
+/// endpoint registers and keeps its session by. Every other route without
+/// a right refuses it 403 `forbidden`; a route with one is decided by its
+/// rights, as for every token.
+pub const SESSION_ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/sessions"),
     ("GET", "/api/sessions/{id}"),
     ("PATCH", "/api/sessions/{id}"),
 ];
 
 /// Whether `method` at route pattern `matched` is one of
-/// [`SCOPED_ROUTES`] (`HEAD` as `GET`).
+/// [`SESSION_ROUTES`] (`HEAD` as `GET`).
 pub fn scoped_route(method: &Method, matched: &str) -> bool {
     let m = if method == Method::HEAD {
         "GET"
     } else {
         method.as_str()
     };
-    SCOPED_ROUTES
+    SESSION_ROUTES
         .iter()
         .any(|(rm, rp)| *rm == m && *rp == matched)
 }
@@ -2109,8 +2132,11 @@ async fn bearer_head(s: &AppState, headers: &HeaderMap) -> Result<BearerGrant, R
     let found = s
         .store_call(move |st| st.bearer_grant_scoped(&token))
         .await?;
-    let (grant_id, scope) = found.ok_or_else(grant_auth::invalid_token)?;
-    Ok(BearerGrant { grant_id, scope })
+    let (grant_id, person_gives) = found.ok_or_else(grant_auth::invalid_token)?;
+    Ok(BearerGrant {
+        grant_id,
+        person_gives,
+    })
 }
 
 /// Whether a request has no body: no or a zero `Content-Length`, and no
@@ -2331,11 +2357,13 @@ fn bearer_key(grant_id: &str) -> [u8; 32] {
 /// [`VerifiedGrant`] (which its audit rows name), its body read within
 /// [`PERSON_DEVICE_BODY_LIMIT`];
 /// any other token is refused there as on every route outside a grant's.
-/// A scoped grant's token reaches [`SCOPED_ROUTES`] alone beside those two.
+/// A token its person gives nothing (a queue-request token) reaches, beside
+/// those two, the routes its rights name and [`SESSION_ROUTES`].
 async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Next) -> Response {
     let matched = req.extensions().get::<MatchedPath>().map(|m| m.as_str());
     let self_revoke =
         matched == Some(crate::hosted::SELF_REVOKE_PATH) && req.method() == Method::DELETE;
+    let session_route = matched.is_some_and(|m| scoped_route(req.method(), m));
     if matched == Some(crate::headers::MCP_JSON_PATH) {
         let limit = crate::limits::PUBLISH_BODY_LIMIT;
         let mut req = match gated(s, &b, req, limit).await {
@@ -2349,9 +2377,6 @@ async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Nex
         // The handler reads no body.
         req.extensions_mut().insert(b);
         return next.run(req).await;
-    }
-    if b.scope.is_some() && !matched.is_some_and(|m| scoped_route(req.method(), m)) {
-        return crate::auth::grants_refused().into_response();
     }
     if matched.is_some_and(|m| person_device_route(req.method(), m)) {
         let gid = b.grant_id.clone();
@@ -2382,6 +2407,13 @@ async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Nex
     let Some(need) = need.filter(|n| n.grants) else {
         return crate::auth::grants_refused().into_response();
     };
+    // A token its person gives nothing holds only grants of the
+    // zero-default types (`clax_store::grant_raises`): a route needing
+    // another type's right is beyond it, and one needing none presumes what
+    // a person's grant gives, so both refuse it here as its rights would.
+    if !b.person_gives && need.right.is_none_or(|(t, _)| !t.zero_by_default()) && !session_route {
+        return crate::auth::grants_refused().into_response();
+    }
     if need.class == Class::Filtered && !FILTERED_LIVE.contains(&need.name) {
         return not_yet().into_response();
     }

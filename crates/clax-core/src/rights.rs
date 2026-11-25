@@ -17,15 +17,16 @@
 //! A session holds it only as the union of the grants that reach it, each
 //! read at every check within what its granter may still do
 //! ([`granted_within`], [`with_grants`]). `clax-queues` is the first such
-//! type; the others may follow it.
+//! type and `clax-queue-requests` the second; the others may follow them.
 //!
 //! Limits: a client's array holds at most [`MAX_ACCESS`] access objects,
 //! counted before merging, with a preset name counting as its merged
 //! objects (`clax:reader` and `clax:full` are four, `clax:collaborator`
 //! seven); each object holds at most
 //! [`MAX_LOCATIONS`] locations. Merged rights hold at most one object per
-//! type, `clax-db` level and action set: 102 in all (15 artifact action
-//! sets, 63 comment, 7 db, 1 ask, 16 queue: every queue set holds `read`).
+//! type, `clax-db` level and action set: 103 in all (15 artifact action
+//! sets, 63 comment, 7 db, 1 ask, 16 queue: every queue set holds `read`,
+//! 1 queue request).
 
 use crate::db::Level;
 use crate::{CoreError, Result};
@@ -54,6 +55,10 @@ pub const ASK_ACTIONS: &[&str] = &["ask"];
 /// a fix) and `resolve`. Each implies `read`: an object naming any of them
 /// grants `read` too.
 pub const QUEUE_ACTIONS: &[&str] = &["read", "claim", "reply", "fix", "resolve"];
+/// Actions of `clax-queue-requests`: `request`, asking one's person for a
+/// report queue (`POST /api/queue-requests`, reading that request and
+/// taking its answer). Unlocated, as `clax-ask` is.
+pub const QUEUE_REQUEST_ACTIONS: &[&str] = &["request"];
 
 /// Most access objects in one rights array a client sends. Effective rights
 /// are a product of up to three such arrays, so this bounds their rebuild.
@@ -85,6 +90,8 @@ pub enum RightType {
     Ask,
     #[serde(rename = "clax-queues")]
     Queues,
+    #[serde(rename = "clax-queue-requests")]
+    QueueRequests,
 }
 
 impl RightType {
@@ -95,6 +102,7 @@ impl RightType {
             "clax-db" => Some(RightType::Db),
             "clax-ask" => Some(RightType::Ask),
             "clax-queues" => Some(RightType::Queues),
+            "clax-queue-requests" => Some(RightType::QueueRequests),
             _ => None,
         }
     }
@@ -106,6 +114,7 @@ impl RightType {
             RightType::Db => "clax-db",
             RightType::Ask => "clax-ask",
             RightType::Queues => "clax-queues",
+            RightType::QueueRequests => "clax-queue-requests",
         }
     }
 
@@ -117,15 +126,17 @@ impl RightType {
             RightType::Db => DB_ACTIONS,
             RightType::Ask => ASK_ACTIONS,
             RightType::Queues => QUEUE_ACTIONS,
+            RightType::QueueRequests => QUEUE_REQUEST_ACTIONS,
         }
     }
 
     /// Whether a session holds this type only through the grants that
     /// reach it: no person's rights, preset, narrowing or session raise
     /// carries it, so a new session has none of it ([`effective`] leaves
-    /// it out, [`with_grants`] adds the grants'). `clax-queues`.
+    /// it out, [`with_grants`] adds the grants'). `clax-queues` and
+    /// `clax-queue-requests`.
     pub fn zero_by_default(self) -> bool {
-        self == RightType::Queues
+        matches!(self, RightType::Queues | RightType::QueueRequests)
     }
 
     /// Whether this type's locations are artifacts (`*`, `own` or artifact
@@ -137,10 +148,11 @@ impl RightType {
         )
     }
 
-    /// Whether objects of this type carry locations. `clax-ask` does not: a
-    /// question is not asked at an artifact.
+    /// Whether objects of this type carry locations. `clax-ask` and
+    /// `clax-queue-requests` do not: a question is not asked at an
+    /// artifact, and a queue asked for does not exist yet.
     fn located(self) -> bool {
-        self != RightType::Ask
+        !matches!(self, RightType::Ask | RightType::QueueRequests)
     }
 }
 
@@ -316,7 +328,7 @@ impl Access {
             .and_then(RightType::parse)
             .ok_or_else(|| {
                 invalid(
-                    "type must be clax-artifacts, clax-comments, clax-db, clax-ask or clax-queues",
+                    "type must be clax-artifacts, clax-comments, clax-db, clax-ask, clax-queues or clax-queue-requests",
                 )
             })?;
         let mut actions = obj
@@ -353,7 +365,7 @@ impl Access {
         };
         let locations = canonical_locations(locations);
         if !kind.located() && locations != [Location::Any] {
-            return Err(invalid("clax-ask takes no locations"));
+            return Err(invalid(format!("{} takes no locations", kind.as_str())));
         }
         if kind == RightType::Queues {
             if locations

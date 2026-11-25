@@ -2638,10 +2638,15 @@ pub const MIGRATIONS: &[&str] = &[
     // spec `clax_core::rights::RightType::zero_by_default`) to a grant (an
     // agent token or a connected machine), one per (grant, granter; NULL
     // the owner), as `session_elevations` holds a session's raises. It
-    // outlives the grant's sessions and ends with the grant. No row is
-    // made: every existing token starts with no queue access at all, which
-    // its person (or another queue member) grants. A new, empty table: a
-    // few pages at any number of rows elsewhere.
+    // outlives the grant's sessions and ends with the grant, or at its own
+    // `expires_at` when it has one. No queue row is made: every existing
+    // token starts with no queue access at all, which its person (or
+    // another queue member) grants. A token of migration 70's
+    // `queue.request` scope becomes a queue-request token of this model:
+    // its approver's grant of `clax-queue-requests` `request`, ending when
+    // its scope did; `grants.scope` and `grants.scope_expires_at` are no
+    // longer read, and are cleared. A few pages at any number of rows
+    // elsewhere: the scoped grants are few and short-lived.
     //
     // `grant_elevations` is the migration's mark (`MARKS_AFTER_APP`).
     "CREATE TABLE grant_elevations (
@@ -2649,10 +2654,18 @@ pub const MIGRATIONS: &[&str] = &[
         granter TEXT,
         access_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        version TEXT NOT NULL
+        version TEXT NOT NULL,
+        expires_at TEXT
     );
     CREATE UNIQUE INDEX grant_elevations_key ON grant_elevations(grant_id, COALESCE(granter, ''));
-    CREATE INDEX grant_elevations_by_granter ON grant_elevations(granter) WHERE granter IS NOT NULL;",
+    CREATE INDEX grant_elevations_by_granter ON grant_elevations(granter) WHERE granter IS NOT NULL;
+    INSERT INTO grant_elevations (grant_id, granter, access_json, created_at, version, expires_at)
+        SELECT g.id, CASE WHEN COALESCE(v.owner, 0) = 1 THEN NULL ELSE v.public_id END,
+               '[{\"type\":\"clax-queue-requests\",\"actions\":[\"request\"]}]',
+               COALESCE(g.decided_at, g.created_at), 'm74-' || g.id, g.scope_expires_at
+          FROM grants g JOIN viewers v ON v.id = g.viewer_id
+         WHERE g.scope IS NOT NULL AND g.scope_expires_at IS NOT NULL;
+    UPDATE grants SET scope = NULL, scope_expires_at = NULL WHERE scope IS NOT NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec

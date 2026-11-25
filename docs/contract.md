@@ -5016,15 +5016,22 @@ the Queues page lists pending ones too. Audit: `queue_request.ask`,
 `grant`).
 
 **A token for asking alone.** A device sign-in with `scope:
-["queue.request"]` ("The public side's device sign-in") makes a grant with
-no rights whose token reaches `POST /api/queue-requests`, `GET
-/api/queue-requests/<id>`, the session routes the remote MCP endpoint
-keeps its session by (`POST /api/sessions`, `GET` and `PATCH
-/api/sessions/<id>`), `POST /api/queue-requests/<id>/take`, `/mcp` (whose tools' requests are checked the same
-way) and `DELETE /api/hosted/agent-token`; every other route answers 403
-`forbidden`. It makes one request, and ends (its token 401) once its agent
-has taken that request's answer, an hour after it was approved, or when
-revoked on People, whichever comes first.
+["queue.request"]` ("The public side's device sign-in") makes a
+queue-request token: a grant that holds none of its person's rights and
+one grant on it, from the person who approved the sign-in,
+`clax-queue-requests` `request` ("Rights"), recorded as `grant.elevate`
+with its `expires_at`. Its rights are read as every token's are, so it
+reaches the routes that need that right (`POST /api/queue-requests`,
+`GET /api/queue-requests/<id>`, `POST /api/queue-requests/<id>/take`),
+`/mcp` (whose tools' requests are checked the same way) and `DELETE
+/api/hosted/agent-token`. Every other route answers it 403 `forbidden`,
+as one needing a right it cannot hold, or one needing none (which
+presumes what a person's grant gives), but for the session routes the
+remote MCP endpoint keeps its session by (`POST /api/sessions`, `GET` and
+`PATCH /api/sessions/<id>`). It makes one
+request, and ends (its token 401) once its agent has taken that
+request's answer, when its grant to ask ends (an hour after it was
+approved), or when revoked on People, whichever comes first.
 
 ### Working
 
@@ -6448,11 +6455,13 @@ Rights are GNAP access objects:
 {"type": "clax-db",        "actions": ["read", "write"], "level": "interact", "locations": ["*"]}
 {"type": "clax-ask",       "actions": ["ask"]}
 {"type": "clax-queues",    "actions": ["read", "claim", "reply", "fix", "resolve"], "locations": ["*"]}
+{"type": "clax-queue-requests", "actions": ["request"]}
 ```
 
 Locations are `*`, `own` (the artifacts the agent's person created) or
-artifact IDs; a `clax-queues` object's are `*` or queue IDs. The presets
-(which hold no `clax-queues`):
+artifact IDs; a `clax-queues` object's are `*` or queue IDs, and
+`clax-ask` and `clax-queue-requests` take none. The presets (which hold no
+`clax-queues` and no `clax-queue-requests`):
 
 | Preset | Rights |
 |---|---|
@@ -6522,6 +6531,16 @@ An agent's rights:
   granter's holdings ∩ its person's holdings)`, for every session of the
   token and for its requests that name none. Every token starts with
   none, those that existed before this type included.
+- **Zero by default: `clax-queue-requests`.** Its one action, `request`,
+  is asking one's person for a report queue (`POST /api/queue-requests`,
+  reading that request and taking its answer, "Queue requests"). It is no
+  part of a person's rights, a preset or a narrowing either: every agent
+  of a person holds it by its person's grant, with the rest of what that
+  grant gives, and a queue-request token ("A token for asking alone")
+  holds it alone, as a grant on the token from the person who approved
+  its sign-in, with an end of its own. No one grants it by hand: `PUT
+  …/elevate` refuses it (400 `invalid_rights`), and a queue-request token
+  takes no other grant (404).
 - **Granting on a token.** Anyone who holds a queue action, the owner or
   a connected person in their browser, grants it to any approved token
   (an agent token, or a connected machine), their own or another
@@ -6694,9 +6713,9 @@ router), and a test fails when it differs:
 | `GET /api/sessions/{id}/where-to-ask` | Own | `clax-ask` `ask` | 2 MiB | yes |
 | `POST /api/sessions/{id}/terminal` | Own | none | 2 MiB | yes |
 | `GET /api/queues` | Own | none | 2 MiB | yes |
-| `POST /api/queue-requests` | Own | none | 2 MiB | yes |
-| `GET /api/queue-requests/{id}` | Own | none | 2 MiB | yes |
-| `POST /api/queue-requests/{id}/take` | Own | none | 2 MiB | yes |
+| `POST /api/queue-requests` | Own | `clax-queue-requests` `request` | 2 MiB | yes |
+| `GET /api/queue-requests/{id}` | Own | `clax-queue-requests` `request` | 2 MiB | yes |
+| `POST /api/queue-requests/{id}/take` | Own | `clax-queue-requests` `request` | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports` | Own | `clax-comments` `read` | 2 MiB | yes |
 | `POST /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `DELETE /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
