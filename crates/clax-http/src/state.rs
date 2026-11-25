@@ -323,6 +323,11 @@ pub struct AppState {
     /// passkey (`clax_server::routes::sign`); `None` for none. The host sets
     /// it after [`AppState::assemble`].
     pub sign: Option<Arc<clax_core::config::SignConfig>>,
+    /// `[github]`: GitHub sign-in on a local daemon
+    /// ([`crate::github::LocalGitHub`]); `None` for off, and always on a
+    /// hosted one (whose GitHub sign-in is [`crate::hosted::Hosted::github`]).
+    /// The host sets it after [`AppState::assemble`].
+    pub local_github: Option<Arc<crate::github::LocalGitHub>>,
     /// `[serve] trusted_host_frames`: on a request on one of
     /// `trusted_hosts`, artifacts are framed from `/_clax/frame/<id>/…` of
     /// that host, sandboxed ([`crate::host::FRAME_PATH`]).
@@ -397,6 +402,14 @@ static LOCAL_SITES: std::sync::LazyLock<crate::host::SiteHosts> =
     std::sync::LazyLock::new(crate::host::SiteHosts::local);
 
 impl AppState {
+    /// Whether people sign in here with GitHub: a hosted daemon with GitHub
+    /// sign-in, or a local one with `[github]` ([`AppState::local_github`]).
+    /// What a GitHub login is given (a queue invite, a share) binds only at
+    /// such a sign-in.
+    pub fn github_sign_in_on(&self) -> bool {
+        self.hosted.as_ref().is_some_and(|h| h.github.is_some()) || self.local_github.is_some()
+    }
+
     /// The host-to-artifact lookup ([`crate::host::site_layer`]): hosted
     /// mode's site domain when it has one ([`crate::hosted::Hosted::sites`],
     /// its only source), else `<id>.localhost`.
@@ -603,6 +616,7 @@ impl AppState {
             owner_tailscale_login: p.owner_tailscale_login.map(Arc::from),
             owner_devices: None,
             sign: None,
+            local_github: None,
             trusted_host_frames: p.trusted_host_frames,
             grant_auth,
             agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),

@@ -94,3 +94,95 @@ impl GitHub {
             .is_some_and(|o| o.eq_ignore_ascii_case(login))
     }
 }
+
+/// GitHub sign-in on a local Clax (the home's `[github]`,
+/// [`clax_core::config::HomeConfig::github`]; [`crate::state::AppState::local_github`]).
+/// A sign-in makes the browser the person the account is linked to (made
+/// at its first sign-in only for a login a pending queue invite or share
+/// names), by a `clax_viewer` cookie, never the owner: the account has no
+/// owner login ([`GitHub::owner_login`] is `None`), and one linked to the
+/// owner's row is refused ([`clax_store::Store::github_sign_in_local`]).
+#[derive(Clone, Debug)]
+pub struct LocalGitHub {
+    pub github: GitHub,
+    /// The origins a sign-in starts and returns on, normalized
+    /// (`http://localhost:7480`, `https://box.tail1.ts.net`): the OAuth
+    /// App's callback URL is one of them and [`CALLBACK_PATH`].
+    pub origins: Vec<String>,
+}
+
+impl LocalGitHub {
+    /// `[github]` with its secret read by `secret` from the variable it
+    /// names, its origins those it lists or `http://localhost:<port>`;
+    /// `None` when the secret is unset or empty (sign-in stays off).
+    pub fn from_config(
+        c: &clax_core::config::LocalGitHubConfig,
+        port: u16,
+        secret: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<LocalGitHub> {
+        let s = secret(&c.client_secret_env).unwrap_or_default();
+        let github = GitHub::new(
+            &c.client_id,
+            &s,
+            None,
+            c.oauth_base.as_deref(),
+            c.api_base.as_deref(),
+        )?;
+        let origins = if c.origins.is_empty() {
+            vec![format!("http://localhost:{port}")]
+        } else {
+            c.origins.clone()
+        };
+        Some(LocalGitHub { github, origins })
+    }
+
+    /// The configured origin whose authority is `host` (a `Host` header's,
+    /// compared ignoring case), the only one a sign-in on that host may
+    /// name as its redirect.
+    pub fn origin_for_host(&self, host: &str) -> Option<&str> {
+        self.origins
+            .iter()
+            .find(|o| {
+                o.split_once("://")
+                    .is_some_and(|(_, a)| a.eq_ignore_ascii_case(host))
+            })
+            .map(String::as_str)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(origins: &[&str]) -> clax_core::config::LocalGitHubConfig {
+        clax_core::config::LocalGitHubConfig {
+            client_id: "id".into(),
+            client_secret_env: "S".into(),
+            origins: origins.iter().map(|o| o.to_string()).collect(),
+            api_base: None,
+            oauth_base: None,
+        }
+    }
+
+    #[test]
+    fn a_local_sign_in_needs_its_secret_and_names_only_its_origins() {
+        let none = |_: &str| None;
+        assert!(LocalGitHub::from_config(&cfg(&[]), 7480, &none).is_none());
+        let some = |v: &str| (v == "S").then(|| "sec".to_string());
+        let l = LocalGitHub::from_config(&cfg(&[]), 7480, &some).unwrap();
+        assert_eq!(l.origins, ["http://localhost:7480"]);
+        assert_eq!(l.github.owner_login, None);
+        assert_eq!(
+            l.origin_for_host("LOCALHOST:7480"),
+            Some("http://localhost:7480")
+        );
+        assert_eq!(l.origin_for_host("localhost:7481"), None);
+        assert_eq!(l.origin_for_host("127.0.0.1:7480"), None);
+        let l = LocalGitHub::from_config(&cfg(&["https://box.tail1.ts.net"]), 7480, &some).unwrap();
+        assert_eq!(
+            l.origin_for_host("box.tail1.ts.net"),
+            Some("https://box.tail1.ts.net")
+        );
+        assert_eq!(l.origin_for_host("localhost:7480"), None);
+    }
+}
