@@ -1149,6 +1149,34 @@ async fn a_reporter_sees_only_its_own_reports_under_own() {
         .as_reporter(&a, Some(ORIGIN), "GET", &clip, None, vec![])
         .await;
     assert_eq!(res.status(), 200);
+    // One report by its ID: its reporter's, and 404 to another, as for
+    // one that does not exist.
+    let one = format!("{}/{tid}", s.reports());
+    let res = s
+        .as_reporter(&b, Some(ORIGIN), "GET", &one, None, vec![])
+        .await;
+    assert_eq!(status_code(res).await, (404, "not_found".into()));
+    let res = s
+        .as_reporter(&a, Some(ORIGIN), "GET", &one, None, vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        (&v["report"]["id"], &v["report"]["mine"]),
+        (&json!(tid), &json!(true)),
+        "{v}"
+    );
+    let res = s
+        .as_reporter(
+            &a,
+            Some(ORIGIN),
+            "GET",
+            &format!("{}/01J0000000000000000000000Z", s.reports()),
+            None,
+            vec![],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (404, "not_found".into()));
 }
 
 #[tokio::test]
@@ -1250,6 +1278,7 @@ async fn every_queue_route_needs_its_own_credential() {
         ("POST", mint.clone()),
         ("GET", s.reports()),
         ("POST", s.reports()),
+        ("GET", format!("{}/t1", s.reports())),
         ("POST", format!("{}/t1/comments", s.reports())),
         ("GET", format!("{}/t1/clip", s.reports())),
         ("POST", format!("{}/t1/verify", s.reports())),
@@ -1391,10 +1420,20 @@ async fn a_request_signed_by_the_sdk_vector_verifies() {
     let ts = TestServer::spawn_with_clock(clock).await;
     assert_eq!(ts.store.now_utc().timestamp(), 1_760_000_000);
     let made = queue(&ts, ReportersSee::Own);
-    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let mut db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
     db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
-    db.execute("UPDATE queues SET id = 'q1' WHERE id = ?1", [&made])
+    // The maker's member row names the queue too: both are renamed in one
+    // transaction, the foreign key checked at its commit.
+    let tx = db.transaction().unwrap();
+    tx.execute_batch("PRAGMA defer_foreign_keys = ON").unwrap();
+    tx.execute("UPDATE queues SET id = 'q1' WHERE id = ?1", [&made])
         .unwrap();
+    tx.execute(
+        "UPDATE queue_members SET queue_id = 'q1' WHERE queue_id = ?1",
+        [&made],
+    )
+    .unwrap();
+    tx.commit().unwrap();
     let (grant, _, _) = ts
         .store
         .create_service_grant(&AuditCtx::DAEMON, "q1", "app")
@@ -1490,6 +1529,7 @@ async fn under_all_a_reporter_reads_and_comments_on_anothers_report() {
         v["report"]["submitter"],
         json!({"name": null, "you": false})
     );
+    assert_eq!(v["report"]["mine"], false, "{v}");
 }
 
 /// Mints a reporter token for `reporter_id` named `name` on [`ORIGIN`].

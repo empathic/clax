@@ -6,7 +6,7 @@ import type { Captured } from "./capture";
 import {
   BADGE_POLL_MS, BadgeWatch, CONTEXT_TIMEOUT_MS, MAX_CONTEXT_BYTES, PAGE_ANCHOR, Poll, POLL_BACKOFF_MAX, POLL_MS, Session, type Timers, type Visibility,
   buildContext, canSend, carryShapes, clipOf, clipStatus, contextPreview, defaultShapes, externalIdOf, failureText, newDraft, quoteOf, reopenOf, repliesOf, reportOf, reportsModeOf,
-  safeLink, stateLabel, summaryOf, waitingFix,
+  previewFix, safeLink, stateLabel, summaryOf, waitingFix,
 } from "./model";
 import { settled } from "../../shell/src/test/settled";
 
@@ -441,6 +441,13 @@ describe("a report as the reporter reads it", () => {
     expect(waitingFix({ ...base, state: "fix_proposed", fixes: [{ ...fix, n: 1, outcome: "rejected" }, fix] })).toEqual(fix);
     expect(waitingFix({ ...base, state: "open", fixes: [fix] })).toBeNull();
     expect(waitingFix({ ...base, state: "fix_proposed", fixes: undefined })).toBeNull();
+  });
+
+  it("a preview names the fix waiting, else the latest", () => {
+    const fix = { n: 2, summary: "Fixed the end date", proposer_name: "agent", proposer_kind: "agent" as const, created_at: "", outcome: "pending" as const };
+    expect(previewFix({ ...base, state: "fix_proposed", fixes: [{ ...fix, n: 1, outcome: "rejected" }, fix] })).toEqual(fix);
+    expect(previewFix({ ...base, state: "verified", fixes: [{ ...fix, outcome: "verified" }] })?.n).toBe(2);
+    expect(previewFix({ ...base, state: "open", fixes: undefined })).toBeNull();
   });
 
   it("links only http and https URLs", () => {

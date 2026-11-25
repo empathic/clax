@@ -14,7 +14,10 @@
 //! - `GET …/reports/<tid>/clip`: the PNG; `GET
 //!   …/reports/<tid>/comments/<cid>/clip`: a reopen comment's PNG.
 //! - `POST …/reports/<tid>/fix {summary, url?, commit?, release?,
-//!   verify_url?, verify_after?, fence?}` → `{report}`, `fix_proposed`.
+//!   verify_url?, verify_after?, fence?, preview?}` → `{report, ticket?}`,
+//!   `fix_proposed`; with `preview: true` the fix's ticket, which a
+//!   preview deployment presents to attach its origin
+//!   (`queue_reporter::attach_preview`).
 //! - `POST …/reports/<tid>/verify {note?}` and `…/reopen {body}` →
 //!   `{report}`: a person's verdict on the reporter's behalf; agents are
 //!   refused (403 `not_for_agents`), so no agent marks its own fix
@@ -82,7 +85,8 @@ fn queue_person(c: &Caller) -> Option<Option<String>> {
 }
 
 /// 404 `not_a_member` unless the caller of `a` acts as a member of queue
-/// `qid` (either role reads, claims and writes reports).
+/// `qid` (either role reads, claims and writes reports), or oversees every
+/// queue in their browser ([`super::queues::oversees`]).
 async fn member<N: Need>(s: &AppState, a: &Agent<N>, qid: &str) -> Result<(), ApiError> {
     member_as(s, &a.caller, qid).await
 }
@@ -93,10 +97,20 @@ pub(crate) async fn member_as(s: &AppState, c: &Caller, qid: &str) -> Result<(),
         return Err(CoreError::NotAMember.into());
     };
     let qid = qid.to_string();
-    let role = s
-        .store_call(move |st| st.queue_role(&qid, person.as_deref()))
+    let c = c.clone();
+    let member = s
+        .store_call(move |st| {
+            if st.queue_role(&qid, person.as_deref())?.is_some() {
+                return Ok(true);
+            }
+            Ok(super::queues::oversees(st, &c) && st.queue(&qid)?.is_some())
+        })
         .await?;
-    role.map(|_| ()).ok_or_else(|| CoreError::NotAMember.into())
+    if member {
+        Ok(())
+    } else {
+        Err(CoreError::NotAMember.into())
+    }
 }
 
 /// The live session an agent caller acts from: 400 `no_session` without
@@ -724,10 +738,13 @@ pub struct FixBody {
     verify_after: Option<String>,
     #[serde(default)]
     fence: Option<u64>,
+    #[serde(default)]
+    preview: bool,
 }
 
 /// `POST /api/queues/<qid>/reports/<tid>/fix {summary, url?, commit?,
-/// release?, verify_url?, verify_after?, fence?}` → `{report}`: a fix
+/// release?, verify_url?, verify_after?, fence?, preview?}` → `{report,
+/// ticket?}`: a fix
 /// proposed (spec 2026-10-29-feedback-loop-design §6.2). Its summary is
 /// posted as the writer's comment, the report moves to `fix_proposed`,
 /// and its lease ends; it is claimable again once reopened. An agent
@@ -738,6 +755,14 @@ pub struct FixBody {
 /// for a blank summary, a summary over 4 KiB, a `url` or `verify_url`
 /// that is not an http(s) URL, or a field too long; 409 `not_claimable`
 /// for a `verified` or `resolved` report.
+///
+/// With `preview: true` the answer carries the fix's ticket, `{token,
+/// expires_at, n, origins, attach_path}`, shown this once: `token`
+/// (`cxf_…`) is what the fix's preview deployment holds (as
+/// `CLAX_FIX_TICKET`), `origins` the queue's patterns its origin must
+/// match, and `attach_path` the route it presents it on. It lasts 14 days,
+/// or until the fix is verified, rejected, superseded or closed. 400
+/// `no_preview_origins` when the queue lists no origin pattern.
 pub async fn fix(
     State(s): State<AppState>,
     a: Agent<QueueFix>,
@@ -763,7 +788,8 @@ pub async fn fix(
                 verify_url: b.verify_url,
                 verify_after: b.verify_after,
             };
-            let report = st.propose_fix_fenced(&ctx, &qid, &tid, &w.as_store(), fix, b.fence)?;
+            let (report, ticket) =
+                st.propose_fix_ticketed(&ctx, &qid, &tid, &w.as_store(), fix, b.fence, b.preview)?;
             if let Some(sid) = w.session() {
                 // Its summary is its last word on the report until a verdict.
                 let fctx = &an.fctx;
@@ -776,10 +802,24 @@ pub async fn fix(
             if let Err(e) = announce_comment(&an, st, &tid, last_comment(&report).as_deref()) {
                 tracing::warn!(error = ?e, "announcing a proposed fix failed");
             }
-            Ok(report)
+            let ticket = ticket.map(|t| {
+                json!({
+                    "token": t.token.expose(),
+                    "expires_at": t.expires_at,
+                    "n": t.n,
+                    "origins": t.origins,
+                    "attach_path": format!("/api/queues/{qid}/reports/{tid}/fixes/{}/preview", t.n),
+                })
+            });
+            Ok((report, ticket))
         })
         .await?;
-    Ok(Json(json!({"report": report})))
+    let (report, ticket) = report;
+    let mut out = json!({ "report": report });
+    if let Some(t) = ticket {
+        out["ticket"] = t;
+    }
+    Ok(Json(out))
 }
 
 /// 404 `not_a_member` unless the caller of a verdict route acts as a

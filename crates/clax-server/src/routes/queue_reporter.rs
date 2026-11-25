@@ -12,15 +12,22 @@
 //!   a `Clax-Signature` by the reporter's key, and the token's `Origin`):
 //!   `POST /api/queues/<qid>/reporter/reports` (multipart) → `201
 //!   {report}`; `GET /api/queues/<qid>/reporter/reports?cursor=` →
-//!   `{reports, next}`; `POST …/reporter/reports/<tid>/comments {body}` →
+//!   `{reports, next}`; `GET …/reporter/reports/<tid>` → `{report}`;
+//!   `POST …/reporter/reports/<tid>/comments {body}` →
 //!   `{report}`; `GET …/reporter/reports/<tid>/clip` and
 //!   `…/comments/<cid>/clip` → the PNG; `POST …/reporter/reports/<tid>/verify
 //!   {note?, context?}` and `…/reopen` (multipart) → `{report}`; `GET
 //!   …/reporter/reports/<tid>/diagnostics?capture=` → `{lines}`; `POST
 //!   …/reporter/reports/<tid>/seen` → 204; `GET
 //!   /api/queues/<qid>/reporter/badge` → `{waiting, report_ids}`; `POST
-//!   …/reporter/view-link {report_id?}` → `{path, expires_at}`; `OPTIONS`
-//!   on each, the CORS preflight ([`clax_http::reporter::cors`]).
+//!   …/reporter/view-link {report_id?}` → `{path, expires_at}`; `GET
+//!   /api/queues/<qid>/reporter/previews` → `{reports}`, the reports with
+//!   a fix to check on the token's own origin; `OPTIONS` on each, the CORS
+//!   preflight ([`clax_http::reporter::cors`]).
+//! - A preview deployment's backend (`Authorization: Clax-Fix <ticket>`,
+//!   unsigned, no `Origin`): `POST
+//!   /api/queues/<qid>/reports/<tid>/fixes/<n>/preview {origin, path?}` →
+//!   `{report, verify_url, changed}`, the one thing a fix ticket does.
 //!
 //! The reporter is always the token's, never the body's. A reporter reads
 //! the reports its queue's `reporters_see` shows it, and gives a verdict on
@@ -46,7 +53,9 @@ use clax_core::report::{
 };
 use clax_core::{Anchor, CoreError};
 use clax_http::error::ApiError;
-use clax_http::reporter::{self, REPORT_BODY_LIMIT, ReporterCaller, ServiceCaller};
+use clax_http::reporter::{
+    self, FixTicketCaller, REPORT_BODY_LIMIT, ReporterCaller, ServiceCaller,
+};
 use clax_http::state::AppState;
 use clax_store::queues::{ExternalScope, NewReport, Verdict, Visibility};
 use clax_store::threads::clip_problem;
@@ -64,6 +73,10 @@ pub fn router(state: AppState) -> Router {
                 // The extractor bounds the body; `Multipart` reads it again.
                 .layer(DefaultBodyLimit::disable())
                 .options(preflight),
+        )
+        .route(
+            "/api/queues/{qid}/reporter/reports/{tid}",
+            get(one_report).options(preflight),
         )
         .route(
             "/api/queues/{qid}/reporter/reports/{tid}/comments",
@@ -103,12 +116,20 @@ pub fn router(state: AppState) -> Router {
             "/api/queues/{qid}/reporter/view-link",
             post(view_link).options(preflight),
         )
+        .route(
+            "/api/queues/{qid}/reporter/previews",
+            get(previews).options(preflight),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             reporter::cors,
         ));
     Router::new()
         .route("/api/queues/{qid}/reporter-tokens", post(mint_token))
+        .route(
+            "/api/queues/{qid}/reports/{tid}/fixes/{n}/preview",
+            post(attach_preview),
+        )
         .merge(reporter)
         .merge(super::queue_reporter_view::router())
         .merge(super::installs::public_router())
@@ -483,6 +504,28 @@ pub async fn my_reports(
     Ok(Json(json!({ "reports": reports, "next": next })))
 }
 
+/// `GET /api/queues/<qid>/reporter/reports/<tid>`: one report the token's
+/// reporter sees, as the list serves it (an overlay opened from a link to
+/// the report). Answers `{report}`.
+///
+/// # Errors
+/// [`ReporterCaller`]'s; 404 `not_found` for a report the reporter does
+/// not see, as for one that does not exist.
+pub async fn one_report(
+    State(s): State<AppState>,
+    Path((qid, tid)): Path<(String, String)>,
+    r: ReporterCaller,
+) -> Result<Json<Value>, ApiError> {
+    let rid = r.token.reporter_id;
+    let report = s
+        .store_call(move |st| {
+            st.report(&qid, &tid, Visibility::Reporter(&rid))?
+                .ok_or(CoreError::NotFound)
+        })
+        .await?;
+    Ok(Json(json!({ "report": report.for_reporter() })))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommentBody {
@@ -580,7 +623,9 @@ struct VerifyBody {
 /// filed works (spec 2026-10-29-feedback-loop-design §6.3), with its
 /// browser's `context` at verification (the filing's shape, checked and
 /// scrubbed the same way). The report is `verified`, resolved for reason
-/// `fixed`. Answers `{report}`.
+/// `fixed`, and the fix keeps the token's origin as its
+/// `verified_origin`: a verdict given on a preview deployment counts as
+/// one given anywhere, and says where. Answers `{report}`.
 ///
 /// # Errors
 /// [`ReporterCaller`]'s; 404 `not_found` for a report the reporter did not
@@ -602,17 +647,19 @@ pub async fn verify(
         Some(c) => Some(parse_context(&c.to_string())?),
     };
     let rid = r.token.reporter_id;
+    let origin = r.token.origin;
     let an = Announcer::of(&s);
     let report = s
         .store_call(move |st| {
             let ctx = reporter_ctx(&qid, &rid);
-            let (report, touched) = st.verify_report_touched(
+            let (report, touched) = st.verify_report_from(
                 &ctx,
                 &qid,
                 &tid,
                 Verdict::Reporter(&rid),
                 b.note,
                 context,
+                Some(&origin),
             )?;
             let t = st.get_thread(&tid)?.ok_or(CoreError::NotFound)?;
             announce_resolved(&an, st, &ctx, &t, None, &touched);
@@ -798,6 +845,92 @@ pub async fn view_link(
     })))
 }
 
+/// `GET /api/queues/<qid>/reporter/previews`: the reports the token's
+/// reporter filed whose fix waits for its verdict at a `verify_url` on
+/// the token's own origin, the one it was minted for (never one the
+/// request names), oldest first: on a preview deployment, the fixes that
+/// preview carries for this reporter. Answers `{reports}`, `[]` when
+/// there are none.
+///
+/// # Errors
+/// [`ReporterCaller`]'s.
+pub async fn previews(
+    State(s): State<AppState>,
+    Path(qid): Path<String>,
+    r: ReporterCaller,
+) -> Result<Json<Value>, ApiError> {
+    let (rid, origin) = (r.token.reporter_id, r.token.origin);
+    let reports = s
+        .store_call(move |st| st.preview_reports(&qid, &rid, &origin))
+        .await?;
+    let reports: Vec<_> = reports
+        .into_iter()
+        .map(clax_core::queue::Report::for_reporter)
+        .collect();
+    Ok(Json(json!({ "reports": reports })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreviewBody {
+    origin: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// `POST /api/queues/<qid>/reports/<tid>/fixes/<n>/preview {origin,
+/// path?}`: a preview deployment, through its fix ticket, attaches its own
+/// exact `origin` (from its deployment's configuration, never from a
+/// request it received) to fix `n`, the one the ticket was issued for. The
+/// fix's `verify_url` becomes `origin` and `path` (`/` when none),
+/// replacing what it named; the ticket's issuer posts a notice on the
+/// report, which the reporter reads as it reads a fix's summary, and the
+/// queue's members and the reporter's page hear of it. Recorded as
+/// `queue.preview`, by actor `fix_ticket`. Attaching the URL the fix names
+/// already changes nothing. Answers `{report, verify_url, changed}`.
+///
+/// # Errors
+/// [`FixTicketCaller`]'s; 400 `invalid_args` or `invalid_origin` (a
+/// pattern, or no origin); 403 `wrong_origin` for an origin none of the
+/// queue's patterns matched when the ticket was issued, or the queue no
+/// longer allows.
+pub async fn attach_preview(
+    State(s): State<AppState>,
+    c: FixTicketCaller,
+) -> Result<Json<Value>, ApiError> {
+    let b: PreviewBody = json_body(&c.body)?;
+    let ticket = c.ticket;
+    let ctx = AuditCtx {
+        actor: Actor::FixTicket {
+            queue_id: ticket.queue_id.clone(),
+            ticket_id: ticket.id.clone(),
+        },
+        via: Via::Lan,
+        git: GitField::Absent,
+        call: None,
+    };
+    let tid = ticket.thread_id.clone();
+    let done = s
+        .store_call(move |st| st.attach_preview(&ctx, &ticket, &b.origin, b.path.as_deref()))
+        .await?;
+    let changed = done.comment_id.is_some();
+    if changed {
+        let an = Announcer::of(&s);
+        let cid = done.comment_id.clone();
+        let r = s
+            .store_call(move |st| announce_comment(&an, st, &tid, cid.as_deref()))
+            .await;
+        if let Err(e) = r {
+            tracing::warn!(error = ?e, "announcing an attached preview failed");
+        }
+    }
+    Ok(Json(json!({
+        "report": done.report,
+        "verify_url": done.url,
+        "changed": changed,
+    })))
+}
+
 /// `OPTIONS` on each reporter route: the CORS preflight, `204`, whose
 /// headers [`reporter::cors`] adds for the origins the queue allows.
 pub async fn preflight() -> StatusCode {
@@ -822,13 +955,14 @@ mod tests {
             match name {
                 "preflight" => assert!(sig.contains("()"), "{name}"),
                 "mint_token" => assert!(sig.contains("c: ServiceCaller"), "{name}"),
+                "attach_preview" => assert!(sig.contains("c: FixTicketCaller"), "{name}"),
                 _ => assert!(sig.contains("r: ReporterCaller"), "{name}"),
             }
         }
-        assert_eq!(seen, 13);
+        assert_eq!(seen, 16);
         let routes = &src[src.find("pub fn router").unwrap()..];
         let routes = &routes[..routes.find("\n}\n").unwrap()];
-        assert_eq!(routes.matches(".route(").count(), 11);
+        assert_eq!(routes.matches(".route(").count(), 14);
         assert_eq!(routes.matches(".route_layer(").count(), 1);
         assert!(routes.find("reporter::cors").unwrap() < routes.find("reporter-tokens").unwrap());
     }

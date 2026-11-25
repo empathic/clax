@@ -690,6 +690,10 @@ describe("clax Pi extension", () => {
         { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", summary: "Fixed", url: "https://x", commit: "c", release: "r", verify_url: "https://y", verify_after: "release:1" },
       ],
       clax_queue_watch: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", stop: true }],
+      clax_queue_request: [
+        { name: "Acme reports", origins: ["https://app.example.com", "https://app-pr-*.example.com"], reporters_see: "all", note: "for the beta", timeout_s: 60, write_env: "/srv/app/.env" },
+        { request_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" },
+      ],
     };
     const invalid: Record<string, Record<string, unknown>[]> = {
       clax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
@@ -728,6 +732,7 @@ describe("clax Pi extension", () => {
       clax_queue_get: [{ queue: "q" }, { queue: "q", report_id: "r", capture: 1 }],
       clax_queue_fix: [{ queue: "q", report_id: "r" }, { queue: "q", report_id: "r", summary: "s", fence: 3 }],
       clax_queue_watch: [{}, { queue: "q", stop: "yes" }],
+      clax_queue_request: [{ bogus: 1 }, { name: "n", reporters_see: "some" }, { timeout_s: -1 }],
     };
     expect(Object.keys(valid).sort()).toEqual([...TOOLS].sort());
     const check = (name: string, args: Record<string, unknown>) =>

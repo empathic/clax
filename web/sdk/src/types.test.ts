@@ -13,7 +13,7 @@ const EVERY: Record<QueueErrorCode, true> = {
   invalid_clip: true, invalid_comment: true, invalid_context: true, invalid_diagnostics: true, invalid_query: true,
   external_artifact: true, not_found: true, not_fix_proposed: true,
   not_a_member: true, not_for_agents: true, not_claimable: true, claim_required: true, lease_lost: true,
-  thread_taken: true, invalid_state: true, invalid_fix: true, no_session: true,
+  thread_taken: true, invalid_state: true, invalid_fix: true, no_preview_origins: true, no_session: true,
 };
 
 describe("QueueErrorCode", () => {

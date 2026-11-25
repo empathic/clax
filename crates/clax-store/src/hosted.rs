@@ -885,17 +885,25 @@ impl Store {
     /// its grant are live: what the remote MCP endpoint authenticates by,
     /// before [`Store::grant_caller`] gives its rights.
     pub fn bearer_grant(&self, token: &str) -> Result<Option<String>> {
+        Ok(self.bearer_grant_scoped(token)?.map(|(g, _)| g))
+    }
+
+    /// [`Store::bearer_grant`] with the grant's scope
+    /// ([`crate::queue_requests::QUEUE_REQUEST_SCOPE`], or `None` for an
+    /// ordinary grant). A scoped grant past its end holds none.
+    pub fn bearer_grant_scoped(&self, token: &str) -> Result<Option<(String, Option<String>)>> {
         if !token.starts_with(AGENT_TOKEN_PREFIX) {
             return Ok(None);
         }
         let hash = sha256_hex(token);
+        let now = self.now();
         self.with_read(|c| {
             Ok(c.query_row(
-                "SELECT g.id FROM grant_tokens t JOIN grants g ON g.id = t.grant_id
+                "SELECT g.id, g.scope FROM grant_tokens t JOIN grants g ON g.id = t.grant_id
                  WHERE t.sha256 = ?1 AND t.revoked_at IS NULL AND g.status = 'approved'
-                   AND g.bearer = 1",
-                params![hash],
-                |r| r.get(0),
+                   AND g.bearer = 1 AND (g.scope_expires_at IS NULL OR g.scope_expires_at > ?2)",
+                params![hash, now],
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?)
         })

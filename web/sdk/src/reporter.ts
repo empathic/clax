@@ -238,6 +238,15 @@ export class ReporterClient {
     return readJson<Badge>(await this.send("GET", queuePath(this.opts.queue, "reporter", "badge")));
   }
 
+  /** The reports this reporter filed whose fix waits for its verdict on
+   * this very page's origin (the one its token was minted for, never one
+   * the call names): on a preview deployment, the fixes it carries for
+   * this reporter, to check here with `verify`, `reopen` or `comment`. */
+  async previews(): Promise<Report[]> {
+    const { reports } = await readJson<{ reports: Report[] }>(await this.send("GET", queuePath(this.opts.queue, "reporter", "previews")));
+    return reports;
+  }
+
   /** Marks report `reportId` read: its comments until now leave the badge. */
   async seen(reportId: string): Promise<void> {
     const res = await this.send("POST", queuePath(this.opts.queue, "reporter", "reports", reportId, "seen"));
@@ -248,6 +257,14 @@ export class ReporterClient {
   async myReports(cursor?: string): Promise<ReportPage> {
     const q = cursor === undefined ? "" : `?cursor=${encodeURIComponent(cursor)}`;
     return readJson<ReportPage>(await this.send("GET", queuePath(this.opts.queue, "reporter", "reports") + q));
+  }
+
+  /** Report `reportId`, when this reporter sees it (`GET …/reporter/reports/<id>`):
+   * as `myReports` lists it; 404 `not_found` for one it does not see. */
+  async report(reportId: string): Promise<Report> {
+    const { report } = await readJson<{ report: Report }>(
+      await this.send("GET", queuePath(this.opts.queue, "reporter", "reports", reportId)));
+    return report;
   }
 
   /** Comments `body` (made well-formed, `wellFormed`) on report `reportId` as this reporter. */

@@ -57,7 +57,7 @@ export type Header = {
   inbox: boolean | null;
   /** The browser is a member's: Settings' gear. */
   member: boolean;
-  /** Queues shows: for the owner and the instance's admins. */
+  /** Queues shows: for the owner, a member of a queue, and anyone who may make one. */
   queues: boolean;
   /** The config route's body, for the feedback menu (`feedback/boot.ts`); undefined when not asked. */
   feedback: unknown;
@@ -84,14 +84,13 @@ export function header(a: HeaderAnswers, inbox: boolean | null = null): Header {
   // has an inbox, of a viewer who is no person, says the token is served to it.
   const owner = !!token || hostedOwner || (a.token === undefined && (me?.viewer?.owner === true || (inbox === true && !!me && !person(me))));
   const member = owner || person(me);
-  const role = bot?.role ?? (owner ? "owner" : "member");
   // The token refused and the viewer known: no inbox, unless a person's.
   const known = person(me) || owner ? true : a.token === null && !!a.viewer?.status ? false : null;
   return {
     me, hosted, owner, member, bot, summary,
     site: !!hosted || !!token?.startsWith("cxo_"),
     inbox: inbox ?? known,
-    queues: member && (owner || role === "owner" || role === "admin"),
+    queues: member && (owner || (me?.queues?.member ?? 0) > 0 || me?.queues?.may_make === true),
     feedback: a.feedback?.body,
   };
 }

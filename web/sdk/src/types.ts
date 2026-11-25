@@ -117,6 +117,9 @@ export interface Report {
   status: ReportStatus;
   state: ReportState;
   reporter_id: string | null;
+  /** On a report served to a reporter: whether that reporter filed it.
+   * Only they give it a verdict or reopen it. Absent on a member's read. */
+  mine?: boolean;
   /** The host app's metadata; `null` on a report served to a reporter
    * that did not file it. */
   metadata: unknown;
@@ -248,7 +251,8 @@ export interface FixAttempt {
   commit?: string;
   /** The release the fix ships in. */
   release?: string;
-  /** Where the reporter checks the fix. */
+  /** Where the reporter checks the fix: a preview deployment's origin
+   * once its fix ticket attached it (`ServiceClient.attachPreview`). */
   verify_url?: string;
   /** When the reporter can check it, such as `release:0.6.1`. */
   verify_after?: string;
@@ -265,6 +269,11 @@ export interface FixAttempt {
    * report served to a reporter that did not file it. */
   verdict_context?: ReportContext;
   verdict_at?: string;
+  /** The exact origin the reporter verified it from (its reporter
+   * token's): a preview deployment's, or the production site's. Absent
+   * for a verdict a triage person gave, and from a server older than the
+   * field. */
+  verified_origin?: string;
 }
 
 /** A line of a report's diagnostics (spec 2026-10-29-feedback-loop-design
@@ -335,10 +344,51 @@ export interface ReporterToken {
 
 /** `POST /api/queues/{qid}/service-grants`'s answer: the token and key are shown once. */
 export interface ServiceGrantCreated {
-  grant: { id: string; name: string; created_at: string };
+  /** `origins`: the queue's origins and patterns the grant mints for
+   * (such as its preview pattern alone); `null` for every one. */
+  grant: { id: string; name: string; origins: string[] | null; created_at: string };
   token: string;
   /** PKCS#8 of the grant's Ed25519 key, unpadded base64url. */
   private_key: string;
+}
+
+/** A fix's ticket: `POST /api/queues/{qid}/reports/{tid}/fix` with
+ * `preview: true` answers it beside the report, once. Its holder, the
+ * fix's preview deployment, can only attach its own origin to that fix
+ * (`ServiceClient.attachPreview`); it ends at `expires_at` (14 days) or at
+ * the fix's verdict, whichever comes first. */
+export interface FixTicket {
+  /** `cxf_<queue ID>.<report ID>.<fix number>.<secret>`: what the
+   * preview deployment holds, as `CLAX_FIX_TICKET`. */
+  token: string;
+  expires_at: string;
+  /** The fix's number. */
+  n: number;
+  /** The queue's origin patterns; the preview's origin must match one. */
+  origins: string[];
+  /** The route the ticket is presented on. */
+  attach_path: string;
+}
+
+/** What `ServiceClient.attachPreview` sends. */
+export interface PreviewAttachment {
+  /** The fix ticket (`CLAX_FIX_TICKET`). */
+  ticket: string;
+  /** The preview deployment's own exact origin, from its deployment's
+   * configuration (never from a request it received), such as
+   * `https://app-pr-538.fly.dev`. */
+  origin: string;
+  /** Where on it to check the fix, starting with `/`. Default `/`. */
+  path?: string;
+}
+
+/** `POST /api/queues/{qid}/reports/{tid}/fixes/{n}/preview`'s answer:
+ * the report (as triage reads it), the fix's `verify_url` now, and
+ * whether this call changed it (`false` when it named that URL already). */
+export interface PreviewAttached {
+  report: Report;
+  verify_url: string;
+  changed: boolean;
 }
 
 /** `GET /.well-known/clax`. */
@@ -355,8 +405,9 @@ export interface ApiErrorBody {
 }
 
 /** Error codes the queue routes answer (`ApiError`'s `error.code`): the
- * reporter routes, the service route that mints reporter tokens, the
- * signed-request checks in front of both, and the triage routes.
+ * reporter routes, the service route that mints reporter tokens, the fix
+ * ticket's route, the signed-request checks in front of them, and the
+ * triage routes.
  * `web/sdk/test/queue-error-codes.json` lists the same codes, and
  * Clax's own tests of the reporter routes fail on a code it lacks. */
 export type QueueErrorCode =
@@ -402,6 +453,7 @@ export type QueueErrorCode =
   | "thread_taken"
   | "invalid_state"
   | "invalid_fix"
+  | "no_preview_origins"
   | "no_session";
 
 /** Error codes the SDK gives itself: `network` (status 0) when no answer

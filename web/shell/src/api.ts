@@ -224,7 +224,7 @@ export type QuestionLink = {
   answered_there: boolean; unlinked: boolean;
 };
 
-export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push" | "remote_request";
+export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push" | "remote_request" | "queue_request";
 /** A `connection` item's grant: a request waiting for the owner, or a
  * machine that connected with an invite (`person` once it has one). */
 export type InboxConnection = {
@@ -270,6 +270,21 @@ export type InboxRemoteRequest = {
   status: "open" | "connected" | "dismissed" | "muted" | "expired" | null;
   remote_id: string | null; expires_at: string | null; askers: number;
 };
+/** An agent's request for a report queue, addressed to its approver
+ * (`GET /api/queue-requests`): the queue it would make (`name`, the
+ * `origins` it would accept reports from, what its reporters see) and the
+ * agent's `note`; who asked (`agent`, as text: its harness or its
+ * machine's name) and the approver (`person`, their public ID; null for
+ * the owner); how it stands (`pending` until approved, denied, cancelled
+ * when the agent's access ended, or expired), and once approved the
+ * queue it made (`queue_id`). */
+export type QueueRequest = {
+  id: string; status: "pending" | "approved" | "denied" | "cancelled" | "expired";
+  name: string; origins: string[]; reporters_see: "own" | "all"; note: string | null;
+  agent: string; person: string | null;
+  created_at: string; expires_at: string; decided_at: string | null;
+  queue_id: string | null;
+};
 
 /** The inbox item view. Each kind fills its own field (`reply` also fills
  * `thread`); a source's text fields are null when `gone`. `seq` orders items
@@ -298,6 +313,8 @@ export type InboxItem = {
   push?: { n: number | null; origin: string | null; code: string | null; message: string | null; url: string | null };
   /** `remote_request`: an agent asks the owner to connect another Clax. */
   remote_request?: InboxRemoteRequest;
+  /** `queue_request`: an agent asks the reader for a report queue; null once the request is gone. */
+  queue_request?: QueueRequest | null;
   gone: boolean;
   /** Where opening the item leads (a path on the daemon). */
   url: string;

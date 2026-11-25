@@ -563,6 +563,7 @@ pub async fn summary(
                     Kind::Connection,
                     Kind::Approval,
                     Kind::RemoteRequest,
+                    Kind::QueueRequest,
                 ],
                 read: ReadFilter::Unread,
                 limit: SUMMARY_LATEST,

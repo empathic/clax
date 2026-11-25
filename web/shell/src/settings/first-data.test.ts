@@ -7,7 +7,7 @@ import { Reveal } from "./first-data";
 import type { Ctx } from "./screens";
 
 // The browser's context is given, not asked: each test names who it is.
-let who: Ctx = { hosted: false, owner: true, member: true, admin: true, bot: true };
+let who: Ctx = { hosted: false, owner: true, member: true, admin: true, bot: true, queues: false, mayMakeQueues: true };
 vi.mock("./context", () => ({ context: () => Promise.resolve(who) }));
 // The Audit log's chunk and the Usage tab's chunk do not load.
 vi.mock("../bot/AuditPage.svelte", () => { throw new Error("chunk"); });
@@ -35,7 +35,7 @@ function stubFetch(routes: Record<string, unknown>, gates: Record<string, Promis
   return asked;
 }
 
-beforeEach(() => { who = { hosted: false, owner: true, member: true, admin: true, bot: true }; forget(); });
+beforeEach(() => { who = { hosted: false, owner: true, member: true, admin: true, bot: true, queues: false, mayMakeQueues: false }; forget(); });
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", "/"); });
 
 describe("Reveal", () => {

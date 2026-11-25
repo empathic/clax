@@ -2508,16 +2508,129 @@ pub const MIGRATIONS: &[&str] = &[
         path TEXT NOT NULL,
         PRIMARY KEY (day, visitor, path)
     ) WITHOUT ROWID;",
-    // 69: the tailnet login that names a viewer coming through `tailscale
+    // 69: fixes checked on preview deployments (`crate::queues`): the
+    // origins a service grant may mint reporter tokens for
+    // (`queue_service_grants.origins_json`, a JSON list of some of its
+    // queue's origins and patterns; NULL for every one the queue allows),
+    // the origin a reporter verified a fix from
+    // (`report_fixes.verified_origin`), and fix tickets: each bound to one
+    // fix of one report, the queue's origin patterns when it was issued,
+    // who issued it and for whom, kept as its token's SHA-256, until
+    // `expires_at` or its fix's verdict.
+    //
+    // `queue_fix_tickets` is the migration's mark (`MARKS_AFTER_APP`).
+    "ALTER TABLE queue_service_grants ADD COLUMN origins_json TEXT;
+    ALTER TABLE report_fixes ADD COLUMN verified_origin TEXT;
+    CREATE TABLE queue_fix_tickets (
+        id TEXT PRIMARY KEY,
+        token_sha256 TEXT NOT NULL UNIQUE,
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        n INTEGER NOT NULL,
+        origins_json TEXT NOT NULL,
+        issuer_name TEXT NOT NULL,
+        issuer_session_id TEXT,
+        issuer_person TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    );
+    CREATE INDEX queue_fix_tickets_by_fix ON queue_fix_tickets(thread_id, n);",
+    // 70: queue requests (`crate::queue_requests`): an agent's ask for a
+    // report queue, which its person approves or denies. A request names
+    // its approver (`person`, a public ID; NULL the owner), the agent's
+    // grant (NULL for the owner's agents) and session, what it asks for,
+    // and once approved the queue made and the service grant handed to the
+    // agent on its one read (`fetched_at`); no token or key is kept. A
+    // grant may be scoped (`grants.scope`, `queue.request` alone): a device
+    // sign-in that asked for that scope (`device_codes.scope`) makes it,
+    // with no rights (`narrow_json` `[]`) and an end of its own
+    // (`grants.scope_expires_at`). The inbox gains the requests' kind,
+    // `queue_request`, rebuilt as migration 60 rebuilt it, keeping every
+    // `seq`.
+    //
+    // `queue_requests` is the migration's mark (`MARKS_AFTER_APP`).
+    "CREATE TABLE queue_requests (
+        id TEXT PRIMARY KEY,
+        person TEXT,
+        grant_id TEXT,
+        session_id TEXT,
+        agent TEXT NOT NULL,
+        name TEXT NOT NULL,
+        origins_json TEXT NOT NULL,
+        reporters_see TEXT NOT NULL CHECK (reporters_see IN ('own', 'all')),
+        note TEXT,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'cancelled', 'expired')),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        decided_at TEXT,
+        queue_id TEXT,
+        service_grant_id TEXT,
+        fetched_at TEXT
+    );
+    CREATE INDEX queue_requests_by_person ON queue_requests(COALESCE(person, ''), created_at);
+    CREATE INDEX queue_requests_pending ON queue_requests(expires_at) WHERE status = 'pending';
+    CREATE INDEX queue_requests_by_grant ON queue_requests(grant_id) WHERE grant_id IS NOT NULL;
+    ALTER TABLE grants ADD COLUMN scope TEXT;
+    ALTER TABLE grants ADD COLUMN scope_expires_at TEXT;
+    ALTER TABLE device_codes ADD COLUMN scope TEXT;
+    CREATE TABLE inbox_items_70 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended', 'push', 'remote_request',
+                                           'queue_request')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_70 SELECT seq, id, kind, key, recipient, artifact_id, thread_id,
+        comment_id, version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+        created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_70 RENAME TO inbox_items;
+    CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;",
+    // 71: a queue's maker is listed among its members, as its admin, and
+    // the owner may be one (`crate::queues::OWNER_MEMBER`, `*owner`, as
+    // `queue_members.person`): each live or deleted queue's maker gets an
+    // admin row, the owner's under that key; a row a maker had (an earlier
+    // build let one be written, unread) becomes admin.
+    //
+    // `queue_members_in_order` (the members as they were added) is the
+    // migration's mark (`MARKS_AFTER_APP`).
+    "INSERT INTO queue_members (queue_id, person, role, created_at)
+        SELECT id, COALESCE(person, '*owner'), 'admin', created_at FROM queues WHERE true
+        ON CONFLICT (queue_id, person) DO UPDATE SET role = 'admin';
+    CREATE INDEX queue_members_in_order ON queue_members(queue_id, created_at, person);",
+    // 72: the tailnet login that names a viewer coming through `tailscale
     // serve` (`[serve] tailscale_identity`; `crate::viewers`), one viewer
     // per login. `NULL` for every other viewer. (wip/bdelanghe builds made
-    // it as their 40, then 55, then 60, then 63:
+    // it as their 40, then 55, then 60, then 63, then 69:
     // `crate::migrations::adopt_wip_tailscale` and
     // `crate::migrations::adopt_wip_queues` renumber such a database.)
     "ALTER TABLE viewers ADD COLUMN tailscale_login TEXT;
     CREATE UNIQUE INDEX viewers_tailscale_login ON viewers(tailscale_login)
         WHERE tailscale_login IS NOT NULL;",
-    // 70: a queue's reporters' names, as their app gave them at a token's
+    // 73: a queue's reporters' names, as their app gave them at a token's
     // minting, and a reporter's view of the queue in Clax: the single-use
     // codes a view link carries and the sessions a code becomes
     // (`crate::queues`). Codes and sessions are kept only as SHA-256.
@@ -2544,7 +2657,7 @@ pub const MIGRATIONS: &[&str] = &[
     ) WITHOUT ROWID;
     CREATE INDEX queue_view_codes_by_expiry ON queue_view_codes(expires_at);
     CREATE INDEX queue_view_sessions_by_expiry ON queue_view_sessions(expires_at);",
-    // 71: a queue's installs, one per site that embeds the overlay and
+    // 74: a queue's installs, one per site that embeds the overlay and
     // files into it, with the config its overlay fetches
     // (`clax_core::install`). A deleted install keeps its row.
     "CREATE TABLE installs (
@@ -2558,7 +2671,7 @@ pub const MIGRATIONS: &[&str] = &[
         deleted_at TEXT
     );
     CREATE INDEX installs_by_queue ON installs(queue_id) WHERE deleted_at IS NULL;",
-    // 72: who answers a report queue (`crate::queues::responders`): its
+    // 75: who answers a report queue (`crate::queues::responders`): its
     // ordered responders, the first the first responder, as one JSON list
     // per queue (`clax_core::queue::Responder`, checked when written).
     "CREATE TABLE queue_responders (
@@ -2657,8 +2770,21 @@ pub const CONTENT_SECURITY_POLICY_MIGRATION: u32 = KEY_PROBLEM_MIGRATION + 1;
 /// `analytics_*` tables), as a schema version.
 pub const ANALYTICS_MIGRATION: u32 = CONTENT_SECURITY_POLICY_MIGRATION + 1;
 
+/// The migration that adds fixes checked on preview deployments
+/// (`queue_service_grants.origins_json`, `report_fixes.verified_origin`
+/// and `queue_fix_tickets`), as a schema version.
+pub const PREVIEW_FIXES_MIGRATION: u32 = ANALYTICS_MIGRATION + 1;
+
+/// The migration that adds queue requests (`queue_requests`, scoped
+/// grants and the inbox's `queue_request` kind), as a schema version.
+pub const QUEUE_REQUESTS_MIGRATION: u32 = PREVIEW_FIXES_MIGRATION + 1;
+
+/// The migration that lists each queue's maker among its members and lets
+/// the owner be one, as a schema version.
+pub const QUEUE_MAKERS_MIGRATION: u32 = QUEUE_REQUESTS_MIGRATION + 1;
+
 /// The migration that adds `viewers.tailscale_login`, as a schema version.
-pub const TAILSCALE_LOGIN_MIGRATION: u32 = ANALYTICS_MIGRATION + 1;
+pub const TAILSCALE_LOGIN_MIGRATION: u32 = QUEUE_MAKERS_MIGRATION + 1;
 
 /// The migration that adds reporters' names and their view of a queue
 /// (`queue_reporters`, `queue_view_codes`, `queue_view_sessions`), as a
@@ -2835,7 +2961,7 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 23] = [
+const MARKS_AFTER_APP: [Mark<'static>; 26] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2855,6 +2981,9 @@ const MARKS_AFTER_APP: [Mark<'static>; 23] = [
     Mark::Column("sealed_secrets", "last_problem_json"),
     Mark::Column("artifacts", "content_security_policy"),
     Mark::Table("analytics_days"),
+    Mark::Table("queue_fix_tickets"),
+    Mark::Table("queue_requests"),
+    Mark::Index("queue_members_in_order"),
     Mark::Column("viewers", "tailscale_login"),
     Mark::Table("queue_reporters"),
     Mark::Table("installs"),
@@ -3647,27 +3776,43 @@ const WIP_QUEUES_MARKS: [Mark<'static>; 4] = [
 /// database of this numbering holds below [`TAILSCALE_LOGIN_MIGRATION`].
 /// It must hold exactly the first of those marks its version names and
 /// none of main's 63 (`bot_person_prefs`), or it is refused
-/// ([`clax_core::CoreError::MigrationFailed`]) and left as it was. Main's
-/// 63 to 68 then run on it, SQL and Rust step each (none touches what the
-/// wip's four made), and its version becomes the one this numbering gives
+/// ([`clax_core::CoreError::MigrationFailed`]) and left as it was. The
+/// builds of 2026-11-24 numbered the four 69 to 72, after main's 63 to 68:
+/// such a database is at 69 to 72 with the tailnet login and without
+/// main's 69 (`queue_fix_tickets`). Main's migrations from where the four
+/// sat to [`QUEUE_MAKERS_MIGRATION`] then run on it, SQL and Rust step
+/// each (none touches what the wip's four made), and its version becomes
+/// the one this numbering gives
 /// the last of the four it holds: every row is kept, and nothing of the
 /// four runs again.
 pub(crate) fn adopt_wip_queues(
     tx: &rusqlite::Transaction<'_>,
 ) -> clax_core::Result<Option<(u32, u32)>> {
     let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let first = WEB_MIGRATION;
-    let last = first + WIP_QUEUES_MARKS.len() as u32 - 1;
-    if !(first..=last).contains(&version) || !has_mark(tx, &WIP_QUEUES_MARKS[0])? {
+    if !has_mark(tx, &WIP_QUEUES_MARKS[0])? {
         return Ok(None);
     }
+    let span = WIP_QUEUES_MARKS.len() as u32 - 1;
+    // Where that build put the four: at main's 63 (builds before
+    // 2026-11-24), or at main's 69 (the builds of 2026-11-24, which had
+    // main's 63 to 68). A database of this numbering at 72 has the tailnet
+    // login too, with main's 69 (`queue_fix_tickets`) under it.
+    let first = if (WEB_MIGRATION..=WEB_MIGRATION + span).contains(&version) {
+        WEB_MIGRATION
+    } else if (PREVIEW_FIXES_MIGRATION..=PREVIEW_FIXES_MIGRATION + span).contains(&version)
+        && !has_table(tx, "queue_fix_tickets")?
+    {
+        PREVIEW_FIXES_MIGRATION
+    } else {
+        return Ok(None);
+    };
     let refuse = |why: String| clax_core::CoreError::MigrationFailed {
         at: version,
         detail: format!(
             "a database from a wip/bdelanghe build at version {version} {why}; it was left unchanged"
         ),
     };
-    if has_table(tx, "bot_person_prefs")? {
+    if first == WEB_MIGRATION && has_table(tx, "bot_person_prefs")? {
         return Err(refuse(
             "holds the table bot_person_prefs of a migration that build did not have".to_string(),
         ));
@@ -3681,11 +3826,11 @@ pub(crate) fn adopt_wip_queues(
             )));
         }
     }
-    for v in WEB_MIGRATION..=ANALYTICS_MIGRATION {
+    for v in first..=QUEUE_MAKERS_MIGRATION {
         tx.execute_batch(MIGRATIONS[v as usize - 1])?;
         rust_step_of(tx, MIGRATIONS, v)?;
     }
-    let now = ANALYTICS_MIGRATION + held as u32;
+    let now = QUEUE_MAKERS_MIGRATION + held as u32;
     tx.pragma_update(None, "user_version", now)?;
     Ok(Some((version, now)))
 }
@@ -6067,22 +6212,37 @@ mod tests {
         );
         assert!(MIGRATIONS[first + 26].contains("CREATE TABLE analytics_days ("));
         assert_eq!(
-            super::TAILSCALE_LOGIN_MIGRATION,
+            super::PREVIEW_FIXES_MIGRATION,
             super::ANALYTICS_MIGRATION + 1
         );
-        assert!(MIGRATIONS[first + 27].contains("ADD COLUMN tailscale_login"));
+        assert!(MIGRATIONS[first + 27].contains("CREATE TABLE queue_fix_tickets ("));
+        assert_eq!(
+            super::QUEUE_REQUESTS_MIGRATION,
+            super::PREVIEW_FIXES_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 28].contains("CREATE TABLE queue_requests ("));
+        assert_eq!(
+            super::QUEUE_MAKERS_MIGRATION,
+            super::QUEUE_REQUESTS_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 29].contains("CREATE INDEX queue_members_in_order"));
+        assert_eq!(
+            super::TAILSCALE_LOGIN_MIGRATION,
+            super::QUEUE_MAKERS_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 30].contains("ADD COLUMN tailscale_login"));
         assert_eq!(
             super::REPORTER_VIEW_MIGRATION,
             super::TAILSCALE_LOGIN_MIGRATION + 1
         );
-        assert!(MIGRATIONS[first + 28].contains("CREATE TABLE queue_reporters ("));
+        assert!(MIGRATIONS[first + 31].contains("CREATE TABLE queue_reporters ("));
         assert_eq!(
             super::INSTALLS_MIGRATION,
             super::REPORTER_VIEW_MIGRATION + 1
         );
-        assert!(MIGRATIONS[first + 29].contains("CREATE TABLE installs ("));
+        assert!(MIGRATIONS[first + 32].contains("CREATE TABLE installs ("));
         assert_eq!(super::RESPONDERS_MIGRATION, super::INSTALLS_MIGRATION + 1);
-        assert!(MIGRATIONS[first + 30].contains("CREATE TABLE queue_responders ("));
+        assert!(MIGRATIONS[first + 33].contains("CREATE TABLE queue_responders ("));
         assert_eq!(MIGRATIONS.len() as u32, super::RESPONDERS_MIGRATION);
     }
 
@@ -6260,12 +6420,20 @@ mod tests {
                  DROP TABLE queue_reporters;
                  DROP INDEX viewers_tailscale_login;
                  ALTER TABLE viewers DROP COLUMN tailscale_login;
+                 DROP INDEX queue_members_in_order;
+                 ALTER TABLE queue_service_grants DROP COLUMN origins_json;
+                 ALTER TABLE report_fixes DROP COLUMN verified_origin;
+                 DROP TABLE queue_fix_tickets;
                  ALTER TABLE artifacts DROP COLUMN analytics;
                  DROP TABLE analytics_days;
                  DROP TABLE analytics_dims;
                  DROP TABLE analytics_timings;
                  DROP TABLE analytics_day_secrets;
                  DROP TABLE analytics_seen;
+                 DROP TABLE queue_requests;
+                 ALTER TABLE grants DROP COLUMN scope;
+                 ALTER TABLE grants DROP COLUMN scope_expires_at;
+                 ALTER TABLE device_codes DROP COLUMN scope;
                  INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
                  VALUES ('abcdefghjkmn', 'Plan', 'x', 'x', 1, '1');
                  PRAGMA user_version = 67;",
@@ -6312,7 +6480,61 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_72() {
+    fn migration_71_lists_each_queues_maker_as_its_admin() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            // The schema as it was at 70: the owner's queue, a person's
+            // with a triage member, and a row the person's maker had.
+            c.execute_batch(
+                "DROP TABLE queue_responders;
+                 DROP TABLE installs;
+                 DROP TABLE queue_view_sessions;
+                 DROP TABLE queue_view_codes;
+                 DROP TABLE queue_reporters;
+                 DROP INDEX viewers_tailscale_login;
+                 ALTER TABLE viewers DROP COLUMN tailscale_login;
+                 DROP INDEX queue_members_in_order;
+                 INSERT INTO queues (id, name, person, origins_json, created_at)
+                 VALUES ('q_owner', 'Mine', NULL, '[]', '2026-11-01'),
+                        ('q_sam', 'Sam''s', 'u_sam', '[]', '2026-11-02');
+                 INSERT INTO queue_members (queue_id, person, role, created_at)
+                 VALUES ('q_sam', 'u_ana', 'triage', '2026-11-03'),
+                        ('q_sam', 'u_sam', 'triage', '2026-11-04');
+                 PRAGMA user_version = 70;",
+            )
+            .unwrap();
+        }
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        let rows: Vec<(String, String, String, String)> = c
+            .prepare(
+                "SELECT queue_id, person, role, created_at FROM queue_members
+                 ORDER BY queue_id, created_at",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let row = |q: &str, p: &str, r: &str, at: &str| {
+            (q.to_string(), p.to_string(), r.to_string(), at.to_string())
+        };
+        assert_eq!(
+            rows,
+            [
+                row("q_owner", "*owner", "admin", "2026-11-01"),
+                row("q_sam", "u_ana", "triage", "2026-11-03"),
+                row("q_sam", "u_sam", "admin", "2026-11-04"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_fresh_database_reaches_75() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -6339,10 +6561,13 @@ mod tests {
         assert_eq!(super::KEY_PROBLEM_MIGRATION, 66);
         assert_eq!(super::CONTENT_SECURITY_POLICY_MIGRATION, 67);
         assert_eq!(super::ANALYTICS_MIGRATION, 68);
-        assert_eq!(super::TAILSCALE_LOGIN_MIGRATION, 69);
-        assert_eq!(super::REPORTER_VIEW_MIGRATION, 70);
-        assert_eq!(super::INSTALLS_MIGRATION, 71);
-        assert_eq!(super::RESPONDERS_MIGRATION, 72);
+        assert_eq!(super::PREVIEW_FIXES_MIGRATION, 69);
+        assert_eq!(super::QUEUE_REQUESTS_MIGRATION, 70);
+        assert_eq!(super::QUEUE_MAKERS_MIGRATION, 71);
+        assert_eq!(super::TAILSCALE_LOGIN_MIGRATION, 72);
+        assert_eq!(super::REPORTER_VIEW_MIGRATION, 73);
+        assert_eq!(super::INSTALLS_MIGRATION, 74);
+        assert_eq!(super::RESPONDERS_MIGRATION, 75);
         assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
@@ -7621,8 +7846,9 @@ mod tests {
         // the feedback loop's to 61, the price catalog's to 62, the web lines' to 63,
         // the run bindings' to 64, the surfaces' to 65, the key problem's
         // to 66, the Content Security Policy's to 67, analytics' to 68, the
-        // tailnet login's to 69, the reporter view's to 70, the installs' to
-        // 71 and the responders' to 72.
+        // preview fixes' to 69, the queue requests' to 70, the queue makers' to
+        // 71, the tailnet login's to 72, the reporter view's to 73, the
+        // installs' to 74 and the responders' to 75.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
@@ -7638,7 +7864,7 @@ mod tests {
         assert_eq!(
             user_version(&c),
             super::RESPONDERS_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 72 after it are one later now"
+            "ClaxBot's 50 and the migrations 51 to 75 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -8460,16 +8686,22 @@ mod tests {
     /// login, the reporter view, the installs and the responders, with a
     /// viewer's login.
     fn wip_queues_database(home: &Home, at: u32) {
+        wip_queues_database_over(home, super::PRICE_CATALOG_MIGRATION, at);
+    }
+
+    /// As [`wip_queues_database`], the four following main's 1 to `under`:
+    /// 62 for the builds before 2026-11-24, 68 for those of that day.
+    fn wip_queues_database_over(home: &Home, under: u32, at: u32) {
         home.ensure_dirs().unwrap();
         let mut c = Connection::open(home.db_path()).unwrap();
-        for v in 0..super::PRICE_CATALOG_MIGRATION {
+        for v in 0..under {
             let tx = c.transaction().unwrap();
             tx.execute_batch(MIGRATIONS[v as usize]).unwrap();
             super::rust_step(&tx, v + 1).unwrap();
             tx.pragma_update(None, "user_version", v + 1).unwrap();
             tx.commit().unwrap();
         }
-        for i in 0..at - super::PRICE_CATALOG_MIGRATION {
+        for i in 0..at - under {
             c.execute_batch(MIGRATIONS[(super::TAILSCALE_LOGIN_MIGRATION + i) as usize - 1])
                 .unwrap();
         }
@@ -8527,6 +8759,38 @@ mod tests {
                 "ok"
             );
             // Opened again, nothing changes.
+            let (schema, rows) = (schema_of(&c), every_row(&c));
+            crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
+            assert_eq!((schema_of(&c), every_row(&c)), (schema, rows), "at {at}");
+        }
+    }
+
+    /// A database a wip/bdelanghe build of 2026-11-24 left at 69 to 72
+    /// (main's 63 to 68, then the four) opens at this build's last
+    /// migration with a fresh database's schema and its viewer.
+    #[test]
+    fn a_wip_queues_database_of_2026_11_24_is_renumbered_too() {
+        let fresh = fresh_shape();
+        for at in super::PREVIEW_FIXES_MIGRATION..=super::PREVIEW_FIXES_MIGRATION + 3 {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            wip_queues_database_over(&home, super::ANALYTICS_MIGRATION, at);
+            let st = Store::open(&home).unwrap();
+            let again = st.tailscale_viewer("alex@github", Some("Alex")).unwrap();
+            assert_eq!(
+                (again.id.as_str(), again.public_id.as_str()),
+                ("v1", "p1"),
+                "at {at}: the login names the same viewer"
+            );
+            drop(st);
+            let mut c = Connection::open(home.db_path()).unwrap();
+            assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION, "at {at}");
+            assert_eq!(shape_of(&c), fresh, "at {at}: a fresh database's schema");
+            assert_eq!(
+                c.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                    .unwrap(),
+                "ok"
+            );
             let (schema, rows) = (schema_of(&c), every_row(&c));
             crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
             assert_eq!((schema_of(&c), every_row(&c)), (schema, rows), "at {at}");

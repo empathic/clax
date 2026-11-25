@@ -18,7 +18,7 @@
 //!   live install, or one whose queue is deleted.
 
 use super::artifacts::{body, path};
-use super::queues::{admin_person, require_admin};
+use super::queues::{admin_person, require_admin, role_on};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
@@ -49,7 +49,7 @@ pub async fn list(
     let qid = path(qid)?;
     let installs = s
         .store_call(move |st| {
-            if st.queue_role(&qid, person.as_deref())?.is_none() {
+            if role_on(st, &qid, &person)?.is_none() {
                 return Err(CoreError::NotAMember);
             }
             st.installs_of_queue(&qid)
@@ -87,7 +87,7 @@ pub async fn create(
     let b = body(req)?;
     let install = s
         .store_call(move |st| {
-            if let Err(e) = require_admin(st, &qid, person.as_deref()) {
+            if let Err(e) = require_admin(st, &qid, &person) {
                 return Ok(Err(e));
             }
             let i = st.create_install(
@@ -132,7 +132,7 @@ pub async fn patch(
     let b = body(req)?;
     let install = s
         .store_call(move |st| {
-            if let Err(e) = require_admin(st, &qid, person.as_deref()) {
+            if let Err(e) = require_admin(st, &qid, &person) {
                 return Ok(Err(e));
             }
             let i = st.update_install(
@@ -164,7 +164,7 @@ pub async fn delete(
     let person = admin_person(&s, &d).await?;
     let (qid, iid) = path(p)?;
     s.store_call(move |st| {
-        if let Err(e) = require_admin(st, &qid, person.as_deref()) {
+        if let Err(e) = require_admin(st, &qid, &person) {
             return Ok(Err(e));
         }
         st.delete_install(&ctx, &qid, &iid)?;

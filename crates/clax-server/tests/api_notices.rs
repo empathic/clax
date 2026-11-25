@@ -83,6 +83,26 @@ async fn a_notice_points_at_the_comment_once_and_delivers_nothing() {
     assert_eq!(f["feedback"].as_array().unwrap().len(), 1, "{f}");
 }
 
+/// A queue's poll (`clax queue follow`) takes no notice of a comment on an
+/// artifact: the session's plain follower still announces it.
+#[tokio::test]
+async fn a_queue_poll_leaves_other_notices_to_the_sessions_follower() {
+    let ts = TestServer::spawn().await;
+    let sid = grok_session(&ts).await;
+    let (_, tid) = sent_comment(&ts, &sid).await;
+    let res = ts
+        .get_authed(&format!(
+            "/api/sessions/{sid}/notices?wait=0&queue=01JQUEUE00000000000000000Q"
+        ))
+        .await;
+    assert_eq!(res.status(), 200);
+    let queued: Value = res.json().await.unwrap();
+    assert_eq!(queued["notices"], json!([]), "{queued}");
+    let v = notices(&ts, &sid, 0).await;
+    assert_eq!(v["notices"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["notices"][0]["thread_id"], tid);
+}
+
 /// The poll waits 600 s, past the HANG guard: an answer at all is the new
 /// comment ending it.
 #[tokio::test]

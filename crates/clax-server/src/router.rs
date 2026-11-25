@@ -8,10 +8,10 @@ use crate::routes::{
     admin, analytics, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot,
     client_imports, confirmations, connect, content, discovery, docs, drafts, extension, feedback,
     git_token, grants, health, inbox, installs, jobs, live, live_layers, login, mcp_http, passkeys,
-    people, perf, permissions, questions, queue_agent, queue_reporter, queues, remote_apps,
-    remote_artifacts, remote_requests, remotes, resolve, room, sample, sessions, settings,
-    site_signin, sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers,
-    watches, working,
+    people, perf, permissions, questions, queue_agent, queue_reporter, queue_requests, queues,
+    remote_apps, remote_artifacts, remote_requests, remotes, resolve, room, sample, sessions,
+    settings, site_signin, sites, snapshot, stream, surface, tags, threads, token, toolpath,
+    viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{
@@ -161,6 +161,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             patch(queues::patch).delete(queues::delete),
         )
         .route("/api/queues/{qid}/members", get(queues::members))
+        .route("/api/queues/{qid}/people", get(queues::people))
+        .route(
+            "/api/admin/queues",
+            get(queues::policy).put(queues::set_policy),
+        )
         .route(
             "/api/queues/{qid}/responders",
             get(queues::responders).put(queues::put_responders),
@@ -187,6 +192,19 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/queues/{qid}/installs/{iid}",
             patch(installs::patch).delete(installs::delete),
         )
+        // Queue requests: an agent asks, its person answers
+        // (`routes::queue_requests`); its read waits below, outside the
+        // request timeout.
+        .route(
+            "/api/queue-requests",
+            get(queue_requests::list).post(queue_requests::ask),
+        )
+        .route(
+            "/api/queue-requests/{id}/approve",
+            post(queue_requests::approve),
+        )
+        .route("/api/queue-requests/{id}/deny", post(queue_requests::deny))
+        .route("/api/queue-requests/{id}/take", post(queue_requests::take))
         .route("/api/queues/{qid}/reports", get(queue_agent::list))
         .route(
             "/api/queues/{qid}/watch",
@@ -884,6 +902,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             get(confirmations::get_one).post(confirmations::answer),
         )
         .route("/api/remotes/requests/{id}", get(remote_requests::poll))
+        .route("/api/queue-requests/{id}", get(queue_requests::get))
         .merge(api_fast)
         .merge(api_slow)
         .merge(shell_routes)

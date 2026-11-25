@@ -15,6 +15,10 @@ export type Ctx = {
   admin: boolean;
   /** ClaxBot is on this Clax. */
   bot: boolean;
+  /** A member of a report queue. */
+  queues: boolean;
+  /** May make a report queue. */
+  mayMakeQueues: boolean;
 };
 
 export type Item = {
@@ -162,6 +166,10 @@ export const SCREENS: Screen[] = [
     ],
   },
   {
+    id: "report-queues", group: "System", title: "Report queues", line: "Whether members who administer nothing may make report queues.", when: c => c.owner || c.admin,
+    items: [{ title: "Members may make report queues", words: "queue create new feedback reports service grant policy who" }],
+  },
+  {
     id: "remotes", group: "System", title: "Remotes", line: "The Clax instances you answered Never for, which you can unmute.", when: c => local(c) && c.owner,
     items: [{ title: "Muted instances", at: "#sec-remotes", words: "unmute never for this instance connect" }],
   },
@@ -173,7 +181,7 @@ export const SCREENS: Screen[] = [
     ],
   },
   {
-    id: "queues", group: "Elsewhere", title: "Queues", line: "Report queues: their members and service grants.", when: c => c.owner || c.admin, href: "/queues",
+    id: "queues", group: "Elsewhere", title: "Queues", line: "Report queues: their members and service grants.", when: c => c.member && (c.queues || c.mayMakeQueues), href: "/queues",
     items: [
       { title: "New queue", words: "create report queue origins" },
       { title: "Queue members", words: "triage admin add remove" },

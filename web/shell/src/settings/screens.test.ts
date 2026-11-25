@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { moved } from "./moved";
 import { type Ctx, SCREENS, groupsFor, hrefOf, idOf, screenFor, search } from "./screens";
 
-const ctx = (o: Partial<Ctx> = {}): Ctx => ({ hosted: false, owner: false, member: true, admin: false, bot: false, ...o });
-const LOCAL_OWNER = ctx({ owner: true, admin: true, bot: true });
+const ctx = (o: Partial<Ctx> = {}): Ctx => ({ hosted: false, owner: false, member: true, admin: false, bot: false, queues: false, mayMakeQueues: false, ...o });
+const LOCAL_OWNER = ctx({ owner: true, admin: true, bot: true, mayMakeQueues: true });
 const HOSTED_MEMBER = ctx({ hosted: true, bot: true });
 const ids = (c: Ctx) => groupsFor(c).map(g => [g.name, g.screens.map(s => s.id)]);
 
@@ -13,8 +13,18 @@ describe("Settings' screens", () => {
       ["You", ["agents", "claxbot", "confirmations"]],
       ["People", ["people", "roles"]],
       ["ClaxBot", ["provider", "web", "pricing", "usage"]],
-      ["System", ["config", "remotes", "audit"]],
+      ["System", ["config", "report-queues", "remotes", "audit"]],
     ]);
+  });
+
+  it("lists Queues to a member of a queue and to anyone who may make one, and Report queues to administrators", () => {
+    const listed = (c: Ctx) => search("", c).map(h => h.screen.id);
+    expect(listed(ctx({ queues: true }))).toContain("queues");
+    expect(listed(ctx({ mayMakeQueues: true }))).toContain("queues");
+    expect(listed(ctx())).not.toContain("queues");
+    expect(listed(ctx({ queues: true, member: false }))).not.toContain("queues");
+    expect(listed(ctx())).not.toContain("report-queues");
+    expect(listed(ctx({ admin: true }))).toContain("report-queues");
   });
 
   it("lists a hosted member their own screens and the audit log, and nothing of the instance's", () => {

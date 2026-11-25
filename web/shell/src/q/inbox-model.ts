@@ -6,6 +6,7 @@ import type { CardPerson, InboxApproval, InboxItem, QAgent } from "../api";
 import { agentLabel, answerText, cutHeader } from "./model";
 import { whose } from "../view/working-model";
 import { plainText } from "../view/md-load.svelte";
+import { queueRequestLine } from "./queue-request-line";
 
 /** The newest `seq` of `items`, the `upto` of a mark-all over what was
  * shown; 0 when none was shown, which marks nothing. */
@@ -84,6 +85,7 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = [], { page = true 
     case "ended": return `${who} ended`;
     case "push": return `${i.push?.origin ?? "A public Clax"} refused v${i.push?.n ?? "?"}${on(" of ")}`;
     case "remote_request": return remoteRequestText(i, others);
+    case "queue_request": return i.queue_request ? queueRequestLine(i.queue_request) : "A request for a report queue";
   }
 }
 
@@ -96,6 +98,7 @@ export function remoteRequestText(i: InboxItem, others: InboxItem[] = []): strin
   return `${named(i.agent, others)} wants to connect to ${r.name} (${r.origin})${r.url ? ` to read ${r.url}` : ""}`;
 }
 
+
 /** An answered question's answers on one line: "Layout: Two · Notes: ok". */
 const answersText = (q: NonNullable<InboxItem["question"]>): string | null =>
   q.answers && q.questions.map((s, n) => `${cutHeader(s.header)}: ${answerText(q, n)}`).join(" · ");
@@ -103,7 +106,8 @@ const answersText = (q: NonNullable<InboxItem["question"]>): string | null =>
 /** An item's text on one line: the reply's body as text (`plainText`), the version's note, the
  * new artifact's description, the answers to a question (else its first
  * question, as text), what an approval request holds, a connecting machine's key,
- * the finished work's message, or what an ended agent's end cleaned up;
+ * the finished work's message, what an ended agent's end cleaned up, or
+ * an agent's reason to connect a Clax or its note on a queue request;
  * "" when it has none. */
 export function itemText(i: InboxItem): string {
   const t = i.kind === "reply" ? (i.reply?.body ? plainText(i.reply.body) : null)
@@ -117,6 +121,7 @@ export function itemText(i: InboxItem): string {
     : i.kind === "ended" ? i.ended?.text.split(" · ").slice(1).join(" · ")
     : i.kind === "push" ? i.push?.message
     : i.kind === "remote_request" ? i.remote_request?.reason
+    : i.kind === "queue_request" ? i.queue_request?.note
     : null;
   return (t ?? "").replace(/\s+/g, " ").trim();
 }

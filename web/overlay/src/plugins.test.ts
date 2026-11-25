@@ -38,6 +38,8 @@ const client = (): ReporterApi => ({
   reopen: async () => ({}) as Report,
   badge: async () => ({ waiting: 0, report_ids: [] }),
   seen: async () => {},
+  report: async () => ({}) as Report,
+  previews: async () => [],
 });
 const picker = () => (p: (x: Picked) => void): Picker => { onPick = p; return { set: () => {}, areasOnly: () => {}, keyboard: () => {}, done: () => {}, destroy: () => {} }; };
 const session = () => new Session({ context: () => ({ release: { version: "host" }, app: { view: "cart" } }), recorder: { lines: () => [], count: () => 0, stop: () => {} }, now: () => new Date("2026-11-02T12:00:00Z") }, window);

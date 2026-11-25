@@ -154,6 +154,33 @@ fn claim_then_expiry_frees_report() {
 }
 
 #[test]
+fn a_lapsed_lease_is_named_once_and_a_released_one_never() {
+    let (_d, st, clock) = clocked();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, None, None);
+    let other = file(&st, &qid, None, Some("invoice:9"));
+    let a = session(&st, "claude", "a");
+    let start = st.now();
+    let lease = st.claim(DAEMON, &qid, &tid, &a).unwrap();
+    st.claim(DAEMON, &qid, &other, &a).unwrap();
+    st.release(DAEMON, &qid, &other, &a).unwrap();
+    assert_eq!(
+        st.next_lease_lapse().unwrap().map(clax_core::time::stamp),
+        Some(lease.expires_at.clone())
+    );
+    assert!(st.leases_lapsed(&start, &st.now()).unwrap().is_empty());
+    clock.advance(LEASE_SECS + 1);
+    let upto = st.now();
+    assert_eq!(
+        st.leases_lapsed(&start, &upto).unwrap(),
+        [(qid.clone(), tid.clone())],
+        "the released report's lease is not named"
+    );
+    assert!(st.leases_lapsed(&upto, &upto).unwrap().is_empty());
+    assert_eq!(st.next_lease_lapse().unwrap(), None);
+}
+
+#[test]
 fn renew_extends_lease() {
     let (_d, st, clock) = clocked();
     let qid = queue(&st, ReportersSee::Own);
@@ -265,6 +292,22 @@ fn reporter_sees_only_own_under_own() {
         .reports(&qid, Visibility::Reporter("emp-1"), None, None)
         .unwrap();
     assert_eq!(seen.len(), 2);
+}
+
+#[test]
+fn a_reporter_is_told_which_reports_it_filed() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::All);
+    let own = file(&st, &qid, Some("emp-1"), Some("a"));
+    let other = file(&st, &qid, Some("emp-2"), Some("b"));
+    let mine = |tid: &str, vis| st.report(&qid, tid, vis).unwrap().unwrap().mine;
+    assert_eq!(mine(&own, Visibility::Reporter("emp-1")), Some(true));
+    assert_eq!(mine(&other, Visibility::Reporter("emp-1")), Some(false));
+    assert_eq!(
+        mine(&own, Visibility::All),
+        None,
+        "a member's read says nothing"
+    );
 }
 
 #[test]
@@ -792,13 +835,27 @@ fn members_and_roles() {
     assert!(st.queues_of(None).unwrap().is_empty());
     assert_eq!(
         st.queue_members(&qid).unwrap(),
-        [("u_t".to_string(), Role::Triage)]
+        [
+            ("u_maker".to_string(), Role::Admin),
+            ("u_t".to_string(), Role::Triage)
+        ],
+        "the maker first, as its admin"
     );
     st.set_member(DAEMON, &qid, "u_t", None).unwrap();
     assert!(st.queues_of(Some("u_t")).unwrap().is_empty());
     let updates = audit(&st, "queue.update");
     assert_eq!(updates.len(), 2);
     assert_eq!(updates[1]["role"], json!(null));
+    // The maker stays its admin.
+    for role in [Some(Role::Triage), None] {
+        assert!(matches!(
+            st.set_member(DAEMON, &qid, "u_maker", role),
+            Err(CoreError::Invalid {
+                code: "queue_maker",
+                ..
+            })
+        ));
+    }
 
     st.delete_queue(DAEMON, &qid).unwrap();
     assert!(st.queue(&qid).unwrap().is_none());
@@ -806,6 +863,110 @@ fn members_and_roles() {
         st.reports(&qid, Visibility::All, None, None),
         Err(CoreError::NotAMember)
     ));
+}
+
+/// The owner joins a person's queue under the owner's member key: the
+/// owner then reads it among their queues, at that role, and leaves it
+/// when removed. Every queue reads as an administrator sees it: at their
+/// role where they are a member, else admin, and whether they are one.
+#[test]
+fn the_owner_is_a_member_like_anyone_and_every_queue_is_an_administrators() {
+    let (_d, st) = store();
+    let mine = queue(&st, ReportersSee::Own);
+    let sams = st
+        .create_queue(
+            DAEMON,
+            Some("u_sam"),
+            NewQueue {
+                name: "Sam's".into(),
+                origins: vec![],
+                reporters_see: ReportersSee::Own,
+            },
+        )
+        .unwrap()
+        .id;
+    assert_eq!(
+        st.queue_members(&mine).unwrap(),
+        [(super::OWNER_MEMBER.to_string(), Role::Admin)],
+        "the owner's own queue lists the owner"
+    );
+    let ids = |qs: Vec<clax_core::queue::Queue>| qs.into_iter().map(|q| q.id).collect::<Vec<_>>();
+    assert_eq!(
+        ids(st.queues_of(None).unwrap()),
+        std::slice::from_ref(&mine)
+    );
+
+    st.set_member(DAEMON, &sams, super::OWNER_MEMBER, Some(Role::Triage))
+        .unwrap();
+    assert_eq!(st.queue_role(&sams, None).unwrap(), Some(Role::Triage));
+    assert_eq!(
+        ids(st.queues_of(None).unwrap()),
+        [mine.clone(), sams.clone()]
+    );
+    assert_eq!(
+        st.queue_members(&sams).unwrap(),
+        [
+            ("u_sam".to_string(), Role::Admin),
+            (super::OWNER_MEMBER.to_string(), Role::Triage)
+        ]
+    );
+    st.set_member(DAEMON, &sams, super::OWNER_MEMBER, None)
+        .unwrap();
+    assert_eq!(st.queue_role(&sams, None).unwrap(), None);
+
+    let every = st.every_queue(Some("u_ana")).unwrap();
+    assert_eq!(
+        every
+            .iter()
+            .map(|(q, m)| (q.id.clone(), q.role, *m))
+            .collect::<Vec<_>>(),
+        [
+            (mine.clone(), Role::Admin, false),
+            (sams.clone(), Role::Admin, false)
+        ]
+    );
+    st.set_member(DAEMON, &sams, "u_ana", Some(Role::Triage))
+        .unwrap();
+    let every = st.every_queue(Some("u_ana")).unwrap();
+    assert_eq!((every[1].0.role, every[1].1), (Role::Triage, true));
+    st.delete_queue(DAEMON, &mine).unwrap();
+    assert_eq!(
+        st.every_queue(None).unwrap().len(),
+        1,
+        "deleted ones are gone"
+    );
+}
+
+/// The owner's sessions are the owner's as a member: removing the owner
+/// releases their leases and ends their watches of the queue.
+#[test]
+fn removing_the_owner_releases_the_owners_leases() {
+    let (_d, st, _clock) = clocked();
+    let qid = st
+        .create_queue(
+            DAEMON,
+            Some("u_sam"),
+            NewQueue {
+                name: "Sam's".into(),
+                origins: vec![ORIGIN.into()],
+                reporters_see: ReportersSee::Own,
+            },
+        )
+        .unwrap()
+        .id;
+    st.set_member(DAEMON, &qid, super::OWNER_MEMBER, Some(Role::Admin))
+        .unwrap();
+    let tid = file(&st, &qid, None, None);
+    let a = session(&st, "claude", "a");
+    st.claim(DAEMON, &qid, &tid, &a).unwrap();
+    st.watch_queue(&qid, &a).unwrap();
+    assert_eq!(st.queue_watchers(&qid).unwrap(), std::slice::from_ref(&a));
+    st.set_member(DAEMON, &qid, super::OWNER_MEMBER, None)
+        .unwrap();
+    assert!(st.queue_watchers(&qid).unwrap().is_empty());
+    let released = audit(&st, "queue.release");
+    assert_eq!(released.len(), 1);
+    assert_eq!(released[0]["reason"], json!("member_removed"));
 }
 
 #[test]
@@ -2215,3 +2376,5 @@ fn own_feedback_is_made_once_kept_and_remade_when_gone() {
     assert_eq!(queues.len(), 1, "{queues:?}");
     assert_eq!(queues[0].id, remade.queue_id);
 }
+
+mod previews;

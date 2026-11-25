@@ -41,7 +41,11 @@ tools". This guide says how the parts fit together.
 - **The queue** lives on a Clax instance (clax.dev, or one you host). Its
   admin creates it on the Queues page (`/queues`), names the origins your
   pages are served from, and chooses whether a reporter sees only their
-  own reports or every report in the queue.
+  own reports or every report in the queue. The owner and the instance's
+  administrators always may; other members may while Settings › Report
+  queues ("Members may make report queues") is on, which it is by default
+  on a Clax on your own machine and is not on a hosted one. The owner and
+  administrators see every queue on the instance.
 - **The service grant** is your backend's credential for the queue: a
   `cxq_` token and an Ed25519 private key, shown once when the admin makes
   it (Queues page, Manage, "Create service grant"). Keep it in your
@@ -65,7 +69,9 @@ On the instance, as the person who will administer the queue:
    development if you want reports from there; a pattern covers preview
    deployments, below), and pick who reporters see
    ("Their own reports" is the usual choice).
-2. Manage, add the people who triage (Members), then "Create service
+2. Manage, add the people who triage (Members: find each by name among
+   the people connected to the instance, and pick Triage or Admin; you,
+   the queue's maker, are listed first as its admin), then "Create service
    grant". Copy the token and the private key into your backend's secrets,
    for example `CLAX_QUEUE`, `CLAX_QUEUE_TOKEN` and `CLAX_QUEUE_KEY`.
    They are shown once; make a new grant to rotate, then delete the old
@@ -74,14 +80,32 @@ On the instance, as the person who will administer the queue:
 The same steps as API calls are in `docs/prod.md`, "Feedback: clax.dev's
 own report queue".
 
+An agent setting this up for you cannot make the queue itself: it asks
+you for one (the `queue_request` tool, or `clax queue create <name>
+--origin <origin>…` run under a harness), naming the origins and why.
+The request waits in your inbox and on the Queues page; Approve makes the
+queue with you as its admin, and the agent receives its service grant
+once, which it appends to the env file it names (`write_env`, `--write-env`)
+as `CLAX_QUEUE`, `CLAX_QUEUE_TOKEN` and `CLAX_QUEUE_KEY`, keeping the
+secret out of the conversation. A request you leave expires after an
+hour. On a hosted Clax an agent with no plugin signs in with the device
+flow asking for `scope: ["queue.request"]` (`docs/contract.md`, "Queue
+requests"): its token can ask you for one queue and nothing else, and
+ends once it takes that request's answer, or after an hour.
+
 ### Preview deployments
 
 A preview deployment per branch or pull request has an origin of its own
 (`https://pathbase-pr-538.fly.dev`, `https://pathbase-pr-539.fly.dev`, …).
-List one origin pattern for all of them, `https://pathbase-pr-*.fly.dev`,
-beside your exact origins. A `*` beside other characters stands for one or
-more letters, digits and `-` within its label, never a `.`, so this
-pattern matches `https://pathbase-pr-538.fly.dev` and not
+Three things let a preview take reports, show a fix to the person who
+reported it, and take their verdict there, without any preview holding a
+secret that reaches production.
+
+**One pattern for every preview.** List one origin pattern for all of
+them, `https://pathbase-pr-*.fly.dev`, beside your exact origins. A `*`
+beside other characters stands for one or more letters, digits and `-`
+within its label, never a `.`, so this pattern matches
+`https://pathbase-pr-538.fly.dev` and not
 `https://pathbase-pr-1.evil.fly.dev`, `https://pathbase-pr-.fly.dev` or
 another scheme or port. A label that is only `*` stands for one or more
 whole labels: `https://*.preview.example.com` matches
@@ -91,14 +115,67 @@ A pattern can be as broad as you want, up to `https://*` for every
 filing still needs a reporter token your backend minted for one exact
 origin.
 
-Each preview's backend still mints for its own exact origin (the page's,
-never the pattern), and the token is bound to it: a page on another
-`fly.dev` name the pattern also matches cannot use it, and without your
-service grant it cannot mint one of its own. So take the origin from the
-deployment's own configuration, never from the request: a token route
-that mints for whatever origin a caller names would mint for that other
-page too. `docs/contract.md` ("Report queue routes", Origins) has the
-whole rule.
+**A service grant limited to previews.** On the Queues page, **Manage,
+Create service grant** with **Previews only** ticked makes a grant that
+mints reporter tokens for the queue's patterns alone (`POST
+/api/queues/<qid>/service-grants {name, origins: [<pattern>]}`). Give that
+grant to your preview environments and keep the production grant for
+production: a preview's secrets then mint nothing for your production
+origin (403 `wrong_origin`). Each preview's backend mints for its own
+exact origin (the page's, never the pattern), and the token is bound to
+it: a page on another `fly.dev` name the pattern also matches cannot use
+it. So take the origin from the deployment's own configuration, never
+from the request: a token route that mints for whatever origin a caller
+names would mint for that other page too.
+
+**A fix ticket for each fix.** When an agent fixes a report in a pull
+request, it proposes the fix with `preview: true` (`queue_fix`, or `clax
+queue fix --preview`) and gets back the fix's ticket, `cxf_…`, once. It
+sets it on that pull request's preview environment as
+`CLAX_FIX_TICKET`. When the preview deploys, its backend attaches its own
+origin to the fix:
+
+```ts
+import { ServiceClient } from "@empathic/clax-client-sdk/service";
+
+// The preview grant, from the preview environment's secrets.
+const service = new ServiceClient({ instance: "https://clax.example.com", queue: "<queue ID>", token: grant.token, privateKey: grant.private_key });
+if (process.env.CLAX_FIX_TICKET) {
+  // The deployment's own origin, from its configuration (here Fly's app name).
+  await service.attachPreview({
+    ticket: process.env.CLAX_FIX_TICKET,
+    origin: `https://${process.env.FLY_APP_NAME}.fly.dev`,
+    path: "/orders/7", // optional: where to check it
+  });
+}
+```
+
+Clax sets the fix's `verify_url` to that origin (and path), tells the
+reporter a preview of the fix is ready (a comment on their report, which
+their badge counts), and records `queue.preview`: "Preview <origin>
+attached to fix <n> of report <ID>, ticket issued by <agent> for
+<person>". The ticket can do nothing else: it reads no report, mints no
+token, gives no verdict, and attaches only an origin one of the queue's
+patterns matches, so a leaked ticket points one fix at one preview at
+most. It ends after 14 days, or as soon as the fix has its verdict
+(verified or rejected), whichever comes first; the agent's next fix of
+the report gets a new ticket. Attaching again on a redeploy changes
+nothing.
+
+**The reporter checks it on the preview.** The overlay on a preview asks
+Clax, with the reporter's own token, whether any of their reports has a
+fix whose `verify_url` is on this origin (the token's, never one the page
+names: `ReporterClient.previews()`). If one has, it shows "This preview
+has a fix for your report" with **It's fixed**, **Still broken** and
+**Add a note…**, the same verify, reopen and comment routes. A verdict
+given on a preview counts: the report is verified, and triage sees the
+origin it was verified on beside the verdict. The reporter must be the
+same on both origins: `reporter_id` is your app's stable user ID, which a
+preview signed in against the production identity provider keeps. A
+preview with no sign-in has no reporter, and shows the banner to nobody.
+
+`docs/contract.md` ("Report queue routes": Origins, Grants limited to
+some origins, Fix tickets, Previews) has the whole rule.
 
 ## 2. The token route in your backend
 
@@ -589,7 +666,7 @@ drawn in fallback fonts.
 | `externalId` | The record the report is about, in your terms (`invoice:4821`). Default: the page's `<meta name="clax-artifact" content="…">`; with neither, the instance files the report on the page's origin and path (its query and fragment left out), so every report on one path is about one record. |
 | `nonce` | Your policy's style nonce (section 3). |
 | `user` | A stable ID of the signed-in user: the reporter's key and token are kept across page loads for it (section 2). |
-| `onShowReports(report?)` | Your own page of the user's reports, called where the overlay would open "Your reports": the Filed notice's "View in …" (with the report just filed) and the corner's "Your reports" (with none). Default: none, and both open "Your reports". |
+| `onShowReports(report?)` | Your own page of the user's reports, called where the overlay would open "Your reports": the Filed notice's "View in …" (with the report just filed), the corner's "Your reports" (with none), and a link to one report (with it, below). Default: none, and each opens "Your reports". |
 | `reportsLabel` | What the Filed notice calls that place: "Replies and fixes show in *label*." and "View in *label*". Default `"Your reports"`. |
 
 The handle:
@@ -651,8 +728,24 @@ Report in the corner or else the page's body, before the call, so your
 page can take focus. `showReports()` still opens the overlay's panel,
 and a "Still broken" note started there goes back to it. Your page reads
 and answers the reports with a `ReporterClient` of the same `instance`,
-`queue`, `user` and `auth`: `myReports()`, `comment()`, `seen()` (which
-takes a read reply off the badge), `verify()` and `reopen()`.
+`queue`, `user` and `auth`: `myReports()`, `report(id)`, `comment()`,
+`seen()` (which takes a read reply off the badge), `verify()` and
+`reopen()`.
+
+### A link to one report
+
+Add `clax-report=<report ID>` to the query of any page that loads the
+overlay, `https://app.example.com/invoices/4821?clax-report=01JQ…`, and
+the overlay opens "Your reports" on that report once it starts: a link
+in a Slack message or an email lands the reporter on the fix waiting
+for them. The overlay takes the parameter out of the address as it
+reads it (`history.replaceState`, the rest of the URL and the history
+state kept), so a reload does not open it again. It asks for the report
+with the signed-in reporter's token (`GET
+…/reporter/reports/<report ID>`); a report that token does not read, or
+a reporter not signed in, leaves the page as it was, saying nothing.
+With `onShowReports` the overlay calls it with the report instead of
+opening its panel.
 
 ## 5. Context and flags
 
@@ -772,6 +865,7 @@ instructions, and the tools say so.
 
 | | MCP tool | CLI |
 |---|---|---|
+| Ask your person for a queue | `queue_request {name, origins, note?, write_env?}` | `clax queue create <name> --origin <origin> [--write-env <path>]` |
 | Be woken by new and reopened reports | `queue_watch {queue}`, then `wait_for_feedback` | `clax queue follow <qid> --session <SID>` (one JSON line per event) |
 | List | `queue_list {queue, state?}` | `clax queue ls --queue <qid> [--state …]` |
 | Read one whole | `queue_get {queue, report_id}` (the latest screenshot attached, diagnostics inline) | `clax queue show <report> --json`, `clax queue clip`, `clax queue diagnostics` |
@@ -815,6 +909,12 @@ its summary, "Check it here" and "The change". Then:
   reporter"), whether it watches the queue or not. It claims again,
   reads the new capture with `queue_get`, updates the pull request or
   opens another, and proposes again.
+
+A report that is closed, `verified` or `resolved` (a fix that regressed,
+or a close the reporter disagrees with), still shows "Still broken" in
+"Your reports", and it reopens the report the same way. The overlay
+offers verdicts only on the reporter's own reports (`mine`); under
+`reporters_see: all` it shows the others without them.
 
 No agent can verify its own fix: verifying and reopening on a reporter's
 behalf are a person's alone.

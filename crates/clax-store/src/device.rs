@@ -64,6 +64,11 @@ pub struct DeviceRequest {
     /// The loopback page on the machine to send its person to once the
     /// sign-in is decided (already vetted by the caller), if any.
     pub return_to: Option<String>,
+    /// What its token may do, when it asked for less than its person's
+    /// rights: `["queue.request"]`
+    /// ([`crate::queue_requests::QUEUE_REQUEST_SCOPE`]) alone; `None` for
+    /// an ordinary sign-in.
+    pub scope: Option<Vec<String>>,
     pub created_at: String,
     pub expires_at: String,
 }
@@ -85,6 +90,8 @@ pub enum DevicePoll {
         grant_id: String,
         person: String,
         person_name: Option<String>,
+        /// The grant's scope and its end, for a scoped sign-in.
+        scope: Option<(String, String)>,
     },
 }
 
@@ -120,6 +127,33 @@ impl Store {
         kind: Option<&str>,
         return_to: Option<&str>,
     ) -> Result<DeviceStart> {
+        self.start_device_scoped(client_name, peer_ip, kind, return_to, None)
+    }
+
+    /// [`Store::start_device_kind`] for a sign-in that asks for `scope`
+    /// rather than its person's rights: approving it makes a grant of that
+    /// scope alone ([`crate::queue_requests`]).
+    ///
+    /// # Errors
+    /// [`Store::start_device_kind`]'s, and `invalid_args` for a scope
+    /// other than [`crate::queue_requests::QUEUE_REQUEST_SCOPE`] or one
+    /// beside a kind.
+    pub fn start_device_scoped(
+        &self,
+        client_name: &str,
+        peer_ip: &str,
+        kind: Option<&str>,
+        return_to: Option<&str>,
+        scope: Option<&str>,
+    ) -> Result<DeviceStart> {
+        if scope.is_some_and(|s| s != crate::queue_requests::QUEUE_REQUEST_SCOPE)
+            || (scope.is_some() && kind.is_some())
+        {
+            return Err(CoreError::invalid(
+                "invalid_args",
+                "a sign-in's scope is queue.request alone, and names no client kind",
+            ));
+        }
         if let Some(k) = kind
             && (k.is_empty()
                 || k.len() > 64
@@ -167,8 +201,8 @@ impl Store {
             let expires_at = self.device_later(DEVICE_TTL_SECS);
             tx.execute(
                 "INSERT INTO device_codes (id, device_sha256, user_sha256, client_name, peer_ip,
-                    created_at, expires_at, client_kind, return_to)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    created_at, expires_at, client_kind, return_to, scope)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     new_ulid(),
                     device_code.sha256_hex(),
@@ -178,7 +212,8 @@ impl Store {
                     now,
                     expires_at,
                     kind,
-                    return_to
+                    return_to,
+                    scope
                 ],
             )?;
             Ok(DeviceStart {
@@ -198,7 +233,7 @@ impl Store {
         let now = self.now();
         self.with_read(|c| {
             Ok(c.query_row(
-                "SELECT client_name, peer_ip, client_kind, return_to, created_at, expires_at
+                "SELECT client_name, peer_ip, client_kind, return_to, created_at, expires_at, scope
                  FROM device_codes
                  WHERE user_sha256 = ?1 AND status = 'pending' AND expires_at > ?2",
                 params![hash, now],
@@ -210,6 +245,7 @@ impl Store {
                         return_to: r.get(3)?,
                         created_at: r.get(4)?,
                         expires_at: r.get(5)?,
+                        scope: r.get::<_, Option<String>>(6)?.map(|s| vec![s]),
                     })
                 },
             )
@@ -235,16 +271,27 @@ impl Store {
         let hash = user_sha256(user_code).ok_or(CoreError::NotFound)?;
         self.with_tx(|tx| {
             let now = self.now();
-            let row: Option<(String, String, String, Option<String>)> = tx
+            type Row = (String, String, String, Option<String>, Option<String>);
+            let row: Option<Row> = tx
                 .query_row(
-                    "SELECT id, client_name, peer_ip, client_kind FROM device_codes
+                    "SELECT id, client_name, peer_ip, client_kind, scope FROM device_codes
                      WHERE user_sha256 = ?1 AND status = 'pending' AND expires_at > ?2",
                     params![hash, now],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .optional()?;
-            let (id, name, peer_ip, kind) = row.ok_or(CoreError::NotFound)?;
+            let (id, name, peer_ip, kind, scope) = row.ok_or(CoreError::NotFound)?;
             let grant = self.bearer_grant_in(tx, ctx, viewer_id, &name, &peer_ip)?;
+            if let Some(scope) = &scope {
+                // No rights at all, and its own end: what it may do is its
+                // scope's routes alone (`clax_http::agent`).
+                let ends = self.device_later(crate::queue_requests::SCOPED_GRANT_LIFE_S);
+                tx.execute(
+                    "UPDATE grants SET scope = ?2, scope_expires_at = ?3, narrow_json = '[]'
+                     WHERE id = ?1",
+                    params![grant.id, scope, ends],
+                )?;
+            }
             let device = kind.as_deref() == Some(CLAX_APP_KIND);
             if device {
                 tx.execute(
@@ -364,12 +411,24 @@ impl Store {
                         params![viewer],
                         |r| r.get(0),
                     )?;
+                    let scope: Option<(String, String)> = tx
+                        .query_row(
+                            "SELECT scope, scope_expires_at FROM grants WHERE id = ?1",
+                            params![gid],
+                            |r| {
+                                Ok(r.get::<_, Option<String>>(0)?
+                                    .zip(r.get::<_, Option<String>>(1)?))
+                            },
+                        )
+                        .optional()?
+                        .flatten();
                     let token = self.issue_bearer_token_in(tx, ctx, &gid)?;
                     Ok(DevicePoll::Issued {
                         token,
                         grant_id: gid,
                         person,
                         person_name,
+                        scope,
                     })
                 }
                 _ => Ok(DevicePoll::Pending),

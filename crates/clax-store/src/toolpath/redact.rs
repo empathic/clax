@@ -415,7 +415,8 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("queue.create" | "queue.update", "name" | "grant_name") => Text,
         (
             "queue.create" | "queue.update",
-            "queue_id" | "origins" | "reporters_see" | "op" | "member" | "role" | "grant_id",
+            "queue_id" | "origins" | "reporters_see" | "op" | "member" | "role" | "grant_id"
+            | "grant_origins",
         ) => Safe,
         (
             "queue.claim" | "queue.release",
@@ -426,6 +427,21 @@ fn body_class(kind: &str, field: &str) -> Class {
             "queue.fix" | "queue.verify" | "queue.reopen",
             "queue_id" | "thread_id" | "n" | "commit" | "reopen_count" | "reason",
         ) => Safe,
+        ("queue.preview", "url") => Path,
+        ("queue.preview", "issued_by") => Name,
+        (
+            "queue.preview",
+            "queue_id" | "thread_id" | "n" | "origin" | "ticket_id" | "for_person",
+        ) => Safe,
+        // A queue request (`crate::queue_requests`): the queue's name and
+        // the agent's note are its words; the rest is Clax's.
+        ("queue_request.ask", "name" | "note") => Text,
+        (
+            "queue_request.ask",
+            "request_id" | "origins" | "reporters_see" | "approver" | "grant_id",
+        ) => Safe,
+        ("queue_request.answer", "request_id" | "answer" | "queue_id") => Safe,
+        ("queue_request.close", "request_id" | "status") => Safe,
         ("confirmation.answer", "confirmation_id" | "decision" | "answer") => Safe,
         ("passkey.add", "credential_id" | "alg") => Safe,
         ("passkey.remove", "credential_id" | "reason") => Safe,
@@ -437,7 +453,9 @@ fn body_class(kind: &str, field: &str) -> Class {
 fn actor_class(field: &str) -> Class {
     match field {
         "type" | "session_id" | "harness" | "harness_session_id" | "agent_handle" | "public_id"
-        | "reason" | "grant_id" | "person" | "channel" | "on_behalf_of" => Class::Safe,
+        | "reason" | "grant_id" | "person" | "channel" | "on_behalf_of" | "ticket_id" => {
+            Class::Safe
+        }
         "display_name" | "client_name" => Class::Name,
         "transcript_path" => Class::Path,
         _ => Class::Unclassified,

@@ -5,8 +5,9 @@
   // move another: ClaxBot's meter (`BotMeter`, from `bot`, the header's
   // `GET /api/me/bot` answer, when ClaxBot is on for this person), **Inbox**
   // with its unread count for a browser with an inbox (spec
-  // 2026-10-06-agent-questions-and-inbox §9.4), **Queues** for the owner and
-  // the instance's admins, the feedback menu's place for a person who may
+  // 2026-10-06-agent-questions-and-inbox §9.4), **Queues** for the owner, a
+  // member of a report queue and anyone who may make one (`GET
+  // /api/viewers/me`'s `queues`), the feedback menu's place for a person who may
   // report (`Menu` fills it), and Settings' gear for every member (spec
   // 2026-10-08-multi-agent-multi-person §17). While the gear shows, the
   // Settings key (Cmd+K, or Ctrl+K) opens Settings' search over the page

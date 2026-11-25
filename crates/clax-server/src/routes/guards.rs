@@ -311,6 +311,9 @@ mod l10 {
         ("queues::members", NoArtifact),
         ("queues::responders", NoArtifact),
         ("queues::put_responders", NoArtifact),
+        ("queues::people", NoArtifact),
+        ("queues::policy", NoArtifact),
+        ("queues::set_policy", NoArtifact),
         ("queues::put_member", NoArtifact),
         ("queues::delete_member", NoArtifact),
         ("queues::grants", NoArtifact),
@@ -320,6 +323,12 @@ mod l10 {
         ("installs::create", NoArtifact),
         ("installs::patch", NoArtifact),
         ("installs::delete", NoArtifact),
+        ("queue_requests::ask", NoArtifact),
+        ("queue_requests::get", NoArtifact),
+        ("queue_requests::take", NoArtifact),
+        ("queue_requests::list", NoArtifact),
+        ("queue_requests::approve", NoArtifact),
+        ("queue_requests::deny", NoArtifact),
         ("queue_agent::list", NoArtifact),
         ("queue_agent::watch", NoArtifact),
         ("queue_agent::unwatch", NoArtifact),
@@ -457,6 +466,7 @@ mod l10 {
             "tags" => include_str!("tags.rs"),
             "queues" => include_str!("queues.rs"),
             "installs" => include_str!("installs.rs"),
+            "queue_requests" => include_str!("queue_requests.rs"),
             "queue_agent" => include_str!("queue_agent.rs"),
             "discovery" => include_str!("discovery.rs"),
             "agent" => include_str!("../../../clax-http/src/agent.rs"),
@@ -1774,6 +1784,9 @@ mod agents {
             ("POST", "/api/sessions/{id}/tool-call-ids", Own, None),
             // Report queues (spec 2026-10-27-clax-sdk-design §7).
             ("GET", "/api/queues", Own, None),
+            ("POST", "/api/queue-requests", Own, None),
+            ("GET", "/api/queue-requests/{id}", Own, None),
+            ("POST", "/api/queue-requests/{id}/take", Own, None),
             (
                 "GET",
                 "/api/queues/{qid}/reports",
@@ -2099,9 +2112,13 @@ mod agents {
                 {
                     assert!(
                         h.src.contains("vis.filter_")
-                            || ["st.take_feedback_readable(", "st.take_notices("]
-                                .iter()
-                                .any(|t| h.src.contains(t)),
+                            || [
+                                "st.take_feedback_readable(",
+                                "st.take_notices(",
+                                "st.take_queue_notices(",
+                            ]
+                            .iter()
+                            .any(|t| h.src.contains(t)),
                         "{name}: a Filtered route open to agents must pass its response through vis.filter_"
                     );
                 }

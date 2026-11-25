@@ -8,7 +8,10 @@
   // While a fix waits, a reply reaches the agent that proposed it while its
   // session lives and its person is a member of the queue (that agent may
   // answer), and the queue's people always; a person's fix is answered by
-  // the queue's people alone. The reply box says who will hear it.
+  // the queue's people alone. The reply box says who will hear it. A
+  // verified or resolved report its reporter filed offers "Still broken"
+  // too, for a fix that regressed or a close they disagree with; verdicts
+  // are offered only on the reporter's own reports (`mine`).
   import type { Report } from "../../sdk/src/types";
   import { OUTCOME, anchorText, browserOf, failureText, filedByText, repliesOf, safeLink, timeIn, viewportText, waitingFix } from "./model";
 
@@ -36,8 +39,11 @@
   let error = $state<string | null>(null);
   let verifying = $state(false);
 
-  const waiting = $derived(waitingFix(r));
-  const past = $derived((r.fixes ?? []).filter(f => f !== waiting));
+  // Absent from a server older than `mine`: every report it listed was the reporter's.
+  const mine = $derived(r.mine !== false);
+  const waiting = $derived(mine ? waitingFix(r) : null);
+  const closed = $derived(mine && (r.state === "verified" || r.state === "resolved"));
+  const past = $derived((r.fixes ?? []).filter(f => f !== waitingFix(r)));
 
   // ---- The clip, Full view alone: fetched once per report (`clipKey`
   // changes value only when the id, `full` or whether a clip can be had
@@ -173,6 +179,13 @@
     </section>
   {/if}
 
+  {#if closed}
+    <div class="verdict reopen">
+      <p class="small muted">Not fixed after all?</p>
+      <button type="button" onclick={() => onStillBroken(r)}>Still broken</button>
+    </div>
+  {/if}
+
   {#if error}<p class="error small" role="alert">Not sent: {error}</p>{/if}
 
   {#if r.status === "open"}
@@ -228,6 +241,7 @@
   .links { display: flex; gap: 12px; margin-top: 4px; }
   .links a { color: var(--agent-ink); font-weight: 600; }
   .verdict { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
+  .verdict.reopen { align-items: center; }
   .reply-note { margin-top: 4px; }
   .actions { display: flex; justify-content: flex-end; margin-top: 6px; }
   .error { color: var(--danger); }

@@ -503,6 +503,20 @@ fn render(
             });
             r.is_none()
         }
+        // A queue request (`clax_store::queue_requests`): the request as it
+        // stands now, for its card.
+        Kind::QueueRequest => {
+            let rid = i
+                .detail
+                .as_ref()
+                .and_then(|d| d["request_id"].as_str())
+                .unwrap_or_default()
+                .to_string();
+            v["url"] = json!(format!("/inbox?queue_request={rid}"));
+            let r = st.queue_request(&rid)?;
+            v["queue_request"] = json!(r);
+            r.is_none()
+        }
     };
     v["gone"] = json!(gone);
     Ok(v)

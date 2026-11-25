@@ -90,4 +90,74 @@ describe("ServiceClient", () => {
     await expect(client.mintReporterToken({ reporter_id: "r", origin: "https://evil.example", public_key: "AAAA" }))
       .rejects.toMatchObject({ code: "wrong_origin", status: 403 });
   });
+
+  describe("attachPreview", () => {
+    const TICKET = "cxf_q1.01JB9T00000000000000000001.2.c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3JldA";
+    const attached = { report: { id: "01JB9T00000000000000000001" }, verify_url: "https://app-pr-538.fly.dev/orders/7", changed: true };
+
+    it("sends the ticket alone, unsigned, to its fix's route", async () => {
+      const sent: { url: string; init: RequestInit }[] = [];
+      const client = new ServiceClient({
+        instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
+        fetch: async (url, init) => { sent.push({ url, init }); return new Response(JSON.stringify(attached), { status: 200 }); },
+      });
+      expect(await client.attachPreview({ ticket: ` ${TICKET}\n`, origin: "https://app-pr-538.fly.dev", path: "/orders/7" })).toEqual(attached);
+      const [{ url, init }] = sent;
+      expect(url).toBe("https://clax.example/api/queues/q1/reports/01JB9T00000000000000000001/fixes/2/preview");
+      expect(init.method).toBe("POST");
+      expect(init.credentials).toBe("omit");
+      const headers = init.headers as Record<string, string>;
+      expect(headers).toEqual({ authorization: `Clax-Fix ${TICKET}`, "content-type": "application/json" });
+      expect(JSON.parse(init.body as string)).toEqual({ origin: "https://app-pr-538.fly.dev", path: "/orders/7" });
+    });
+
+    it("leaves the path out when none is given", async () => {
+      const bodies: unknown[] = [];
+      const client = new ServiceClient({
+        instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
+        fetch: async (_url, init) => { bodies.push(JSON.parse(init.body as string)); return new Response(JSON.stringify(attached), { status: 200 }); },
+      });
+      await client.attachPreview({ ticket: TICKET, origin: "https://app-pr-538.fly.dev" });
+      expect(bodies).toEqual([{ origin: "https://app-pr-538.fly.dev" }]);
+    });
+
+    it("refuses what is no ticket, or another queue's, before sending", async () => {
+      let calls = 0;
+      const client = new ServiceClient({
+        instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
+        fetch: async () => { calls++; return new Response("{}", { status: 200 }); },
+      });
+      for (const ticket of ["cxq_grant", "cxf_q1.t1.0.s", "cxf_q1.t1.s", "cxf_q1/x.t1.1.s", ""]) {
+        await expect(client.attachPreview({ ticket, origin: "https://app-pr-1.fly.dev" })).rejects.toThrow(/^attachPreview: ticket is not a fix ticket/);
+      }
+      await expect(client.attachPreview({ ticket: TICKET.replace("cxf_q1.", "cxf_q2."), origin: "https://app-pr-1.fly.dev" }))
+        .rejects.toThrow("attachPreview: the ticket is of queue q2, not q1");
+      expect(calls).toBe(0);
+    });
+
+    it("gives the instance's refusal, and retries busy after its backoff", async () => {
+      const slept: number[] = [];
+      const answers = [
+        new Response(JSON.stringify({ error: { code: "busy", message: "busy" } }), { status: 503 }),
+        new Response(JSON.stringify({ error: { code: "wrong_origin", message: "not a preview" } }), { status: 403 }),
+        new Response(JSON.stringify({ error: { code: "token_expired", message: "verified" } }), { status: 401 }),
+      ];
+      const client = new ServiceClient({
+        instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
+        sleep: async ms => { slept.push(ms); }, random: () => 0,
+        fetch: async () => answers.shift()!,
+      });
+      await expect(client.attachPreview({ ticket: TICKET, origin: "https://app.example" })).rejects.toMatchObject({ code: "wrong_origin", status: 403 });
+      expect(slept).toEqual([1000]);
+      await expect(client.attachPreview({ ticket: TICKET, origin: "https://app-pr-538.fly.dev" })).rejects.toMatchObject({ code: "token_expired", status: 401 });
+    });
+
+    it("says network when no answer comes", async () => {
+      const client = new ServiceClient({
+        instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
+        fetch: async () => { throw new Error("offline"); },
+      });
+      await expect(client.attachPreview({ ticket: TICKET, origin: "https://app-pr-538.fly.dev" })).rejects.toMatchObject({ code: "network", status: 0 });
+    });
+  });
 });

@@ -149,6 +149,7 @@ clax comments reply <ID>#2 "Thanks"  # reply as you (- reads stdin); also resolv
 clax comments name "Alex"            # your name, in the CLI and every browser of yours
 clax versions <ID>                   # versions: label, publisher, time, threads addressed
 clax db get <ID> tasks t1            # the page database: get, list, query, set, update, delete, str-replace, batch
+clax queue create <name> --origin <ORIGIN> --write-env .env  # make a queue and its service grant; run by an agent, ask its person for one and wait
 clax queue ls --queue <QID>          # a report queue's active reports (CLAX_QUEUE sets the queue; --state all for every state)
 clax queue show <report>             # one report: context, conversation, fixes; also clip, diagnostics
 clax queue claim <report> --session <SID>  # also renew, release, reply, fix --summary …, resolve --reason …
@@ -605,7 +606,7 @@ published from the app, is not an app: its get page says so.
 
 ## Use from an agent
 
-Each harness gets the same forty-two tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
+Each harness gets the same forty-three tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch`, `queue_request`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
 
 The plugins run `CLAX_BIN`, else the `bin` setting, else the release they
 pin (see "Which clax the plugins run"). `status` and `clax doctor --agent`

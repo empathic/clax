@@ -24,6 +24,18 @@
   // host's own ask, still opens the panel, and so does going back to it
   // from a "Still broken" note.
   //
+  // A link to one report (`?clax-report=<report ID>`, `takeReportLink`)
+  // opens the overlay on it once mounted, when the reporter's token reads
+  // it (else the page shows as ever); the parameter leaves the URL as it
+  // is read. With `onShowReports` the report is handed to the host.
+  //
+  // On a preview deployment, a fix waiting on the reporter's verdict at
+  // this page's origin (`client.previews`, asked with each badge) shows as
+  // a banner naming the report and the fix (the first, with a count of the
+  // rest), whose verdicts are the panel's own: "It's fixed" verifies,
+  // "Still broken" reopens, "Add a note…" opens the report in "Your
+  // reports". A server without the route shows none.
+  //
   // Every feedback feature is a plugin (sdk/src/plugin.ts, `plugins`): the
   // capture methods, the Annotator and its tools, the privacy filters (run
   // on each capture before the reporter sees it), the attachments (each its
@@ -42,7 +54,8 @@
   import Portal from "./Portal.svelte";
   import {
     type Draft, type ReporterApi, type Session, type Timers, canSend, carryShapes, clipOf, clipStatus, defaultShapes,
-    failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, type ReportsMode, summaryOf, withCapture,
+    failureText, newDraft, pageUrl, previewFix, quoteOf, realTimers, reopenOf, reportOf, type ReportsMode, safeLink, summaryOf, takeReportLink,
+    withCapture,
   } from "./model";
   import { ReporterLifecycle, type ReporterLifecycleState, type Visibility } from "../../sdk/src/lifecycle";
   import { DEFAULT_WORDING, type QueueInfo, type Wording } from "./install";
@@ -118,7 +131,19 @@
   // overlay consumes it rather than owning the poll and the badge watch
   // itself; its own state below (`reports`, `loadError`, `count`, `pulse`,
   // `waitingId`) mirrors what it tells, so the template is unchanged.
-  const lifecycle = untrack(() => new ReporterLifecycle(client, { timers, win: win as unknown as Visibility }));
+  // Each badge ask also asks which fixes wait on this page's origin (the
+  // preview banner, `loadPreviews`): the lifecycle is given `client` with
+  // its `badge` doing both, every other call passed through unchanged.
+  const lifecycleClient = untrack((): ConstructorParameters<typeof ReporterLifecycle>[0] => ({
+    fileReport: r => client.fileReport(r),
+    myReports: cursor => client.myReports(cursor),
+    comment: (id, body) => client.comment(id, body),
+    verify: (id, v) => client.verify(id, v),
+    reopen: (id, r) => client.reopen(id, r),
+    badge: () => { loadPreviews(); return client.badge(); },
+    seen: id => client.seen(id),
+  }));
+  const lifecycle = untrack(() => new ReporterLifecycle(lifecycleClient, { timers, win: win as unknown as Visibility }));
 
   // ---- Plugins ----
 
@@ -175,6 +200,19 @@
   let pulse = $state(false);
   let reportBtn = $state<HTMLButtonElement | null>(null);
   let viewBtn = $state<HTMLButtonElement | null>(null);
+  /** The reports whose fix waits for the reporter's verdict on this page's origin. */
+  let previews = $state<Report[]>([]);
+
+  // ---- Previews ----
+
+  // Declared before the badge starts (below), whose first ask calls `loadPreviews` at once.
+  let previewAsk = 0;
+  /** Asks which fixes wait on this origin; a failed ask (a server without
+   * the route among them) shows no banner. Only the latest ask's answer is kept. */
+  function loadPreviews(): void {
+    const n = ++previewAsk;
+    Promise.resolve().then(() => client.previews()).then(rs => { if (n === previewAsk) previews = rs; }, () => { if (n === previewAsk) previews = []; });
+  }
 
   /** Whether a report is under way: the mode bar, a pick, or the form. */
   const active = $derived(bar !== null || picking || draft !== null);
@@ -186,6 +224,8 @@
     untrack(() => onActive?.(on));
   });
 
+  /** The report a link opened, kept in "Your reports" when no page listed holds it. */
+  let linked: Report | null = null;
   /** The report newly waiting on the reporter, which "Your reports" opens on next. */
   let waitingId: string | null = null;
 
@@ -199,7 +239,7 @@
   let lastRiseSeq = 0;
   let pulseTimer: unknown = null;
   const unsubscribeLifecycle = untrack(() => lifecycle.subscribe(s => {
-    reports = s.reports;
+    reports = s.reports === null ? null : withLinked(s.reports);
     loadError = s.reportsError === null ? null : failureText(s.reportsError);
     if (s.waiting !== toldBadge) {
       toldBadge = s.waiting;
@@ -231,9 +271,12 @@
   onMount(() => {
     const made = makePicker(onPick, () => closeBar(), what => { outlined = what; });
     picker = made;
+    void openLinked();
     return () => made.destroy();
   });
+  let destroyed = false;
   onDestroy(() => {
+    destroyed = true;
     closeWindow();
     unsubscribeLifecycle();
     lifecycle.stop();
@@ -724,6 +767,7 @@
         draft = null;
         revokeClip();
         expanded = r.id;
+        relink(r);
         showReports();
         say("Sent. The report is open again.");
         return;
@@ -745,7 +789,8 @@
 
   // ---- Your reports ----
   // The poll that drives `reports` and `loadError` is the lifecycle's own
-  // (`ReporterLifecycle.openReports`/`closeReports`): see `unsubscribeLifecycle` above.
+  // (`ReporterLifecycle.openReports`/`closeReports`): see `unsubscribeLifecycle`
+  // above, which keeps a linked report in the list (`withLinked`).
 
   function toggleReports(): void {
     if (open) { closeReports(); return; }
@@ -837,7 +882,7 @@
   }
 
   async function reply(id: string, body: string): Promise<void> {
-    await lifecycle.reply(id, body);
+    relink(await lifecycle.reply(id, body));
   }
 
   /** The Full view's clip, when the client exposes one: bound so `this` on
@@ -850,7 +895,56 @@
 
   async function verify(id: string): Promise<void> {
     const context = await session.verdictContext();
-    await lifecycle.verify(id, { context });
+    relink(await lifecycle.verify(id, { context }));
+    previews = previews.filter(r => r.id !== id);
+  }
+
+  /** Opens the overlay on the report a link in the page's URL names, when
+   * the reporter's token reads it; nothing otherwise. */
+  async function openLinked(): Promise<void> {
+    const id = takeReportLink(win);
+    if (!id) return;
+    let r: Report;
+    try {
+      r = await client.report(id);
+    } catch {
+      return;
+    }
+    if (destroyed) return;
+    linked = r;
+    if (onShowReports) { handOff(r); return; }
+    waitingId = null;
+    showReports();
+    expand(r.id);
+  }
+
+  /** `list`, with the linked report after it when the list lacks it. */
+  function withLinked(list: Report[]): Report[] {
+    const l = linked;
+    if (!l || list.some(x => x.id === l.id)) return list;
+    return [...list, reports?.find(x => x.id === l.id) ?? l];
+  }
+
+  /** A command's answer `r` on the linked report, put in place of the copy
+   * shown: the lifecycle updates only the reports its pages listed. */
+  function relink(r: Report): void {
+    if (linked?.id !== r.id) return;
+    linked = r;
+    if (reports) reports = reports.map(x => (x.id === r.id ? r : x));
+  }
+
+  /** "It's fixed" on the preview banner, once at a time; a refusal is the notice's. */
+  let verifying = false;
+  function verifyPreview(id: string): void {
+    if (verifying) return;
+    verifying = true;
+    verify(id).catch(e => say(`Not sent: ${failureText(e)}`)).finally(() => { verifying = false; });
+  }
+
+  /** "Add a note…" on the preview banner: "Your reports", open on `r`. */
+  function noteOn(r: Report): void {
+    expand(r.id);
+    showReports();
   }
 
   /** "Still broken": a note, and the mode bar for a new capture. */
@@ -1057,6 +1151,21 @@
       <div class="actions">
         <button type="button" class="ghost" aria-label="Dismiss" onclick={() => { filed = null; }}>✕</button>
         {#if reportsOn}<button type="button" class="primary" bind:this={viewBtn} onclick={viewFiled}>View in {reportsLabel}</button>{/if}
+      </div>
+    </section>
+  {/if}
+
+  {#if previews.length && !open && !draft}
+    {@const r = previews[0]}
+    {@const fix = previewFix(r)}
+    <section class="filed" aria-label="A fix for your report">
+      <p><strong>This preview has a fix for your report{previews.length > 1 ? ` (and ${previews.length - 1} more)` : ""}</strong></p>
+      <p class="quote">{summaryOf(r)}</p>
+      {#if fix}<p>Fix {fix.n}: {fix.summary} {#if safeLink(fix.url)}<a href={safeLink(fix.url)} target="_blank" rel="noopener noreferrer">The change</a>{/if}</p>{/if}
+      <div class="actions">
+        <button type="button" class="ghost" onclick={() => noteOn(r)}>Add a note…</button>
+        <button type="button" onclick={() => stillBroken(r)}>Still broken</button>
+        <button type="button" class="primary" onclick={() => verifyPreview(r.id)}>It's fixed</button>
       </div>
     </section>
   {/if}

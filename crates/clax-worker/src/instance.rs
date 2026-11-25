@@ -110,7 +110,8 @@
 //! on no timer here, `questions::SweptGraces`; on a hosted instance, the
 //! batch of page views a minute old and the UTC day's rollover,
 //! `clax_http::analytics`), the grant expiry by
-//! `Store::grants_next_due`, and the store's planner refresh an hour after
+//! `Store::grants_next_due`, a queue lease's lapse, which the sweep
+//! announces, by `Store::next_lease_lapse`, and the store's planner refresh an hour after
 //! the last one once a request that may write was served, with the prune
 //! of ended ClaxBot runs and of site analytics' daily totals past their
 //! 13 months ([`prune_pass`]). A server built anew reads whether a day of
@@ -1437,6 +1438,11 @@ impl InstanceDo {
             // Unknown: look again a sweep period from now.
             Err(_) => Some(now),
         };
+        // A queue lease's lapse, announced by the sweep.
+        let leases = match inst.app.store.call(|st| st.next_lease_lapse()).await {
+            Ok(t) => t.map(|t| t.timestamp_millis() as f64),
+            Err(_) => Some(now),
+        };
         let optimize = prune_wanted(
             self.wrote.get(),
             self.last_optimize.get(),
@@ -1448,7 +1454,7 @@ impl InstanceDo {
             Ok(t) => t.map(|t| t.timestamp_millis() as f64),
             Err(_) => Some(now),
         };
-        [sweep, grants, optimize, unseen]
+        [sweep, grants, leases, optimize, unseen]
             .into_iter()
             .flatten()
             .reduce(f64::min)

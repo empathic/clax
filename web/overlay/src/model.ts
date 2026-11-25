@@ -9,7 +9,7 @@ import type { Anchor } from "../../bridge/src/protocol";
 import { anchorText, browserOf, stateTone, timeIn, viewportText } from "../../bridge/src/report-text";
 import type { Recorder } from "../../sdk/src/diagnostics";
 import { environment } from "../../sdk/src/environment";
-import { type NewReport, type Reopening, contextJson } from "../../sdk/src/reporter";
+import { type NewReport, type Reopening, type ReporterApi as SdkReporterApi, contextJson } from "../../sdk/src/reporter";
 import { scrub, wellFormed } from "../../sdk/src/scrub";
 import type { CaptureInfo, DiagLine, FixAttempt, FixOutcome, FlagValue, Release, Report, ReportComment, ReportContext, ResolveReason } from "../../sdk/src/types";
 import { type Placement, type Shape, remapShapes } from "./annotate";
@@ -415,6 +415,32 @@ const RESOLVED: Record<ResolveReason, string> = {
   other: "Resolved",
 };
 
+/** The query parameter of a link that opens the overlay on one report:
+ * `?clax-report=<report ID>` on any page that mounts the overlay. */
+export const REPORT_LINK_PARAM = "clax-report";
+
+/** The report ID a link to one report names in `win`'s URL
+ * (`REPORT_LINK_PARAM`), taken out of the URL in place
+ * (`history.replaceState`, keeping its state), so a reload or a copied
+ * address does not open it again; null when the URL names none. */
+export function takeReportLink(win: Pick<Window, "location" | "history">): string | null {
+  let url: URL;
+  try {
+    url = new URL(win.location.href);
+  } catch {
+    return null;
+  }
+  if (!url.searchParams.has(REPORT_LINK_PARAM)) return null;
+  const id = url.searchParams.get(REPORT_LINK_PARAM)?.trim() ?? "";
+  url.searchParams.delete(REPORT_LINK_PARAM);
+  try {
+    win.history.replaceState(win.history.state, "", url.href);
+  } catch {
+    // A sandboxed frame may refuse; the link still opens the report.
+  }
+  return id && id.length <= 128 ? id : null;
+}
+
 /** A report's state as the reporter reads it. */
 export function stateLabel(r: Pick<Report, "state" | "resolve_reason">): string {
   switch (r.state) {
@@ -443,6 +469,11 @@ export function waitingFix(r: Report): FixAttempt | null {
   return last && last.outcome === "pending" ? last : null;
 }
 
+/** The fix a preview banner names: the one waiting, else the latest. */
+export function previewFix(r: Report): FixAttempt | null {
+  return waitingFix(r) ?? r.fixes?.at(-1) ?? null;
+}
+
 /** A link a report shows, when it is an `https:` or `http:` URL; none for
  * any other scheme (a `javascript:` URL is never made a link). */
 export function safeLink(url: string | undefined): string | null {
@@ -462,4 +493,13 @@ export function safeLink(url: string | undefined): string | null {
 // moved next to ReporterClient in sdk/src/reporter.ts, which it describes.
 export { BADGE_POLL_MS, BadgeWatch, POLL_BACKOFF_MAX, POLL_MS, Poll, realTimers } from "../../sdk/src/lifecycle";
 export type { BadgeHooks, Timers, Visibility } from "../../sdk/src/lifecycle";
-export type { ReporterApi } from "../../sdk/src/reporter";
+
+/** What the overlay calls of the SDK's `ReporterClient`: the lifecycle's
+ * calls (sdk/src/reporter.ts), and the two only the overlay makes. */
+export interface ReporterApi extends SdkReporterApi {
+  /** One report by its ID, for a link to it (`takeReportLink`). */
+  report(reportId: string): Promise<Report>;
+  /** The reporter's reports whose fix waits for its verdict on this page's
+   * origin: a preview deployment's. */
+  previews(): Promise<Report[]>;
+}

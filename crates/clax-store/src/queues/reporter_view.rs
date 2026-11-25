@@ -357,6 +357,7 @@ mod tests {
             status: "open".into(),
             state: State::Open,
             reporter_id: Some(rid.into()),
+            mine: None,
             metadata: serde_json::json!({"logs": ["alice@example.com"]}),
             metadata_version: 1,
             has_clip: false,

@@ -88,7 +88,8 @@ pub fn actor_person(actor: &Actor) -> Option<String> {
         | Actor::Anonymous
         | Actor::System { .. }
         | Actor::Reporter { .. }
-        | Actor::Service { .. } => None,
+        | Actor::Service { .. }
+        | Actor::FixTicket { .. } => None,
     }
 }
 
