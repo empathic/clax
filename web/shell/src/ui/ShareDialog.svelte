@@ -81,8 +81,10 @@
   }
   const pick = (c: api.ShareCandidate) => { chosen = c; query = c.name ?? `@${c.github_login}`; };
   const typed = (v: string) => { query = v; chosen = null; err = ""; };
+  // By the share's ID: a waiting share's login is never looked up again,
+  // so a change cannot hand it to whoever holds that login now.
   const change = (s: api.Share, access: api.ShareAccess) =>
-    act(() => api.share(id, s.person ? { person: s.person } : { github_login: s.github_login ?? "" }, access));
+    act(() => api.share(id, { id: s.id }, access));
   async function toggleComments(box: HTMLInputElement) {
     const on = box.checked;
     // The change is heard once the daemon holds it, even if the dialog's

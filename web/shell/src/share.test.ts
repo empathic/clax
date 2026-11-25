@@ -66,6 +66,12 @@ describe("share model", () => {
     expect(suggest("  ", people, [])).toEqual([]);
   });
 
+  it("says in words that a waiting legacy share goes by login alone", () => {
+    expect(shareDetail({ ...octo, legacy: true })).toBe(
+      "Not signed in yet. Added by login alone, so it goes to whoever signs in as @octo: share with @octo again to tie it to their GitHub account");
+    expect(shareDetail({ ...octo, legacy: false })).toBe("Not signed in yet: has access once that GitHub account signs in, even under a new login");
+  });
+
   it("names a chosen person, else the login typed", () => {
     expect(subject("@Octo", null)).toEqual({ github_login: "octo" });
     expect(subject("Mia Chen", { person: "u_mia", name: "Mia Chen", github_login: null })).toEqual({ person: "u_mia" });
@@ -180,7 +186,7 @@ describe("Share dialog", () => {
     await until(() => root.querySelectorAll(".shared li").length === 2);
     await idle();
     expect(sent.at(-1)).toEqual({ method: "PUT", url: `${BASE}/shares`, body: { github_login: "octo", access: "commenter" } });
-    expect(root.querySelectorAll(".shared li")[1].textContent).toMatch(/@octo.*once they sign in with GitHub/);
+    expect(root.querySelectorAll(".shared li")[1].textContent).toMatch(/@octo.*once that GitHub account signs in, even under a new login/);
     expect(who.value, "the field clears").toBe("");
     // A suggestion is picked by name and shared by person.
     flush(() => { who.value = "mi"; who.dispatchEvent(new Event("input", { bubbles: true })); });
@@ -196,7 +202,7 @@ describe("Share dialog", () => {
     flush(() => { samAccess.value = "editor"; samAccess.dispatchEvent(new Event("change", { bubbles: true })); });
     await until(() => sent.length === 3);
     await idle();
-    expect(sent[2].body).toEqual({ person: "u_sam", access: "editor" });
+    expect(sent[2].body).toEqual({ id: "s1", access: "editor" });
     state.sharing = open({ people: [octo] });
     flush(() => root.querySelector<HTMLButtonElement>("button[aria-label='Remove Sam Lee']")!.click());
     await until(() => sent.length === 4 && root.querySelectorAll(".shared li").length === 1);

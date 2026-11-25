@@ -87,8 +87,9 @@ export const setSiteAccess = (aid: string, access: SiteAccess) =>
 /** Serves `aid`'s site without Clax's Content Security Policy (`unrestricted`), or holds it to its own site again (`self`). */
 export const setContentSecurityPolicy = (aid: string, policy: ContentSecurityPolicy) =>
   call<{ artifact?: { content_security_policy?: ContentSecurityPolicy } }>(`/api/artifacts/${e(aid)}`, "PATCH", { content_security_policy: policy });
-/** Shares `aid` with a GitHub login or a person (by public ID), or changes their access. */
-export const share = (aid: string, to: { github_login: string } | { person: string }, access: ShareAccess) =>
+/** Shares `aid` with a GitHub login or a person (by public ID), or changes their access; `{ id }`
+ * changes the access of that share alone, never asking GitHub about its login again. */
+export const share = (aid: string, to: { github_login: string } | { person: string } | { id: string }, access: ShareAccess) =>
   call<{ share: Share }>(`/api/hosted/artifacts/${e(aid)}/shares`, "PUT", { ...to, access });
 /** Turns `aid`'s Comments switch on or off. */
 /** Sets the artifact's Comments switch; the answer is what the daemon now holds. */
