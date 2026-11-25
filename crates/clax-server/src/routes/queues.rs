@@ -21,13 +21,13 @@
 //! Every route but the listing is a person's in their browser (or the
 //! owner by hand), from the daemon's own origin (`SameOrigin`); agents are
 //! refused. The owner acts as the person `None`, a connected person as
-//! their public ID. The owner and the instance's administrators
-//! ([`clax_http::bot::may_admin`]) oversee every queue, in their browser:
-//! each is theirs to read and administer as an admin's, member or not
-//! (their agents work only the queues they are members of). Any other
-//! caller's queue that they are not a member of answers 404
+//! their public ID. A queue is reached only by those it is shared with,
+//! its maker and its members: the owner and the instance's administrators
+//! ([`clax_http::bot::may_admin`]) too, who are told of no queue they are
+//! not a member of. A queue the caller is not a member of answers 404
 //! `not_a_member`, as an unknown one does; a triage member's change 403
-//! `not_queue_admin`.
+//! `not_queue_admin`. The owner and administrators make queues whatever
+//! `queues.members_create` says ([`is_instance_admin`]).
 
 use super::artifacts::{body, path};
 use axum::Json;
@@ -57,18 +57,21 @@ use serde_json::{Value, json};
 pub const MAX_PEOPLE: usize = 20;
 
 /// An administering caller: the person they act as (`None` for the owner,
-/// a connected person's public ID), and whether they oversee every queue
-/// ([`oversees`]).
+/// a connected person's public ID), and whether they are the owner or an
+/// administrator of the instance ([`is_instance_admin`]), who make queues
+/// whatever `queues.members_create` says.
 #[derive(Clone)]
 struct Admin {
     person: Option<String>,
-    oversees: bool,
+    instance_admin: bool,
 }
 
-/// Whether `c` oversees every queue: the owner or an administrator of the
-/// instance ([`clax_http::bot::may_admin`]), in their browser (or the
-/// owner by hand), never an agent.
-pub(crate) fn oversees(st: &Store, c: &Caller) -> bool {
+/// Whether `c` is the owner or an administrator of the instance
+/// ([`clax_http::bot::may_admin`]), in their browser (or the owner by
+/// hand), never an agent: who makes a queue whatever
+/// `queues.members_create` says ([`may_make`]). It reaches no queue: a
+/// queue is reached by its maker and its members alone.
+pub(crate) fn is_instance_admin(st: &Store, c: &Caller) -> bool {
     matches!(c, Caller::Owner { .. } | Caller::Person { .. })
         && clax_http::bot::may_admin(st, c).is_ok()
 }
@@ -95,8 +98,13 @@ async fn admin_person(s: &AppState, d: &DeniedToGrants) -> Result<Admin, ApiErro
             ));
         }
     };
-    let oversees = s.store_call(move |st| Ok(oversees(st, &caller))).await?;
-    Ok(Admin { person, oversees })
+    let instance_admin = s
+        .store_call(move |st| Ok(is_instance_admin(st, &caller)))
+        .await?;
+    Ok(Admin {
+        person,
+        instance_admin,
+    })
 }
 
 /// 403 `not_queue_admin` for a triage member.
@@ -107,26 +115,14 @@ fn not_queue_admin() -> ApiError {
     )
 }
 
-/// `a`'s role on live queue `qid`: their member role, else admin for a
-/// caller who oversees every queue; `None` for anyone else and no such
-/// queue.
-///
-/// # Errors
-/// The store's.
-fn role_on(st: &Store, qid: &str, a: &Admin) -> clax_core::Result<Option<Role>> {
-    if let Some(r) = st.queue_role(qid, a.person.as_deref())? {
-        return Ok(Some(r));
-    }
-    Ok((a.oversees && st.queue(qid)?.is_some()).then_some(Role::Admin))
-}
-
-/// `Ok` when `a` is queue `qid`'s admin ([`role_on`]).
+/// `Ok` when `a` is live queue `qid`'s admin: its maker, or a member at
+/// `admin`.
 ///
 /// # Errors
 /// 404 `not_a_member` for a non-member or no such queue; 403
 /// `not_queue_admin` for a triage member.
 fn require_admin(st: &Store, qid: &str, a: &Admin) -> Result<(), ApiError> {
-    match role_on(st, qid, a)? {
+    match st.queue_role(qid, a.person.as_deref())? {
         Some(Role::Admin) => Ok(()),
         Some(Role::Triage) => Err(not_queue_admin()),
         None => Err(CoreError::NotAMember.into()),
@@ -161,7 +157,7 @@ pub(crate) fn members_create(st: &Store) -> clax_core::Result<bool> {
 /// # Errors
 /// The store's; within, 403 `queues_admin_only`.
 pub(crate) fn may_make(st: &Store, c: &Caller) -> clax_core::Result<Result<(), ApiError>> {
-    if matches!(c, Caller::Person { .. }) && !oversees(st, c) && !members_create(st)? {
+    if matches!(c, Caller::Person { .. }) && !is_instance_admin(st, c) && !members_create(st)? {
         return Ok(Err(ApiError::forbidden(
             "queues_admin_only",
             "an administrator of this Clax makes its report queues",
@@ -183,7 +179,7 @@ pub(crate) fn access(st: &Store, c: &Caller) -> clax_core::Result<Value> {
         Caller::Owner { .. } => (None, true),
         Caller::Person { viewer } => (
             Some(viewer.public_id.clone()),
-            oversees(st, c) || members_create(st)?,
+            is_instance_admin(st, c) || members_create(st)?,
         ),
         _ => return Ok(json!({"member": 0, "may_make": false})),
     };
@@ -193,44 +189,14 @@ pub(crate) fn access(st: &Store, c: &Caller) -> clax_core::Result<Value> {
 
 /// `GET /api/queues` → `{queues}`: the live queues the caller made or is a
 /// member of, oldest first, each `{id, name, origins, reporters_see,
-/// created_at, role, member}`. The owner and the owner's agents read the
-/// owner's; a connected person and their agents read theirs; a viewer who
-/// is no connected person reads none. A caller who oversees every queue
-/// ([`oversees`]) reads every live queue, at their member role where they
-/// are one and else as admin with `member` false. 401 without a
-/// credential.
+/// created_at, role}`. The owner and the owner's agents read the owner's;
+/// a connected person and their agents read theirs; a viewer who is no
+/// connected person reads none. The owner and administrators read only
+/// theirs too. 401 without a credential.
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<QueuesList>,
 ) -> Result<Json<Value>, ApiError> {
-    if matches!(a.caller, Caller::Owner { .. } | Caller::Person { .. }) {
-        let c = a.caller.clone();
-        let queues = s
-            .store_call(move |st| {
-                let person = match &c {
-                    Caller::Person { viewer } => Some(viewer.public_id.clone()),
-                    _ => None,
-                };
-                let rows = if oversees(st, &c) {
-                    st.every_queue(person.as_deref())?
-                } else {
-                    st.queues_of(person.as_deref())?
-                        .into_iter()
-                        .map(|q| (q, true))
-                        .collect()
-                };
-                Ok(rows
-                    .into_iter()
-                    .map(|(q, member)| {
-                        let mut v = json!(q);
-                        v["member"] = json!(member);
-                        v
-                    })
-                    .collect::<Vec<_>>())
-            })
-            .await?;
-        return Ok(Json(json!({ "queues": queues })));
-    }
     let person = match &a.caller {
         Caller::Owner { .. }
         | Caller::OwnerAgent { .. }
@@ -285,7 +251,7 @@ pub async fn create(
     let person = a.person.clone();
     let queue = s
         .store_call(move |st| {
-            if a.person.is_some() && !a.oversees && !members_create(st)? {
+            if a.person.is_some() && !a.instance_admin && !members_create(st)? {
                 return Ok(Err(ApiError::forbidden(
                     "queues_admin_only",
                     "an administrator of this Clax makes its report queues",

@@ -334,19 +334,10 @@ async fn members_hold_the_role_an_admin_gives_them() {
     }
 }
 
-#[tokio::test]
-async fn another_persons_queue_is_not_found() {
-    let w = world().await;
-    let mia = w.ts.connect_person("Mia", "clax:collaborator").await;
-    let mia_viewer = w.ts.store.viewer_of_grant(&mia.grant_id()).unwrap();
-    let mia = format!("clax_viewer={}", w.ts.browser_cookie(&mia_viewer.id));
-    let qid = make_queue(&w, &w.sam, "Sam's bugs").await;
-    let (_, v) = browser(&w.ts, &w.sam, Method::GET, "/api/queues", None).await;
-    assert_eq!(v["queues"][0]["role"], "admin");
-    assert_eq!(v["queues"][0]["member"], true);
-    let (_, v) = browser(&w.ts, &mia, Method::GET, "/api/queues", None).await;
-    assert_eq!(v["queues"], json!([]));
-    for (m, path, body) in [
+/// Every browser route of queue `qid` that a stranger to it is refused,
+/// each `(method, path, body)`.
+fn queue_routes(qid: &str) -> Vec<(Method, String, Option<Value>)> {
+    vec![
         (
             Method::PATCH,
             format!("/api/queues/{qid}"),
@@ -354,6 +345,16 @@ async fn another_persons_queue_is_not_found() {
         ),
         (Method::DELETE, format!("/api/queues/{qid}"), None),
         (Method::GET, format!("/api/queues/{qid}/members"), None),
+        (
+            Method::PUT,
+            format!("/api/queues/{qid}/members/*owner"),
+            Some(json!({"role": "admin"})),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/queues/{qid}/members/*owner"),
+            None,
+        ),
         (Method::GET, format!("/api/queues/{qid}/people?q=sam"), None),
         (
             Method::GET,
@@ -366,10 +367,49 @@ async fn another_persons_queue_is_not_found() {
             Some(json!({"name": "x"})),
         ),
         (Method::GET, format!("/api/queues/{qid}/reports"), None),
-    ] {
-        let (s, v) = browser(&w.ts, &mia, m.clone(), &path, body).await;
+        (
+            Method::GET,
+            format!("/api/queues/{qid}/reports/t_none"),
+            None,
+        ),
+    ]
+}
+
+/// The browser holding `cookie` reaches nothing of queue `qid`: each of
+/// its routes answers 404 `not_a_member`, as it answers for a queue ID no
+/// queue has, so nothing tells it whether `qid` exists.
+async fn reaches_nothing_of(ts: &TestServer, cookie: &str, qid: &str) {
+    let (_, v) = browser(ts, cookie, Method::GET, "/api/queues", None).await;
+    let listed: Vec<&Value> = v["queues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| &q["id"])
+        .collect();
+    assert!(!listed.contains(&&json!(qid)), "{v}");
+    for ((m, path, body), (_, unknown, _)) in
+        queue_routes(qid).into_iter().zip(queue_routes("q_unknown"))
+    {
+        let (s, v) = browser(ts, cookie, m.clone(), &path, body.clone()).await;
         assert_eq!((s, code(&v)), (404, "not_a_member"), "{m} {path}: {v}");
+        let (s2, v2) = browser(ts, cookie, m.clone(), &unknown, body).await;
+        assert_eq!((s2, code(&v2)), (s, code(&v)), "{m} {unknown}: {v2}");
     }
+}
+
+#[tokio::test]
+async fn another_persons_queue_is_not_found() {
+    let w = world().await;
+    let mia = w.ts.connect_person("Mia", "clax:collaborator").await;
+    let mia_viewer = w.ts.store.viewer_of_grant(&mia.grant_id()).unwrap();
+    let mia = format!("clax_viewer={}", w.ts.browser_cookie(&mia_viewer.id));
+    let qid = make_queue(&w, &w.sam, "Sam's bugs").await;
+    let (_, v) = browser(&w.ts, &w.sam, Method::GET, "/api/queues", None).await;
+    assert_eq!(v["queues"][0]["role"], "admin");
+    assert_eq!(v["queues"][0].get("member"), None, "{v}");
+    let (_, v) = browser(&w.ts, &mia, Method::GET, "/api/queues", None).await;
+    assert_eq!(v["queues"], json!([]));
+    reaches_nothing_of(&w.ts, &mia, &qid).await;
     // A viewer who is no connected person makes none.
     let ann = w.ts.viewer(Some("Ann")).await;
     let (s, v) = browser(
@@ -383,38 +423,19 @@ async fn another_persons_queue_is_not_found() {
     assert_eq!((s, code(&v)), (403, "not_a_person"), "{v}");
 }
 
-/// The owner oversees every queue in their browser: a person's queue is
-/// listed to them as admin, not a member, and theirs to administer and
-/// triage; their agents work only the queues they are members of. Added
-/// (by `*owner` or their own public ID), the owner is a member like anyone.
+/// A person's queue that was not shared with the owner is not the owner's
+/// to see: it is not listed to them and its routes answer them as a
+/// stranger, as they answer an unknown queue; their agents see it no more.
+/// Added (by `*owner` or their own public ID), the owner is a member like
+/// anyone, and sees it at their role.
 #[tokio::test]
-async fn the_owner_oversees_every_queue_and_joins_one_like_anyone() {
+async fn the_owner_sees_only_the_queues_shared_with_them() {
     let w = world().await;
     let qid = make_queue(&w, &w.sam, "Sam's bugs").await;
     let (_, v) = browser(&w.ts, &w.owner, Method::GET, "/api/queues", None).await;
-    assert_eq!(v["queues"][0]["id"], qid.as_str());
-    assert_eq!(
-        (&v["queues"][0]["role"], &v["queues"][0]["member"]),
-        (&json!("admin"), &json!(false))
-    );
-    for path in [
-        format!("/api/queues/{qid}/members"),
-        format!("/api/queues/{qid}/service-grants"),
-        format!("/api/queues/{qid}/reports"),
-    ] {
-        let (s, v) = browser(&w.ts, &w.owner, Method::GET, &path, None).await;
-        assert_eq!(s, 200, "{path}: {v}");
-    }
-    let (s, v) = browser(
-        &w.ts,
-        &w.owner,
-        Method::PATCH,
-        &format!("/api/queues/{qid}"),
-        Some(json!({"name": "Bugs"})),
-    )
-    .await;
-    assert_eq!((s, &v["queue"]["role"]), (200, &json!("admin")), "{v}");
-    // The owner's agent is no member yet.
+    assert_eq!(v["queues"], json!([]), "{v}");
+    reaches_nothing_of(&w.ts, &w.owner, &qid).await;
+    // The owner's agent is no member either.
     let agent_list = async || {
         json_of(
             w.ts.authed(w.ts.client.get(format!("{}/api/queues", w.ts.base)))
@@ -431,7 +452,7 @@ async fn the_owner_oversees_every_queue_and_joins_one_like_anyone() {
     let members = format!("/api/queues/{qid}/members");
     let (s, v) = browser(
         &w.ts,
-        &w.owner,
+        &w.sam,
         Method::PUT,
         &format!("{members}/*owner"),
         Some(json!({"role": "triage"})),
@@ -449,9 +470,21 @@ async fn the_owner_oversees_every_queue_and_joins_one_like_anyone() {
     );
     let (_, v) = browser(&w.ts, &w.owner, Method::GET, "/api/queues", None).await;
     assert_eq!(
-        (&v["queues"][0]["role"], &v["queues"][0]["member"]),
-        (&json!("triage"), &json!(true))
+        (&v["queues"][0]["id"], &v["queues"][0]["role"]),
+        (&json!(qid), &json!("triage"))
     );
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::GET,
+        &format!("/api/queues/{qid}/reports"),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "the owner, a member, reads its reports: {v}");
+    // A triage member, the owner does not administer it.
+    let (s, v) = browser(&w.ts, &w.owner, Method::GET, &members, None).await;
+    assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
     assert_eq!(agent_list().await["queues"][0]["role"], "triage");
     // Sam removes the owner by their public ID.
     let (s, v) = browser(
@@ -464,6 +497,7 @@ async fn the_owner_oversees_every_queue_and_joins_one_like_anyone() {
     .await;
     assert_eq!(s, 204, "{v}");
     assert_eq!(agent_list().await["queues"], json!([]));
+    reaches_nothing_of(&w.ts, &w.owner, &qid).await;
 }
 
 /// A queue's admin finds the people they may add: the owner and connected
@@ -936,8 +970,8 @@ impl Hosted {
 }
 
 /// On a hosted Clax members make queues until an administrator turns it
-/// off; the owner always does; an administrator the owner names oversees
-/// every queue, and makes one whatever the setting.
+/// off; the owner always does; an administrator the owner names makes one
+/// whatever the setting, and sees no member's queue not shared with them.
 #[tokio::test]
 async fn on_a_hosted_clax_members_make_queues_until_an_administrator_says_otherwise() {
     let h = Hosted::new().await;
@@ -997,7 +1031,8 @@ async fn on_a_hosted_clax_members_make_queues_until_an_administrator_says_otherw
     assert_eq!(s, 201, "{v}");
     let mias = v["queue"]["id"].as_str().unwrap().to_string();
 
-    // Ana, made an administrator, oversees Mia's queue too.
+    // Ana, made an administrator, sees none of the queues not shared with
+    // her: neither listed nor reached, answered as an unknown queue is.
     let (s, v) = h
         .call(
             &owner,
@@ -1008,22 +1043,41 @@ async fn on_a_hosted_clax_members_make_queues_until_an_administrator_says_otherw
         .await;
     assert_eq!(s, 200, "{v}");
     let (_, v) = h.call(&ana, Method::GET, "/api/queues", Value::Null).await;
-    let listed: Vec<(&str, &Value)> = v["queues"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|q| (q["name"].as_str().unwrap(), &q["member"]))
-        .collect();
-    assert_eq!(listed, [("Ada's", &json!(false)), ("Mia's", &json!(false))]);
+    assert_eq!(v["queues"], json!([]), "{v}");
+    for ((m, path, body), (_, unknown, _)) in queue_routes(&mias)
+        .into_iter()
+        .zip(queue_routes("q_unknown"))
+    {
+        let body = body.unwrap_or(Value::Null);
+        let (s, v) = h.call(&ana, m.clone(), &path, body.clone()).await;
+        assert_eq!((s, code(&v)), (404, "not_a_member"), "{m} {path}: {v}");
+        let (s2, v2) = h.call(&ana, m.clone(), &unknown, body).await;
+        assert_eq!((s2, code(&v2)), (s, code(&v)), "{m} {unknown}: {v2}");
+    }
+    // The owner, who made Ada's, sees it alone; Mia sees Mia's alone.
+    let names = |v: &Value| -> Vec<String> {
+        v["queues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| q["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (_, v) = h
+        .call(&owner, Method::GET, "/api/queues", Value::Null)
+        .await;
+    assert_eq!(names(&v), ["Ada's"]);
+    let (_, v) = h.call(&mia, Method::GET, "/api/queues", Value::Null).await;
+    assert_eq!(names(&v), ["Mia's"]);
     let (s, v) = h
         .call(
-            &ana,
+            &mia,
             Method::GET,
             &format!("/api/queues/{mias}/members"),
             Value::Null,
         )
         .await;
-    assert_eq!(s, 200, "{v}");
+    assert_eq!(s, 200, "its maker administers it still: {v}");
     let (s, v) = h
         .call(
             &owner,

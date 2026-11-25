@@ -2020,3 +2020,174 @@ async fn a_lapsed_lease_publishes_the_reports_state() {
         );
     }
 }
+
+/// A person's queue that was not shared with the owner reaches none of the
+/// owner's streams: its topic is refused as an unknown queue's is, and a
+/// change to one of its reports sends nothing to the owner's `artifact`
+/// topic of the report's external artifact, nor to their `gallery`, nor
+/// to any other topic they hold, while its maker hears of it on the queue's
+/// topic.
+#[tokio::test]
+async fn a_queue_not_shared_with_the_owner_reaches_none_of_their_streams() {
+    let q = setup().await;
+    let bob = q.ts.person("Bob").await;
+    let qid =
+        q.ts.store
+            .create_queue(
+                &AuditCtx::DAEMON,
+                Some(&bob.public_id),
+                NewQueue {
+                    name: "Bob's".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+    let r = file_into(&q.ts, &qid, None).await;
+    let owner_cookie = q.ts.owner_cookie();
+    let unknown = "01J0000000000000000000000A";
+    let (_, s, v) = stream_with(&q.ts, &owner_cookie, &[&format!("queue:{qid}")]).await;
+    let (_, s2, v2) = stream_with(&q.ts, &owner_cookie, &[&format!("queue:{unknown}")]).await;
+    assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
+    assert_eq!((s2, &v2), (s, &v), "as an unknown queue: {v2}");
+
+    let aid = r.artifact.id.clone();
+    let mut owner =
+        q.ts.stream_as_owner(&[&format!("artifact:{aid}"), "gallery", "inbox", "questions"])
+            .await;
+    let (mut bobs, s, v) = stream_with(
+        &q.ts,
+        &format!("clax_viewer={}", bob.cookie),
+        &[&format!("queue:{qid}")],
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = q
+        .browser(
+            &bob.cookie,
+            "POST",
+            &format!("/api/queues/{qid}/reports/{}/comments", r.id),
+            json!({"body": "Bob's reply"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(next_report(&mut bobs).await, (r.id.clone(), "open".into()));
+    // A marker the owner's gallery hears after: anything the reply sent
+    // them arrives before it.
+    q.ts.publish("Marker", &[("index.html", "<p>m</p>")]).await;
+    loop {
+        let (n, d) = within("the marker", owner.next()).await;
+        let text = d.to_string();
+        assert!(
+            !text.contains(&r.id) && !text.contains("Bob's reply"),
+            "the owner heard of the report: {n} {d}"
+        );
+        if n == "version" && d["title"] == "Marker" {
+            break;
+        }
+    }
+}
+
+/// Who replied to a report of a queue not shared with the owner is not
+/// named to the owner among its external artifact's participants, in the
+/// gallery or the artifact's own read; its maker's replies are theirs.
+#[tokio::test]
+async fn a_reports_repliers_are_no_participants_of_its_artifact() {
+    let q = setup().await;
+    let bob = q.ts.person("Bob").await;
+    let qid =
+        q.ts.store
+            .create_queue(
+                &AuditCtx::DAEMON,
+                Some(&bob.public_id),
+                NewQueue {
+                    name: "Bob's".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+    let r = file_into(&q.ts, &qid, None).await;
+    let aid = r.artifact.id.clone();
+    let (s, v) = q
+        .browser(
+            &bob.cookie,
+            "POST",
+            &format!("/api/queues/{qid}/reports/{}/comments", r.id),
+            json!({"body": "Bob's reply"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let (s, v) = q
+        .owner("GET", &format!("/api/artifacts/{aid}"), Value::Null)
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifact"]["participants"]["people"], json!([]), "{v}");
+    let (s, v) = q.owner("GET", "/api/artifacts", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    let card = v["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == aid.as_str())
+        .unwrap();
+    assert_eq!(card["participants"]["people"], json!([]), "{card}");
+}
+
+/// To someone who is no member of its queue, the generic thread routes
+/// answer a report's thread as they answer a thread ID that is not there:
+/// 404, naming no queue. Its members' agents are told it is a report
+/// (`the_generic_thread_routes_refuse_a_report_and_leave_it_out_of_listings`).
+#[tokio::test]
+async fn the_generic_thread_routes_answer_a_non_member_as_for_no_thread() {
+    let q = setup().await;
+    let bob = q.ts.person("Bob").await;
+    let qid =
+        q.ts.store
+            .create_queue(
+                &AuditCtx::DAEMON,
+                Some(&bob.public_id),
+                NewQueue {
+                    name: "Bob's".into(),
+                    origins: vec!["https://app.example.com".into()],
+                    reporters_see: ReportersSee::Own,
+                },
+            )
+            .unwrap()
+            .id;
+    let r = file_into(&q.ts, &qid, None).await;
+    let aid = r.artifact.id.clone();
+    let a = q.session("a").await;
+    let unknown = "01J0000000000000000000000B";
+    for (m, tail, body) in [
+        (
+            "POST",
+            "/comments",
+            json!({"body": "on it", "author_kind": "agent"}),
+        ),
+        ("POST", "/resolve", json!({"as": "agent"})),
+        ("GET", "", json!(null)),
+        ("GET", "/clip", json!(null)),
+        ("DELETE", "?as=agent", json!(null)),
+    ] {
+        let path = format!("/api/artifacts/{aid}/threads/{}{tail}", r.id);
+        let none = format!("/api/artifacts/{aid}/threads/{unknown}{tail}");
+        for (who, (s, v), (s2, v2)) in [
+            (
+                "the owner's agent",
+                q.agent(Some(&a), m, &path, body.clone()).await,
+                q.agent(Some(&a), m, &none, body.clone()).await,
+            ),
+            (
+                "the owner",
+                q.owner(m, &path, body.clone()).await,
+                q.owner(m, &none, body.clone()).await,
+            ),
+        ] {
+            assert_eq!(s, 404, "{who} {m} {path}: {v}");
+            assert_eq!((s, &v), (s2, &v2), "{who} {m} {path}: as for no thread");
+        }
+    }
+}

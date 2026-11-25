@@ -1063,29 +1063,6 @@ impl Store {
         })
     }
 
-    /// Every live queue, oldest first, as an administrator of the instance
-    /// reads it: each with `person`'s role (`None`: the owner) where they
-    /// are a member, else admin, and whether they are a member.
-    ///
-    /// # Errors
-    /// Database errors.
-    pub fn every_queue(&self, person: Option<&str>) -> Result<Vec<(Queue, bool)>> {
-        self.with_read(|c| {
-            let rows: Vec<QueueRow> = c
-                .prepare_cached(&format!(
-                    "{QUEUE_SELECT} WHERE deleted_at IS NULL ORDER BY created_at, id"
-                ))?
-                .query_map([], queue_row)?
-                .collect::<rusqlite::Result<_>>()?;
-            let mut out = Vec::with_capacity(rows.len());
-            for q in rows {
-                let role = role_in(c, &q, person)?;
-                out.push((q.view(role.unwrap_or(Role::Admin)), role.is_some()));
-            }
-            Ok(out)
-        })
-    }
-
     /// Live queue `qid`.
     ///
     /// # Errors
@@ -2341,7 +2318,7 @@ impl Store {
     /// What a change to report `tid` of queue `qid` tells the queue's
     /// topic: the report's state now, and the recipient keys of the
     /// queue's members (empty for the owner, a connected person's public
-    /// ID), its maker first, and the owner's, who oversees every queue;
+    /// ID), its maker first; the owner only as its maker or a member.
     /// `None` for no such live queue or report.
     ///
     /// # Errors
@@ -2360,12 +2337,7 @@ impl Store {
             let s = standing_in(c, tid)?;
             let claimed = current_in(c, tid, &now)?.is_some_and(|cur| cur.live);
             let state = state_of(&s.status, s.phase.as_deref(), claimed);
-            // The owner's browser oversees every queue, so the owner is
-            // always told.
             let mut members = vec![q.person.clone().unwrap_or_default()];
-            if !members.contains(&String::new()) {
-                members.push(String::new());
-            }
             let rows: Vec<String> = c
                 .prepare_cached(
                     "SELECT person FROM queue_members WHERE queue_id = ?1 ORDER BY created_at, person",

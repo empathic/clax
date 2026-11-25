@@ -198,15 +198,15 @@ describe("Queues", () => {
     expect(m.root.querySelector('[data-found="p9"]')).toBeNull();
   });
 
-  it("offers New queue only where this browser may make one, and marks a queue it oversees without being a member", async () => {
+  it("offers New queue only where this browser may make one", async () => {
     stubFetch(routes({
       "GET /api/viewers/me": { viewer: { public_id: "p5" }, queues: { member: 1, may_make: false } },
-      "GET /api/queues": { queues: [{ ...QUEUE, member: false }] },
+      "GET /api/queues": { queues: [QUEUE] },
     }));
     const m = mount(Queues, {});
     await settle();
     expect([...m.root.querySelectorAll("button")].some(b => b.textContent === "New queue")).toBe(false);
     expect(m.root.querySelector(".qpolicy")!.textContent).toContain("An administrator makes new queues");
-    expect(m.root.querySelector('[data-id="q1"] .qrow')!.textContent).toContain("Not a member");
+    expect(m.root.querySelector('[data-id="q1"] .qrow')!.textContent).not.toContain("Not a member");
   });
 });
