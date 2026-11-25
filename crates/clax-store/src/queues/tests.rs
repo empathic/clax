@@ -1,6 +1,6 @@
 use super::{
-    Badge, ExternalScope, NewQueue, NewReport, QueueMemberTo, ReportWriter, ReporterToken,
-    Verdict, Visibility,
+    Badge, ExternalScope, NewQueue, NewReport, QueueMemberTo, ReportWriter, ReporterToken, Verdict,
+    Visibility,
 };
 use crate::Store;
 use crate::github::GitHubUser;
@@ -2322,19 +2322,37 @@ fn an_existing_person_is_added_by_public_id_as_set_member_does_and_notified_once
         "unknown_person"
     );
     let row = st
-        .add_queue_member(DAEMON, &qid, &QueueMemberTo::Person(sam.clone()), Role::Triage, None)
+        .add_queue_member(
+            DAEMON,
+            &qid,
+            &QueueMemberTo::Person(sam.clone()),
+            Role::Triage,
+            None,
+        )
         .unwrap();
     assert_eq!(row.person.as_deref(), Some(sam.as_str()));
     assert_eq!(st.queue_role(&qid, Some(&sam)).unwrap(), Some(Role::Triage));
     assert_eq!(access_items(&st, Some(&sam)).len(), 1, "one access item");
     // Adding the same person again at the same role notifies no one again.
-    st.add_queue_member(DAEMON, &qid, &QueueMemberTo::Person(sam.clone()), Role::Triage, None)
-        .unwrap();
+    st.add_queue_member(
+        DAEMON,
+        &qid,
+        &QueueMemberTo::Person(sam.clone()),
+        Role::Triage,
+        None,
+    )
+    .unwrap();
     assert_eq!(access_items(&st, Some(&sam)).len(), 1);
     // A role change on the same row: still one row, no new item either
     // (the brief's key is per grant, not per change).
-    st.add_queue_member(DAEMON, &qid, &QueueMemberTo::Person(sam.clone()), Role::Admin, None)
-        .unwrap();
+    st.add_queue_member(
+        DAEMON,
+        &qid,
+        &QueueMemberTo::Person(sam.clone()),
+        Role::Admin,
+        None,
+    )
+    .unwrap();
     assert_eq!(st.queue_role(&qid, Some(&sam)).unwrap(), Some(Role::Admin));
     assert_eq!(st.queue_members(&qid).unwrap().len(), 1);
 }
@@ -2374,7 +2392,15 @@ fn a_known_login_is_added_at_once_and_an_unknown_one_waits_pending() {
         .find(|(id, ..)| *id == pending.id)
         .cloned()
         .unwrap();
-    assert_eq!((pid, person, login, role), (pending.id.clone(), None, Some("octo-cat".into()), Role::Admin));
+    assert_eq!(
+        (pid, person, login, role),
+        (
+            pending.id.clone(),
+            None,
+            Some("octo-cat".into()),
+            Role::Admin
+        )
+    );
 
     for bad in ["", "@", "-lead", "has space"] {
         assert_eq!(
@@ -2403,8 +2429,13 @@ fn a_pending_login_binds_at_its_first_sign_in_and_is_notified_then() {
         None,
     )
     .unwrap();
-    assert!(st.queue_members(&qid).unwrap().is_empty(), "pending, not bound");
-    let (signed, _) = st.github_sign_in(DAEMON, &gh(42, "octo-cat"), false).unwrap();
+    assert!(
+        st.queue_members(&qid).unwrap().is_empty(),
+        "pending, not bound"
+    );
+    let (signed, _) = st
+        .github_sign_in(DAEMON, &gh(42, "octo-cat"), false)
+        .unwrap();
     let octo = signed.who.viewer.public_id;
     assert_eq!(st.queue_role(&qid, Some(&octo)).unwrap(), Some(Role::Admin));
     assert_eq!(access_items(&st, Some(&octo)).len(), 1);
@@ -2412,7 +2443,9 @@ fn a_pending_login_binds_at_its_first_sign_in_and_is_notified_then() {
     // they inherit nothing (as a login share does, shares.rs).
     st.github_sign_in(DAEMON, &gh(42, "octo-renamed"), false)
         .unwrap();
-    let (other, _) = st.github_sign_in(DAEMON, &gh(99, "octo-cat"), false).unwrap();
+    let (other, _) = st
+        .github_sign_in(DAEMON, &gh(99, "octo-cat"), false)
+        .unwrap();
     let other = other.who.viewer.public_id;
     assert_eq!(st.queue_role(&qid, Some(&other)).unwrap(), None);
     assert_eq!(st.queue_role(&qid, Some(&octo)).unwrap(), Some(Role::Admin));
@@ -2453,7 +2486,10 @@ fn a_pending_and_a_persons_membership_merge_at_sign_in_keeping_the_more_permissi
     // direct membership, keeping the more permissive role.
     st.with_tx(|tx| super::bind_github_members(tx, "mia-gh", &mia.public_id))
         .unwrap();
-    assert_eq!(st.queue_role(&qid, Some(&mia.public_id)).unwrap(), Some(Role::Admin));
+    assert_eq!(
+        st.queue_role(&qid, Some(&mia.public_id)).unwrap(),
+        Some(Role::Admin)
+    );
     assert_eq!(st.queue_members(&qid).unwrap().len(), 1);
 }
 
@@ -2462,7 +2498,13 @@ fn removing_a_pending_row_by_its_id_takes_only_that_row() {
     let (_d, st, sam) = hosted();
     let qid = queue(&st, ReportersSee::Own);
     let bound = st
-        .add_queue_member(DAEMON, &qid, &QueueMemberTo::Person(sam.clone()), Role::Triage, None)
+        .add_queue_member(
+            DAEMON,
+            &qid,
+            &QueueMemberTo::Person(sam.clone()),
+            Role::Triage,
+            None,
+        )
         .unwrap();
     let pending = st
         .add_queue_member(
@@ -2482,5 +2524,8 @@ fn removing_a_pending_row_by_its_id_takes_only_that_row() {
     st.remove_queue_member(DAEMON, &qid, &pending.id).unwrap();
     st.remove_queue_member(DAEMON, &qid, "nope").unwrap();
     assert_eq!(st.queue_members_listing(&qid).unwrap().len(), 1);
-    assert_eq!(code_of(st.remove_queue_member(DAEMON, "nope", &pending.id)), "not_a_member");
+    assert_eq!(
+        code_of(st.remove_queue_member(DAEMON, "nope", &pending.id)),
+        "not_a_member"
+    );
 }

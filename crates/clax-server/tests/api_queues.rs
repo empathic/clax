@@ -353,7 +353,10 @@ async fn members_are_added_by_person_or_by_a_pending_github_login_triage_cannot(
     .await;
     assert_eq!(s, 201, "{v}");
     assert_eq!(
-        (v["member"]["person"].as_str(), v["member"]["github_login"].as_ref()),
+        (
+            v["member"]["person"].as_str(),
+            v["member"]["github_login"].as_ref()
+        ),
         (Some(w.sam_public.as_str()), Some(&Value::Null))
     );
 

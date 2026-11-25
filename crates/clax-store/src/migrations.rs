@@ -6163,7 +6163,10 @@ mod tests {
         assert!(MIGRATIONS[first + 29].contains("CREATE TABLE installs ("));
         assert_eq!(super::RESPONDERS_MIGRATION, super::INSTALLS_MIGRATION + 1);
         assert!(MIGRATIONS[first + 30].contains("CREATE TABLE queue_responders ("));
-        assert_eq!(super::QUEUE_ACCESS_MIGRATION, super::RESPONDERS_MIGRATION + 1);
+        assert_eq!(
+            super::QUEUE_ACCESS_MIGRATION,
+            super::RESPONDERS_MIGRATION + 1
+        );
         assert!(MIGRATIONS[first + 31].contains("CREATE TABLE queue_members_73 ("));
         assert_eq!(MIGRATIONS.len() as u32, super::QUEUE_ACCESS_MIGRATION);
     }
