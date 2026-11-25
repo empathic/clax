@@ -3,7 +3,10 @@
 // for the Rust ones: an OAuth App's authorize page, which signs in as the
 // account `signInAs` chose and redirects back with `code` and `state`; the
 // token exchange, which turns `code-<id>` into `tok-<id>` for the app's
-// client ID and secret; and the API's `GET /user`.
+// client ID and secret; the API's `GET /user`; and `GET /users/<login>`,
+// which names the account holding a login now (any case) for the app's
+// client ID and secret as basic auth, else 404: the daemon asks it before
+// a login is added.
 import { createServer, type IncomingMessage } from "node:http";
 
 export interface FakeGitHub {
@@ -50,6 +53,15 @@ export async function startFakeGitHub(clientId: string, clientSecret: string): P
       const id = Number(req.headers.authorization?.match(/^Bearer tok-(\d+)$/)?.[1]);
       const u = users.get(id);
       if (u) json(200, u); else json(401, { message: "Bad credentials" });
+      return;
+    }
+    const lookup = req.method === "GET" ? url.pathname.match(/^\/users\/([^/]+)$/) : null;
+    if (lookup) {
+      const basic = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
+      if (req.headers.authorization !== basic) { json(401, { message: "Bad credentials" }); return; }
+      const want = decodeURIComponent(lookup[1]).toLowerCase();
+      const u = [...users.values()].find(x => String(x.login).toLowerCase() === want);
+      if (u) json(200, { id: u.id, login: u.login, type: "User" }); else json(404, { message: "Not Found" });
       return;
     }
     res.writeHead(404);

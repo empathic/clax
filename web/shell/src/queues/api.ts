@@ -95,8 +95,10 @@ export const releaseClaim = (qid: string, tid: string, note?: string) => call<{ 
 export const verify = (qid: string, tid: string, note?: string) => call<{ report: Report }>(`${r(qid, tid)}/verify`, "POST", note ? { note } : {});
 /** Says, on the reporter's behalf, that the report is still broken, with `body` as their comment. */
 export const reopen = (qid: string, tid: string, body: string) => call<{ report: Report }>(`${r(qid, tid)}/reopen`, "POST", { body });
-/** A teammate added by GitHub login who has not signed in here yet: their membership waits for that sign-in. */
-export type PendingMember = { id: string; github_login: string; role: QueueRole; created_at: string };
+/** A teammate added by GitHub login who has not signed in here yet: their membership waits for that
+ * GitHub account's sign-in (`github_login` as GitHub spells it). `legacy`: added by login alone,
+ * before invites named the account, so it goes to whoever first signs in with the login. */
+export type PendingMember = { id: string; github_login: string; role: QueueRole; created_at: string; legacy?: boolean };
 /** The queue's members, the logins waiting for their sign-in, and whether
  * people sign in here with GitHub (a hosted Clax), so whether adding by
  * login is offered. */

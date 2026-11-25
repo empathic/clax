@@ -141,7 +141,9 @@ test("shared report queues, as a user story", async ({ browser: plain }) => {
     await inboxNotice(mia, "07-teammate-inbox", new RegExp(`Robert added you to ${queue} as triage`));
 
     // 4. Robert adds @octo-cat, who has no account here yet: a row waits
-    // for their GitHub sign-in; he removes it, then adds it again.
+    // for their GitHub sign-in; he removes it, then adds it again. GitHub
+    // (the fake) names the account the login is when it is added.
+    gh.account(7, "octo-cat", "Octo Cat");
     await card.getByLabel("Add a person").fill("@octo-cat");
     const addLogin = card.getByRole("button", { name: "Add @octo-cat" });
     await expect(addLogin).toBeEnabled();
@@ -158,7 +160,6 @@ test("shared report queues, as a user story", async ({ browser: plain }) => {
     await expect(waiting).toContainText("@octo-cat · waiting for their GitHub sign-in");
 
     // 5. octo-cat signs in with GitHub (the fake) and lands in the queue, with the notice.
-    gh.account(7, "octo-cat", "Octo Cat");
     gh.signInAs(7);
     const catContext = await browser.newContext();
     await asStranger(catContext);

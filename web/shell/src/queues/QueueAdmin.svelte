@@ -109,7 +109,9 @@
         said = [`Added ${name}.`, m ? cannotRead(m) : ""].filter(Boolean).join(" ");
       } else if (login) {
         const b = await api.addMemberByLogin(qid, login, role);
-        said = b.member ? [`Added ${nameOf(b.member)} (@${login}).`, cannotRead(b.member)].filter(Boolean).join(" ") : `@${login} becomes a member when they first sign in here with GitHub.`;
+        // The login as GitHub spells it, once GitHub has named the account.
+        const as = b.invite?.github_login ?? login;
+        said = b.member ? [`Added ${nameOf(b.member)} (@${as}).`, cannotRead(b.member)].filter(Boolean).join(" ") : `@${as} becomes a member when that GitHub account first signs in here, even under a new login.`;
         chosen = null; find = ""; found = null;
         await loadMembers();
       }
@@ -242,7 +244,7 @@
       <ul class="lines" aria-label="Waiting for their GitHub sign-in">
         {#each pending as w (w.id)}
           <li class="line" data-pending={w.github_login}>
-            <span class="who">@{w.github_login}<span class="key">{" · waiting for their GitHub sign-in"}</span></span>
+            <span class="who">@{w.github_login}<span class="key">{" · waiting for their GitHub sign-in"}</span>{#if w.legacy}<span class="key" data-legacy>{` · added by login alone, so it goes to whoever signs in as @${w.github_login}: add @${w.github_login} again to tie it to their GitHub account`}</span>{/if}</span>
             <span class="fixed">{w.role === "admin" ? "Admin" : "Triage"}</span>
             <button type="button" class="ghost danger" aria-label={`Remove @${w.github_login}`} onclick={() => void removeWaiting(w)}>Remove</button>
           </li>

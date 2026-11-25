@@ -40,12 +40,13 @@ export function shareName(s: Share): string {
 /** The line under a share's name: its login, and that it waits for a first sign-in. */
 export function shareDetail(s: Share): string {
   const login = s.github_login && s.name ? `@${s.github_login}` : "";
-  return s.pending ? "Not signed in yet: has access once they sign in with GitHub" : login;
+  if (s.pending && s.legacy) return `Not signed in yet. Added by login alone, so it goes to whoever signs in as @${s.github_login}: share with @${s.github_login} again to tie it to their GitHub account`;
+  return s.pending ? "Not signed in yet: has access once that GitHub account signs in, even under a new login" : login;
 }
 
 /** Whether `c` already has a share among `people`. */
 const holds = (c: ShareCandidate, people: Share[]) =>
-  people.some(p => (p.person && p.person === c.person) || (!!c.github_login && p.github_login === c.github_login.toLowerCase()));
+  people.some(p => (p.person && p.person === c.person) || (!!c.github_login && p.github_login?.toLowerCase() === c.github_login.toLowerCase()));
 
 /** The suggestions for what was typed: people not shared with yet whose name or login starts a word with it, at most `max`. */
 export function suggest(query: string, candidates: ShareCandidate[], people: Share[], max = 6): ShareCandidate[] {

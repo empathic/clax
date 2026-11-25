@@ -31,8 +31,9 @@ export type SharedLink = { artifact_id: string; title: string; access: LinkAcces
 export type ShareAccess = "viewer" | "commenter" | "editor";
 /** Who may open an artifact beyond its people: only them, anyone with its link, or the public gallery too. */
 export type GeneralAccess = "restricted" | "link" | "public";
-/** One person an artifact is shared with; `pending` until their GitHub login first signs in. */
-export type Share = { id: string; access: ShareAccess; github_login: string | null; person: string | null; name: string | null; pending: boolean };
+/** One person an artifact is shared with; `pending` until the GitHub account the login named first
+ * signs in. `legacy`: a pending share given by login alone, before shares named the account. */
+export type Share = { id: string; access: ShareAccess; github_login: string | null; person: string | null; name: string | null; pending: boolean; legacy?: boolean };
 /** A person the owner's sharing dialog suggests. */
 export type ShareCandidate = { person: string; name: string | null; github_login: string | null };
 /** Whether an artifact's site is open to anyone, without signing in, or only to those it is shared with. */

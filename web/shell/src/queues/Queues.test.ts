@@ -417,8 +417,9 @@ describe("Queues", () => {
     const members = [{ public_id: "p1", name: "Alex", role: "admin", maker: true, owner: false }];
     const calls = stubFetch(routes({
       "GET /api/queues/q1/members": () => ({ members, pending, github_logins: true }),
+      // The daemon answers with the login as GitHub spells it.
       "PUT /api/queues/q1/members": (b: { github_login: string; role: string }) => {
-        pending = [{ id: "i1", github_login: b.github_login, role: b.role, created_at: "2026-11-25T10:00:00Z" }];
+        pending = [{ id: "i1", github_login: b.github_login === "octo-cat" ? "Octo-Cat" : b.github_login, role: b.role, created_at: "2026-11-25T10:00:00Z", legacy: false }];
         return [201, { invite: pending[0] }];
       },
       "DELETE /api/queues/q1/members/pending/i1": () => { pending = []; return {}; },
@@ -439,15 +440,34 @@ describe("Queues", () => {
     click(add);
     await settle();
     expect(calls.find(c => c.method === "PUT")).toMatchObject({ url: "/api/queues/q1/members", body: { github_login: "octo-cat", role: "admin" } });
-    const row = m.root.querySelector('[data-pending="octo-cat"]')!;
-    expect(row.querySelector(".who")!.textContent).toBe("@octo-cat · waiting for their GitHub sign-in");
+    const row = m.root.querySelector('[data-pending="Octo-Cat"]')!;
+    expect(row.querySelector(".who")!.textContent).toBe("@Octo-Cat · waiting for their GitHub sign-in");
     expect(row.querySelector(".fixed")!.textContent).toBe("Admin");
-    expect(m.root.querySelector(".part [role=status].hint")!.textContent).toBe("@octo-cat becomes a member when they first sign in here with GitHub.");
+    expect(m.root.querySelector(".part [role=status].hint")!.textContent).toBe("@Octo-Cat becomes a member when that GitHub account first signs in here, even under a new login.");
     expect((m.root.querySelector('input[name="person"]') as HTMLInputElement).value).toBe("");
-    click(row.querySelector('[aria-label="Remove @octo-cat"]'));
+    click(row.querySelector('[aria-label="Remove @Octo-Cat"]'));
     await settle();
     expect(calls.some(c => c.method === "DELETE" && c.url === "/api/queues/q1/members/pending/i1")).toBe(true);
     expect(m.root.querySelector("[data-pending]")).toBeNull();
+  });
+
+  it("says in words that a legacy invite goes by login alone, and announces a login GitHub does not know", async () => {
+    const pending = [{ id: "i9", github_login: "octo", role: "triage", created_at: "2026-11-20T10:00:00Z", legacy: true }];
+    stubFetch(routes({
+      "GET /api/queues/q1/members": { members: [], pending, github_logins: true },
+      "PUT /api/queues/q1/members": [400, { error: { code: "unknown_github_login", message: "no GitHub account has the login nobody-x: check its spelling" } }],
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    expect(m.root.querySelector('[data-pending="octo"] .who')!.textContent).toBe(
+      "@octo · waiting for their GitHub sign-in · added by login alone, so it goes to whoever signs in as @octo: add @octo again to tie it to their GitHub account");
+    type(m.root.querySelector('input[name="person"]'), "@nobody-x");
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Add @nobody-x"));
+    await settle();
+    expect(m.root.querySelector("p.err[role=alert]")!.textContent).toBe("No GitHub account has the login nobody-x: check its spelling.");
   });
 
   it("offers no add for text that is no GitHub login, and adds one signed in here as a member at once", async () => {

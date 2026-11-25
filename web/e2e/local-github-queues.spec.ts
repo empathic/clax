@@ -24,14 +24,15 @@ test("a login added on a local Clax signs in with GitHub and finds the queue and
     await expect(card).toBeVisible();
     await card.getByRole("button", { name: "Manage" }).click();
 
-    // Add @octo-cat: offered because this Clax signs people in with GitHub.
+    // Add @octo-cat: offered because this Clax signs people in with GitHub,
+    // which names the account the login is.
+    gh.account(7, "octo-cat", "Octo Cat");
     await card.getByLabel("Add a person").fill("@octo-cat");
     await card.getByRole("button", { name: "Add @octo-cat" }).click();
     const waiting = card.getByRole("list", { name: "Waiting for their GitHub sign-in" });
     await expect(waiting).toContainText("@octo-cat · waiting for their GitHub sign-in");
 
     // octo-cat signs in, in a browser of their own, through the fake.
-    gh.account(7, "octo-cat", "Octo Cat");
     gh.signInAs(7);
     const catContext = await browser.newContext();
     await asStranger(catContext);
