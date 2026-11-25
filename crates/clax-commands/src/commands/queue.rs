@@ -32,6 +32,11 @@ pub enum Cmd {
     /// and CLAX_QUEUE_KEY), else to stdout. --json gives the queue request
     /// tool's result for an agent, `{queue, grant, token, private_key}` by
     /// hand.
+    ///
+    /// An agent's request is said at once on stderr, --json or not: its
+    /// ID, that it waits for the person, the inbox address where they
+    /// answer it, and when it expires. It exits 3 when the person denies
+    /// it and 4 when it expires or is cancelled unanswered.
     Create(CreateArgs),
     /// List the queue's reports, oldest first (without a queue, your
     /// queues).
@@ -122,12 +127,14 @@ pub struct CreateArgs {
     /// if missing) instead of printing the grant.
     #[arg(long, value_name = "PATH")]
     pub write_env: Option<std::path::PathBuf>,
-    /// For an agent: file the request and print its ID without waiting
-    /// (wait on it later with `--request <ID>`).
-    #[arg(long, conflicts_with = "request")]
+    /// For an agent: file the request, say where it is approved, and exit 0
+    /// without waiting; with --request, look at that request once (and
+    /// take its grant if it was approved) without waiting.
+    #[arg(long)]
     pub no_wait: bool,
     /// For an agent: wait on a request filed before, by its ID, instead of
-    /// filing one (the name and origins are then ignored).
+    /// filing one (the name and origins are then ignored). Its grant is
+    /// handed over once, to the first run that finds it approved.
     #[arg(long, value_name = "ID")]
     pub request: Option<String>,
 }
@@ -474,25 +481,31 @@ fn request(
         },
     };
     args.write_env = write_env.clone();
-    if a.no_wait {
-        args.timeout_s = Some(clax_mcp::tools::MIN_WAIT_S);
-    }
+    // The first call files the request (or reads `--request`'s) and waits
+    // a second at most, so that what the agent waits on is said at once.
+    args.timeout_s = Some(clax_mcp::tools::MIN_WAIT_S);
+    // Asked as the harness session this CLI runs in, when the local daemon
+    // has one live, so the person sees which agent asks.
+    let session = match c.remote() {
+        None => super::remotes::own_session(c).ok().flatten(),
+        Some(_) => None,
+    };
     let mut told = false;
     let v = loop {
         let call = args.clone();
-        let v = tools::call_on(c, home, |t| async move {
+        let v = tools::call_on_in(c, home, session.clone(), |t| async move {
             t.queue_request(Parameters(call)).await
         })?;
         let id = v["request_id"].as_str().unwrap_or_default().to_string();
-        if v["call_again"] != true || a.no_wait {
+        if v["call_again"] != true {
             break v;
         }
-        if !told && !cli.json {
-            eprintln!(
-                "clax queue create: asked your person for queue {}; waiting for their answer in Clax (request {id})",
-                term::clean_line(&a.name)
-            );
+        if !told {
+            eprint!("{}", waiting_lines(c, &v, a, env.as_deref()));
             told = true;
+        }
+        if a.no_wait {
+            break v;
         }
         args = QueueRequestArgs {
             request_id: Some(id),
@@ -500,29 +513,183 @@ fn request(
             ..QueueRequestArgs::default()
         };
     };
-    if cli.json {
-        return print_json(&without_feedback(v));
-    }
     let id = cell(&v["request_id"]);
-    match v["status"].as_str().unwrap_or_default() {
-        "pending" => println!(
-            "request {id} waits for your person: `clax queue create --request {id}` waits on it"
-        ),
-        "approved" => {
-            let qid = v["request"]["queue_id"].as_str().unwrap_or_default();
-            println!("approved: queue {qid}");
-            match (v["token"].as_str(), v["private_key"].as_str()) {
-                (Some(t), Some(k)) => print_grant(qid, t, k, None),
-                _ if v["wrote"].is_string() => print_grant(qid, "", "", env.as_deref()),
-                _ => println!(
-                    "its service grant was handed over before; your person can make another on the Queues page"
-                ),
-            }
-        }
-        other => bail!("request {id} {other}: no queue was made"),
+    let status = v["status"].as_str().unwrap_or_default().to_string();
+    if told && status != "pending" {
+        eprintln!("clax queue create: request {id} {status}");
     }
-    Ok(())
+    let qid = v["request"]["queue_id"].as_str().unwrap_or_default();
+    let next = (status == "approved" && clax_core::is_ulid(qid)).then(|| next_steps(c, qid));
+    if cli.json {
+        let mut out = without_feedback(v.clone());
+        if let Some(n) = &next {
+            out["next_steps"] = n.clone();
+        }
+        print_json(&out)?;
+    } else {
+        match status.as_str() {
+            "pending" => println!("request {id} pending"),
+            "approved" => {
+                println!("approved: queue {qid}");
+                match (v["token"].as_str(), v["private_key"].as_str()) {
+                    (Some(t), Some(k)) => print_grant(qid, t, k, None),
+                    _ if v["wrote"].is_string() => print_grant(qid, "", "", env.as_deref()),
+                    _ => println!(
+                        "its service grant was handed over before; your person can make another on the Queues page"
+                    ),
+                }
+            }
+            _ => {}
+        }
+        if let Some(n) = &next {
+            eprint!("{}", next_lines(n));
+        }
+    }
+    match RequestEnded::of(&id, &status) {
+        Some(e) => Err(e.into()),
+        None => Ok(()),
+    }
 }
+
+/// What `clax queue create` says on stderr once an agent's request `v`
+/// (the `queue_request` tool's result) waits: its ID, where the person
+/// answers it (the inbox's address on daemon `c`, which carries no
+/// credential), when it expires, and how to wait on it again.
+fn waiting_lines(c: &Client, v: &Value, a: &CreateArgs, env: Option<&std::path::Path>) -> String {
+    let id = cell(&v["request_id"]);
+    let r = &v["request"];
+    let url = c.browser_url(&format!("/inbox?queue_request={id}"));
+    let opened = if v["opened"] == true {
+        " (it was opened in their browser)"
+    } else {
+        ""
+    };
+    let again = match env {
+        Some(p) => format!(
+            "clax queue create --request {id} --write-env {}",
+            p.display()
+        ),
+        None => format!("clax queue create --request {id}"),
+    };
+    let next = if a.no_wait {
+        format!(
+            "  Not waiting (--no-wait). Look at it once, taking the grant if approved: `{again} --no-wait`; wait for it: `{again}`\n"
+        )
+    } else {
+        format!(
+            "  Waiting for their answer; stopping leaves the request open: `{again}` waits again.\n"
+        )
+    };
+    format!(
+        "clax queue create: filed queue request {id} for \"{}\"\n  \
+         It waits for your person's approval: they approve or deny it in Clax at {url}{opened}\n  \
+         It expires at {}{}.\n{next}",
+        term::clean_line(r["name"].as_str().unwrap_or(&a.name)),
+        cell(&r["expires_at"]),
+        expires_in(r["expires_at"].as_str()),
+    )
+}
+
+/// The SDK package an app's code imports (`web/sdk/package.json`'s name).
+pub const SDK_PACKAGE: &str = "@empathic/clax-client-sdk";
+
+/// Where an agent goes next once queue `qid` is approved, on daemon `c`:
+/// the queue's page (whose "Add it to your site" holds the install
+/// snippets, filled for this queue), the overlay this daemon serves with
+/// its module and types, and the SDK package. Addresses only: the
+/// snippets themselves are the page's.
+fn next_steps(c: &Client, qid: &str) -> Value {
+    json!({
+        "queue_page": c.browser_url(&format!("/queues/{qid}")),
+        "overlay_js": c.browser_url("/_clax/overlay.js"),
+        "overlay_mjs": c.browser_url("/_clax/overlay.mjs"),
+        "overlay_dts": c.browser_url("/_clax/overlay.d.ts"),
+        "sdk_package": SDK_PACKAGE,
+        "token_backend": format!("{SDK_PACKAGE}/service"),
+    })
+}
+
+/// [`next_steps`] as the lines `clax queue create` prints on stderr.
+fn next_lines(n: &Value) -> String {
+    format!(
+        "clax queue create: next, wire the app to the queue:\n  \
+         Install snippets for it: the queue's page, {} (Add it to your site)\n  \
+         Overlay: {} (module {}, types {})\n  \
+         SDK: {} in the page; ServiceClient from {} in the app's backend, with CLAX_QUEUE, CLAX_QUEUE_TOKEN and CLAX_QUEUE_KEY, mints each reporter's token\n",
+        cell(&n["queue_page"]),
+        cell(&n["overlay_js"]),
+        cell(&n["overlay_mjs"]),
+        cell(&n["overlay_dts"]),
+        cell(&n["sdk_package"]),
+        cell(&n["token_backend"]),
+    )
+}
+
+/// ` (in N min)` until RFC 3339 `at`; empty when it does not read.
+fn expires_in(at: Option<&str>) -> String {
+    let Some(at) = at.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()) else {
+        return String::new();
+    };
+    let mins = (at.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_minutes();
+    if mins < 1 {
+        " (in under a minute)".into()
+    } else {
+        format!(" (in {mins} min)")
+    }
+}
+
+/// An agent's queue request answered without a queue: `main` prints it and
+/// exits [`RequestEnded::code`].
+#[derive(Debug)]
+pub struct RequestEnded {
+    pub id: String,
+    pub status: String,
+}
+
+impl RequestEnded {
+    /// Exit status of a denied request.
+    pub const DENIED: i32 = 3;
+    /// Exit status of a request that expired or was cancelled unanswered.
+    pub const EXPIRED: i32 = 4;
+
+    /// The ending of request `id` in `status`; `None` while it waits or
+    /// once approved.
+    fn of(id: &str, status: &str) -> Option<RequestEnded> {
+        (!matches!(status, "pending" | "approved")).then(|| RequestEnded {
+            id: id.to_string(),
+            status: status.to_string(),
+        })
+    }
+
+    /// The status the CLI exits with.
+    pub fn code(&self) -> i32 {
+        if self.status == "denied" {
+            Self::DENIED
+        } else {
+            Self::EXPIRED
+        }
+    }
+}
+
+impl std::fmt::Display for RequestEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let why = match self.status.as_str() {
+            "denied" => "your person denied it",
+            "expired" => "nobody answered it in time: file a new one",
+            "cancelled" => "the agent's access ended before an answer",
+            _ => "it ended unanswered",
+        };
+        write!(
+            f,
+            "request_{}: queue request {} {}: {why}; no queue was made",
+            term::clean_line(&self.status),
+            term::clean_line(&self.id),
+            term::clean_line(&self.status)
+        )
+    }
+}
+
+impl std::error::Error for RequestEnded {}
 
 /// The queue `q` names, or `CLAX_QUEUE`'s; an error saying how to name one
 /// when neither does, or when it is no queue ID.
@@ -926,11 +1093,29 @@ fn diagnostics(cli: &crate::Cli, c: &Client, a: &CaptureArgs) -> anyhow::Result<
     Ok(())
 }
 
+/// What a queue write's `no_session` error adds: what a session is, where
+/// one comes from, and how to name it.
+pub const NO_SESSION_HELP: &str = "Claiming, renewing, releasing, replying, fixing and resolving act as a live Clax agent session: \
+     it holds the claim's 10-minute lease and is named as the author of what it writes. \
+     A harness with the Clax plugin registers one when its session starts (`clax init` installs the plugins; a session started before that has none), \
+     and a command run in that harness's shell finds it. \
+     Elsewhere, name a live one: --session <ID> (`clax status --json` shows it as session.id), \
+     or --agent <harness> --harness-session <the harness's session ID>. \
+     Reading the queue (`clax queue ls`, `clax queue show`) needs no session.";
+
 /// The session `who` names (or `GROK_SESSION_ID`, inside Grok Build), as
 /// the daemon `c` knows it; `None` when nothing names one.
 fn session(c: &Client, who: &SessionArgs) -> anyhow::Result<Option<InSession>> {
     let Some(target) = feedback::target(who, |k| std::env::var(k).ok()) else {
-        return Ok(None);
+        // Nothing names one: the live session of the harness this CLI runs
+        // under, on the local daemon, as `clax remote request` finds it.
+        if c.remote().is_some() {
+            return Ok(None);
+        }
+        return Ok(super::remotes::own_session(c)
+            .ok()
+            .flatten()
+            .map(|id| InSession::new(id, None)));
     };
     let cred = feedback::credential(c, &target)?;
     let id = match &target {
@@ -943,7 +1128,7 @@ fn session(c: &Client, who: &SessionArgs) -> anyhow::Result<Option<InSession>> {
             };
             found.ok_or_else(|| {
                 anyhow!(
-                    "no_session: no live Clax session for {h} session {}",
+                    "no_session: no live Clax session for {h} session {}. {NO_SESSION_HELP}",
                     term::clean_line(id)
                 )
             })?
@@ -968,9 +1153,7 @@ fn act(cli: &crate::Cli, c: &Client, a: &ActArgs, action: &str, body: Value) -> 
             matches!(&e, ClientError::Api { error, .. } if error["code"] == "no_session");
         let e = tools::client_error(e);
         if no_session {
-            e.context(
-                "this needs an agent session: pass --session, or --agent with --harness-session",
-            )
+            e.context(NO_SESSION_HELP)
         } else {
             e
         }
@@ -1111,6 +1294,20 @@ fn follow(home: &Home, a: &FollowArgs) -> anyhow::Result<()> {
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_ends_with_3_when_denied_and_4_when_unanswered() {
+        assert!(RequestEnded::of("r", "pending").is_none());
+        assert!(RequestEnded::of("r", "approved").is_none());
+        let code = |s| RequestEnded::of("r", s).unwrap().code();
+        assert_eq!(code("denied"), 3);
+        assert_eq!(code("expired"), 4);
+        assert_eq!(code("cancelled"), 4);
+        assert_eq!(
+            RequestEnded::of("01J", "expired").unwrap().to_string(),
+            "request_expired: queue request 01J expired: nobody answered it in time: file a new one; no queue was made"
+        );
+    }
 
     #[test]
     fn latest_capture_prefers_the_newest_reopen_then_the_filing() {

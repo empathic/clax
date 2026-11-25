@@ -113,8 +113,24 @@ where
     F: FnOnce(ClaxTools) -> Fut,
     Fut: Future<Output = Result<CallToolResult, rmcp::ErrorData>>,
 {
+    call_on_in(c, home, None, f)
+}
+
+/// [`call_on`] whose requests name Clax session `session` when given
+/// (`X-Clax-Session`), so the daemon knows which agent asks; the tool
+/// itself runs in no session, so its result carries no waiting feedback.
+pub fn call_on_in<F, Fut>(
+    c: &Client,
+    home: &Home,
+    session: Option<String>,
+    f: F,
+) -> anyhow::Result<serde_json::Value>
+where
+    F: FnOnce(ClaxTools) -> Fut,
+    Fut: Future<Output = Result<CallToolResult, rmcp::ErrorData>>,
+{
     let tools = ClaxTools::new(
-        daemon_client(c, None),
+        daemon_client(c, session),
         c.browser_url(""),
         None,
         home.log_path(),

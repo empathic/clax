@@ -465,6 +465,11 @@ pub(crate) fn main() {
             eprintln!("{n}");
             std::process::exit(2);
         }
+        if let Some(n) = e.downcast_ref::<commands::queue::RequestEnded>() {
+            // A queue request denied (3), or expired or cancelled (4).
+            eprintln!("error: {n}");
+            std::process::exit(n.code());
+        }
         eprintln!("error: {e:#}");
         std::process::exit(clax_core::exit::status_of(e.as_ref()));
     }

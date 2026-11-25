@@ -601,3 +601,251 @@ fn create_as_an_agent_files_a_request_and_takes_the_grant_once_approved() {
     assert!(stdout.contains("handed over before"), "{stdout}");
     assert!(!stdout.contains("cxq_"), "{stdout}");
 }
+
+/// What an agent's `queue create` says on stderr may name the request and
+/// the inbox, but never a credential: no login code, no daemon token, no
+/// grant.
+fn check_no_credential(d: &Daemon, stderr: &str) {
+    for secret in ["cxi_", "code=", "token=", "cxq_", &d.token()] {
+        assert!(!stderr.contains(secret), "{secret}: {stderr}");
+    }
+}
+
+#[test]
+fn create_as_an_agent_says_at_once_where_it_is_approved_then_waits() {
+    let d = Daemon::start();
+    // The harness session this CLI runs in, as its hooks would register it.
+    d.session("hs-create");
+    let env = d.dir.path().join("wait.env");
+    let mut child = clax(&d.home())
+        .env("CLAX_CHANNEL", "agent")
+        .env("CLAUDE_CODE_SESSION_ID", "hs-create")
+        .args(["queue", "create", "Invoices", "--origin"])
+        .arg("https://invoices.example.com")
+        .args(["--note", "for the <b>invoices</b> app", "--write-env"])
+        .arg(&env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    // Read until it says it waits: it says so before any answer.
+    let mut said = String::new();
+    while !said.contains("Waiting for their answer") {
+        let mut line = String::new();
+        let n = stderr.read_line(&mut line).unwrap();
+        assert!(n > 0, "it exited before saying it waits: {said}");
+        said.push_str(&line);
+    }
+    let id = said
+        .split("filed queue request ")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no request ID: {said}"))
+        .to_string();
+    assert!(clax_core::is_ulid(&id), "{said}");
+    assert!(said.contains("for \"Invoices\""), "{said}");
+    assert!(
+        said.contains("It waits for your person's approval"),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("/inbox?queue_request={id}")),
+        "the inbox address: {said}"
+    );
+    assert!(said.contains("It expires at 20"), "{said}");
+    assert!(said.contains(" min)"), "{said}");
+    assert!(
+        said.contains(&format!(
+            "`clax queue create --request {id} --write-env {}` waits again",
+            env.display()
+        )),
+        "{said}"
+    );
+    check_no_credential(&d, &said);
+
+    // The request names the harness session's agent, and keeps the note
+    // as it was written (the card shows it as text).
+    let store = d.store();
+    let r = store.queue_request(&id).unwrap().unwrap();
+    assert_eq!(r.agent, "claude");
+    assert_eq!(r.note.as_deref(), Some("for the <b>invoices</b> app"));
+
+    store
+        .approve_queue_request(&AuditCtx::DAEMON, &id, None)
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut stderr, &mut rest).unwrap();
+    assert!(out.status.success(), "{said}{rest}");
+    assert!(
+        rest.contains(&format!("clax queue create: request {id} approved")),
+        "{rest}"
+    );
+    check_no_credential(&d, &rest);
+    // Then where to wire the app: the queue's page, which holds the
+    // snippets, the overlay this daemon serves, and the SDK's package.
+    let qid = d
+        .store()
+        .queue_request(&id)
+        .unwrap()
+        .unwrap()
+        .queue_id
+        .unwrap();
+    assert!(
+        rest.contains("clax queue create: next, wire the app"),
+        "{rest}"
+    );
+    assert!(
+        rest.contains(&format!("/queues/{qid} (Add it to your site)")),
+        "{rest}"
+    );
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/sdk/package.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let sdk = manifest["name"].as_str().unwrap();
+    assert!(rest.contains(&format!("SDK: {sdk} in the page")), "{rest}");
+    assert!(
+        rest.contains(&format!("ServiceClient from {sdk}/service")),
+        "{rest}"
+    );
+    for path in [
+        "/_clax/overlay.js",
+        "/_clax/overlay.mjs",
+        "/_clax/overlay.d.ts",
+    ] {
+        assert!(rest.contains(path), "{path}: {rest}");
+        let res = d.http().get(format!("{}{path}", d.base())).send().unwrap();
+        // Open without a credential (a build without the web bundle has
+        // no file to serve, so 404 is allowed; a refusal is not).
+        let s = res.status().as_u16();
+        assert!(s == 200 || s == 404, "{path}: {s}");
+    }
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.starts_with("approved: queue "), "{stdout}");
+    assert!(!stdout.contains("cxq_"), "{stdout}");
+    let written = std::fs::read_to_string(&env).unwrap();
+    assert!(written.contains("\nCLAX_QUEUE_TOKEN=cxq_"), "{written}");
+    let grants = store.service_grants(&qid).unwrap();
+    assert_eq!(grants[0].name, "Requested by claude");
+}
+
+#[test]
+fn create_no_wait_says_how_to_look_again_and_a_denial_exits_3() {
+    let d = Daemon::start();
+    let agent = |args: &[&str]| {
+        clax(&d.home())
+            .env("CLAX_CHANNEL", "agent")
+            .args(["queue", "create"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let out = agent(&[
+        "Invoices",
+        "--origin",
+        "https://invoices.example.com",
+        "--no-wait",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let id = stdout
+        .strip_prefix("request ")
+        .and_then(|s| s.strip_suffix(" pending\n"))
+        .unwrap_or_else(|| panic!("{stdout}"))
+        .to_string();
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains(&format!("filed queue request {id} ")), "{err}");
+    assert!(err.contains(&format!("/inbox?queue_request={id}")), "{err}");
+    assert!(
+        err.contains(&format!(
+            "Not waiting (--no-wait). Look at it once, taking the grant if approved: `clax queue create --request {id} --no-wait`"
+        )),
+        "{err}"
+    );
+    check_no_credential(&d, &err);
+    // Without a harness session, the request has no agent's name.
+    assert_eq!(
+        d.store().queue_request(&id).unwrap().unwrap().agent,
+        "An agent"
+    );
+
+    // Looked at once while it waits: still pending, exit 0.
+    let out = agent(&["Invoices", "--request", &id, "--no-wait", "--json"]);
+    assert!(out.status.success());
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"], "pending", "{v}");
+
+    d.store()
+        .deny_queue_request(&AuditCtx::DAEMON, &id, None)
+        .unwrap();
+    for json in [false, true] {
+        let mut args = vec!["Invoices", "--request", &id, "--no-wait"];
+        if json {
+            args.push("--json");
+        }
+        let out = agent(&args);
+        assert_eq!(out.status.code(), Some(3), "denied exits 3 (--json {json})");
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(
+            err.contains(&format!(
+                "request_denied: queue request {id} denied: your person denied it"
+            )),
+            "{err}"
+        );
+        if json {
+            let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(v["status"], "denied", "{v}");
+        }
+    }
+}
+
+#[test]
+fn a_claim_finds_the_harness_session_and_without_one_says_what_a_session_is() {
+    let d = Daemon::start();
+    let tid = d.file("Invoice 4821", "The total is wrong");
+    let out = clax(&d.home())
+        .env("CLAX_CHANNEL", "agent")
+        .args(["queue", "claim", &tid, "--queue", &d.queue])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    for s in [
+        "act as a live Clax agent session",
+        "holds the claim's 10-minute lease",
+        "`clax init` installs the plugins",
+        "--session <ID>",
+        "--agent <harness> --harness-session",
+        "needs no session",
+    ] {
+        assert!(err.contains(s), "{s}: {err}");
+    }
+    assert!(!err.contains("ask your agent"), "{err}");
+
+    // In the harness's shell, its live session is found with no flag.
+    let sid = d.session("hs-claim");
+    let out = clax(&d.home())
+        .env("CLAX_CHANNEL", "agent")
+        .env("CLAUDE_CODE_SESSION_ID", "hs-claim")
+        .args(["--json", "queue", "claim", &tid, "--queue", &d.queue])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["report"]["state"], "claimed", "{v}");
+    let _ = sid;
+}
