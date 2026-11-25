@@ -6,10 +6,12 @@
 // effect is injected (`SetupDeps`), so the tests drive it with a fake
 // fetch, clock and env file.
 import { checkInstance } from "./client";
+import { base64url } from "./sign";
 
 /** The variables written to the env file, in order: the queue's ID, the
  * service grant's token and its private key (the names `queue_request`'s
- * `write_env` and docs/feedback.md's recipes use). */
+ * `write_env` and docs/feedback.md's recipes use). The private key is made
+ * here and never sent: the take sends its public half. */
 export const ENV_NAMES = ["CLAX_QUEUE", "CLAX_QUEUE_TOKEN", "CLAX_QUEUE_KEY"] as const;
 
 /** The longest wait one read of a queue request asks for (the server's
@@ -75,6 +77,17 @@ export interface SetupResult {
 }
 
 type Json = Record<string, any>;
+
+/** A new Ed25519 pair for the service grant: its private key as PKCS#8 in
+ * unpadded base64url (what `ServiceClient`'s `privateKey` reads) and its
+ * public key's 32 bytes in unpadded base64url (what the take's
+ * `public_key` takes, `clax_core::sig::encode_public`). */
+export async function grantKeyPair(): Promise<{ privateKey: string; publicKey: string }> {
+  const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+  const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  return { privateKey: base64url(pkcs8), publicKey: base64url(raw) };
+}
 
 /** One JSON call: `[status, body]`; a body that is not JSON is
  * `bad_response`, and no answer at all is `network`. */
@@ -214,16 +227,21 @@ export async function setup(opts: SetupOptions, deps: SetupDeps): Promise<SetupR
       throw new SetupError("bad_response", `the queue request is ${request?.status}`);
   }
 
-  // The grant, taken once, straight into the env file.
-  const [ks, taken] = await call(deps, `${origin}/api/queue-requests/${encodeURIComponent(id)}/take`, post({}, token));
+  // The grant, taken once with the public half of a key made here, and
+  // its token and this key's private half straight into the env file. An
+  // instance that made the pair itself (one older than the take's
+  // `public_key`) hands over its private key instead, and that is written.
+  const key = await grantKeyPair();
+  const [ks, taken] = await call(deps, `${origin}/api/queue-requests/${encodeURIComponent(id)}/take`, post({ public_key: key.publicKey }, token));
   if (ks !== 200) throw failed("taking the grant", ks, taken);
   const queue = String(taken.request?.queue_id ?? request.queue_id ?? "");
-  if (typeof taken.token !== "string" || typeof taken.private_key !== "string" || !queue) {
+  const privateKey = typeof taken.private_key === "string" ? taken.private_key : key.privateKey;
+  if (typeof taken.token !== "string" || !queue) {
     if (taken.grant_taken) throw new SetupError("grant_taken", "an earlier take took this queue's service grant: make another on the Queues page");
     throw new SetupError("bad_response", "the take carried no grant");
   }
   const before = deps.env.read(opts.envFile);
-  deps.env.write(opts.envFile, withVars(before, [[ENV_NAMES[0], queue], [ENV_NAMES[1], taken.token], [ENV_NAMES[2], taken.private_key]]), before === null);
+  deps.env.write(opts.envFile, withVars(before, [[ENV_NAMES[0], queue], [ENV_NAMES[1], taken.token], [ENV_NAMES[2], privateKey]]), before === null);
   deps.print(`Wrote ${ENV_NAMES.join(", ")} to ${opts.envFile} (queue ${queue}). Keep that file out of git and put the same values in your deployment's secrets.`);
   const mcpUrl = typeof signedIn.mcp_url === "string" ? signedIn.mcp_url : undefined;
   if (mcpUrl) deps.print(`A fixing agent reaches the queue at ${mcpUrl} with an agent token of its own.`);
