@@ -1,0 +1,10 @@
+{
+  "clax_artifact_info": { "type": "object", "additionalProperties": false },
+  "clax_list_threads": { "type": "object", "additionalProperties": false },
+  "clax_read_thread": {
+    "type": "object",
+    "properties": { "thread_id": { "type": "string", "description": "A thread ID from clax_list_threads.", "minLength": 1 } },
+    "required": ["thread_id"],
+    "additionalProperties": false
+  }
+}
