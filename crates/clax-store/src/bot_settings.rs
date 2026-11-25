@@ -18,7 +18,7 @@
 //! The instance's own settings live here too ([`Setting::is_instance`]):
 //! `queues.members_create`, whether a member who is no administrator may
 //! make a report queue. Its default is `null`, which the daemon reads as
-//! on for a local Clax and off for a hosted one. A change to one is
+//! on. A change to one is
 //! recorded as `admin.settings {fields[], values{key: value}}`.
 
 use super::Store;

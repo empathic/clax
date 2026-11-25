@@ -39,14 +39,13 @@ pub struct NameBody {
 /// one or a caller who may make one.
 async fn may_create(s: &AppState, who: &Identity) -> Result<(bool, Value), ApiError> {
     let who = who.clone();
-    let hosted = s.hosted.is_some();
     s.store_call(move |st| {
         let Ok(c) = who.caller(st, None) else {
             return Ok((false, json!({"member": 0, "may_make": false})));
         };
         Ok((
             super::artifacts::brief_refusal(st, &c)?.is_none(),
-            super::queues::access(st, &c, hosted)?,
+            super::queues::access(st, &c)?,
         ))
     })
     .await
