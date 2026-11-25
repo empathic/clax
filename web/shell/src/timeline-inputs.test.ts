@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { botView } from "./bot/send.svelte";
-import { mount } from "./test/svelte";
+import { flush, mount } from "./test/svelte";
 import type { Thread, Viewer } from "./threads";
 import ShellRail from "./ui/ShellRail.svelte";
 import ShellSidebar from "./ui/ShellSidebar.svelte";
@@ -65,5 +65,31 @@ describe("the timeline's inputs", () => {
     m.update({ ctl, s: { ...s, threads: [...s.threads, thread("b")] } as never });
     expect(calls()).toBe(n + 1);
     m.unmount();
+  });
+
+  it("open and scroll to the selected thread's row when the selection changes, not when the controller's state changes and it does not", async () => {
+    sidebarView.set("timeline");
+    const scrolled: Element[] = [];
+    const own = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this); };
+    try {
+      const s = state([thread("a"), thread("b")]);
+      const m = mount(ShellSidebar, { ctl, s: s as never });
+      await vi.waitFor(() => expect(m.root.querySelector(".timeline")).not.toBeNull());
+      const row = (id: string) => m.root.querySelector<HTMLElement>(`.tl-row[data-row="${id}"]`)!;
+      m.update({ ctl, s: { ...s, selected: "a" } as never });
+      await vi.waitFor(() => expect(scrolled).toEqual([row("a")]));
+      flush(() => row("a").click());
+      m.update({ ctl, s: { ...s, selected: "a", hovered: "a" } as never });
+      m.update({ ctl, s: { ...s, selected: "a", hovered: null } as never });
+      expect(row("a").getAttribute("aria-expanded")).toBe("false");
+      // A scroll those changes asked for would come before the next selection's.
+      m.update({ ctl, s: { ...s, selected: "b" } as never });
+      await vi.waitFor(() => expect(scrolled.at(-1)).toBe(row("b")));
+      expect(scrolled).toEqual([row("a"), row("b")]);
+      m.unmount();
+    } finally {
+      Element.prototype.scrollIntoView = own;
+    }
   });
 });
