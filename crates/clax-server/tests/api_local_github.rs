@@ -353,8 +353,45 @@ async fn a_login_github_does_not_answer_for_adds_nothing() {
     let (_, v) = owner(&ts, Method::GET, &members, None).await;
     assert_eq!(v["pending"], json!([]), "nothing kept: {v}");
     fake.set_unavailable(false);
+    // A spent rate limit is GitHub not answering too, and is not asked
+    // again without credentials.
+    fake.set_rate_limited(true);
+    let (s, v) = owner(&ts, Method::PUT, &members, Some(add("octo-cat"))).await;
+    assert_eq!((s, code(&v)), (503, "github_unavailable"), "{v}");
+    assert_eq!(fake.anonymous_lookups(), 0);
+    fake.set_rate_limited(false);
     let (s, v) = owner(&ts, Method::PUT, &members, Some(add("octo-cat"))).await;
     assert_eq!(s, 201, "{v}");
+}
+
+/// GitHub refusing the OAuth App's credentials on `GET /users` does not
+/// stop adding by login: the public endpoint is asked again without them.
+#[tokio::test]
+async fn a_lookup_github_refuses_the_apps_credentials_for_is_asked_again_without_them() {
+    let (ts, fake) = with_github().await;
+    let qid = make_queue(&ts).await;
+    let members = format!("/api/queues/{qid}/members");
+    fake.account(7, "Octo-Cat", None);
+    fake.set_refuses_app(true);
+    let (s, v) = owner(
+        &ts,
+        Method::PUT,
+        &members,
+        Some(json!({"github_login": "octo-cat", "role": "triage"})),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["invite"]["github_login"], "Octo-Cat", "{v}");
+    assert_eq!(fake.anonymous_lookups(), 1);
+    // Unknown is still unknown when asked without credentials.
+    let (s, v) = owner(
+        &ts,
+        Method::PUT,
+        &members,
+        Some(json!({"github_login": "no-one-x", "role": "triage"})),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "unknown_github_login"), "{v}");
 }
 
 #[tokio::test]

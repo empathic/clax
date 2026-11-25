@@ -1022,14 +1022,20 @@ struct ShareBody {
     /// A person's public ID.
     #[serde(default)]
     person: Option<String>,
+    /// A share the artifact holds, by its ID: changes that share's access,
+    /// whomever it names, without asking GitHub again.
+    #[serde(default)]
+    id: Option<String>,
     /// `viewer`, `commenter` or `editor`.
     access: String,
 }
 
-/// `PUT /api/hosted/artifacts/<aid>/shares {github_login | person,
+/// `PUT /api/hosted/artifacts/<aid>/shares {github_login | person | id,
 /// access}` (whoever may share it, [`may_share`], in a browser or from
 /// their own device, [`browser_or_device`]): shares the artifact
-/// with that person, or changes the access of their share. → 200
+/// with that person, or changes the access of their share; `id` changes
+/// that share's access alone (404 for none), never asking GitHub, so a
+/// waiting share keeps the account (or legacy login) it was given to. → 200
 /// `{share}`. A login is first asked of GitHub
 /// ([`crate::github::resolve_login`]): the share is the GitHub account's
 /// it names now, by its numeric ID. An account that has signed in here
@@ -1059,21 +1065,25 @@ async fn put_share(
     let access = ShareAccess::parse(&b.access).ok_or_else(|| {
         ApiError::bad_request("invalid_args", "access is viewer, commenter or editor")
     })?;
-    let to = match (b.github_login, b.person) {
-        (Some(l), None) => {
+    // A share by its ID, or whom a new (or changed) share names.
+    let to: Result<ShareTo, String> = match (b.github_login, b.person, b.id) {
+        (Some(l), None, None) => {
             // Only whoever may share it makes the daemon ask GitHub.
             let (w, a) = (who.clone(), aid.clone());
             s.store_call(move |st| sharer(st, &w, &a))
                 .await
                 .map_err(forbidden_code)?;
             let by = who.viewer.public_id.clone();
-            ShareTo::GitHub(crate::github::resolve_login(&s, &l, &by).await?)
+            Ok(ShareTo::GitHub(
+                crate::github::resolve_login(&s, &l, &by).await?,
+            ))
         }
-        (None, Some(p)) => ShareTo::Person(p),
+        (None, Some(p), None) => Ok(ShareTo::Person(p)),
+        (None, None, Some(id)) => Err(id),
         _ => {
             return Err(ApiError::bad_request(
                 "invalid_args",
-                "name exactly one of github_login or person",
+                "name exactly one of github_login, person or id",
             ));
         }
     };
@@ -1081,13 +1091,17 @@ async fn put_share(
     let share = s
         .store_call(move |st| {
             sharer(st, &who, &aid)?;
-            st.share_artifact(
-                &audit.resolve(st)?,
-                aid.as_str(),
-                &to,
-                access,
-                Some(&who.viewer.public_id),
-            )
+            let ctx = audit.resolve(st)?;
+            match &to {
+                Ok(to) => st.share_artifact(
+                    &ctx,
+                    aid.as_str(),
+                    to,
+                    access,
+                    Some(&who.viewer.public_id),
+                ),
+                Err(id) => st.set_share_access(&ctx, aid.as_str(), id, access),
+            }
         })
         .await
         .map_err(forbidden_code)?;

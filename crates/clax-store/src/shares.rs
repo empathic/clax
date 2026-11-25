@@ -552,6 +552,48 @@ impl Store {
         })
     }
 
+    /// Changes share `share_id` of artifact `aid` to `access`, whomever it
+    /// names (a person, or a pending account or legacy login, which is
+    /// never asked of GitHub again: the change cannot move the share to
+    /// a later holder of its login), recording `artifact.update` of its
+    /// `share` under `ctx`; returns it.
+    ///
+    /// # Errors
+    /// `NotFound` when the live artifact holds no such share.
+    pub fn set_share_access(
+        &self,
+        ctx: &AuditCtx,
+        aid: &str,
+        share_id: &str,
+        access: ShareAccess,
+    ) -> Result<Share> {
+        self.with_tx(|tx| {
+            live_artifact(tx, aid)?;
+            let n = tx.execute(
+                "UPDATE artifact_shares SET access = ?3 WHERE id = ?1 AND artifact_id = ?2",
+                params![share_id, aid, access.as_str()],
+            )?;
+            if n == 0 {
+                return Err(CoreError::NotFound);
+            }
+            let share = tx.query_row(
+                &format!("{SHARE_SELECT} WHERE s.id = ?1"),
+                params![share_id],
+                row_to_share,
+            )?;
+            audit_share(
+                self,
+                tx,
+                ctx,
+                aid,
+                json!({"op": "set", "id": share.id, "person": share.person,
+                       "github_login": share.github_login, "access": access.as_str()}),
+            )?;
+            self.visibility_changed();
+            Ok(share)
+        })
+    }
+
     /// Removes share `share_id` of artifact `aid`, recording
     /// `artifact.update` of its `share` under `ctx`; returns it.
     ///
@@ -886,6 +928,33 @@ mod tests {
         assert_eq!(
             st.artifact_shares(a).unwrap()[0].person.as_deref(),
             Some(alice.as_str())
+        );
+    }
+
+    #[test]
+    fn changing_a_waiting_shares_access_by_its_id_never_moves_it_to_the_logins_new_holder() {
+        let (_d, st, _sam) = hosted();
+        let a = artifact(&st, None);
+        let a = a.as_str();
+        // A legacy share for "octo", and an account 3 that holds "octo"
+        // now and has signed in here.
+        st.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO artifact_shares (id, artifact_id, github_login, access, created_at)
+                 VALUES ('s_l', ?1, 'octo', 'viewer', '2026-11-01')",
+                params![a],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let s = st
+            .set_share_access(DAEMON, a, "s_l", ShareAccess::Editor)
+            .unwrap();
+        assert_eq!((s.access, s.person, s.legacy), (ShareAccess::Editor, None, true));
+        assert_eq!(st.artifact_shares(a).unwrap().len(), 1, "the one row, changed");
+        assert_eq!(
+            code_of(st.set_share_access(DAEMON, a, "s_none", ShareAccess::Viewer)),
+            "not_found"
         );
     }
 

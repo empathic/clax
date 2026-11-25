@@ -508,10 +508,28 @@ struct UsersAnswer {
     kind: Option<String>,
 }
 
-/// Asks GitHub's API (`GET {api_base}/users/<login>`, with the OAuth App's
-/// client ID and secret as basic auth) which account `login` names now.
-/// `login` must already be one ([`clax_store::shares::github_login`]): it
-/// is a path segment of the request, escaped as one.
+/// Whether GitHub answered `res` because the caller is rate limited: 429,
+/// or 403 with no requests left (`x-ratelimit-remaining: 0`), as its REST
+/// API answers a spent limit.
+fn rate_limited(res: &reqwest::Response) -> bool {
+    res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (res.status() == reqwest::StatusCode::FORBIDDEN
+            && res
+                .headers()
+                .get("x-ratelimit-remaining")
+                .and_then(|v| v.to_str().ok())
+                == Some("0"))
+}
+
+/// Asks GitHub's API (`GET {api_base}/users/<login>`) which account
+/// `login` names now: first with the OAuth App's client ID and secret as
+/// basic auth (the app's own rate limit), and, when GitHub refuses those
+/// credentials (401, or a 403 that is not a spent limit), again without
+/// any, as the endpoint is public (60 an hour per address). `login` must
+/// already be one ([`clax_store::shares::github_login`]): it is a path
+/// segment of the request, escaped as one. Only a network error, a 5xx, a
+/// spent rate limit or an answer that is not one is
+/// [`Lookup::Unavailable`].
 pub async fn lookup_login(g: &GitHub, login: &str) -> Lookup {
     let Ok(mut url) = url::Url::parse(&g.api_base) else {
         return Lookup::Unavailable(format!("the API base {} is not a URL", g.api_base));
@@ -522,19 +540,32 @@ pub async fn lookup_login(g: &GitHub, login: &str) -> Lookup {
         }
         Err(()) => return Lookup::Unavailable("the API base cannot take a path".into()),
     }
-    let res = timeout(
-        reqwest::Client::new()
-            .get(url)
+    let http = reqwest::Client::new();
+    let ask = |with_app: bool| {
+        let r = http
+            .get(url.clone())
             .header("accept", "application/vnd.github+json")
-            .header("user-agent", "clax")
-            .basic_auth(&g.client_id, Some(&g.client_secret)),
-    )
-    .send()
-    .await;
-    let res = match res {
+            .header("user-agent", "clax");
+        let r = if with_app {
+            r.basic_auth(&g.client_id, Some(&g.client_secret))
+        } else {
+            r
+        };
+        timeout(r).send()
+    };
+    let mut res = match ask(true).await {
         Ok(r) => r,
         Err(e) => return Lookup::Unavailable(format!("GET /users: {e}")),
     };
+    let refused = res.status() == reqwest::StatusCode::UNAUTHORIZED
+        || (res.status() == reqwest::StatusCode::FORBIDDEN && !rate_limited(&res));
+    if refused {
+        tracing::warn!(status = %res.status(), "GitHub refused the OAuth App's credentials on GET /users; asking without them");
+        res = match ask(false).await {
+            Ok(r) => r,
+            Err(e) => return Lookup::Unavailable(format!("GET /users: {e}")),
+        };
+    }
     if res.status() == reqwest::StatusCode::NOT_FOUND {
         return Lookup::Unknown;
     }

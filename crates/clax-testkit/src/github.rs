@@ -14,9 +14,13 @@
 //! - `GET /users/<login>` answers `{id, login, type}` of the account (or
 //!   organization, [`FakeGitHub::organization`]) holding `login` now (any
 //!   case; the login as it was added), else 404; 503 while
-//!   [`FakeGitHub::set_unavailable`]. It needs the app's client ID and
-//!   secret as basic auth (a wrong pair is 401), and keeps each login it
-//!   was asked ([`FakeGitHub::lookups`]). Renaming an account is adding it
+//!   [`FakeGitHub::set_unavailable`], and 403 with `x-ratelimit-remaining:
+//!   0` while [`FakeGitHub::set_rate_limited`]. It is public, as GitHub's
+//!   is: asked with no credentials it answers; with basic auth, only the
+//!   app's client ID and secret (any other pair, or the app's while
+//!   [`FakeGitHub::set_refuses_app`], is 401). It keeps each login it was
+//!   asked ([`FakeGitHub::lookups`]) and how many were asked with no
+//!   credentials ([`FakeGitHub::anonymous_lookups`]). Renaming an account is adding it
 //!   again under its new login ([`FakeGitHub::account`]); another account
 //!   may then take the old one.
 
@@ -38,6 +42,9 @@ struct Inner {
     next: Arc<Mutex<Option<i64>>>,
     lookups: Arc<Mutex<Vec<String>>>,
     unavailable: Arc<Mutex<bool>>,
+    rate_limited: Arc<Mutex<bool>>,
+    refuses_app: Arc<Mutex<bool>>,
+    anonymous: Arc<Mutex<usize>>,
 }
 
 /// A running fake GitHub (see the module docs).
@@ -92,6 +99,24 @@ impl FakeGitHub {
     /// Makes `GET /users/<login>` answer 503 (`true`) or answer again.
     pub fn set_unavailable(&self, unavailable: bool) {
         *self.inner.unavailable.lock().unwrap() = unavailable;
+    }
+
+    /// Makes `GET /users/<login>` answer a spent rate limit (`true`) or
+    /// answer again.
+    pub fn set_rate_limited(&self, on: bool) {
+        *self.inner.rate_limited.lock().unwrap() = on;
+    }
+
+    /// Makes `GET /users/<login>` refuse the app's client ID and secret
+    /// (401), as GitHub would credentials it does not take there, while
+    /// still answering a request with none.
+    pub fn set_refuses_app(&self, on: bool) {
+        *self.inner.refuses_app.lock().unwrap() = on;
+    }
+
+    /// How many `GET /users/<login>` came with no credentials.
+    pub fn anonymous_lookups(&self) -> usize {
+        *self.inner.anonymous.lock().unwrap()
     }
 
     /// The logins `GET /users/<login>` was asked, in order.
@@ -241,11 +266,21 @@ async fn users(
         "Basic {}",
         base64(format!("{}:{}", f.client_id, f.client_secret).as_bytes())
     );
-    if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some(want.as_str()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+    match headers.get("authorization").and_then(|v| v.to_str().ok()) {
+        None => *f.anonymous.lock().unwrap() += 1,
+        Some(a) if a == want && !*f.refuses_app.lock().unwrap() => {}
+        Some(_) => return StatusCode::UNAUTHORIZED.into_response(),
     }
     if *f.unavailable.lock().unwrap() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    if *f.rate_limited.lock().unwrap() {
+        return (
+            StatusCode::FORBIDDEN,
+            [("x-ratelimit-remaining", "0")],
+            "API rate limit exceeded",
+        )
+            .into_response();
     }
     let found = f
         .users

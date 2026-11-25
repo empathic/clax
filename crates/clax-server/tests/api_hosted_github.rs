@@ -409,6 +409,22 @@ async fn a_share_by_login_binds_to_the_account_that_held_it_not_its_next_holder(
     site.account(11, "alice", None);
     let other = site.sign_in(11).await.unwrap();
     assert!(!reads(site.listing(&other).await), "the next holder reads nothing");
+    // The dialog changes the waiting share's access by its ID: it stays
+    // account 10's, and the login's new holder still reads nothing.
+    let sid = v["share"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .put(&owner, &shares, json!({"id": sid, "access": "editor"}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        (&v["share"]["id"], &v["share"]["access"], &v["share"]["pending"]),
+        (&json!(sid), &json!("editor"), &json!(true))
+    );
+    assert!(!reads(site.listing(&other).await));
+    let (s, v) = site
+        .put(&owner, &shares, json!({"id": "s_none", "access": "editor"}))
+        .await;
+    assert_eq!(s, 404, "{v}");
     let alice = site.sign_in(10).await.unwrap();
     assert!(reads(site.listing(&alice).await), "the account it was given to");
 
