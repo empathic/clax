@@ -503,6 +503,32 @@ fn render(
             });
             r.is_none()
         }
+        // Someone was given access to a queue or an artifact
+        // (`clax_store::inbox::note_access`): the grant's kind, its
+        // level and who granted it; `url` is the queue's or the page's.
+        Kind::Access => {
+            let d = i.detail.clone().unwrap_or(Value::Null);
+            let what = d["what"].as_str().unwrap_or("");
+            let id = d["id"].as_str().unwrap_or_default();
+            v["url"] = json!(if what == "queue" {
+                format!("/queues/{id}")
+            } else {
+                format!("/a/{id}")
+            });
+            let name = if what == "queue" {
+                st.queue(id)?.map(|q| q.name)
+            } else {
+                None
+            };
+            v["access"] = json!({
+                "what": what,
+                "id": id,
+                "name": name,
+                "level": d["level"],
+                "by": d["by"],
+            });
+            false
+        }
     };
     v["gone"] = json!(gone);
     Ok(v)

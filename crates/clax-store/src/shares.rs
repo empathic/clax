@@ -188,12 +188,17 @@ pub(super) fn share_rights(c: &Connection, viewer_id: &str) -> Result<Option<Rig
 
 /// Binds the shares waiting for GitHub login `login` to viewer row
 /// `viewer_id`, at that account's sign-in, as [`give_shares`] does.
-/// Returns how many were waiting.
+/// Returns the artifact and access of each share that had no share of
+/// `viewer_id`'s to merge into (so this sign-in is genuinely new access
+/// there, for [`crate::github::link`] to notify with
+/// [`crate::inbox::note_access`]); one merged into a share `viewer_id`
+/// already held is not one of these, since that access was already
+/// theirs.
 pub(super) fn bind_github_shares(
     tx: &Transaction<'_>,
     login: &str,
     viewer_id: &str,
-) -> Result<usize> {
+) -> Result<Vec<(String, ShareAccess)>> {
     let login = login.to_ascii_lowercase();
     let waiting = moving(
         tx,
@@ -201,9 +206,7 @@ pub(super) fn bind_github_shares(
           WHERE viewer_id IS NULL AND github_login = ?1",
         &login,
     )?;
-    let n = waiting.len();
-    give_shares(tx, waiting, viewer_id)?;
-    Ok(n)
+    give_shares(tx, waiting, viewer_id)
 }
 
 /// Moves viewer row `from`'s shares (`from_public` its public ID) to row
@@ -223,7 +226,7 @@ pub(super) fn fold_shares(
         "SELECT id, artifact_id, access FROM artifact_shares WHERE viewer_id = ?1",
         from,
     )?;
-    give_shares(tx, held, into)
+    give_shares(tx, held, into).map(drop)
 }
 
 /// A share changing hands: [`bind_github_shares`]'s and [`fold_shares`]'.
@@ -249,8 +252,15 @@ fn moving(tx: &Transaction<'_>, sql: &str, arg: &str) -> Result<Vec<Moving>> {
 /// Gives `shares` to viewer row `viewer_id`. A share of an artifact the
 /// person already holds a share of is dropped when it would give less, and
 /// replaces it otherwise. The owner's row takes them as anyone's does: the
-/// owner reads another person's artifact only through its share.
-fn give_shares(tx: &Transaction<'_>, shares: Vec<Moving>, viewer_id: &str) -> Result<()> {
+/// owner reads another person's artifact only through its share. Returns
+/// the artifact and access of each share that had none of `viewer_id`'s
+/// to merge into: freshly theirs, not already.
+fn give_shares(
+    tx: &Transaction<'_>,
+    shares: Vec<Moving>,
+    viewer_id: &str,
+) -> Result<Vec<(String, ShareAccess)>> {
+    let mut fresh = Vec::new();
     for m in shares {
         let held: Option<(String, String)> = tx
             .query_row(
@@ -273,9 +283,12 @@ fn give_shares(tx: &Transaction<'_>, shares: Vec<Moving>, viewer_id: &str) -> Re
                 "UPDATE artifact_shares SET viewer_id = ?2 WHERE id = ?1",
                 params![m.id, viewer_id],
             )?;
+            if let Some(access) = ShareAccess::parse(&m.access) {
+                fresh.push((m.artifact_id, access));
+            }
         }
     }
-    Ok(())
+    Ok(fresh)
 }
 
 const SHARE_SELECT: &str = "SELECT s.id, s.artifact_id, s.access, s.github_login, v.public_id,
@@ -413,6 +426,7 @@ impl Store {
                     )
                     .optional()?,
             };
+            let is_new = existing.is_none();
             let id = match existing {
                 Some(id) => {
                     tx.execute(
@@ -444,6 +458,30 @@ impl Store {
                     id
                 }
             };
+            // A brand-new share that already names a viewer (a known
+            // person, or a login already signed in here): access to
+            // notify at once, unless it names the instance owner (sharing
+            // with the owner is sharing with whoever already reaches
+            // everything; they get no `access` item). A pending login's
+            // waits for `bind_github_shares` to notify at its first
+            // sign-in.
+            if is_new && let Some(vid) = &viewer {
+                let (public_id, owner): (String, bool) = tx.query_row(
+                    "SELECT public_id, owner FROM viewers WHERE id = ?1",
+                    params![vid],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                if !owner {
+                    super::inbox::note_access(
+                        tx,
+                        &public_id,
+                        Some(aid),
+                        json!({"what": "artifact", "id": aid, "level": access.as_str(), "by": by}),
+                        format!("access:artifact:{aid}"),
+                        &self.now(),
+                    )?;
+                }
+            }
             let share = tx.query_row(
                 &format!("{SHARE_SELECT} WHERE s.id = ?1"),
                 params![id],

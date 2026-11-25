@@ -127,8 +127,11 @@ fn linked(tx: &Transaction<'_>, github_id: i64) -> Result<Option<(String, bool, 
 
 /// Links `user` to viewer row `viewer_id` (moving the account's link, and
 /// refreshing its login, name and avatar), noting the sign-in, and binds
-/// the shares waiting for the account's login to that row
-/// ([`super::shares::bind_github_shares`]). Returns how many it bound.
+/// the shares and queue memberships waiting for the account's login to
+/// that row ([`super::shares::bind_github_shares`],
+/// [`super::queues::bind_github_members`]), each bound one fired to the
+/// inbox as freshly theirs ([`super::inbox::note_access`]). Returns how
+/// many it bound in all.
 fn link(st: &Store, tx: &Transaction<'_>, user: &GitHubUser, viewer_id: &str) -> Result<usize> {
     let now = st.now();
     tx.execute(
@@ -139,7 +142,39 @@ fn link(st: &Store, tx: &Transaction<'_>, user: &GitHubUser, viewer_id: &str) ->
              signed_in_at = excluded.signed_in_at",
         params![user.id, viewer_id, user.login, user.name, user.avatar_url, now],
     )?;
-    super::shares::bind_github_shares(tx, &user.login, viewer_id)
+    let shares = super::shares::bind_github_shares(tx, &user.login, viewer_id)?;
+    let (public_id, owner): (String, bool) = tx.query_row(
+        "SELECT public_id, owner FROM viewers WHERE id = ?1",
+        params![viewer_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let members = super::queues::bind_github_members(tx, &user.login, &public_id)?;
+    let bound = shares.len() + members.len();
+    // The owner already reaches everything; they get no `access` item,
+    // whatever a share or a pending membership named their eventual login.
+    if !owner {
+        for (aid, access) in &shares {
+            super::inbox::note_access(
+                tx,
+                &public_id,
+                Some(aid.as_str()),
+                serde_json::json!({"what": "artifact", "id": aid, "level": access.as_str(), "by": null}),
+                format!("access:artifact:{aid}"),
+                &now,
+            )?;
+        }
+        for (qid, role) in &members {
+            super::inbox::note_access(
+                tx,
+                &public_id,
+                None,
+                serde_json::json!({"what": "queue", "id": qid, "level": role.as_str(), "by": null}),
+                format!("access:queue:{qid}"),
+                &now,
+            )?;
+        }
+    }
+    Ok(bound)
 }
 
 /// The names a new person for `user` may take, in order: the profile's

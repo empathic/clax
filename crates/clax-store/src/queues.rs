@@ -137,6 +137,95 @@ pub struct ServiceGrant {
     pub created_at: String,
 }
 
+/// Whom [`Store::add_queue_member`] names, as the Share dialog names a
+/// share's person ([`crate::shares::ShareTo`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueueMemberTo {
+    /// A GitHub login, checked and lowercased by
+    /// [`crate::shares::github_login`].
+    GitHub(String),
+    /// A person, by public ID.
+    Person(String),
+}
+
+/// One row of [`Store::add_queue_member`]: its own ID (which
+/// [`Store::remove_queue_member`] takes), the person it names once bound,
+/// the login it was given by (kept for display once bound), and its role.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct QueueMemberRow {
+    pub id: String,
+    pub person: Option<String>,
+    pub github_login: Option<String>,
+    pub role: Role,
+}
+
+/// A queue membership changing hands: [`bind_github_members`]'s.
+struct MovingMember {
+    id: String,
+    queue_id: String,
+    role: String,
+}
+
+/// Binds the queue memberships waiting for GitHub login `login` to person
+/// `public_id`, at that account's sign-in (beside
+/// [`crate::shares::bind_github_shares`]). A queue the person already
+/// holds a membership of keeps the more permissive role (as
+/// `give_shares` does for shares) and drops the pending row; otherwise the
+/// pending row's `person` is set. Returns each bound membership's queue
+/// ID and role, for [`crate::github::link`] to notify with
+/// [`crate::inbox::note_access`].
+pub(super) fn bind_github_members(
+    tx: &Transaction<'_>,
+    login: &str,
+    public_id: &str,
+) -> Result<Vec<(String, Role)>> {
+    let login = login.to_ascii_lowercase();
+    let waiting: Vec<MovingMember> = {
+        let mut stmt = tx.prepare(
+            "SELECT id, queue_id, role FROM queue_members
+              WHERE person IS NULL AND github_login = ?1",
+        )?;
+        let rows = stmt.query_map(params![login], |r| {
+            Ok(MovingMember {
+                id: r.get(0)?,
+                queue_id: r.get(1)?,
+                role: r.get(2)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut bound = Vec::new();
+    for m in waiting {
+        let held: Option<(String, String)> = tx
+            .query_row(
+                "SELECT id, role FROM queue_members WHERE queue_id = ?1 AND person = ?2",
+                params![m.queue_id, public_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let role = Role::parse(&m.role).unwrap_or(Role::Triage);
+        if let Some((held_id, held_role)) = held {
+            let held_role = Role::parse(&held_role).unwrap_or(Role::Triage);
+            let role = role.max(held_role);
+            if role != held_role {
+                tx.execute(
+                    "UPDATE queue_members SET role = ?2 WHERE id = ?1",
+                    params![held_id, role.as_str()],
+                )?;
+            }
+            tx.execute("DELETE FROM queue_members WHERE id = ?1", params![m.id])?;
+            bound.push((m.queue_id, role));
+        } else {
+            tx.execute(
+                "UPDATE queue_members SET person = ?2 WHERE id = ?1",
+                params![m.id, public_id],
+            )?;
+            bound.push((m.queue_id, role));
+        }
+    }
+    Ok(bound)
+}
+
 /// The name of the queue a hosted instance makes for its own feedback
 /// ([`Store::own_feedback`]).
 pub const OWN_FEEDBACK_QUEUE: &str = "clax-feedback";
@@ -1304,8 +1393,11 @@ impl Store {
         Ok(())
     }
 
-    /// Queue `qid`'s members other than its maker, by public ID, with
-    /// their roles, in the order they were added.
+    /// Queue `qid`'s bound members other than its maker, by public ID,
+    /// with their roles, in the order they were added. A member still
+    /// pending a GitHub login's first sign-in ([`Store::add_queue_member`])
+    /// is not one of these; [`Store::queue_members_listing`] lists them
+    /// too.
     ///
     /// # Errors
     /// Database errors.
@@ -1313,7 +1405,8 @@ impl Store {
         self.with_read(|c| {
             let rows: Vec<(String, String)> = c
                 .prepare_cached(
-                    "SELECT person, role FROM queue_members WHERE queue_id = ?1
+                    "SELECT person, role FROM queue_members
+                     WHERE queue_id = ?1 AND person IS NOT NULL
                      ORDER BY created_at, person",
                 )?
                 .query_map(params![qid], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -1322,6 +1415,225 @@ impl Store {
                 .into_iter()
                 .filter_map(|(p, r)| Role::parse(&r).map(|r| (p, r)))
                 .collect())
+        })
+    }
+
+    /// Queue `qid`'s members other than its maker, bound and pending, in
+    /// the order they were added: each as `(id, person, github_login,
+    /// role)`, `person` `None` for a login still waiting for its first
+    /// GitHub sign-in. `id` is the row's own ID, which [`Store::add_queue_member`]
+    /// returns and names to [`Store::remove_queue_member`] (a pending row
+    /// has no public ID to be named by).
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn queue_members_listing(
+        &self,
+        qid: &str,
+    ) -> Result<Vec<(String, Option<String>, Option<String>, Role)>> {
+        self.with_read(|c| {
+            let rows: Vec<(String, Option<String>, Option<String>, String)> = c
+                .prepare_cached(
+                    "SELECT id, person, github_login, role FROM queue_members
+                     WHERE queue_id = ?1 ORDER BY created_at, id",
+                )?
+                .query_map(params![qid], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(rows
+                .into_iter()
+                .filter_map(|(id, p, l, r)| Role::parse(&r).map(|r| (id, p, l, r)))
+                .collect())
+        })
+    }
+
+    /// Fires `access` to `person`'s inbox for a new membership of queue
+    /// `qid` at `role`, granted by `by` (a public ID, or `None` for the
+    /// owner): for [`Store::set_member`]'s callers, which (PR #123) keep
+    /// deciding themselves whether the membership is new, since
+    /// `set_member` changes nothing else about that. A call for a
+    /// membership already notified does nothing ([`inbox::note_access`]'s
+    /// key).
+    pub fn note_queue_member_access(
+        &self,
+        qid: &str,
+        person: &str,
+        role: Role,
+        by: Option<&str>,
+    ) -> Result<()> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            super::inbox::note_access(
+                tx,
+                person,
+                None,
+                serde_json::json!({"what": "queue", "id": qid, "level": role.as_str(), "by": by}),
+                format!("access:queue:{qid}"),
+                &now,
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Adds `to` to queue `qid` at `role`, by `by` (a public ID, or `None`
+    /// for the owner): an existing connected person as [`Store::set_member`]
+    /// does; a GitHub login a GitHub account here has already signed in
+    /// with at once, named as that account's person; any other login
+    /// stored pending, bound to a person at that account's first GitHub
+    /// sign-in ([`bind_github_members`]). Fires `access` to the inbox
+    /// ([`crate::inbox::note_access`]) when it makes a genuinely new row
+    /// (adding an existing member or re-adding a removed pending login at
+    /// the same role changes nothing and notifies no one again).
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue; `invalid_login` for a
+    /// bad GitHub login; `unknown_person` for a public ID naming no
+    /// connected, unrevoked person.
+    pub fn add_queue_member(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        to: &QueueMemberTo,
+        role: Role,
+        by: Option<&str>,
+    ) -> Result<QueueMemberRow> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let (person, login): (Option<String>, Option<String>) = match to {
+                QueueMemberTo::Person(pid) => {
+                    let known: bool = tx
+                        .query_row(
+                            "SELECT person = 1 AND person_revoked_at IS NULL FROM viewers
+                               WHERE public_id = ?1",
+                            params![pid],
+                            |r| r.get(0),
+                        )
+                        .optional()?
+                        .unwrap_or(false);
+                    if !known {
+                        return Err(CoreError::invalid(
+                            "unknown_person",
+                            "that names no connected person here",
+                        ));
+                    }
+                    (Some(pid.clone()), None)
+                }
+                QueueMemberTo::GitHub(login) => {
+                    let login = super::shares::github_login(login)?;
+                    let known: Option<String> = tx
+                        .query_row(
+                            "SELECT v.public_id FROM github_identities gi
+                               JOIN viewers v ON v.id = gi.viewer_id
+                              WHERE lower(gi.login) = ?1 ORDER BY gi.signed_in_at DESC LIMIT 1",
+                            params![login],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    (known, Some(login))
+                }
+            };
+            let existing: Option<(String, String)> = match &person {
+                Some(p) => tx
+                    .query_row(
+                        "SELECT id, role FROM queue_members WHERE queue_id = ?1 AND person = ?2",
+                        params![qid, p],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?,
+                None => tx
+                    .query_row(
+                        "SELECT id, role FROM queue_members
+                          WHERE queue_id = ?1 AND person IS NULL AND github_login = ?2",
+                        params![qid, login],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?,
+            };
+            let is_new = existing.is_none();
+            let id = match existing {
+                Some((id, before)) => {
+                    if before != role.as_str() {
+                        tx.execute(
+                            "UPDATE queue_members SET role = ?2 WHERE id = ?1",
+                            params![id, role.as_str()],
+                        )?;
+                    }
+                    id
+                }
+                None => {
+                    let id = new_ulid();
+                    tx.execute(
+                        "INSERT INTO queue_members (id, queue_id, person, github_login, role, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![id, qid, person, login, role.as_str(), now],
+                    )?;
+                    id
+                }
+            };
+            let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
+                .with("op", "member")
+                .with("member", person.as_deref().or(login.as_deref()))
+                .with("role", role.as_str());
+            self.record_audit(tx, ctx, rec)?;
+            if is_new && let Some(pid) = &person {
+                super::inbox::note_access(
+                    tx,
+                    pid,
+                    None,
+                    serde_json::json!({"what": "queue", "id": qid, "level": role.as_str(), "by": by}),
+                    format!("access:queue:{qid}"),
+                    &now,
+                )?;
+            }
+            Ok(QueueMemberRow {
+                id,
+                person,
+                github_login: login,
+                role,
+            })
+        })
+    }
+
+    /// Removes member row `id` of queue `qid`, bound or pending: what
+    /// [`Store::set_member`] does for a bound member by public ID, and the
+    /// only way to remove a pending login (which has no public ID). A
+    /// removal of a bound person also releases their live leases, as
+    /// [`Store::set_member`] does. Changes nothing, and records nothing, for
+    /// no such row.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue.
+    pub fn remove_queue_member(&self, ctx: &AuditCtx, qid: &str, id: &str) -> Result<()> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let row: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT person FROM queue_members WHERE id = ?1 AND queue_id = ?2",
+                    params![id, qid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(person) = row else {
+                return Ok(());
+            };
+            tx.execute("DELETE FROM queue_members WHERE id = ?1", params![id])?;
+            let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
+                .with("op", "member")
+                .with("member", id)
+                .with("role", Option::<&str>::None);
+            self.record_audit(tx, ctx, rec)?;
+            if let Some(person) = person {
+                self.release_person_in(tx, ctx, qid, &person, &now)?;
+                tx.execute(
+                    "DELETE FROM queue_watches WHERE queue_id = ?1
+                       AND session_id IN (SELECT id FROM sessions WHERE person = ?2)",
+                    params![qid, person],
+                )?;
+            }
+            Ok(())
         })
     }
 

@@ -2566,6 +2566,79 @@ pub const MIGRATIONS: &[&str] = &[
         responders_json TEXT NOT NULL CHECK (json_valid(responders_json) AND json_type(responders_json) = 'array'),
         updated_at TEXT NOT NULL
     ) WITHOUT ROWID;",
+    // 73: a queue's members by GitHub login (`crate::queues`, as
+    // `artifact_shares`, migration 32, names a share): `queue_members`
+    // gains `github_login` (lowercased, display kept once bound) and
+    // `person` becomes nullable, one or the other required. A login no
+    // GitHub account here has signed in with yet waits, pending, until
+    // that account's first sign-in binds it to the person it signs in as
+    // (`crate::queues::bind_github_members`, called beside
+    // `crate::shares::bind_github_shares`). The old `(queue_id, person)`
+    // primary key becomes a plain unique index: SQLite never treats two
+    // NULLs as equal, so any number of pending rows coexist, and the
+    // `ON CONFLICT(queue_id, person)` upsert in `Store::set_member` (a
+    // bound member's) still matches exactly as it did. The same
+    // migration adds the `access` inbox kind (`crate::inbox::note_access`,
+    // for someone given access to a queue or an artifact), widening
+    // `inbox_items.kind`'s CHECK as migration 60 rebuilt it.
+    "CREATE TABLE queue_members_73 (
+        id TEXT PRIMARY KEY DEFAULT ('qm' || lower(hex(randomblob(12)))),
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        person TEXT,
+        github_login TEXT CHECK (github_login IS NULL OR github_login = lower(github_login)),
+        role TEXT NOT NULL CHECK (role IN ('admin', 'triage')),
+        created_at TEXT NOT NULL,
+        CHECK (person IS NOT NULL OR github_login IS NOT NULL)
+    );
+    INSERT INTO queue_members_73 (id, queue_id, person, github_login, role, created_at)
+        SELECT 'qm' || lower(hex(randomblob(12))), queue_id, person, NULL, role, created_at
+          FROM queue_members;
+    DROP TABLE queue_members;
+    ALTER TABLE queue_members_73 RENAME TO queue_members;
+    CREATE UNIQUE INDEX queue_members_by_queue_person ON queue_members(queue_id, person);
+    CREATE UNIQUE INDEX queue_members_pending ON queue_members(queue_id, github_login)
+        WHERE person IS NULL;
+    CREATE INDEX queue_members_by_person ON queue_members(person) WHERE person IS NOT NULL;
+    CREATE INDEX queue_members_of_login ON queue_members(github_login) WHERE person IS NULL;
+    CREATE TABLE inbox_items_73 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended', 'push', 'remote_request',
+                                           'access')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_73 (seq, id, kind, key, recipient, artifact_id, thread_id, comment_id,
+            version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+            created_at, read_at)
+        SELECT seq, id, kind, key, recipient, artifact_id, thread_id, comment_id,
+            version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+            created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_73 RENAME TO inbox_items;
+    CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2670,8 +2743,14 @@ pub const REPORTER_VIEW_MIGRATION: u32 = TAILSCALE_LOGIN_MIGRATION + 1;
 pub const INSTALLS_MIGRATION: u32 = REPORTER_VIEW_MIGRATION + 1;
 
 /// The migration that adds who answers a queue (`queue_responders`), as
-/// a schema version, and this build's last.
+/// a schema version.
 pub const RESPONDERS_MIGRATION: u32 = INSTALLS_MIGRATION + 1;
+
+/// The migration that lets a queue's members be pending by GitHub login
+/// (`queue_members.github_login`, `person` now nullable) and adds the
+/// `access` inbox kind, widening `inbox_items.kind`'s CHECK, as a schema
+/// version, and this build's last.
+pub const QUEUE_ACCESS_MIGRATION: u32 = RESPONDERS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2831,11 +2910,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`RESPONDERS_MIGRATION`]. They follow the app's in every
+/// [`QUEUE_ACCESS_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 23] = [
+const MARKS_AFTER_APP: [Mark<'static>; 24] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2859,6 +2938,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 23] = [
     Mark::Table("queue_reporters"),
     Mark::Table("installs"),
     Mark::Table("queue_responders"),
+    Mark::Column("queue_members", "github_login"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -6083,7 +6163,9 @@ mod tests {
         assert!(MIGRATIONS[first + 29].contains("CREATE TABLE installs ("));
         assert_eq!(super::RESPONDERS_MIGRATION, super::INSTALLS_MIGRATION + 1);
         assert!(MIGRATIONS[first + 30].contains("CREATE TABLE queue_responders ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::RESPONDERS_MIGRATION);
+        assert_eq!(super::QUEUE_ACCESS_MIGRATION, super::RESPONDERS_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 31].contains("CREATE TABLE queue_members_73 ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::QUEUE_ACCESS_MIGRATION);
     }
 
     #[test]
@@ -6312,7 +6394,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_72() {
+    fn a_fresh_database_reaches_73() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -6343,7 +6425,23 @@ mod tests {
         assert_eq!(super::REPORTER_VIEW_MIGRATION, 70);
         assert_eq!(super::INSTALLS_MIGRATION, 71);
         assert_eq!(super::RESPONDERS_MIGRATION, 72);
-        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        assert_eq!(super::QUEUE_ACCESS_MIGRATION, 73);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
+        assert!(super::has_column(&c, "queue_members", "github_login").unwrap());
+        c.execute(
+            "INSERT INTO queue_members (id, queue_id, github_login, role, created_at)
+             VALUES ('qm1', '7q3k9mzx2b4t', 'octo-cat', 'triage', 'x')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            c.execute(
+                "INSERT INTO inbox_items (id, kind, key, created_at) VALUES ('b1', 'access', 'access:x', 'x')",
+                [],
+            )
+            .is_ok(),
+            "the kind CHECK takes 'access'"
+        );
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -7123,7 +7221,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -7629,7 +7727,7 @@ mod tests {
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+            assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -7637,8 +7735,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::RESPONDERS_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 72 after it are one later now"
+            super::QUEUE_ACCESS_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 73 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -7657,7 +7755,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::RESPONDERS_MIGRATION);
+        assert_eq!(user_version(&copied), super::QUEUE_ACCESS_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -7671,7 +7769,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::RESPONDERS_MIGRATION + 1, schema, rows)
+            (super::QUEUE_ACCESS_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7945,7 +8043,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::RESPONDERS_MIGRATION);
+        assert_eq!(last, super::QUEUE_ACCESS_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -8318,7 +8416,7 @@ mod tests {
         drop(st);
         {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+            assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
             assert_eq!(table_count(&c, "briefs"), 1);
         }
         // Another wip database already holding that viewer and its login.
@@ -8354,7 +8452,7 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home2.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         assert_eq!(table_count(&c, "briefs"), 1, "main's 40 ran");
         assert_eq!(table_count(&c, "tags"), 1);
     }
@@ -8397,7 +8495,7 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         assert!(super::has_column(&c, "device_codes", "return_to").unwrap());
         assert_eq!(table_count(&c, "queues"), 1, "main's 59 ran");
     }
@@ -8440,7 +8538,7 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION);
         for table in [
             "owner_browser_sessions",
             "report_fixes",
@@ -8507,7 +8605,7 @@ mod tests {
             );
             drop(st);
             let mut c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION, "at {at}");
+            assert_eq!(user_version(&c), super::QUEUE_ACCESS_MIGRATION, "at {at}");
             assert_eq!(shape_of(&c), fresh, "at {at}: a fresh database's schema");
             // Main's 63 to 68 ran (the web lines are seeded), and no viewer
             // was made or lost.

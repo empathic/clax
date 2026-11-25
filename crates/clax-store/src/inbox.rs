@@ -62,10 +62,14 @@ pub enum Kind {
     /// (`detail_json`: the request's ID, origin, name, URL and reason;
     /// [`crate::remote_requests`]).
     RemoteRequest,
+    /// Someone was given access to a queue or an artifact, by a
+    /// membership or a share (`detail_json`: `{what: "queue"|"artifact",
+    /// id, level, by}`; [`note_access`]).
+    Access,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Reply,
         Kind::Version,
         Kind::Published,
@@ -76,6 +80,7 @@ impl Kind {
         Kind::Ended,
         Kind::Push,
         Kind::RemoteRequest,
+        Kind::Access,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -90,6 +95,7 @@ impl Kind {
             Kind::Ended => "ended",
             Kind::Push => "push",
             Kind::RemoteRequest => "remote_request",
+            Kind::Access => "access",
         }
     }
 
@@ -1741,6 +1747,45 @@ pub(crate) fn connections_lapsed(c: &Connection, now: &str) -> Result<usize> {
     )?)
 }
 
+/// `subject` (a public ID) was given access to a queue or an artifact, by
+/// a membership ([`crate::queues::add_queue_member`],
+/// [`crate::queues::Store::set_member`]) or a share
+/// ([`crate::shares::Store::share_artifact`]), or at that binding at a
+/// GitHub sign-in ([`crate::github::link`]): one `access` item for them,
+/// never the instance owner (who already reaches everything a membership
+/// or a share would add). `detail` is `{what: "queue"|"artifact", id,
+/// level, by}`; `key` (`access:queue:<qid>`, `access:artifact:<aid>`) is
+/// the grant's own, so granting the same access again (the same person,
+/// the same queue or artifact) makes no second item. `artifact_id` is
+/// `Some` for a share, so a hidden draft or a followed remote's mirror
+/// gets none ([`insert_at`]) and the item is in the hosted reach filter's
+/// count ([`crate::Store::inbox_sources`], `out_of_reach`).
+pub(crate) fn note_access(
+    c: &Connection,
+    subject: &str,
+    artifact_id: Option<&str>,
+    detail: Value,
+    key: String,
+    now: &str,
+) -> Result<Option<i64>> {
+    let text = [detail["what"].as_str(), detail["level"].as_str()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    insert_at(
+        c,
+        New {
+            recipient: Some(subject),
+            artifact_id,
+            detail: Some(detail),
+            text,
+            ..New::of(Kind::Access, key)
+        },
+        now,
+    )
+}
+
 /// Viewer `viewer_id` looked at `tids` of `aid` at `at`: when it is the
 /// owner or a connected person, their `reply` items made by then are read.
 pub(crate) fn read_by_look(
@@ -2479,7 +2524,8 @@ impl Store {
                     | Kind::Question
                     | Kind::Connection
                     | Kind::Ended
-                    | Kind::Push => {}
+                    | Kind::Push
+                    | Kind::Access => {}
                 }
                 out.push(s);
             }
