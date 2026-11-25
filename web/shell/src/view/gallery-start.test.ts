@@ -79,9 +79,11 @@ describe("header", () => {
     expect(header({ viewer: ok(VIEWER), token: "failed" }).inbox).toBeNull();
   });
 
-  it("shows Queues to the owner and the instance's admins, and not to a member", () => {
-    expect(header({ viewer: ok(PERSON), bot: ok({ enabled: false, role: "admin" }), token: null })).toMatchObject({ member: true, queues: true, inbox: true });
-    expect(header({ viewer: ok(PERSON), bot: ok({ enabled: false, role: "member" }), token: null })).toMatchObject({ member: true, queues: false });
+  it("shows Queues to a member of a queue and to anyone who may make one, whatever their ClaxBot role", () => {
+    const queues = (member: number, may_make: boolean) => ok({ ...PERSON, queues: { member, may_make } });
+    expect(header({ viewer: queues(2, false), bot: ok({ enabled: false, role: "member" }), token: null })).toMatchObject({ member: true, queues: true, inbox: true });
+    expect(header({ viewer: queues(0, true), bot: no(404), token: null }).queues).toBe(true);
+    expect(header({ viewer: queues(0, false), bot: ok({ enabled: false, role: "admin" }), token: null })).toMatchObject({ member: true, queues: false });
     expect(header({ viewer: ok(PERSON), bot: no(404), token: null }).queues).toBe(false);
     // A revoked person is no member.
     expect(header({ viewer: ok({ viewer: { ...PERSON.viewer, person_revoked_at: "2026-10-12T10:00:00Z" } }), token: null })).toMatchObject({ member: false, inbox: false });

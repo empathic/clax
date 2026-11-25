@@ -19,6 +19,8 @@ export type GalleryField = keyof typeof GALLERY_ROUTES;
 export type ViewerMe = {
   viewer: { public_id?: string; display_name?: string | null; person?: boolean; person_revoked_at?: string | null; owner?: boolean } | null;
   may_create?: boolean;
+  /** The report queues the caller is a member of, and whether they may make one. */
+  queues?: { member?: number; may_make?: boolean };
 };
 
 /** `GET /api/me/bot`'s body, as far as the gallery's header reads it: the

@@ -34,27 +34,35 @@ pub struct NameBody {
 
 /// Whether the request's caller may start an artifact from a brief
 /// (`POST /api/artifacts:new`, [`super::artifacts::brief_refusal`]): the
-/// gallery offers New only then.
-async fn may_create(s: &AppState, who: &Identity) -> Result<bool, ApiError> {
+/// gallery offers New only then; and what they may do with report queues
+/// ([`super::queues::access`]): the shell shows Queues only to a member of
+/// one or a caller who may make one.
+async fn may_create(s: &AppState, who: &Identity) -> Result<(bool, Value), ApiError> {
     let who = who.clone();
+    let hosted = s.hosted.is_some();
     s.store_call(move |st| {
         let Ok(c) = who.caller(st, None) else {
-            return Ok(false);
+            return Ok((false, json!({"member": 0, "may_make": false})));
         };
-        Ok(super::artifacts::brief_refusal(st, &c)?.is_none())
+        Ok((
+            super::artifacts::brief_refusal(st, &c)?.is_none(),
+            super::queues::access(st, &c, hosted)?,
+        ))
     })
     .await
 }
 
 async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Response, ApiError> {
-    let may_create = may_create(&s, &who).await?;
+    let (may_create, queues) = may_create(&s, &who).await?;
     // A hosted session's viewer is signed in already: it is answered as it
     // is, and no `clax_viewer` cookie is minted (the hosted gate renames a
     // guest itself).
     if let Some(v) = &who.hosted_viewer
         && name.is_none()
     {
-        return Ok(Json(json!({"viewer": v, "may_create": may_create})).into_response());
+        return Ok(
+            Json(json!({"viewer": v, "may_create": may_create, "queues": queues})).into_response(),
+        );
     }
     let owner = who.is_owner();
     let (before, viewer, fresh) = s
@@ -118,7 +126,8 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
     if owner && viewer.is_object() {
         viewer["owner"] = json!(true);
     }
-    let mut res = Json(json!({"viewer": viewer, "may_create": may_create})).into_response();
+    let mut res =
+        Json(json!({"viewer": viewer, "may_create": may_create, "queues": queues})).into_response();
     if let Some(c) = fresh {
         res.headers_mut().insert(SET_COOKIE, set_cookie(&c));
     }
@@ -129,7 +138,10 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
 /// credential (the token, or the owner cookie of the owner's browsers; `null`
 /// for the token alone before the owner exists), else the cookie's viewer,
 /// created (and its cookie set, noting whether it was minted on this
-/// machine) on first contact.
+/// machine) on first contact. Answers `{viewer, may_create, queues:
+/// {member, may_make}}`: whether the caller may start an artifact from a
+/// brief, and how many report queues they are a member of and whether
+/// they may make one ([`super::queues::access`]).
 pub async fn me(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,

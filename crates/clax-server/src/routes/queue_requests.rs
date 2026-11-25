@@ -26,7 +26,9 @@
 //! - `GET /api/queue-requests[?status=]` (a person's or the owner's browser,
 //!   or the owner by hand) → `{requests}`: those they answer, newest first.
 //! - `POST /api/queue-requests/<id>/approve` (the person's browser) →
-//!   `{request, queue}`: the queue is made with them as its admin. While an
+//!   `{request, queue}`: the queue is made with them as its admin, so a
+//!   person who may not make one is refused as `POST /api/queues` refuses
+//!   them (403 `queues_admin_only`), the request left pending. While an
 //!   agent of the owner's is live it may wait for a confirmation
 //!   ([`clax_http::confirm`]). `POST /api/queue-requests/<id>/deny` →
 //!   `{request}`. 409 `request_closed` with `request` for one no longer
@@ -327,6 +329,12 @@ pub async fn approve(
     let caller = d.caller(&s).await?;
     let person = browser_approver(&caller)?;
     let id = path(p)?;
+    // An approval makes a queue whose admin is the approver, so it is
+    // refused wherever making one by hand is.
+    let hosted = s.hosted.is_some();
+    let maker = caller.clone();
+    s.store_call(move |st| super::queues::may_make(st, &maker, hosted))
+        .await??;
     require_confirmation(
         &s,
         &caller,

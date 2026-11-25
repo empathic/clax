@@ -8,7 +8,7 @@ const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], report
 const routes = (o: Record<string, unknown> = {}) => ({
   "GET /api/queues": { queues: [QUEUE] },
   "GET /api/queues/q1/reports": { reports: [{ state: "open" }, { state: "open" }, { state: "claimed" }], next: null },
-  "GET /api/queues/q1/members": { members: [{ public_id: "p2", name: "Mia", role: "triage" }] },
+  "GET /api/queues/q1/members": { members: [{ public_id: "p1", name: "Alex", role: "admin", maker: true, owner: false }, { public_id: "p2", name: "Mia", role: "triage", maker: false, owner: false }] },
   "GET /api/queues/q1/service-grants": { grants: [] },
   ...o,
 });
@@ -101,15 +101,26 @@ describe("Queues", () => {
     expect(m.root.querySelector('input[name="previews_only"]')).toBeNull();
   });
 
-  it("adds a member by public ID at a role, and removes one after confirming", async () => {
-    const calls = stubFetch(routes({ "PUT /api/queues/q1/members/p3": {}, "DELETE /api/queues/q1/members/p2": {} }));
+  it("adds a member found by name at a role, and removes one after confirming", async () => {
+    const calls = stubFetch(routes({
+      "GET /api/queues/q1/people?q=sa": { people: [{ public_id: "p3", name: "Sam", avatar_url: null, owner: false }, { public_id: "p2", name: "Mia Sato", avatar_url: null, owner: false }] },
+      "PUT /api/queues/q1/members/p3": {},
+      "DELETE /api/queues/q1/members/p2": {},
+    }));
     vi.stubGlobal("confirm", () => true);
     const m = mount(Queues, {});
     await settle();
     click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
     await settle();
-    type(m.root.querySelector('input[name="public_id"]'), " p3 ");
-    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Add member"));
+    const add = () => [...m.root.querySelectorAll("button")].find(b => b.textContent === "Add member") as HTMLButtonElement;
+    expect(add().disabled).toBe(true);
+    type(m.root.querySelector('input[name="person"]'), "sa");
+    await settle();
+    // Someone already a member is listed but cannot be chosen again.
+    expect((m.root.querySelector('[data-found="p2"] button') as HTMLButtonElement).disabled).toBe(true);
+    click(m.root.querySelector('[data-found="p3"] button'));
+    expect((m.root.querySelector('input[name="person"]') as HTMLInputElement).value).toBe("Sam");
+    click(add());
     await settle();
     expect(calls.find(c => c.method === "PUT")).toMatchObject({ url: "/api/queues/q1/members/p3", body: { role: "triage" } });
     click(m.root.querySelector('[data-member="p2"] button'));
@@ -152,5 +163,50 @@ describe("Queues", () => {
     expect(lists()).toBe(before + 1);
     expect(sec.querySelector(".outcome")!.textContent).toContain("Approved: the queue is made");
     expect(m.root.querySelector('[data-id="q9"] h3')!.textContent).toBe("Site feedback");
+  });
+
+  it("lists the maker first as the queue's admin, with nothing to change or remove", async () => {
+    stubFetch(routes());
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    const rows = [...m.root.querySelectorAll("[data-member]")];
+    expect(rows.map(r => r.getAttribute("data-member"))).toEqual(["p1", "p2"]);
+    expect(rows[0].textContent).toContain("made this queue");
+    expect(rows[0].querySelector("select, button")).toBeNull();
+    expect(rows[1].querySelector("select")).not.toBeNull();
+  });
+
+  it("says when no one connected goes by a name, and drops a search answered after a later one", async () => {
+    let answer: (v: unknown) => void = () => {};
+    const slow = new Promise(r => { answer = r; });
+    stubFetch(routes({ "GET /api/queues/q1/people?q=zz": { people: [] } }));
+    const base = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
+      url === "/api/queues/q1/people?q=m" ? slow.then(b => new Response(JSON.stringify(b))) : base(url, init));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    type(m.root.querySelector('input[name="person"]'), "m");
+    type(m.root.querySelector('input[name="person"]'), "zz");
+    await settle();
+    expect(m.root.querySelector(".pick [role=status]")!.textContent).toContain("Only the owner and connected people can be added");
+    answer({ people: [{ public_id: "p9", name: "Mo" }] });
+    await settle();
+    expect(m.root.querySelector('[data-found="p9"]')).toBeNull();
+  });
+
+  it("offers New queue only where this browser may make one, and marks a queue it oversees without being a member", async () => {
+    stubFetch(routes({
+      "GET /api/viewers/me": { viewer: { public_id: "p5" }, queues: { member: 1, may_make: false } },
+      "GET /api/queues": { queues: [{ ...QUEUE, member: false }] },
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    expect([...m.root.querySelectorAll("button")].some(b => b.textContent === "New queue")).toBe(false);
+    expect(m.root.querySelector(".qpolicy")!.textContent).toContain("An administrator makes new queues");
+    expect(m.root.querySelector('[data-id="q1"] .qrow')!.textContent).toContain("Not a member");
   });
 });

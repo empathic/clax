@@ -15,7 +15,7 @@
 import type { Lease, Report, ReportPage } from "../sdk/src/types";
 import { startDeployerSite } from "./deployer-site/server";
 import { expect, test } from "./fixtures";
-import { hostedDaemon, ownerOf } from "./hosted-helpers";
+import { hostedDaemon, memberOf, ownerOf } from "./hosted-helpers";
 import { agentOf, agentTokenOf, cspViolations, openReports, queueWithGrant, refocus, reporterOn, shotPath } from "./queues-helpers";
 
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -437,6 +437,49 @@ test("the triage views stay current: a filing, an agent's claim and a person's r
     await expect(mine).not.toContainText("Stuck since Monday");
   } finally {
     await site.stop();
+    await d.stop();
+  }
+});
+
+test("a member added to a queue by name gets the Queues link; while members may not make queues, they get no New queue", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const owner = await ownerOf(browser, origin);
+    const mia = await memberOf(browser, owner, origin, "Mia", []);
+    // A hosted Clax's members make no queue by default, and Mia is in none.
+    await expect(mia.locator("a.queues-link")).toHaveCount(0);
+
+    await owner.goto(`${origin}/queues`);
+    await owner.getByRole("button", { name: "New queue" }).click();
+    const form = owner.locator("form.qform");
+    await form.getByLabel("Name", { exact: true }).fill("Team reports");
+    await form.getByRole("button", { name: "Create queue" }).click();
+    const card = owner.locator("li.qcard", { has: owner.getByRole("heading", { name: "Team reports" }) });
+    await card.getByRole("button", { name: "Manage" }).click();
+    // The owner, its maker, is listed first; Mia is found by name.
+    await expect(card.locator("li.line[data-member]").first()).toContainText("made this queue");
+    await card.getByLabel("Add a person").fill("mi");
+    await card.getByRole("list", { name: "People found" }).getByRole("button", { name: /Mia/ }).click();
+    await card.getByRole("button", { name: "Add member" }).click();
+    await expect(card.locator("li.line[data-member]")).toHaveCount(2);
+    await expect(card.locator("li.line[data-member]").nth(1)).toContainText("Mia");
+
+    await mia.reload();
+    await mia.locator("a.queues-link").click();
+    await expect(mia.getByRole("heading", { name: "Team reports" })).toBeVisible();
+    await expect(mia.locator(".qcard .role").first()).toHaveText("Triage");
+    await expect(mia.getByRole("button", { name: "New queue" })).toHaveCount(0);
+    await expect(mia.getByText("An administrator makes new queues on this Clax.")).toBeVisible();
+
+    // The owner lets members make queues in Settings; Mia then may.
+    await owner.goto(`${origin}/settings/report-queues`);
+    const sw = owner.getByRole("switch", { name: "Members may make report queues" });
+    await expect(sw).toHaveAttribute("aria-checked", "false");
+    await sw.click();
+    await expect(sw).toHaveAttribute("aria-checked", "true");
+    await mia.reload();
+    await expect(mia.getByRole("button", { name: "New queue" })).toBeVisible();
+  } finally {
     await d.stop();
   }
 });
