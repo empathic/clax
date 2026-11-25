@@ -4359,7 +4359,7 @@ the copy's remote, the link holds the copy's address alone.
 | `queue_release` | `queue`, `report_id` | `{report}`, open again |
 | `queue_reply` | `queue`, `report_id`, `body` | `{comment, report}`, under the session's live lease or, while the fix it proposed waits (`fix_proposed`), without one; `claim_required`, `lease_lost` or `thread_taken` |
 | `queue_resolve` | `queue`, `report_id`, optional `reason` (`fixed`, `duplicate`, `wontfix`, `cannot_reproduce` or `other`, the default) | `{report}`, resolved with `resolve_reason`; `claim_required`, `lease_lost` or `thread_taken` |
-| `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after` | `{report}`, `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix` or `not_claimable` |
+| `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after`, `preview` | `{report}`, and with `preview: true` the fix's `ticket` ("Fix tickets"), `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix`, `not_claimable` or `no_preview_origins` |
 | `queue_watch` | `queue`, optional `stop` | `{queue, watching: true, wake}` (`POST /api/queues/<queue>/watch`; `wake` as `watch` gives it), or with `stop: true` `{queue, watching: false}` (`DELETE`) |
 
 #### Report queue tools
@@ -4544,6 +4544,54 @@ matches cannot use the token. A report keeps the URL its page sent; the
 pattern is never stored on a token or a report, nor named in a CORS
 answer.
 
+**Grants limited to some origins.** A service grant may be limited to
+some of its queue's origins and patterns (`POST
+/api/queues/<qid>/service-grants {name, origins}`, each one the queue
+lists, as it lists it; 400 `invalid_origin` for an empty list or one it
+does not list): it then mints only for an origin one of them allows and
+the queue still allows (403 `wrong_origin` otherwise). A grant limited to
+the queue's preview pattern is what preview deployments hold, so none of
+them holds a grant that mints for the production site. A grant without
+`origins` (`null` in its listing) mints for every origin the queue allows.
+
+**Fix tickets.** A fix proposed with `preview: true` (`POST
+…/reports/<tid>/fix`, `queue_fix`, `clax queue fix --preview`) is issued
+a ticket, in that answer alone: `ticket: {token, expires_at, n, origins,
+attach_path}`. `token` is `cxf_<queue ID>.<report ID>.<n>.<secret>`, kept
+as its SHA-256; `origins` are the queue's origin patterns when it was
+issued (400 `no_preview_origins`, and no fix, when the queue lists
+none). It is bound to fix `n` of that report and does one thing: its
+holder, the fix's preview deployment, attaches its own exact origin to
+that fix (`POST …/reports/<tid>/fixes/<n>/preview`, below), which sets the
+fix's `verify_url` to the origin and `path` (default `/`), replacing what
+it named. The origin must be one of the ticket's patterns matches and the
+queue still allows (403 `wrong_origin`); an exact origin, never a
+pattern (400 `invalid_origin`); `path` starts with one `/`, at most 1 KiB,
+and keeps the URL on the origin (400 `invalid_args`). The ticket reads
+nothing, files nothing, mints nothing and gives no verdict: on any other
+route it is 401 `invalid_token`, as it is on another fix's, report's or
+queue's route. It ends 14 days after it was issued, or as soon as its fix
+no longer waits for a verdict (verified, rejected, superseded or closed),
+whichever is first: 401 `token_expired`. The request is server to server,
+unsigned (`Authorization: Clax-Fix <token>`, no `Origin` and no cookie:
+403 `forbidden_origin`). Attaching the URL the fix names already changes
+nothing (`changed: false`), so a redeploy may attach again. An attach that
+changes the URL posts a notice on the report as the ticket's issuer (the
+issuing agent's comment through its session, or the issuing person's),
+`A preview with fix <n> is ready: check it at <url>`, which the reporter
+reads, and which counts in its badge, as a fix's summary does; it is
+recorded as `queue.preview`, by actor `fix_ticket`.
+
+**Previews.** A reporter's page on a preview deployment asks `GET
+/api/queues/<qid>/reporter/previews` for the reports it filed whose fix
+waits for its verdict at a `verify_url` on the token's own origin (the one
+the token was minted for, never one the request names), and offers its
+own verdict there through the same verify, reopen and comment routes. A
+verdict given on a preview counts as one given anywhere: the report is
+`verified`, and the fix keeps the reporter token's origin as its
+`verified_origin`, which triage reads beside the verdict (absent for a
+verdict a person gives).
+
 Reporter routes (`Authorization: Clax-Reporter <token>`, a
 `Clax-Signature` by the reporter's key, the token's `Origin`; each answers
 CORS for the origins the queue allows, naming the request's own exact
@@ -4593,6 +4641,8 @@ reporter routes' tests fail on a refusal whose code it lacks.
 | `GET …/reporter/reports/<tid>/diagnostics?capture=` | | `{lines}` of a report it filed (404 `not_found` for another reporter's, `reporters_see: all` or not): capture `capture`'s, else the latest capture's that has any; `[]` for none; 400 `invalid_query` for a `capture` that is not a number, or another query |
 | `POST …/reporter/reports/<tid>/seen` | | 204: comments before now leave the badge |
 | `GET /api/queues/<qid>/reporter/badge` | | `{waiting, report_ids}`: its reports with a fix waiting for its verdict or a comment not its own since it last read them, oldest first |
+| `GET /api/queues/<qid>/reporter/previews` | | `{reports}`: the reports it filed whose fix waits for its verdict at a `verify_url` on the token's origin, oldest first; `[]` for none |
+| `POST /api/queues/<qid>/reports/<tid>/fixes/<n>/preview` (`Clax-Fix`, the fix's ticket, unsigned, no `Origin`, no CORS) | `{origin, path?}` | `{report, verify_url, changed}`; 403 `wrong_origin`, 400 `invalid_origin` or `invalid_args`, 401 `invalid_token` or `token_expired` (above) |
 
 Triage routes (a queue member, or a member's agent as "Report queue
 tools" says; 404 `not_a_member` otherwise):
@@ -4600,7 +4650,7 @@ tools" says; 404 `not_a_member` otherwise):
 | Route | Body | Answer |
 |---|---|---|
 | `GET /api/queues/<qid>/reports?state=&order=&cursor=` | | `{reports, next}`; `state` one of the five states or `active`; 400 `invalid_state` for another; `order` `oldest` (the default: in order of arrival) or `newest` (the latest filed first, each page after `cursor` holding the ones filed before it); 400 `invalid_query` for another |
-| `POST …/reports/<tid>/fix` | `{summary, url?, commit?, release?, verify_url?, verify_after?, fence?}` | `{report}`, `fix_proposed`: the summary is posted as the writer's comment, the lease ends (`queue.release`, reason `fix_proposed`); an agent needs its live lease, a person none; 400 `invalid_fix` (blank summary, summary over 4 KiB, a `url` or `verify_url` not http(s) or over 2048 bytes, `commit`, `release` or `verify_after` over 256 bytes); 409 `not_claimable` for a `verified` or `resolved` report |
+| `POST …/reports/<tid>/fix` | `{summary, url?, commit?, release?, verify_url?, verify_after?, fence?, preview?}` | `{report}`, and with `preview: true` its `ticket` (above; 400 `no_preview_origins` when the queue lists no pattern), `fix_proposed`: the summary is posted as the writer's comment, the lease ends (`queue.release`, reason `fix_proposed`); an agent needs its live lease, a person none; 400 `invalid_fix` (blank summary, summary over 4 KiB, a `url` or `verify_url` not http(s) or over 2048 bytes, `commit`, `release` or `verify_after` over 256 bytes); 409 `not_claimable` for a `verified` or `resolved` report |
 | `POST …/reports/<tid>/verify` | `{note?}` | `{report}`, `verified`, on the reporter's behalf and recorded as the person's; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
 | `POST …/reports/<tid>/reopen` | `{body}` | `{report}`, `open`, as the reporter's reopen; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
 | `POST …/reports/<tid>/resolve` | `{reason?}` (default `other`) | `{report}`, `resolved` with `resolve_reason`; 400 `invalid_args` for another reason |
@@ -4672,8 +4722,9 @@ An undelivered wake of a session that ends is deleted, never handed to
 another session: the report waits in its queue.
 
 Error codes besides the common ones: `invalid_context`,
-`invalid_diagnostics`, `invalid_profile`, `invalid_fix` (400);
-`not_fix_proposed`, `not_claimable`, `lease_lost` (409).
+`invalid_diagnostics`, `invalid_profile`, `invalid_fix`,
+`no_preview_origins` (400); `not_fix_proposed`, `not_claimable`,
+`lease_lost` (409).
 
 **The instance's own feedback queue.** An instance files its people's
 reports about Clax itself into one of its queues, as an integrating
@@ -9589,8 +9640,9 @@ the body below.
 | `thread.reopen` | none | a reopen of a resolved thread |
 | `queue.claim` | `queue_id, thread_id, session, lease_id, fence, expires_at` | a claim of a report that makes a new lease |
 | `queue.release` | `queue_id, thread_id, session, lease_id, reason (explicit\|member_removed\|fix_proposed\|person)` | a lease ended by its session, by its person's removal from the queue, by a fix, or by a triage person (`…/release`; the actor is the person) |
-| `queue.fix` | `queue_id, thread_id, n, url?, commit?` | a fix proposed on a report, after its summary's `comment.add` |
-| `queue.verify` | `queue_id, thread_id, n` | a verdict that a report's fix works, after its `thread.resolve` (`reason: fixed`) |
+| `queue.fix` | `queue_id, thread_id, n, url?, commit?, ticket_id?` (`ticket_id` the fix ticket's, with `preview`) | a fix proposed on a report, after its summary's `comment.add` |
+| `queue.verify` | `queue_id, thread_id, n, origin?` (`origin` the reporter token's, when the reporter gave it) | a verdict that a report's fix works, after its `thread.resolve` (`reason: fixed`) |
+| `queue.preview` | `queue_id, thread_id, n, origin, url, ticket_id, issued_by, for_person` (`issued_by` the agent's or person's name; `for_person` the person's public ID, or `owner`) | a preview deployment attached to a fix through its ticket, after its notice's `comment.add`: "Preview <origin> attached to fix <n> of report <report ID>, ticket issued by <issued_by> for <for_person>" |
 | `queue.reopen` | `queue_id, thread_id, n?, reopen_count` (`n` the latest fix's, when there is one) | a report said still broken, after its `comment.add` and `thread.reopen` |
 | `thread.delete` | `moved` | delete |
 | `thread.send` | `target ("watchers" \| {session_id, agent_handle}), feedback_ids[], batch_id?, thread_ids[]` | a send that changes something, automatic forwards included |
@@ -9697,6 +9749,7 @@ taken from the request's identity and session:
 | an anonymous viewer | `human:clax-anonymous` | `name` "Anonymous viewer" |
 | a report queue's reporter (a reporter token's requests) | `human:clax-reporter/<queue ID>.<reporter ID>` | `name` the reporter ID (none under `--no-names`); identity `{system: "clax-reporter", id: "<install ID>/<queue ID>/<reporter ID>"}`; the actor is `{"type": "reporter", "queue_id", "reporter_id"}` |
 | a report queue's service grant (the deployer's backend; minting a reporter token records nothing) | `tool:clax-service/<grant ID>` | `name` "Report queue service"; identities `{system: "clax-queue-grant", id: <grant ID>}` and `{system: "clax-queue", id: "<install ID>/<queue ID>"}`; the actor is `{"type": "service", "queue_id", "grant_id"}` |
+| a fix ticket (a preview deployment attaching its origin) | `tool:clax-fix-ticket/<ticket ID>` | `name` "Preview deployment"; identities `{system: "clax-fix-ticket", id: <ticket ID>}` and `{system: "clax-queue", id: "<install ID>/<queue ID>"}`; the actor is `{"type": "fix_ticket", "queue_id", "ticket_id"}` |
 | ClaxBot acting for a person | `agent:claxbot/<person>` (`agent:claxbot/owner` for the owner) | `name` "ClaxBot"; identity `{system: "clax-person", id: "<install ID>/<person key>"}`; the actor is `{"type": "bot", "on_behalf_of": "<public ID>\|*owner"}` |
 | Clax itself | `tool:clax/<recording version>` | `name` "Clax"; identity `{system: "clax-build", id: <commit>}`; the reason (`ttl`, `rule`, `backfill`, `daemon`) is `meta.clax.system_reason` |
 
@@ -10578,7 +10631,7 @@ and D a download.
 | `run_invalid`, `surface_hash_invalid`, `no_content_store` | 400 | The store's refusal of what the route has checked already (St; U for the last): no request a host can write gives them |
 | `no_credential` | 401 | Every route: the request carries no credential at all, refused before the route |
 | `unauthorized` | 401 | Every route: the daemon's token is missing or refused (an owner browser session's or a viewer's cookie, another `Authorization`): after a restart of the daemon, the token read before it |
-| `invalid_token` | 401 | Every route: an agent's token (`Bearer cxa_…`), which a local daemon takes none of; a grant's token that is not one; a report queue's or a reporter's credential (`Clax-Queue`, `Clax-Reporter`) |
+| `invalid_token` | 401 | Every route: an agent's token (`Bearer cxa_…`), which a local daemon takes none of; a grant's token that is not one; a report queue's, a reporter's or a fix ticket's credential (`Clax-Queue`, `Clax-Reporter`, `Clax-Fix`) |
 | `grant_revoked` | 401 | Every route: a grant whose grant was revoked, refused before the route |
 | `invalid_signature`, `stale_request`, `replayed_request` | 401 | Every route: a grant whose headers do not verify, refused before the route |
 | `forbidden_host` | 403 | Every route: the request comes from another machine (a token does not let it in), or its `Host` is not one the daemon answers |

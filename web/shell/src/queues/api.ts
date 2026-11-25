@@ -78,7 +78,10 @@ export const listMembers = (qid: string) => call<{ members: QueueMember[] }>(`${
 export const setMember = (qid: string, pid: string, role: QueueRole) => call<unknown>(`${q(qid)}/members/${e(pid)}`, "PUT", { role });
 export const removeMember = (qid: string, pid: string) => call<unknown>(`${q(qid)}/members/${e(pid)}`, "DELETE");
 export const listGrants = (qid: string) => call<{ grants: ServiceGrant[] }>(`${q(qid)}/service-grants`);
-/** Makes a service grant; its token and private key are in this answer alone. */
-export const createGrant = (qid: string, name: string) => call<ServiceGrantCreated>(`${q(qid)}/service-grants`, "POST", { name });
+/** Makes a service grant; its token and private key are in this answer
+ * alone. `origins`, some of the queue's origins and patterns exactly as it
+ * lists them, limits the origins it mints reporter tokens for (such as the
+ * preview pattern alone); without them it mints for every one. */
+export const createGrant = (qid: string, name: string, origins?: string[]) => call<ServiceGrantCreated>(`${q(qid)}/service-grants`, "POST", origins ? { name, origins } : { name });
 /** Revokes a service grant, which ends every reporter token it minted. */
 export const revokeGrant = (qid: string, gid: string) => call<unknown>(`${q(qid)}/service-grants/${e(gid)}`, "DELETE");

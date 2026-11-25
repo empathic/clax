@@ -142,6 +142,8 @@ mod api_pushes;
 mod api_questions;
 #[cfg(any(not(clax_split), clax_split = "api_queue_agent"))]
 mod api_queue_agent;
+#[cfg(any(not(clax_split), clax_split = "api_queue_previews"))]
+mod api_queue_previews;
 #[cfg(any(not(clax_split), clax_split = "api_queue_reporter"))]
 mod api_queue_reporter;
 #[cfg(any(not(clax_split), clax_split = "api_queues"))]

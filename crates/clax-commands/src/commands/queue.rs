@@ -56,6 +56,11 @@ pub enum Cmd {
     Reply(ReplyArgs),
     /// Propose a fix for a report you claimed; it then waits in
     /// fix_proposed for the reporter's verdict, and your claim ends.
+    ///
+    /// --preview also prints the fix's ticket (`cxf_…`, shown once): set
+    /// it as `CLAX_FIX_TICKET` on the pull request's preview deployment,
+    /// which attaches its own origin as the fix's verify URL. --json gives
+    /// `{report, ticket}`.
     Fix(FixArgs),
     /// Resolve a report you claimed, with a reason.
     Resolve(ResolveArgs),
@@ -165,6 +170,11 @@ pub struct FixArgs {
     /// When the fix can be checked, such as `release:0.6.1`.
     #[arg(long)]
     pub verify_after: Option<String>,
+    /// Also issue the fix's ticket, for its preview deployment to attach
+    /// its own origin as the fix's verify URL (the queue must list an
+    /// origin pattern).
+    #[arg(long)]
+    pub preview: bool,
 }
 
 #[derive(clap::Args)]
@@ -283,6 +293,9 @@ pub fn run(cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
                 if let Some(v) = v {
                     body[k] = json!(v);
                 }
+            }
+            if a.preview {
+                body["preview"] = json!(true);
             }
             act(cli, &c, &a.act, "fix", body)
         }
@@ -762,7 +775,18 @@ fn act(cli: &crate::Cli, c: &Client, a: &ActArgs, action: &str, body: Value) -> 
         "renew" => println!("renewed {tid} until {}", cell(&v["expires_at"])),
         "release" => println!("released {tid}: {}", cell(&r["state"])),
         "comments" => println!("replied on {tid} (comment {})", cell(&v["comment"]["id"])),
-        "fix" => println!("proposed a fix for {tid}: {}", cell(&r["state"])),
+        "fix" => {
+            println!("proposed a fix for {tid}: {}", cell(&r["state"]));
+            let t = &v["ticket"];
+            if t.is_object() {
+                println!(
+                    "fix ticket, shown once (set CLAX_FIX_TICKET on the preview deployment; \
+                     it ends {} or at the fix's verdict): {}",
+                    cell(&t["expires_at"]),
+                    cell(&t["token"])
+                );
+            }
+        }
         _ => println!(
             "resolved {tid}: {} ({})",
             cell(&r["state"]),

@@ -149,6 +149,37 @@ app.post("/clax/reporter-token", async (req, res) => {
 });
 ```
 
+### Preview deployments
+
+Give preview deployments a service grant limited to the queue's preview
+pattern (on the Queues page, **Manage**, **Previews only**), never the
+production grant: it mints reporter tokens for the previews' origins
+alone. When an agent proposes a fix with `preview: true`, it gets the
+fix's ticket (`cxf_…`) once and sets it on the pull request's preview
+environment as `CLAX_FIX_TICKET`. On deploy, the preview's backend
+attaches its own origin to that fix:
+
+```ts
+if (process.env.CLAX_FIX_TICKET) {
+  // The deployment's own origin, from its configuration, never from a request.
+  const { verify_url, changed } = await service.attachPreview({
+    ticket: process.env.CLAX_FIX_TICKET,
+    origin: "https://app-pr-538.fly.dev",
+    path: "/orders/7", // optional, default "/"
+  });
+}
+```
+
+The ticket is the call's only credential and its only right: it sets
+that one fix's `verify_url`, for an origin one of the queue's patterns
+matches (403 `wrong_origin` otherwise), until the fix has its verdict or
+14 days pass (401 `token_expired`). Attaching the same URL again changes
+nothing (`changed: false`). The overlay on the preview then asks
+`ReporterClient.previews()`, the reporter's reports with a fix waiting on
+this very origin, and offers "It's fixed", "Still broken" and a note
+there. `docs/feedback.md` in the Clax repository ("Preview deployments")
+has the whole flow.
+
 ## License
 
 LGPL-2.1-only: see `LICENSE` and `LICENSES/LGPL-2.1-only.txt`. The packages

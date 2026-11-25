@@ -74,6 +74,8 @@ let listed: number;
 let comments: [string, string][];
 /** The reports `client.report` answers; any other is 404. */
 let linkable: Report[];
+let previewed: () => Promise<Report[]>;
+let previewAsks: number;
 let timers: ReturnType<typeof manualTimers>;
 let host: HTMLElement;
 let screens: number;
@@ -110,6 +112,8 @@ beforeEach(() => {
   listed = 0;
   comments = [];
   linkable = [];
+  previewed = async () => [];
+  previewAsks = 0;
   drawn = [];
   screens = 0;
   contexts = 0;
@@ -127,6 +131,7 @@ beforeEach(() => {
       if (!r) throw Object.assign(new Error("not found"), { code: "not_found", status: 404 });
       return r;
     },
+    previews: () => { previewAsks++; return previewed(); },
   };
   host = document.createElement("div");
   document.body.append(host);
@@ -950,6 +955,87 @@ describe("the overlay", () => {
     await settle();
     expect(q(".panel li.open")?.textContent).toMatch(/The end date is wrong/);
     expect(seen).toEqual(["t1"]);
+  });
+
+  describe("the preview banner", () => {
+    /** Mounts the overlay anew, with `previews` answering `answer` first. */
+    const remount = async (...answers: (() => Promise<Report[]>)[]) => {
+      view.unmount();
+      previewAsks = 0;
+      previewed = () => (answers.shift() ?? (async () => []))();
+      view = mount(Overlay as never, props(), host);
+      await settle();
+    };
+    const banner = () => q('section[aria-label="A fix for your report"]');
+
+    it("names the report and its fix when this origin carries one", async () => {
+      await remount(async () => [proposed("t1")]);
+      expect(previewAsks).toBe(1);
+      const b = banner()!;
+      expect(b.textContent).toMatch(/This preview has a fix for your report/);
+      expect(b.textContent).toMatch(/The end date is wrong/);
+      expect(b.textContent).toMatch(/Fix 1:.*Fixed the end date in 0\.6\.1/);
+      expect(b.querySelector<HTMLAnchorElement>("a")?.href).toBe("https://github.com/o/leave/pull/12");
+      expect(b.textContent).not.toMatch(/more/);
+    });
+
+    it("shows the first of several and counts the rest", async () => {
+      await remount(async () => [proposed("t1"), proposed("t2")]);
+      expect(banner()?.textContent).toMatch(/and 1 more/);
+    });
+
+    it("shows nothing when no fix waits here, or when the ask fails", async () => {
+      expect(banner()).toBeNull();
+      await remount(async () => { throw Object.assign(new Error("not found"), { code: "not_found" }); });
+      expect(previewAsks).toBeGreaterThan(0);
+      expect(banner()).toBeNull();
+      expect(q(".launcher")).not.toBeNull();
+    });
+
+    it("It's fixed verifies the report and the banner goes", async () => {
+      await remount(async () => [proposed("t1")]);
+      click(button("It's fixed"));
+      await settle();
+      expect(verified.map(([id]) => id)).toEqual(["t1"]);
+      expect(verified[0][1]?.context).toMatchObject({ v: 1 });
+      expect(banner()).toBeNull();
+    });
+
+    it("a refused verdict says so and keeps the banner", async () => {
+      await remount(async () => [proposed("t1")]);
+      client.verify = async () => { throw Object.assign(new Error("gone"), { code: "not_fix_proposed" }); };
+      click(button("It's fixed"));
+      await settle();
+      expect(q(".notice")?.textContent).toBe("Not sent: No fix is waiting for your check any more.");
+      expect(banner()).not.toBeNull();
+    });
+
+    it("Still broken opens the reopen note, and its send asks again", async () => {
+      await remount(async () => [proposed("t1")], async () => [proposed("t1")]);
+      click(button("Still broken"));
+      await settle();
+      expect(banner()).toBeNull();
+      expect(q('.composer[aria-label="Still broken"]')?.textContent).toMatch(/The end date is wrong/);
+      typeIn(".composer textarea", "Still says 3 to 7");
+      click(button("Send"));
+      await settle();
+      expect(reopened.map(([id, r]) => [id, r.body])).toEqual([["t1", "Still says 3 to 7"]]);
+      expect(banner()).toBeNull();
+    });
+
+    it("Add a note… opens the report in Your reports, whose reply comments on it", async () => {
+      await remount(async () => [proposed("t1")]);
+      pages.push({ reports: [proposed("t1")], next: null });
+      click(button("Add a note…"));
+      await settle();
+      expect(banner()).toBeNull();
+      expect(q(".panel li.open")?.textContent).toMatch(/The end date is wrong/);
+      expect(seen).toEqual(["t1"]);
+      typeIn(".panel textarea", "Works, but slow");
+      click(button("Reply"));
+      await settle();
+      expect(comments).toEqual([["t1", "Works, but slow"]]);
+    });
   });
 
   it("while comment mode is on, presses on the overlay stop before the page's listeners, and others go on", () => {

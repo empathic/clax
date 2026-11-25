@@ -443,6 +443,11 @@ export function waitingFix(r: Report): FixAttempt | null {
   return last && last.outcome === "pending" ? last : null;
 }
 
+/** The fix a preview banner names: the one waiting, else the latest. */
+export function previewFix(r: Report): FixAttempt | null {
+  return waitingFix(r) ?? r.fixes?.at(-1) ?? null;
+}
+
 /** A link a report shows, when it is an `https:` or `http:` URL; none for
  * any other scheme (a `javascript:` URL is never made a link). */
 export function safeLink(url: string | undefined): string | null {
@@ -605,4 +610,7 @@ export interface ReporterApi {
   reopen(reportId: string, r: Reopening): Promise<Report>;
   badge(): Promise<Badge>;
   seen(reportId: string): Promise<void>;
+  /** The reporter's reports whose fix waits for its verdict on this page's
+   * origin: a preview deployment's. */
+  previews(): Promise<Report[]>;
 }

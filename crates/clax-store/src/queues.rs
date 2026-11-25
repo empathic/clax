@@ -110,6 +110,10 @@ pub struct ServiceGrant {
     /// Its Ed25519 public key, unpadded base64url.
     #[serde(skip)]
     pub public_key: String,
+    /// The origins and patterns it may mint reporter tokens for, each one
+    /// its queue lists; `None` for every origin the queue allows. A token
+    /// is minted only for an origin both these and the queue allow.
+    pub origins: Option<Vec<String>>,
     pub created_at: String,
 }
 
@@ -620,7 +624,7 @@ fn fixes_in(c: &Connection, aid: &str, tid: &str) -> Result<Vec<FixAttempt>> {
     let rows: Vec<FixRow> = c
         .prepare_cached(
             "SELECT n, fix_json, proposer_name, created_at, outcome, verdict_note,
-                verdict_context_json, verdict_at, proposer_session_id IS NOT NULL
+                verdict_context_json, verdict_at, proposer_session_id IS NOT NULL, verified_origin
              FROM report_fixes WHERE thread_id = ?1 ORDER BY n",
         )?
         .query_map(params![tid], |r| {
@@ -634,6 +638,7 @@ fn fixes_in(c: &Connection, aid: &str, tid: &str) -> Result<Vec<FixAttempt>> {
                 verdict_context_json: r.get(6)?,
                 verdict_at: r.get(7)?,
                 by_agent: r.get(8)?,
+                verified_origin: r.get(9)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -663,6 +668,7 @@ fn fixes_in(c: &Connection, aid: &str, tid: &str) -> Result<Vec<FixAttempt>> {
                     "report_fixes.verdict_context_json",
                 )?,
                 verdict_at: f.verdict_at,
+                verified_origin: f.verified_origin,
             })
         })
         .collect()
@@ -678,6 +684,7 @@ struct FixRow {
     verdict_context_json: Option<String>,
     verdict_at: Option<String>,
     by_agent: bool,
+    verified_origin: Option<String>,
 }
 
 /// The report views of `rows` as `vis` reads them, on `c` at `now`: the
@@ -1276,39 +1283,85 @@ impl Store {
         qid: &str,
         name: &str,
     ) -> Result<(ServiceGrant, Secret, KeyPair)> {
-        let name = check_queue_name(name)?;
-        self.with_tx(|tx| self.create_service_grant_in(tx, ctx, qid, &name))
+        self.create_service_grant_for(ctx, qid, name, None)
     }
 
-    /// [`Store::create_service_grant`] in `tx`, of a checked `name`.
+    /// [`Store::create_service_grant`], limited to `origins` when given:
+    /// the grant mints reporter tokens only for an origin one of them
+    /// allows (and the queue still allows), such as a queue's preview
+    /// pattern alone, so a preview deployment holds no grant that mints
+    /// for the production site. Each is normalized and must be one the
+    /// queue lists, as written there. Recorded as `queue.update {queue_id,
+    /// op: "grant", grant_id, grant_name, grant_origins?}`.
+    ///
+    /// # Errors
+    /// [`Store::create_service_grant`]'s; `invalid_origin` for an empty
+    /// list, or an origin or pattern the queue does not list.
+    pub fn create_service_grant_for(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        name: &str,
+        origins: Option<&[String]>,
+    ) -> Result<(ServiceGrant, Secret, KeyPair)> {
+        let name = check_queue_name(name)?;
+        let origins = origins.map(normalize_origins).transpose()?;
+        self.with_tx(|tx| self.create_service_grant_in(tx, ctx, qid, &name, origins.as_deref()))
+    }
+
+    /// [`Store::create_service_grant_for`] in `tx`, of a checked `name`
+    /// and normalized `origins`.
     fn create_service_grant_in(
         &self,
         tx: &Transaction<'_>,
         ctx: &AuditCtx,
         qid: &str,
         name: &str,
+        origins: Option<&[String]>,
     ) -> Result<(ServiceGrant, Secret, KeyPair)> {
         let token = clax_core::secret::token(SERVICE_TOKEN_PREFIX);
         let key = KeyPair::generate();
         let public = clax_core::sig::encode_public(&key.public());
         let id = new_ulid();
         let now = self.now();
-        queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+        let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+        if let Some(list) = origins {
+            if list.is_empty() {
+                return Err(CoreError::invalid(
+                    "invalid_origin",
+                    "a grant limited to origins names at least one of its queue's",
+                ));
+            }
+            if let Some(o) = list.iter().find(|o| !q.origins.contains(o)) {
+                return Err(CoreError::invalid(
+                    "invalid_origin",
+                    format!(
+                        "{o} is not one of the queue's origins: a grant's origins are among its queue's"
+                    ),
+                ));
+            }
+        }
+        let origins_json = origins.map(|o| serde_json::to_string(o).expect("strings serialise"));
         tx.execute(
-            "INSERT INTO queue_service_grants (id, queue_id, name, token_sha256, public_key, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, qid, name, token.sha256_hex(), public, now],
+            "INSERT INTO queue_service_grants (id, queue_id, name, token_sha256, public_key,
+                created_at, origins_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, qid, name, token.sha256_hex(), public, now, origins_json],
         )?;
-        let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
+        let mut rec = queue_record(AuditKind::QueueUpdate, &now, qid)
             .with("op", "grant")
             .with("grant_id", id.as_str())
             .with("grant_name", name);
+        if let Some(o) = origins {
+            rec = rec.with("grant_origins", o.to_vec());
+        }
         self.record_audit(tx, ctx, rec)?;
         let grant = ServiceGrant {
             id,
             queue_id: qid.to_string(),
             name: name.to_string(),
             public_key: public,
+            origins: origins.map(<[String]>::to_vec),
             created_at: now,
         };
         Ok((grant, token, key))
@@ -1420,7 +1473,7 @@ impl Store {
                 }
             }
             let (grant, token, key) =
-                self.create_service_grant_in(tx, ctx, &qid, OWN_FEEDBACK_GRANT)?;
+                self.create_service_grant_in(tx, ctx, &qid, OWN_FEEDBACK_GRANT, None)?;
             tx.execute(
                 "INSERT INTO instance_feedback (id, queue_id, grant_id, grant_token, grant_key, created_at)
                  VALUES (1, ?1, ?2, ?3, ?4, ?5)
@@ -1451,7 +1504,8 @@ impl Store {
     pub fn service_grants(&self, qid: &str) -> Result<Vec<ServiceGrant>> {
         self.with_read(|c| {
             Ok(c.prepare_cached(
-                "SELECT id, queue_id, name, public_key, created_at FROM queue_service_grants
+                "SELECT id, queue_id, name, public_key, created_at, origins_json
+                 FROM queue_service_grants
                  WHERE queue_id = ?1 AND revoked_at IS NULL ORDER BY created_at, id",
             )?
             .query_map(params![qid], grant_row)?
@@ -1467,7 +1521,7 @@ impl Store {
     pub fn service_grant_by_token(&self, sha256: &str) -> Result<Option<ServiceGrant>> {
         self.with_read(|c| {
             Ok(c.prepare_cached(
-                "SELECT g.id, g.queue_id, g.name, g.public_key, g.created_at
+                "SELECT g.id, g.queue_id, g.name, g.public_key, g.created_at, g.origins_json
                  FROM queue_service_grants g JOIN queues q ON q.id = g.queue_id
                  WHERE g.token_sha256 = ?1 AND g.revoked_at IS NULL AND q.deleted_at IS NULL",
             )?
@@ -1508,7 +1562,8 @@ impl Store {
     /// Mints a reporter token ([`REPORTER_TOKEN_PREFIX`]) of `grant` for
     /// reporter `reporter_id` on exact `origin`, one the queue allows
     /// ([`queue_allows_origin`]: listed, or matched by one of its
-    /// patterns), bound to that origin and to the reporter's Ed25519
+    /// patterns) and, for a grant limited to some of its origins
+    /// ([`ServiceGrant::origins`]), one of those allows too, bound to that origin and to the reporter's Ed25519
     /// `public_key` (unpadded base64url), valid for
     /// [`REPORTER_TOKEN_SECS`], carrying the reporter's `profile` (an
     /// empty one is none). Answers the token, kept only as its SHA-256,
@@ -1516,7 +1571,8 @@ impl Store {
     /// nothing. Tokens that expired a day before are dropped.
     ///
     /// # Errors
-    /// [`CoreError::WrongOrigin`] for an origin the queue does not allow;
+    /// [`CoreError::WrongOrigin`] for an origin the queue or the grant
+    /// does not allow;
     /// `invalid_origin` (an origin pattern among them),
     /// `invalid_reporter_id`, `invalid_key` or
     /// [`CoreError::InvalidProfile`] for bad input; `NotFound` when the
@@ -1542,17 +1598,22 @@ impl Store {
         let now = self.now_utc();
         let expires_at = later(now, REPORTER_TOKEN_SECS);
         self.with_tx(|tx| {
-            let live: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM queue_service_grants WHERE id = ?1 AND queue_id = ?2
-                    AND revoked_at IS NULL)",
-                params![grant.id, grant.queue_id],
-                |r| r.get(0),
-            )?;
+            let live: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT origins_json FROM queue_service_grants WHERE id = ?1 AND queue_id = ?2
+                    AND revoked_at IS NULL",
+                    params![grant.id, grant.queue_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
             let q = queue_in(tx, &grant.queue_id)?;
-            let (true, Some(q)) = (live, q) else {
+            let (Some(limit), Some(q)) = (live, q) else {
                 return Err(CoreError::NotFound);
             };
-            if !queue_allows_origin(&q.origins, &origin) {
+            let limit = grant_origins(limit);
+            if !queue_allows_origin(&q.origins, &origin)
+                || limit.is_some_and(|l| !queue_allows_origin(&l, &origin))
+            {
                 return Err(CoreError::WrongOrigin);
             }
             tx.execute(
@@ -2713,7 +2774,45 @@ impl Store {
         fix: NewFix,
         fence: Option<u64>,
     ) -> Result<Report> {
+        self.propose_fix_ticketed(ctx, qid, tid, by, fix, fence, false)
+            .map(|(r, _)| r)
+    }
+
+    /// [`Store::propose_fix_fenced`], and with `preview` the fix's ticket
+    /// too, issued in the fix's transaction ([`IssuedTicket`]): a
+    /// [`FIX_TICKET_PREFIX`] token bound to this fix of this report and
+    /// to the queue's origin patterns as they are now, valid for
+    /// [`FIX_TICKET_SECS`] or until the fix is no longer waiting for a
+    /// verdict, whichever comes first. Its holder may only attach a
+    /// preview deployment's origin to the fix
+    /// ([`Store::attach_preview`]). Issued by `by` (an agent's session
+    /// for its person, or a person), recorded on the fix's `queue.fix`
+    /// as `ticket_id`.
+    ///
+    /// # Errors
+    /// [`Store::propose_fix_fenced`]'s; with `preview`,
+    /// `no_preview_origins` (400) when the queue lists no origin pattern,
+    /// checked before anything is written.
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_fix_ticketed(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: &ReportWriter<'_>,
+        fix: NewFix,
+        fence: Option<u64>,
+        preview: bool,
+    ) -> Result<(Report, Option<IssuedTicket>)> {
         fix.check()?;
+        if preview {
+            let q = self
+                .with_read(|c| queue_in(c, qid))?
+                .ok_or(CoreError::NotAMember)?;
+            if previews::patterns_of(&q.origins).is_empty() {
+                return Err(previews::no_preview_origins());
+            }
+        }
         let comment = match by {
             ReportWriter::Agent(sess) => {
                 // A lapsed lease's owner is cleared whatever this answers.
@@ -2738,10 +2837,13 @@ impl Store {
         };
         let proposer = comment.author_name.clone();
         let agent = by.session();
+        let issuer = previews::Issuer::of(by);
         let now = self.now();
         let fix_json = serde_json::to_string(&fix).expect("fixes serialise");
+        let mut ticket = None;
+        let issued = &mut ticket;
         self.add_comment_then(ctx, tid, comment, |tx, t, _| {
-            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
             let aid = report_artifact_in(tx, qid, tid)?;
             if let Some(sid) = agent {
                 check_lease_in(tx, tid, sid, &now)?;
@@ -2788,14 +2890,21 @@ impl Store {
             if let Some(c) = &fix.commit {
                 rec = rec.with("commit", c.as_str());
             }
+            if preview {
+                let made = self.issue_ticket_in(tx, &q, tid, n, &issuer)?;
+                rec = rec.with("ticket_id", made.id.as_str());
+                *issued = Some(made);
+            }
             rec.ids.artifact = Some(aid);
             rec.ids.thread = Some(tid.to_string());
             rec.ids.session = agent.map(str::to_string);
             self.record_audit(tx, ctx, rec)?;
             Ok(())
         })?;
-        self.report(qid, tid, Visibility::All)?
-            .ok_or(CoreError::NotFound)
+        let report = self
+            .report(qid, tid, Visibility::All)?
+            .ok_or(CoreError::NotFound)?;
+        Ok((report, ticket))
     }
 
     /// [`Store::verify_report_touched`]'s report.
@@ -2838,6 +2947,27 @@ impl Store {
         note: Option<String>,
         context: Option<ReportContext>,
     ) -> Result<(Report, clax_core::feedback::Touched)> {
+        self.verify_report_from(ctx, qid, tid, by, note, context, None)
+    }
+
+    /// [`Store::verify_report_touched`], the verdict given from exact
+    /// `origin` (a reporter token's): the attempt keeps it as its
+    /// `verified_origin`, a preview deployment's or the production
+    /// site's, which triage reads beside the verdict.
+    ///
+    /// # Errors
+    /// [`Store::verify_report_touched`]'s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_report_from(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: Verdict<'_>,
+        note: Option<String>,
+        context: Option<ReportContext>,
+        origin: Option<&str>,
+    ) -> Result<(Report, clax_core::feedback::Touched)> {
         let note = note.filter(|n| !n.trim().is_empty());
         if let Some(n) = &note {
             check_body(n)?;
@@ -2860,8 +2990,9 @@ impl Store {
                 .ok_or(CoreError::NotFixProposed)?;
             tx.execute(
                 "UPDATE report_fixes SET outcome = 'verified', verdict_note = ?3,
-                    verdict_context_json = ?4, verdict_at = ?5 WHERE thread_id = ?1 AND n = ?2",
-                params![tid, n, note, context, now],
+                    verdict_context_json = ?4, verdict_at = ?5, verified_origin = ?6
+                 WHERE thread_id = ?1 AND n = ?2",
+                params![tid, n, note, context, now, origin],
             )?;
             let touched = self.resolve_thread_reason_in(
                 tx,
@@ -2879,6 +3010,9 @@ impl Store {
             let mut rec = queue_record(AuditKind::QueueVerify, &now, qid)
                 .with("thread_id", tid)
                 .with("n", n);
+            if let Some(o) = origin {
+                rec = rec.with("origin", o);
+            }
             rec.ids.artifact = Some(s.artifact_id);
             rec.ids.thread = Some(tid.to_string());
             self.record_audit(tx, ctx, rec)?;
@@ -3312,13 +3446,22 @@ impl Store {
 }
 
 fn grant_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ServiceGrant> {
+    let origins: Option<String> = r.get(5)?;
     Ok(ServiceGrant {
         id: r.get(0)?,
         queue_id: r.get(1)?,
         name: r.get(2)?,
         public_key: r.get(3)?,
         created_at: r.get(4)?,
+        origins: grant_origins(origins),
     })
+}
+
+/// A grant's `origins_json` as [`ServiceGrant::origins`]: `None` for no
+/// limit, and a list that does not parse as one that allows nothing, so a
+/// damaged limit never widens to every origin.
+fn grant_origins(json: Option<String>) -> Option<Vec<String>> {
+    json.map(|j| serde_json::from_str(&j).unwrap_or_default())
 }
 
 /// `Ok` when `sid` is a session that has not ended.
@@ -3337,6 +3480,9 @@ fn live_session_in(c: &Connection, sid: &str, message: &'static str) -> Result<(
         Err(CoreError::invalid("unknown_session", message))
     }
 }
+
+mod previews;
+pub use previews::{Attached, FixTicket, IssuedTicket};
 
 #[cfg(test)]
 #[warn(clippy::disallowed_methods)]

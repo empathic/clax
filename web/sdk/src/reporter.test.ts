@@ -269,6 +269,15 @@ describe("ReporterClient", () => {
     expect(JSON.parse((await (form.get("diagnostics") as File).text()).trim())).toEqual(diagnostics[0]);
   });
 
+  it("previews reads the reports waiting on this origin", async () => {
+    const s = setup(() => json(200, { reports: [{ id: "t1" }] }));
+    const { signer, client } = await s.make();
+    expect(await client.previews()).toEqual([{ id: "t1" }]);
+    expect(s.inst.sent[0].method).toBe("GET");
+    expect(s.inst.sent[0].url.pathname).toBe("/api/queues/q%201/reporter/previews");
+    expect(await verifies(signer, s.inst.sent[0])).toBe(true);
+  });
+
   it("badge reads waiting", async () => {
     const s = setup(() => json(200, { waiting: 2, report_ids: ["t1", "t2"] }));
     const { signer, client } = await s.make();

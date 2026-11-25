@@ -6263,13 +6263,64 @@
             ],
             "timestamp": "2026-10-06T14:09:36.127Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "for_person": "owner",
+                "issued_by": "claude",
+                "n": 1,
+                "origin": "https://app-pr-538.fly.dev",
+                "queue_id": "01JBQQ00000000000000000001",
+                "thread_id": "01JB9T00000000000000000001",
+                "ticket_id": "01JBFT00000000000000000001",
+                "type": "clax.queue.preview",
+                "url": "https://app-pr-538.fly.dev/orders/7"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "queue.preview",
+              "seq": 128,
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "Preview https://app-pr-538.fly.dev attached to fix 1 of report 01JB9T00000000000000000001, ticket issued by claude for owner",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax-fix-ticket/01JBFT00000000000000000001",
+            "id": "e000000000128",
+            "parents": [
+              "e000000000127"
+            ],
+            "timestamp": "2026-10-06T14:09:37.128Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000127",
+        "head": "e000000000128",
         "id": "clax-export-a375109d6c47"
       },
       "meta": {
@@ -6453,6 +6504,19 @@
             ],
             "name": "sam-mbp"
           },
+          "tool:clax-fix-ticket/01JBFT00000000000000000001": {
+            "identities": [
+              {
+                "id": "01JBFT00000000000000000001",
+                "system": "clax-fix-ticket"
+              },
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/01JBQQ00000000000000000001",
+                "system": "clax-queue"
+              }
+            ],
+            "name": "Preview deployment"
+          },
           "tool:clax/0.3.0": {
             "identities": [
               {
@@ -6487,7 +6551,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 127,
+      "last_seq": 128,
       "redaction": [],
       "selection": {
         "artifacts": [],

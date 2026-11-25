@@ -7,7 +7,11 @@
   // already there changes their role. A new service grant's token and
   // private key are shown here once, each with Copy, under a warning that
   // they are not shown again; Done forgets them. Revoking a grant, after
-  // confirming, ends every reporter token it minted. Each list is fetched
+  // confirming, ends every reporter token it minted. A queue that lists
+  // origin patterns (a preview deployment's, such as
+  // `https://app-pr-*.fly.dev`) offers a grant limited to them, which
+  // mints for its previews alone; the list names a limited grant's
+  // origins. Each list is fetched
   // when the panel opens and after each change.
   import { onMount } from "svelte";
   import * as api from "./api";
@@ -21,10 +25,13 @@
   let pid = $state("");
   let role = $state<api.QueueRole>("triage");
   let grantName = $state("");
+  let previewsOnly = $state(false);
   let made = $state<api.ServiceGrantCreated | null>(null);
   let copied = $state<"token" | "key" | null>(null);
   // svelte-ignore state_referenced_locally
   const qid = p.queue.id;
+  /** The queue's origin patterns: the origins that hold a `*`. */
+  const patterns = $derived(p.queue.origins.filter(o => o.includes("*")));
 
   const loadMembers = () => api.listMembers(qid).then(b => { members = b.members; }, x => { memberErr = `Could not load the members: ${refusal(x)}`; });
   const loadGrants = () => api.listGrants(qid).then(b => { grants = b.grants; }, x => { grantErr = `Could not load the service grants: ${refusal(x)}`; });
@@ -53,7 +60,7 @@
     const name = grantName.trim();
     if (!name) return;
     grantErr = null; copied = null;
-    try { made = await api.createGrant(qid, name); grantName = ""; } catch (x) { grantErr = refusal(x); }
+    try { made = await api.createGrant(qid, name, previewsOnly && patterns.length ? patterns : undefined); grantName = ""; previewsOnly = false; } catch (x) { grantErr = refusal(x); }
     await loadGrants();
   }
   async function revoke(g: api.ServiceGrant) {
@@ -113,7 +120,7 @@
       <ul class="lines">
         {#each grants as g (g.id)}
           <li class="line" data-grant={g.id}>
-            <span class="who">{g.name}<span class="key">made {day(g.created_at)}</span></span>
+            <span class="who">{g.name}<span class="key">made {day(g.created_at)}</span>{#if g.origins}<span class="key limit">{g.origins.every(o => o.includes("*")) ? "previews" : "only"}: {g.origins.join(", ")}</span>{/if}</span>
             <button type="button" class="ghost danger" onclick={() => void revoke(g)}>Revoke</button>
           </li>
         {/each}
@@ -123,6 +130,9 @@
     {/if}
     <form class="add" onsubmit={makeGrant}>
       <label class="field">Name <input name="grant_name" autocomplete="off" maxlength="80" placeholder="production backend" value={grantName} oninput={e => { grantName = e.currentTarget.value; }} /></label>
+      {#if patterns.length}
+        <label class="hint"><input type="checkbox" name="previews_only" checked={previewsOnly} onchange={e => { previewsOnly = e.currentTarget.checked; }} /> Previews only: mint only for {patterns.join(", ")}</label>
+      {/if}
       <button type="submit" disabled={!grantName.trim()}>Create service grant</button>
     </form>
     {#if grantErr}<p class="err" role="alert">{grantErr}</p>{/if}
