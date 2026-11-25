@@ -29,12 +29,11 @@ InspectionMsg _shot({List<({String kind, String text})> errors = const []}) =>
 Ready _ready([String aid = _draft]) =>
     Ready(artifact: aid, version: 1, latest: 1, file: 'index.html');
 
-/// Lets the inspection's awaits run.
-Future<void> _settle() async {
-  for (var i = 0; i < 20; i++) {
-    await Future<void>.delayed(Duration.zero);
-  }
-}
+/// Lets the inspection's awaits run: they wait only on microtasks (the
+/// fake surface's synchronous streams and [StepClock]'s completers), and
+/// one turn of the event loop runs every microtask queued before it and
+/// every one those queue.
+Future<void> _settle() => Future<void>.delayed(Duration.zero);
 
 void main() {
   late StepClock clock;

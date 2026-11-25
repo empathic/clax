@@ -92,6 +92,7 @@ pub async fn trim(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::report;
     use serde_json::json;

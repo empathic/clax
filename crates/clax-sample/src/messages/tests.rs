@@ -197,6 +197,7 @@ fn request() -> MessagesRequest {
             name: "run_script".into(),
             description: "Run code".into(),
             input_schema: json!({"type": "object", "properties": {"title": {"type": "string"}, "code": {"type": "string"}}, "required": ["title", "code"]}),
+            input_schema_text: None,
             cache_control: None,
             eager_input_streaming: false,
         }],
@@ -454,12 +455,12 @@ async fn every_http_error_maps_to_its_class() {
         got.push(call(&base, &req).await.0.unwrap_err());
     }
     assert!(
-        matches!(&got[0], MessagesError::Auth { status: 401, .. }),
+        matches!(&got[0], MessagesError::Auth { answer, .. } if answer.status == 401),
         "{:?}",
         got[0]
     );
     assert!(
-        matches!(&got[1], MessagesError::Auth { status: 403, .. }),
+        matches!(&got[1], MessagesError::Auth { answer, .. } if answer.status == 403),
         "{:?}",
         got[1]
     );
@@ -467,27 +468,41 @@ async fn every_http_error_maps_to_its_class() {
         got[2],
         MessagesError::RateLimited {
             retry_after: Some(Duration::from_secs(7)),
-            message: "slow down".into()
+            message: "slow down".into(),
+            answer: Answer::new(429, "rate_limit_error", Some("slow down".into()))
+                .with_request_id(Some("req_1".into())),
         }
     );
     assert_eq!(
         got[3],
         MessagesError::Overloaded {
-            message: "Overloaded".into()
+            message: "Overloaded".into(),
+            answer: Answer::new(529, "overloaded_error", Some("Overloaded".into()))
+                .with_request_id(Some("req_1".into())),
         }
     );
+    let refused = "messages: roles must alternate";
     assert_eq!(
         got[4],
         MessagesError::InvalidRequest {
-            message: "messages: roles must alternate".into()
+            message: refused.into(),
+            answer: Answer::new(400, "invalid_request_error", Some(refused.into()))
+                .with_request_id(Some("req_1".into())),
         }
     );
-    assert!(matches!(&got[5], MessagesError::Api { status: 500, kind, .. } if kind == "api_error"));
     assert!(
-        matches!(&got[6], MessagesError::Api { status: 404, kind, .. } if kind == "not_found_error")
+        matches!(&got[5], MessagesError::Api { answer, .. } if answer.status == 500 && answer.kind == "api_error")
     );
     assert!(
-        matches!(&got[7], MessagesError::Api { status: 502, message, .. } if message.contains("HTTP 502"))
+        matches!(&got[6], MessagesError::Api { answer, .. } if answer.status == 404 && answer.kind == "not_found_error")
+    );
+    assert!(
+        matches!(&got[7], MessagesError::Api { message, answer } if answer.status == 502 && message.contains("HTTP 502"))
+    );
+    // A body that is not JSON is what the provider said, as one line.
+    assert_eq!(
+        got[7].detail().message.as_deref(),
+        Some("<html>bad gateway</html>")
     );
     let retryable: Vec<bool> = got.iter().map(MessagesError::retryable).collect();
     assert_eq!(
@@ -529,9 +544,8 @@ async fn the_key_never_appears_in_an_error() {
     errors.push(network);
     errors.push(
         MessagesError::Api {
-            status: 0,
-            kind: KEY.into(),
             message: KEY.into(),
+            answer: Answer::new(0, KEY, Some(KEY.into())).with_request_id(Some(KEY.into())),
         }
         .redacted(&key()),
     );
@@ -556,7 +570,8 @@ async fn an_error_event_mid_stream_is_classified() {
     assert_eq!(
         out.unwrap_err(),
         MessagesError::Overloaded {
-            message: "Overloaded".into()
+            message: "Overloaded".into(),
+            answer: Answer::new(0, "overloaded_error", Some("Overloaded".into())),
         }
     );
     assert!(deltas.iter().any(|d| matches!(d, Delta::Thinking { .. })));
@@ -655,7 +670,7 @@ async fn list_models_follows_pages_and_test_connection_asks_for_one() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, MessagesError::Auth { status: 401, .. }),
+        matches!(&err, MessagesError::Auth { answer, .. } if answer.status == 401),
         "{err:?}"
     );
     let seen = log.lock().unwrap().clone();
@@ -681,6 +696,7 @@ fn the_retry_policy_is_bounded_and_honours_retry_after() {
     };
     let over = MessagesError::Overloaded {
         message: String::new(),
+        answer: Answer::default(),
     };
     assert_eq!(p.delay(0, &over), Some(Duration::from_millis(100)));
     assert_eq!(p.delay(1, &over), Some(Duration::from_millis(200)));
@@ -689,6 +705,7 @@ fn the_retry_policy_is_bounded_and_honours_retry_after() {
     let limited = |s| MessagesError::RateLimited {
         retry_after: Some(Duration::from_secs(s)),
         message: String::new(),
+        answer: Answer::default(),
     };
     assert_eq!(p.delay(0, &limited(9)), Some(Duration::from_secs(9)));
     assert_eq!(p.delay(0, &limited(31)), None);
@@ -696,7 +713,8 @@ fn the_retry_policy_is_bounded_and_honours_retry_after() {
         p.delay(
             0,
             &MessagesError::InvalidRequest {
-                message: String::new()
+                message: String::new(),
+                answer: Answer::default(),
             }
         ),
         None
@@ -723,9 +741,11 @@ async fn with_retry_waits_through_the_injected_sleeper() {
         Err(MessagesError::RateLimited {
             retry_after: Some(Duration::from_secs(2)),
             message: String::new(),
+            answer: Answer::default(),
         }),
         Err(MessagesError::Overloaded {
             message: String::new(),
+            answer: Answer::default(),
         }),
         Ok(42),
     ]));
@@ -759,8 +779,8 @@ async fn with_retry_waits_through_the_injected_sleeper() {
         |_| async { panic!("no wait") },
         |_| {
             std::future::ready(Err(MessagesError::Auth {
-                status: 401,
                 message: String::new(),
+                answer: Answer::new(401, "", None),
             }))
         },
     )
@@ -1145,30 +1165,34 @@ async fn betas_extra_fields_system_turns_and_eager_tools_reach_the_wire() {
 #[test]
 fn an_errors_summary_carries_no_text_from_the_answer() {
     let secret = "<html>internal admin panel: db=10.0.0.7 password=hunter2</html>";
+    let said = |status, kind: &str| {
+        Answer::new(status, kind, Some(secret.into())).with_request_id(Some(secret.into()))
+    };
     let errors = [
         MessagesError::Auth {
-            status: 401,
             message: secret.into(),
+            answer: said(401, "authentication_error"),
         },
         MessagesError::RateLimited {
             retry_after: None,
             message: secret.into(),
+            answer: said(429, secret),
         },
         MessagesError::Overloaded {
             message: secret.into(),
+            answer: said(529, secret),
         },
         MessagesError::InvalidRequest {
             message: secret.into(),
+            answer: said(400, secret),
         },
         MessagesError::Api {
-            status: 500,
-            kind: "api_error".into(),
             message: secret.into(),
+            answer: said(500, "api_error"),
         },
         MessagesError::Api {
-            status: 418,
-            kind: secret.into(),
             message: secret.into(),
+            answer: said(418, secret),
         },
         MessagesError::Redirected { status: 302 },
         MessagesError::Network {
@@ -1199,3 +1223,373 @@ fn an_errors_summary_carries_no_text_from_the_answer() {
 
 /// The client against providers that speak another API.
 mod wire;
+
+// ---------------------------------------------------------------------------
+// A tool result's images
+// ---------------------------------------------------------------------------
+
+/// A request whose last turn answers `toolu_9` with `result`.
+fn answering(result: Block) -> MessagesRequest {
+    let mut req = request();
+    req.messages.push(Message {
+        role: Role::Assistant,
+        content: vec![Block::ToolUse {
+            id: "toolu_9".into(),
+            name: "run_script".into(),
+            input: json!({}),
+        }],
+    });
+    req.messages.push(Message::user(vec![result]));
+    req
+}
+
+#[test]
+fn a_tool_result_with_no_image_is_the_request_it_was_byte_for_byte() {
+    let plain = answering(Block::tool_result("toolu_9", "teal", true));
+    let bytes = serde_json::to_vec(&plain.body()).unwrap();
+    for takes in [false, true] {
+        let block = Block::tool_result_with_images("toolu_9", "teal", true, &[], takes);
+        assert_eq!(block, Block::tool_result("toolu_9", "teal", true));
+        let req = answering(block);
+        assert_eq!(serde_json::to_vec(&req.body()).unwrap(), bytes);
+        for base in ["https://api.openai.com/v1", "https://api.mistral.ai/v1"] {
+            assert_eq!(
+                serde_json::to_vec(&openai::body(&req, base)).unwrap(),
+                serde_json::to_vec(&openai::body(&plain, base)).unwrap()
+            );
+        }
+        assert_eq!(
+            serde_json::to_vec(&gemini::body(&req)).unwrap(),
+            serde_json::to_vec(&gemini::body(&plain)).unwrap()
+        );
+    }
+    // The block as it has always been sent.
+    assert_eq!(
+        Block::tool_result_with_images("toolu_9", "teal", true, &[], true)
+            .to_json()
+            .to_string(),
+        r#"{"content":"teal","is_error":true,"tool_use_id":"toolu_9","type":"tool_result"}"#
+    );
+}
+
+#[test]
+fn a_tool_results_images_follow_its_text_as_base64_blocks() {
+    let images = [
+        ToolImage::new("image/png", vec![0x89, b'P', b'N', b'G']),
+        ToolImage::new("image/jpeg", vec![0xff, 0xd8, 0xff]),
+    ];
+    let block = Block::tool_result_with_images("toolu_9", "{\"shot\":1}", false, &images, true);
+    assert_eq!(
+        answering(block).body()["messages"][2],
+        json!({"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": "toolu_9",
+            "content": [
+                {"type": "text", "text": "{\"shot\":1}"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw=="}},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/"}},
+            ],
+        }]})
+    );
+    // No empty text block: images alone are the content.
+    let alone = Block::tool_result_with_images("toolu_9", "", true, &images[..1], true);
+    assert_eq!(
+        alone.to_json(),
+        json!({"type": "tool_result", "tool_use_id": "toolu_9", "is_error": true, "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw=="}},
+        ]})
+    );
+}
+
+#[test]
+fn a_model_that_takes_no_images_is_sent_none_and_told_so() {
+    let images = [ToolImage::new("image/png", vec![1, 2, 3])];
+    assert_eq!(
+        Block::tool_result_with_images("toolu_9", "{\"shot\":1}", false, &images, false),
+        Block::tool_result(
+            "toolu_9",
+            format!("{{\"shot\":1}}\n\n{IMAGES_NOT_SHOWN}"),
+            false
+        )
+    );
+    assert_eq!(
+        Block::tool_result_with_images("toolu_9", "", false, &images, false),
+        Block::tool_result("toolu_9", IMAGES_NOT_SHOWN, false)
+    );
+    // The note says that images were not sent and which setting sends
+    // them, not that the model takes none, which nothing here knows.
+    assert!(!IMAGES_NOT_SHOWN.contains("takes no images"));
+    assert!(IMAGES_NOT_SHOWN.contains("[bot] model_takes_images is off"));
+}
+
+/// A tool that carries its schema as text is sent that text, in its
+/// order, by every provider (each takes the schema as it is), where its
+/// `Value` would sort the members; the body as a `Value` is unchanged,
+/// and a request with no such tool is sent `body()`'s text byte for
+/// byte.
+#[test]
+fn a_tools_schema_text_is_sent_in_its_order_by_every_provider() {
+    let plain = request();
+    assert_eq!(plain.body_text(), plain.body().to_string());
+    for base in ["https://api.openai.com/v1", "https://api.mistral.ai/v1"] {
+        let marked = openai::body_marked(&plain, base, true);
+        assert_eq!(
+            super::spliced(&marked, &plain.tools),
+            openai::body(&plain, base).to_string()
+        );
+    }
+    assert_eq!(
+        super::spliced(&gemini::body_marked(&plain, true), &plain.tools),
+        gemini::body(&plain).to_string()
+    );
+    let text = r#"{"type":"object","properties":{"title":{"type":"string"},"code":{"type":"string"}},"required":["title","code"]}"#;
+    let mut req = request();
+    req.tools[0].input_schema_text = Some(text.into());
+    assert_eq!(
+        serde_json::from_str::<Value>(text).unwrap(),
+        req.tools[0].input_schema,
+        "one JSON value"
+    );
+    assert_eq!(req.body(), plain.body(), "the Value is the schema's");
+    let sorted = req.tools[0].input_schema.to_string();
+    assert_ne!(sorted, text);
+    let sent = [
+        req.body_text(),
+        super::spliced(
+            &openai::body_marked(&req, "https://api.openai.com/v1", true),
+            &req.tools,
+        ),
+        super::spliced(&gemini::body_marked(&req, true), &req.tools),
+    ];
+    for (body, key) in sent
+        .iter()
+        .zip(["input_schema", "parameters", "parametersJsonSchema"])
+    {
+        assert!(body.contains(&format!("\"{key}\":{text}")), "{body}");
+        assert!(!body.contains(&sorted), "{body}");
+        assert!(
+            !body.contains("input_schema_text"),
+            "no mark is left: {body}"
+        );
+        let read: Value = serde_json::from_str(body).unwrap();
+        assert!(read.to_string().contains(&sorted), "the same JSON");
+    }
+}
+
+/// Each shape of a 400 the Messages API (or something in front of it)
+/// answers, and what a failed call then says of it: the class, the
+/// status, the provider's type and message, and its request ID.
+#[tokio::test]
+async fn each_kind_of_400_keeps_what_the_provider_said() {
+    let with_id = |mut r: Reply, id: &str| {
+        if let Reply::Full { headers, .. } = &mut r {
+            headers.push(("request-id", id.into()));
+        }
+        r
+    };
+    let credit = "Your credit balance is too low to access the Anthropic API. \
+                  Please go to Plans & Billing to upgrade or purchase credits.";
+    let (base, _) = serve(vec![
+        with_id(
+            json_reply(
+                400,
+                error_body("invalid_request_error", "max_tokens: Field required"),
+            ),
+            "req_011A",
+        ),
+        with_id(
+            json_reply(400, error_body("invalid_request_error", credit)),
+            "req_011B",
+        ),
+        json_reply(
+            400,
+            error_body(
+                "invalid_request_error",
+                "anthropic-version: invalid version 2099-01-01",
+            ),
+        ),
+        Reply::Full {
+            status: 400,
+            headers: vec![
+                ("content-type", "text/html".into()),
+                ("x-request-id", "edge-7".into()),
+            ],
+            body: b"<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\
+                    <center><h1>400 Bad Request</h1></center>\r\n</body></html>"
+                .to_vec(),
+            piece: usize::MAX,
+        },
+        Reply::Full {
+            status: 400,
+            headers: vec![],
+            body: Vec::new(),
+            piece: usize::MAX,
+        },
+    ])
+    .await;
+    let req = request();
+    let mut got = Vec::new();
+    for _ in 0..5 {
+        got.push(call(&base, &req).await.0.unwrap_err());
+    }
+    let details: Vec<Value> = got.iter().map(|e| e.detail().to_json()).collect();
+    let refused = |message: &str, id: &str| {
+        json!({"class": "invalid_request", "status": 400, "type": "invalid_request_error",
+               "message": message, "request_id": id})
+    };
+    assert_eq!(
+        details[0],
+        refused("max_tokens: Field required", "req_011A")
+    );
+    assert_eq!(details[1], refused(credit, "req_011B"));
+    // Without the header, the body's `request_id`.
+    assert_eq!(
+        details[2],
+        refused("anthropic-version: invalid version 2099-01-01", "req_1")
+    );
+    // An intermediary's page: no type, and its text as one line.
+    assert_eq!(
+        details[3],
+        json!({"class": "invalid_request", "status": 400, "type": null,
+               "message": "<html> <head><title>400 Bad Request</title></head> <body><center><h1>400 Bad Request</h1></center> </body></html>",
+               "request_id": "edge-7"})
+    );
+    // Nothing said at all: this client's words are not passed off as the provider's.
+    assert_eq!(
+        details[4],
+        json!({"class": "invalid_request", "status": 400, "type": null, "message": null,
+               "request_id": null})
+    );
+    // The summary stays this client's own words for each.
+    for e in &got {
+        assert_eq!(e.summary(), "the provider refused the request (HTTP 400)");
+    }
+}
+
+/// A provider that echoes the key back, in its message, its type and its
+/// request ID, is shown none of it.
+#[tokio::test]
+async fn the_detail_never_holds_the_key() {
+    let echo = || {
+        let mut r = json_reply(
+            400,
+            json!({"type": "error", "error": {"type": format!("bad_{KEY}"),
+                   "message": format!("x-api-key {KEY} is not valid here")}}),
+        );
+        if let Reply::Full { headers, .. } = &mut r {
+            headers.push(("request-id", format!("req-{KEY}")));
+        }
+        r
+    };
+    let (base, _) = serve(vec![echo(), echo()]).await;
+    let streamed = call(&base, &request()).await.0.unwrap_err();
+    let listed = MessagesClient::new()
+        .list_models(ModelApi::Anthropic, &base, &key())
+        .await
+        .unwrap_err();
+    for e in [streamed, listed] {
+        let d = e.detail();
+        let shown = d.to_json().to_string();
+        assert!(!shown.contains(KEY), "{shown}");
+        assert_eq!(
+            d.message.as_deref(),
+            Some("x-api-key [redacted] is not valid here")
+        );
+        assert_eq!(d.request_id.as_deref(), Some("req-[redacted]"));
+        assert_eq!(d.kind.as_deref(), Some("bad_[redacted]"));
+    }
+}
+
+#[test]
+fn plain_text_is_one_bounded_line_cut_on_a_character() {
+    assert_eq!(
+        plain_text("  a\n\tb\u{7}  c ", 100).as_deref(),
+        Some("a b c")
+    );
+    assert_eq!(
+        plain_text("\u{202E}evil\u{2066}", 100).as_deref(),
+        Some("evil")
+    );
+    assert_eq!(plain_text(" \n\t ", 100), None);
+    // 10 two-byte characters cut to at most 9 bytes: three of them and the mark.
+    let cut = plain_text(&"é".repeat(10), 9).unwrap();
+    assert_eq!(cut, "ééé…");
+    assert!(cut.len() <= 9);
+    let long = "word ".repeat(200);
+    let cut = plain_text(&long, DETAIL_MESSAGE_BYTES).unwrap();
+    assert!(
+        cut.len() <= DETAIL_MESSAGE_BYTES && cut.ends_with('…'),
+        "{cut}"
+    );
+}
+
+#[test]
+fn each_class_has_its_detail() {
+    let cases = [
+        (
+            MessagesError::BadBaseUrl,
+            json!({"class": "bad_base_url", "status": null, "type": null, "message": null, "request_id": null}),
+        ),
+        (
+            MessagesError::Redirected { status: 307 },
+            json!({"class": "redirected", "status": 307, "type": null, "message": null, "request_id": null}),
+        ),
+        (
+            MessagesError::Network {
+                message: "connection refused".into(),
+            },
+            json!({"class": "network", "status": null, "type": null, "message": "connection refused", "request_id": null}),
+        ),
+        (
+            MessagesError::StreamCut {
+                message: "no data for 60s".into(),
+            },
+            json!({"class": "stream_cut", "status": null, "type": null, "message": "no data for 60s", "request_id": null}),
+        ),
+        (
+            MessagesError::Protocol {
+                message: "not SSE".into(),
+            },
+            json!({"class": "protocol", "status": null, "type": null, "message": "not SSE", "request_id": null}),
+        ),
+        (
+            MessagesError::UnknownEvent {
+                kind: "content_block_delta/x".into(),
+            },
+            json!({"class": "unknown_event", "status": null, "type": null, "message": "content_block_delta/x", "request_id": null}),
+        ),
+        (
+            http_error(
+                404,
+                None,
+                Some("r4"),
+                &error_body("not_found_error", "model: claude-x").to_string(),
+            ),
+            json!({"class": "api", "status": 404, "type": "not_found_error", "message": "model: claude-x", "request_id": "r4"}),
+        ),
+        (
+            http_error(
+                401,
+                None,
+                None,
+                &error_body("authentication_error", "invalid x-api-key").to_string(),
+            ),
+            json!({"class": "auth", "status": 401, "type": "authentication_error", "message": "invalid x-api-key", "request_id": "req_1"}),
+        ),
+        (
+            http_error(429, Some("3"), None, "{}"),
+            json!({"class": "rate_limited", "status": 429, "type": null, "message": null, "request_id": null}),
+        ),
+        (
+            http_error(
+                529,
+                None,
+                None,
+                &error_body("overloaded_error", "Overloaded").to_string(),
+            ),
+            json!({"class": "overloaded", "status": 529, "type": "overloaded_error", "message": "Overloaded", "request_id": "req_1"}),
+        ),
+    ];
+    for (e, want) in cases {
+        assert_eq!(e.detail().to_json(), want, "{e:?}");
+    }
+}

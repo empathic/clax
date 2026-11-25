@@ -47,6 +47,19 @@ pub fn normalize_origin(raw: &str) -> Result<String> {
     }
 }
 
+/// The origin of `http` or `https` URL `u`, as [`normalize_origin`] writes
+/// one; `None` for anything else (another scheme, no host, no URL).
+pub fn origin_of_url(u: &str) -> Option<String> {
+    let u = url::Url::parse(u).ok()?;
+    if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none() {
+        return None;
+    }
+    match u.origin() {
+        o @ url::Origin::Tuple(..) => Some(o.ascii_serialization()),
+        url::Origin::Opaque(_) => None,
+    }
+}
+
 /// The longest host an origin pattern names, and the longest it matches,
 /// in bytes: a DNS name's, so at most 127 labels.
 const MAX_PATTERN_HOST_BYTES: usize = 253;
@@ -132,6 +145,11 @@ impl OriginPattern {
     /// The normalized form.
     pub fn as_str(&self) -> &str {
         &self.text
+    }
+
+    /// Whether this is a pattern (it holds a `*`), not an exact origin.
+    pub fn is_pattern(&self) -> bool {
+        self.wild.is_some()
     }
 
     /// Whether this allows exact origin `origin`: an exact origin equal
@@ -288,6 +306,7 @@ fn label_matches(p: &str, o: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -325,6 +344,28 @@ mod tests {
         ] {
             assert!(normalize_origin(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_urls_origin_is_its_normalized_scheme_host_and_port() {
+        assert_eq!(
+            origin_of_url("https://App-PR-5.fly.dev:443/orders/7?x=1#y").as_deref(),
+            Some("https://app-pr-5.fly.dev")
+        );
+        assert_eq!(
+            origin_of_url("http://localhost:5173/a").as_deref(),
+            Some("http://localhost:5173")
+        );
+        assert_eq!(origin_of_url("ftp://x.example/a"), None);
+        assert_eq!(origin_of_url("not a url"), None);
+    }
+
+    #[test]
+    fn a_pattern_is_one_that_holds_a_star() {
+        let p = |raw| OriginPattern::parse(raw).unwrap().is_pattern();
+        assert!(p("https://pr-*.fly.dev"));
+        assert!(p("https://*.preview.example.com"));
+        assert!(!p("https://app.example.com"));
     }
 
     #[test]

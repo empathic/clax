@@ -643,11 +643,11 @@ async fn revoking_a_person_revokes_grants_and_invites_and_keeps_history() {
     };
     // The revocation wakes the agent's wait: it returns, well before its
     // ten minutes.
-    let (_, (status, v)) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        tokio::join!(waiting, revoke)
-    })
-    .await
-    .expect("the parked wait returns once its person is revoked");
+    let (_, (status, v)) = clax_testkit::within(
+        "the parked wait's return once its person is revoked",
+        async { tokio::join!(waiting, revoke) },
+    )
+    .await;
     assert!(status == 200 || status == 401, "{status}: {v}");
     // Its working record ended, and People heard the grant end.
     assert_eq!(
@@ -1152,7 +1152,11 @@ async fn the_people_page_is_the_gallery() {
     let a = ts.get("/").await;
     let b = ts.get("/people").await;
     assert_eq!(a.status(), b.status());
-    assert_eq!(a.text().await.unwrap(), b.text().await.unwrap());
+    // The same entry; each page's first-load data is its own.
+    assert_eq!(
+        clax_testkit::without_boot(&a.text().await.unwrap()),
+        clax_testkit::without_boot(&b.text().await.unwrap())
+    );
 }
 
 impl People {

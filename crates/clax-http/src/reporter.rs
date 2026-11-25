@@ -16,6 +16,11 @@
 //! bounds ([`crate::agent::Gate`]), the signature verified, and only then
 //! the nonce recorded ([`crate::grant_auth::GrantAuth::record_queue_nonce`]).
 //!
+//! A preview deployment's backend presents a fix ticket (`Authorization:
+//! Clax-Fix <cxf_…>`, [`FixTicketCaller`]) on the one route of its fix,
+//! server to server, unsigned: the ticket is a bearer credential whose
+//! whole right is attaching a preview origin to that fix.
+//!
 //! A service request is server to server: one carrying an `Origin` or a
 //! cookie is 403 `forbidden_origin`. A reporter request must carry exactly
 //! one `Origin`, equal to the token's exact origin, which the queue still
@@ -40,12 +45,14 @@ use axum::response::Response;
 use clax_core::Secret;
 use clax_core::queue::queue_allows_origin;
 use clax_core::sig::{self, SigError};
-use clax_store::queues::{ReporterToken, ServiceGrant};
+use clax_store::queues::{FixTicket, ReporterToken, ServiceGrant};
 
 /// The `Authorization` scheme of a queue service grant's token (`cxq_…`).
 pub const QUEUE_SCHEME: &str = "Clax-Queue";
 /// The `Authorization` scheme of a reporter token (`cxr_…`).
 pub const REPORTER_SCHEME: &str = "Clax-Reporter";
+/// The `Authorization` scheme of a fix ticket (`cxf_…`).
+pub const FIX_TICKET_SCHEME: &str = "Clax-Fix";
 /// The most a queue route's body holds, but for filing a report: a
 /// reporter token request or a comment (at most
 /// [`clax_store::threads::MAX_BODY_CHARS`] characters) in JSON.
@@ -71,12 +78,14 @@ const PREFLIGHT_MAX_AGE: &str = "600";
 /// learns the instance's clock from after a `stale_request`.
 pub const EXPOSE_HEADERS: &str = "retry-after, date";
 
-/// Whether the request carries a queue credential ([`QUEUE_SCHEME`] or
-/// [`REPORTER_SCHEME`]), valid or not: one is accepted on the queue routes
-/// alone, and refused everywhere else ([`refused_elsewhere`]).
+/// Whether the request carries a queue credential ([`QUEUE_SCHEME`],
+/// [`REPORTER_SCHEME`] or [`FIX_TICKET_SCHEME`]), valid or not: one is
+/// accepted on the queue routes alone, and refused everywhere else
+/// ([`refused_elsewhere`]).
 pub fn carries_queue_credential(headers: &HeaderMap) -> bool {
     crate::auth::has_scheme(headers, QUEUE_SCHEME)
         || crate::auth::has_scheme(headers, REPORTER_SCHEME)
+        || crate::auth::has_scheme(headers, FIX_TICKET_SCHEME)
 }
 
 /// 401 `invalid_token` for a queue credential on a route that is not a
@@ -256,6 +265,59 @@ impl FromRequest<AppState> for ServiceCaller {
     }
 }
 
+/// A request of a fix ticket (`Authorization: Clax-Fix <ticket>`) on its
+/// own fix's route (`/api/queues/{qid}/reports/{tid}/fixes/{n}/…`), with
+/// its body.
+#[derive(Debug)]
+pub struct FixTicketCaller {
+    pub ticket: FixTicket,
+    /// The body, at most [`SMALL_BODY_LIMIT`] bytes.
+    pub body: Bytes,
+}
+
+impl FromRequest<AppState> for FixTicketCaller {
+    type Rejection = Refusal;
+
+    /// # Errors
+    /// 403 `forbidden_origin` for an `Origin` or a cookie; 401
+    /// `invalid_token` for another credential, an unknown ticket, or one
+    /// of another queue, report or fix than the path's; 401
+    /// `token_expired` for a ticket past its expiry or whose fix no longer
+    /// waits for a verdict; 413 `body_too_large`.
+    async fn from_request(req: Request, s: &AppState) -> Result<Self, Refusal> {
+        let (mut parts, body) = req.into_parts();
+        grant_auth::no_browser(&parts.headers)?;
+        let token = token_of(&parts.headers, FIX_TICKET_SCHEME)?;
+        let Path(params) = Path::<Vec<(String, String)>>::from_request_parts(&mut parts, &())
+            .await
+            .map_err(|_| invalid_token())?;
+        let param = |name: &str| {
+            params
+                .iter()
+                .find_map(|(k, v)| (k == name).then(|| v.clone()))
+        };
+        let (Some(qid), Some(tid), Some(n)) = (param("qid"), param("tid"), param("n")) else {
+            return Err(invalid_token());
+        };
+        let hash = token.sha256_hex();
+        let ticket = s
+            .store_call(move |st| st.fix_ticket_by_token(&hash))
+            .await?
+            .filter(|t| t.queue_id == qid && t.thread_id == tid && t.n.to_string() == n)
+            .ok_or_else(invalid_token)?;
+        let body = axum::body::to_bytes(body, SMALL_BODY_LIMIT)
+            .await
+            .map_err(|_| {
+                Refusal::from(ApiError::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "body_too_large",
+                    format!("a fix ticket's request holds at most {SMALL_BODY_LIMIT} bytes"),
+                ))
+            })?;
+        Ok(FixTicketCaller { ticket, body })
+    }
+}
+
 /// A verified request of a reporter token (`Authorization: Clax-Reporter
 /// <token>`) on its own queue's route, from its own origin, with its body
 /// of at most `LIMIT` bytes.
@@ -403,6 +465,7 @@ pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Respon
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -515,6 +578,11 @@ mod tests {
         h.insert(
             header::AUTHORIZATION,
             HeaderValue::from_static("Clax-Queue cxq_x"),
+        );
+        assert!(carries_queue_credential(&h));
+        h.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Clax-Fix cxf_x"),
         );
         assert!(carries_queue_credential(&h));
     }

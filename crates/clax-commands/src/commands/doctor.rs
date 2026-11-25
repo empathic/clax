@@ -829,17 +829,17 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
             checks.push(check("assets", false, "store unavailable"));
         }
     }
-    let ui = client
-        .as_ref()
-        .map(|c| c.http_status("/") == Some(200))
-        .unwrap_or(false);
+    // The daemon answers a request without a credential 401 on every page.
+    let ui = client.as_ref().map(|c| c.status("/"));
     checks.push(check(
         "ui",
-        ui,
-        if ui {
-            "shell served"
-        } else {
-            "UI not built or daemon down; run `just web`"
+        ui == Some(Some(200)),
+        match ui {
+            Some(Some(200)) => "shell served".to_string(),
+            Some(Some(503)) => "the web UI is not built; run `just web`".to_string(),
+            Some(Some(code)) => format!("the daemon answered {code} for the shell"),
+            Some(None) => "the daemon did not answer".to_string(),
+            None => "not checked: the daemon is not running".to_string(),
         },
     ));
     let local = clax_core::config::HomeConfig::load(home.root())
@@ -912,6 +912,7 @@ fn report(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{
         codex_approvals_check, codex_push_check, config_check, config_check_with,

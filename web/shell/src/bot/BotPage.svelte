@@ -1,8 +1,8 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // The frame of ClaxBot's pages in the gallery shell (`/admin`, `/settings`,
-  // `/me`, `/audit`): a heading (focused when the page opens, for a screen
+  // The frame of Settings' screens that are not about people (ClaxBot's,
+  // Configuration, Confirmations, Remotes, the audit log): a heading (focused when the page opens, for a screen
   // reader), a line under it, an optional row of tabs (links, the current
   // one marked) and the page. Its styles are the pages' shared ones: cards,
   // tables that scroll inside their card at phone width rather than the

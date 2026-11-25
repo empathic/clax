@@ -19,7 +19,7 @@ import type { Locator, Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { advance, settle } from "./time";
+import { advance, pauseTime, settle } from "./time";
 
 const PAGE = { "index.html": "<main><h2>Quarterly goals</h2><p>Revenue, hiring and the roadmap.</p></main>" };
 const TWO_PAGES = { ...PAGE, "about.html": "<main><h2>Our team</h2></main>" };
@@ -104,6 +104,7 @@ for (const theme of THEMES) {
       const s = await namedSession(d.base, d.token);
       const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", PAGE);
       const tid = await threadAsOwner(d.base, d.token, artifact.id, "Make the title bigger?");
+      await page.clock.install();
       await openArtifact(page, d.base, artifact.id, 1);
       await showThreads(page, size);
       const card = page.locator(`.thread-card[data-thread="${tid}"]`);
@@ -134,6 +135,11 @@ for (const theme of THEMES) {
       await shot(page, "thread-question", size, theme);
       // Answering it neither selects nor scrolls the thread card; the label shows, then it leaves with no gap.
       const { scroll, below } = await cardPlace(card);
+      // The page's time stands still but for the shell's clock, which the
+      // test advances: the closed card's label stays until the test moves
+      // past its time on screen, however long a loaded machine takes to
+      // check it.
+      await pauseTime(page);
       await inCard.getByRole("radio").first().check();
       await inCard.getByRole("button", { name: `Answer ${NAME}` }).click();
       await expect(inCard.locator(".closed")).toHaveText("Answered");
@@ -141,6 +147,7 @@ for (const theme of THEMES) {
       expect(await cardPlace(card)).toMatchObject({ scroll, below });
       await expect(inboxCount(page, size)).toHaveCount(0);
       await advance(page, 4000);
+      await page.clock.resume();
       await expect(inCard).toHaveCount(0);
       // The slot collapses, the card stays where it was and unselected, and the sidebar's block for the question leaves.
       await expect.poll(() => cardPlace(card)).toEqual(before);
@@ -265,6 +272,7 @@ for (const size of SIZES) {
     const s = await namedSession(d.base, d.token);
     const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", PAGE);
     const tid = await threadAsOwner(d.base, d.token, artifact.id, "Make the title bigger?");
+    await page.clock.install();
     await openArtifact(page, d.base, artifact.id, 1);
     await showThreads(page, size);
     const card = page.locator(`.thread-card[data-thread="${tid}"]`);
@@ -275,11 +283,14 @@ for (const size of SIZES) {
     const inCard = card.locator(`.thread-q-slot .qcard[data-question="${q.question.id}"]`);
     await expect(inCard).toBeVisible();
     const { scroll, below } = await cardPlace(card);
+    // As above: the label stays until the test moves past its time.
+    await pauseTime(page);
     await inCard.getByRole("button", { name: "Skip" }).click();
     await expect(inCard.locator(".closed")).toHaveText("Skipped");
     await expect(card).not.toHaveClass(/\bselected\b/);
     expect(await cardPlace(card)).toMatchObject({ scroll, below });
     await advance(page, 4000);
+    await page.clock.resume();
     await expect(inCard).toHaveCount(0);
     await expect.poll(() => cardPlace(card)).toEqual(before);
     await expect(card).not.toHaveClass(/\bselected\b/);

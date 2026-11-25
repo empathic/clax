@@ -1,15 +1,7 @@
-import { type Page } from "@playwright/test";
-import { test, expect, type Daemon, publish } from "./fixtures";
+import { test, expect, type Daemon, contentFrame, publish } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
-
-/** The artifact's content frame for version `n`, once it exists; locators on it auto-wait. */
-async function contentFrame(page: Page, id: string, n: number) {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)$`);
-  await expect.poll(() => page.frame({ url }) !== null).toBe(true);
-  return page.frame({ url })!;
-}
 
 // On a daemon of its own: it expects an empty gallery.
 test("gallery shows an empty state then a card", async ({ page, freshDaemon: own }) => {
@@ -34,7 +26,7 @@ test("viewer renders content with the bridge, and offers Reload on republish", a
   await expect(page.locator(".who .sum b.l1")).toHaveText("v2 published");
   await page.getByRole("button", { name: "Reload" }).click();
   await expect((await contentFrame(page, artifact.id, 2)).locator("#h")).toHaveText("v2");
-  await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
+  await page.getByRole("button", { name: /^Latest, version 2\b/ }).click();
   await page.getByRole("dialog", { name: "Versions" }).getByRole("link", { name: /^v1\b/ }).click();
   await expect(page).toHaveURL(new RegExp(`/a/${artifact.id}/v/1$`));
   await expect((await contentFrame(page, artifact.id, 1)).locator("#h")).toHaveText("v1");

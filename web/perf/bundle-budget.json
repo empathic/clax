@@ -1,10 +1,10 @@
 {
   "bridgeBaseline": 32861,
-  "gallery": 32806,
-  "artifact": 70835,
+  "gallery": 51176,
+  "artifact": 73664,
   "host": 9088,
-  "questions": 18300,
-  "bridge": 6288,
+  "questions": 18302,
+  "bridge": 7253,
   "transport": 2368,
   "partComment": 15104,
   "partClip": 21888,
@@ -13,12 +13,13 @@
   "partRoom": 3657,
   "partSample": 3674,
   "extOverlay": 32768,
-  "extWorker": 25544,
-  "extComposer": 28672,
+  "extWorker": 25799,
+  "extComposer": 28719,
   "extPanel": 66560,
   "people": 1048576,
-  "queues": 25216,
+  "queues": 27910,
   "partLive": 4616,
-  "overlay": 78082,
-  "sdkOverlay": 112128
+  "overlay": 78874,
+  "sdkOverlay": 113154,
+  "analytics": 7488
 }

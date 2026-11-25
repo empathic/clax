@@ -52,7 +52,13 @@ impl Env {
             )
             .env(
                 "PATH",
-                format!("{}:/usr/bin:/bin", self.p("fakebin").display()),
+                std::env::join_paths(std::iter::once(self.p("fakebin")).chain(
+                    std::env::split_paths(&crate::common::system_path_without(
+                        self.dir.path(),
+                        &crate::common::HARNESSES,
+                    )),
+                ))
+                .unwrap(),
             )
             .env_remove("CLAX_BIN");
         c
@@ -197,6 +203,41 @@ fn init_registers_each_harness_on_path_through_its_cli() {
     for a in ["claude", "codex", "pi"] {
         assert_eq!(status(&v, a), "registered", "{v}");
     }
+}
+
+/// A Pi registration of the released package is kept: `init` adds no copy
+/// of its own, records nothing for Pi, and `uninit` leaves it.
+#[test]
+fn an_npm_registration_of_the_pi_package_is_kept_through_init_and_uninit() {
+    let e = Env::new(&["pi"]);
+    std::fs::create_dir_all(e.p("pi")).unwrap();
+    std::fs::write(
+        e.p("pi/settings.json"),
+        r#"{"packages":["npm:@empathic/clax-pi@0.4.1"]}"#,
+    )
+    .unwrap();
+    let (ok, v) = e.json(&["init", "--agent", "pi"]);
+    assert!(ok, "{v}");
+    assert!(e.calls().is_empty(), "{:?}", e.calls());
+    assert_eq!(status(&v, "pi"), "kept", "{v}");
+    assert!(
+        detail(&v, "pi").contains("`pi remove npm:@empathic/clax-pi@0.4.1`"),
+        "{v}"
+    );
+    assert_eq!(v["bin"]["status"], "set", "{v}");
+    let note = v["bin"]["note"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("Pi") && note.contains("runs this clax"),
+        "{v}"
+    );
+    let rec: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(e.p("ax/registrations.json")).unwrap_or_default())
+            .unwrap_or_default();
+    assert!(rec["harnesses"].get("pi").is_none(), "{rec}");
+    let (ok, v) = e.json(&["uninit", "--agent", "pi"]);
+    assert!(ok, "{v}");
+    assert!(e.calls().is_empty(), "{:?}", e.calls());
+    assert!(!e.root().exists(), "{v}");
 }
 
 #[test]
@@ -582,12 +623,42 @@ fn an_unparseable_registry_is_reported_and_registration_goes_ahead() {
 #[test]
 fn a_failed_removal_is_noted_but_does_not_fail_the_harness() {
     let e = Env::new(&["claude"]);
+    std::fs::create_dir_all(e.p("claude/plugins")).unwrap();
+    std::fs::write(
+        e.p("claude/plugins/installed_plugins.json"),
+        r#"{"version":2,"plugins":{"clax@clax":[]}}"#,
+    )
+    .unwrap();
     std::fs::write(e.p("fail"), "claude plugin uninstall clax@clax\n").unwrap();
     let (ok, v) = e.json(&["init"]);
     assert!(ok, "{v}");
     assert_eq!(status(&v, "claude"), "registered");
     let detail = detail(&v, "claude");
     assert!(detail.contains("failed (ignored)"), "{detail}");
+}
+
+/// A first `init` removes nothing: the removal commands fail, and the
+/// registries, which list no Clax plugin, say that is expected.
+#[test]
+fn a_failed_removal_of_a_plugin_no_registry_lists_is_not_noted() {
+    let e = Env::new(&["claude", "codex"]);
+    std::fs::write(
+        e.p("fail"),
+        "claude plugin uninstall clax@clax\nclaude plugin marketplace remove clax\ncodex plugin remove clax@clax\ncodex plugin marketplace remove clax\n",
+    )
+    .unwrap();
+    let (ok, v) = e.json(&["init"]);
+    assert!(ok, "{v}");
+    for a in ["claude", "codex"] {
+        assert_eq!(status(&v, a), "registered", "{v}");
+        assert_eq!(detail(&v, a), "", "{v}");
+    }
+    assert!(
+        e.calls()
+            .contains(&"claude plugin uninstall clax@clax".to_string()),
+        "{:?}",
+        e.calls()
+    );
 }
 
 #[test]

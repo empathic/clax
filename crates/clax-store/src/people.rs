@@ -721,6 +721,9 @@ fn end_grant(
     out.ended = true;
     // Its agents' rights end with it (M17).
     st.visibility_changed();
+    // So do the queue requests still waiting on its person.
+    let by_ctx = if by == EndedBy::Expiry { &EXPIRY } else { ctx };
+    super::queue_requests::cancel_for_grant(st, tx, by_ctx, gid, now)?;
     tx.execute(
         "UPDATE grant_tokens SET revoked_at = ?2 WHERE grant_id = ?1 AND revoked_at IS NULL",
         params![gid, now],
@@ -756,6 +759,18 @@ fn end_grant(
         st.record_audit(tx, ctx, rec)?;
     }
     Ok(out)
+}
+
+/// Ends grant `gid` in `tx` as its own end would (`EndedBy::Expiry`): a
+/// scoped grant whose one request was answered and read
+/// ([`crate::queue_requests`]).
+pub(crate) fn end_grant_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    gid: &str,
+) -> Result<RevokedGrant> {
+    end_grant(st, tx, ctx, gid, EndedBy::Expiry, &st.now())
 }
 
 /// A grant's stored hash of `column`, for checking a presented token.
@@ -2241,9 +2256,12 @@ impl Store {
                     "SELECT id FROM grants WHERE {UNFINISHED_STALE}
                      UNION ALL
                      SELECT id FROM grants WHERE status = 'approved' AND manage_sha256 IS NOT NULL
-                       AND COALESCE(last_used_at, decided_at, created_at) < ?2"
+                       AND COALESCE(last_used_at, decided_at, created_at) < ?2
+                     UNION ALL
+                     SELECT id FROM grants WHERE status = 'approved'
+                       AND scope_expires_at IS NOT NULL AND scope_expires_at <= ?3"
                 ))?;
-                stmt.query_map(params![pending_cutoff, idle_cutoff], |r| r.get(0))?
+                stmt.query_map(params![pending_cutoff, idle_cutoff, now], |r| r.get(0))?
                     .collect::<rusqlite::Result<_>>()?
             };
             for gid in &due {
@@ -2751,6 +2769,7 @@ pub(crate) fn grant_caller_in(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) mod tests {
     use super::*;
     use crate::RegisterSession;

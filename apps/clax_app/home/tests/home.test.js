@@ -14,13 +14,20 @@ async function show(state, { layout, clock } = {}) {
   const home = fakeHome(state);
   db = fakeDb(layout ? { [LAYOUT]: layout } : {});
   mount(root(), home, { db, clock });
-  await ui.waitFor(() => document.querySelector('.h-grid, .h-message'));
+  await wait(() => document.querySelector('.h-grid, .h-message'));
   return home;
 }
 const section = (name) => [...document.querySelectorAll(`.h-section[data-section="${name}"] .h-tile[data-id]`)].map((t) => t.dataset.id);
 const stored = async () => (await db.doc(LAYOUT).get()).data();
 
-const wait = (fn) => ui.waitFor(fn, 3000);
+// A wait's bound is a hang guard: just under the per-test limit the runner
+// sets (testMs in web/e2e/home-app.spec.ts), so it ends only a test whose
+// condition never holds.
+const HANG_MS = 9000;
+const wait = (fn) => ui.waitFor(fn, HANG_MS);
+// One task: what an event's handlers start in the page (over the fake
+// capability, no IO) has run, for the checks that nothing happened.
+const turn = () => new Promise((done) => setTimeout(done, 0));
 
 test('lists the apps newest first, with each kind of icon', async () => {
   const shuffled = [SAMPLE.apps[2], SAMPLE.apps[0], SAMPLE.apps[7], SAMPLE.apps[1]];
@@ -167,7 +174,7 @@ test('a press that moves or is cancelled before it arms asks for nothing', async
   tile.dispatchEvent(new PointerEvent('pointerup', at(30)));
   tile.dispatchEvent(new PointerEvent('pointerdown', at(0)));
   tile.dispatchEvent(new PointerEvent('pointercancel', at(0)));
-  await new Promise((done) => setTimeout(done, 0));
+  await turn();
   expect(home.calls).toEqual([]);
   expect('held' in tile.dataset).toBe(false);
 });
@@ -294,7 +301,7 @@ const OFFERS_GET = { platform: 'android', form: 'phone', toolbar: false, pointer
 test('Get my apps from clax.dev in More asks the app, where chrome() offers it', async () => {
   const home = await show({ chrome: OFFERS_GET });
   await ui.click('[aria-label="More"]');
-  await ui.waitFor(() => [...document.querySelectorAll('.h-menu-item')].some((b) => b.textContent === 'Get my apps from clax.dev'));
+  await wait(() => [...document.querySelectorAll('.h-menu-item')].some((b) => b.textContent === 'Get my apps from clax.dev'));
   await ui.click('Get my apps from clax.dev');
   expect(home.calls).toEqual([{ method: 'getApps', args: [] }]);
   expect(ui.exists('.h-menu')).toBe(false);
@@ -325,7 +332,7 @@ test('a missing key shows the banner, and Add key opens Settings', async () => {
 
 test('with no apps and no makes it says what to do over the mark, with one New app', async () => {
   const home = await show({ apps: [], makes: [], chrome: OFFERS_GET });
-  await ui.waitFor(() => document.querySelector('.h-message-get'));
+  await wait(() => document.querySelector('.h-message-get'));
   expect(ui.text()).toContain('Say what you need, and Clax makes it.');
   expect(ui.exists('.h-message .clax-mark')).toBe(true);
   expect(ui.exists('.h-grid')).toBe(false);
@@ -349,7 +356,7 @@ test('follows the app list, the makes and the unread count as they change', asyn
 
 test('without the home capability the page says to open it in Clax, with no grid', async () => {
   mount(root(), null, { db: fakeDb() });
-  await ui.waitFor(() => ui.exists('.h-message'));
+  await wait(() => ui.exists('.h-message'));
   expect(ui.text()).toContain('This is a Clax home screen. Open it in the Clax app.');
   expect(ui.exists('.h-grid')).toBe(false);
   expect(ui.exists('.h-fab')).toBe(false);
@@ -382,7 +389,7 @@ test('tells Clax once the grid is drawn, after the apps arrive', async () => {
   const shown = [];
   home.shown = async () => { shown.push(tiles().length); };
   mount(root(), home, { db: fakeDb() });
-  await ui.waitFor(() => document.querySelector('.h-fab'));
+  await wait(() => document.querySelector('.h-fab'));
   expect(shown).toEqual([]);
   release();
   await wait(() => shown.length === 1);
@@ -449,7 +456,7 @@ test("Clax's own menu item or a dismissal changes nothing", async () => {
   home.menuPick = null;
   document.querySelector('[data-id="app-plants"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
   await wait(() => home.calls.length === 1);
-  await new Promise((r) => setTimeout(r, 0));
+  await turn();
   expect(db.writes.length).toBe(before);
   expect(section('starred')).toEqual([]);
 });
@@ -484,7 +491,7 @@ test('the save-failure notice drops the kept call it replaces: a tap on it opens
   el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
   await wait(() => ui.text('.h-notice') === 'Couldn’t save your arrangement');
   await ui.click('.h-notice');
-  await new Promise((r) => setTimeout(r, 0));
+  await wait(() => opens === 1);
   expect(opens).toBe(1);
 });
 
@@ -496,7 +503,7 @@ test('a page whose db cannot be had says the arrangement cannot be saved, and a 
   await wait(() => ui.text('.h-notice') === 'Couldn’t save your arrangement');
   document.querySelector('[data-id="app-plants"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
   await wait(() => home.calls.length === 1);
-  await new Promise((r) => setTimeout(r, 0));
+  await turn();
   await wait(() => ui.text('.h-notice') === 'Couldn’t save your arrangement');
   expect(section('starred')).toEqual([]);
 });
@@ -1338,7 +1345,7 @@ test('no match says so; Escape closes search; Backspace in an empty field closes
   input = await searchField();
   typeIn(input, 'r');
   press(input, 'Backspace');
-  await new Promise((done) => setTimeout(done, 0));
+  await turn();
   expect(ui.exists('.h-search')).toBe(true);
   typeIn(input, '');
   press(input, 'Backspace');
@@ -1361,7 +1368,7 @@ test('a pull down from the top does not open search; only the ⌕ does', async (
   send('touchstart', 100);
   expect([send('touchmove', 160), send('touchmove', 400)]).toEqual([false, false]);
   send('touchend', 400);
-  await new Promise((done) => setTimeout(done, 0));
+  await turn();
   expect(ui.exists('.h-search')).toBe(false);
   expect(ui.exists('.h-search-ghost')).toBe(false);
   await searchField();

@@ -1,0 +1,27 @@
+[
+  {
+    "content": [
+      {
+        "text": "Working on it.",
+        "type": "text"
+      },
+      {
+        "text": "The heading is fine.",
+        "type": "text"
+      }
+    ],
+    "role": "assistant"
+  },
+  {
+    "content": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "Call run_script, finish or give_up.",
+        "type": "text"
+      }
+    ],
+    "role": "user"
+  }
+]

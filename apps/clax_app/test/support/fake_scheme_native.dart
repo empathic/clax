@@ -4,6 +4,8 @@ import 'dart:isolate';
 import 'package:clax_app/core/scheme_worker.dart';
 import 'package:flutter/services.dart';
 
+import 'settle.dart' show stuckAfter;
+
 /// The runner's scheme host as the scheme worker's channels reach it, on
 /// the test's isolate: events queued until a `next` takes them, a `next`
 /// kept until there is one, and every `attach`, `respond` and `eval`
@@ -49,7 +51,7 @@ class FakeSchemeNative {
     while (true) {
       final v = probe();
       if (v != null) return v;
-      await _changed.stream.first.timeout(const Duration(seconds: 30));
+      await _changed.stream.first.timeout(stuckAfter);
     }
   }
 

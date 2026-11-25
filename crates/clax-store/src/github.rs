@@ -419,6 +419,7 @@ pub(super) fn unblock_in(tx: &Transaction<'_>, viewer_id: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::test_util::{DAEMON, artifact, store};

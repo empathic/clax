@@ -51,7 +51,7 @@ test("a Send to ClaxBot runs on the daemon and the run panel follows it to its e
     await expect(card).toContainText("ClaxBot");
 
     // The audit view lists the run's events, ClaxBot acting for the owner.
-    await page.goto(`${d.base}/audit?group=bot`);
+    await page.goto(`${d.base}/settings/audit?group=bot`);
     await expect(page.getByRole("button", { name: /ClaxBot for / }).first()).toBeVisible();
   } finally {
     await d.stop();
@@ -63,8 +63,10 @@ test("the admin pages read and change the daemon's people, provider and pricing"
   const fake = await fakeMessages();
   const d = await botDaemon(fake);
   try {
+    // The page that was `/admin` goes to its screen in Settings.
     await page.goto(`${d.base}/admin`);
-    await expect(page.getByRole("heading", { name: "Admin", level: 2 })).toBeFocused();
+    await page.waitForURL(`${d.base}/settings/roles`);
+    await expect(page.getByRole("heading", { name: "Roles & ClaxBot access", level: 2 })).toBeFocused();
     // The owner, on by default; turning the limit off for them is recorded.
     const unenforced = page.getByRole("switch", { name: /^Unenforced limit for / }).first();
     await expect(unenforced).toHaveAttribute("aria-checked", "false");
@@ -75,14 +77,14 @@ test("the admin pages read and change the daemon's people, provider and pricing"
 
     // The provider: its URL from config.toml (read-only), its key from the
     // environment, its models from the provider's list.
-    await page.getByRole("navigation", { name: "Admin sections" }).getByRole("link", { name: "Provider" }).click();
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Model provider" }).click();
     await expect(page.locator("#pv-base")).toHaveValue(fake.base);
     await expect(page.locator("#pv-base")).toHaveAttribute("readonly", "");
     await page.getByRole("button", { name: "Test connection" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Connected" })).toContainText("Connected in");
 
     // Pricing lists the seeded cost lines.
-    await page.getByRole("navigation", { name: "Admin sections" }).getByRole("link", { name: "Pricing" }).click();
+    await page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Pricing" }).click();
     await expect(page.getByRole("spinbutton", { name: /^Margin on / }).first()).toBeVisible();
   } finally {
     await d.stop();
@@ -108,7 +110,7 @@ test("an admin turns web on and a run searches, fetches a fixture page and lists
   });
   try {
     // The admin turns search and fetch on.
-    await page.goto(`${d.base}/admin?tab=web`);
+    await page.goto(`${d.base}/settings/web`);
     const search = page.getByRole("switch", { name: "Web search" });
     const fetchSw = page.getByRole("switch", { name: "Web fetch" });
     await expect(search).toHaveAttribute("aria-checked", "false");

@@ -219,14 +219,16 @@ pub(crate) struct Pace {
 /// the session, across daemon restarts and re-registrations, calls
 /// `ready` for each session it finds before its first poll (and again
 /// after a failed poll, as the daemon may have restarted), and hands each
-/// answer of `GET /api/sessions/<sid>/notices` to `on_poll`, which says
-/// whether to stop. Returns once `on_poll` says stop, or the session has
+/// answer of `GET /api/sessions/<sid>/notices` (with `queue`, only the
+/// notices on that queue's reports: the session's others stay for another
+/// follower) to `on_poll`, which says whether to stop. Returns once `on_poll` says stop, or the session has
 /// ended (a Clax session at once; a harness session after `pace.grace`
 /// with no live Clax session). An error of `ready` or `on_poll` ends it.
 pub(crate) fn follow(
     home: &Home,
     target: &Target,
     pace: &Pace,
+    queue: Option<&str>,
     mut ready: impl FnMut(&Client, &str, Option<&SessionCredential>) -> anyhow::Result<Ready>,
     mut on_poll: impl FnMut(&Value) -> anyhow::Result<bool>,
 ) -> anyhow::Result<()> {
@@ -289,7 +291,11 @@ pub(crate) fn follow(
                 }
             }
         }
-        let path = format!("/api/sessions/{sid}/notices?wait={}", poll.as_secs());
+        let mut path = format!("/api/sessions/{sid}/notices?wait={}", poll.as_secs());
+        if let Some(q) = queue {
+            path.push_str("&queue=");
+            path.push_str(q);
+        }
         let polled = Instant::now();
         match client.request_with(
             reqwest::Method::GET,
@@ -342,6 +348,7 @@ pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
         home,
         &target,
         &pace,
+        None,
         |_, _, _| Ok(Ready::Yes),
         |v| {
             let lines: Vec<&str> = v["lines"]
@@ -365,9 +372,13 @@ pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use crate::client::tests::recv_within;
+    use crate::remote::tests::{Answer, FakeDaemon};
     use clap::Parser;
+    use serde_json::json;
 
     #[derive(clap::Parser)]
     struct T {
@@ -410,6 +421,134 @@ mod tests {
         );
         assert_eq!(target(&args(&[]), env(Some(""))), None);
         assert_eq!(target(&args(&[]), env(None)), None);
+    }
+
+    /// Records `daemon` in `home`'s `daemon.json` as a live daemon (this
+    /// test's own process).
+    fn record(home: &Home, daemon: &FakeDaemon) {
+        let port = daemon.base.rsplit(':').next().unwrap().parse().unwrap();
+        clax_core::daemon::write_daemon_info(
+            home,
+            &clax_core::daemon::DaemonInfo {
+                port,
+                pid: std::process::id(),
+                token: "t".into(),
+                started_at: "2026-11-01T00:00:00Z".into(),
+                bind: "127.0.0.1".into(),
+                version: "0.0.1".into(),
+                exe: None,
+                commit: None,
+            },
+        )
+        .unwrap();
+    }
+
+    /// One round of [`follow`] against a [`FakeDaemon`]: `/healthz`, then
+    /// the notices poll answering `lines`.
+    fn round(lines: &[&str]) -> [Answer; 2] {
+        [
+            (200, vec![], json!({"version": "0.0.1"})),
+            (200, vec![], json!({"notices": [], "lines": lines})),
+        ]
+    }
+
+    /// Follows session `s1` of `home` on a thread of its own until a poll
+    /// prints `last` (with `queue`, of that queue's notices only):
+    /// follow's result and the answers it handed on, in order, bounded by
+    /// the hang guard.
+    fn follow_until(
+        home: &Home,
+        queue: Option<&'static str>,
+        last: &'static str,
+    ) -> (anyhow::Result<()>, Vec<Value>) {
+        let home = home.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            let pace = Pace {
+                poll: Duration::from_secs(50),
+                grace: Duration::from_secs(60),
+            };
+            let r = follow(
+                &home,
+                &Target::Session("s1".into()),
+                &pace,
+                queue,
+                |_, _, _| Ok(Ready::Yes),
+                |v| {
+                    seen.push(v.clone());
+                    Ok(v["lines"].as_array().unwrap().iter().any(|l| l == last))
+                },
+            );
+            let _ = tx.send((r, seen));
+        });
+        recv_within("the follow's end", &rx)
+    }
+
+    /// The paths of `daemon`'s requests.
+    fn paths(daemon: &FakeDaemon) -> Vec<String> {
+        daemon.seen().into_iter().map(|r| r.path).collect()
+    }
+
+    /// Each answer is handed on in turn, an empty one that came at once as
+    /// well as those that printed, each from a poll of its own.
+    #[test]
+    fn follow_hands_on_each_answer_from_a_poll_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let daemon = FakeDaemon::start(
+            [round(&[]), round(&["a"]), round(&["b"])]
+                .into_iter()
+                .flatten()
+                .collect(),
+        );
+        record(&home, &daemon);
+        let (r, seen) = follow_until(&home, None, "b");
+        r.unwrap();
+        let lines: Vec<&Value> = seen.iter().map(|v| &v["lines"]).collect();
+        assert_eq!(lines, [&json!([]), &json!(["a"]), &json!(["b"])]);
+        let polls: Vec<String> = paths(&daemon)
+            .into_iter()
+            .filter(|p| p.contains("/notices"))
+            .collect();
+        assert_eq!(polls, vec!["/api/sessions/s1/notices?wait=50"; 3]);
+    }
+
+    /// A queue's follower asks for that queue's notices only.
+    #[test]
+    fn follow_of_a_queue_polls_for_its_notices_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let daemon = FakeDaemon::start(round(&["a"]).to_vec());
+        record(&home, &daemon);
+        let (r, _) = follow_until(&home, Some("01JQUEUE00000000000000000Q"), "a");
+        r.unwrap();
+        assert_eq!(
+            paths(&daemon).last().map(String::as_str),
+            Some("/api/sessions/s1/notices?wait=50&queue=01JQUEUE00000000000000000Q")
+        );
+    }
+
+    /// A daemon that does not answer `/healthz` is no daemon to follow: it
+    /// looks again, and follows the one that answers.
+    #[test]
+    fn follow_looks_again_while_no_daemon_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let mut answers = vec![(503, vec![], json!({}))];
+        answers.extend(round(&["a"]));
+        let daemon = FakeDaemon::start(answers);
+        record(&home, &daemon);
+        let (r, seen) = follow_until(&home, None, "a");
+        r.unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(
+            paths(&daemon),
+            ["/healthz", "/healthz", "/api/sessions/s1/notices?wait=50"]
+        );
     }
 
     #[test]

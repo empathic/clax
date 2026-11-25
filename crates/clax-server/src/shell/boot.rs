@@ -14,7 +14,9 @@ use serde_json::{Value, json};
 /// The permissions the content frame delegates, as `FRAME_ALLOW` in
 /// `web/shell/src/view/frame-host.ts`.
 pub const FRAME_ALLOW: &str = "clipboard-write; fullscreen; storage-access";
-const BOOT_MARK: &str = "<!--clax:boot-->";
+/// Where a shell entry (`artifact.html`, `index.html`) takes its bootstrap
+/// block ([`boot_script`]); removed when there is none.
+pub const BOOT_MARK: &str = "<!--clax:boot-->";
 const FRAME_MARK: &str = "<!--clax:frame-->";
 const TITLE_MARK: &str = "<h1>Clax</h1>";
 
@@ -314,6 +316,14 @@ pub async fn assemble(
                 Err(_) => false,
             };
             artifact["may_tag"] = json!(may_tag);
+            // Whether a hosted Clax counts visits to its site, for a caller
+            // who administers it, as `GET /api/artifacts/<id>` says: the top
+            // bar offers Analytics… where it is.
+            if let Ok(c) = &caller
+                && let Some(on) = crate::routes::analytics::field(st, c, &lookup, hosted)?
+            {
+                artifact["analytics"] = json!(on);
+            }
             let may_approve = caller
                 .as_ref()
                 .is_ok_and(|c| crate::routes::permissions::may_approve(c, may_tag, hosted));
@@ -329,6 +339,10 @@ pub async fn assemble(
                 a.id.as_str(),
             )?;
             artifact["may_resolve"] = json!(may_resolve);
+            // The Content-Security-Policy Clax sends on its own content, as
+            // `GET /api/artifacts/<id>` says.
+            artifact["content_security_policy"] =
+                json!(crate::routes::content_security_policy::of(st, &lookup)?);
             // Whether the caller may edit it, as `GET /api/artifacts/<id>`
             // says.
             artifact["may_edit"] = json!(crate::routes::artifacts::browser_edits(
@@ -466,17 +480,18 @@ pub fn inject(template: &str, i: Option<&Injected>) -> String {
             1,
         )
         .replacen(FRAME_MARK, i.frame.as_deref().unwrap_or(""), 1)
-        .replacen(
-            BOOT_MARK,
-            &format!(
-                "<script type=\"application/json\" id=\"clax-boot\">{}</script>",
-                i.boot
-            ),
-            1,
-        )
+        .replacen(BOOT_MARK, &boot_script(&i.boot), 1)
+}
+
+/// The bootstrap block of a shell entry: `json` (already escaped by
+/// [`script_json`]) in the `clax-boot` element the shell reads
+/// (`web/shell/src/view/boot.ts`, `web/shell/src/view/gallery-boot.ts`).
+pub fn boot_script(json: &str) -> String {
+    format!("<script type=\"application/json\" id=\"clax-boot\">{json}</script>")
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

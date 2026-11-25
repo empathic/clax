@@ -134,7 +134,11 @@ lane_lint() {
     run "pipefail pipes"        bash -c "scripts/test-check-pipefail-pipes.sh >/dev/null && scripts/check-pipefail-pipes.sh" &&
     run "cargo fmt --check"     cargo fmt --all -- --check &&
     await tests-built rust &&
-    run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings &&
+    # clippy.toml's timing rules are for test code only (.bazelrc's
+    # build:clippy): the lint is allowed and test code turns it back on;
+    # clax-commands' own disallowed methods are errors in a run of their own.
+    run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings -A clippy::disallowed_methods &&
+    run "cargo clippy (clax-commands)" cargo clippy -p clax-commands --all-targets -- -D warnings &&
     mark linted
 }
 # crates/clax-worker, whose format check, tests and clippy (the SQLite

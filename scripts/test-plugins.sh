@@ -218,7 +218,7 @@ done
 if out="$(scripts/check-version.sh 2>&1)"; then pass "every written version agrees (scripts/check-version.sh)"
 else fail "$out"; fi
 
-# The Rust tools and the Pi extension carry the same forty-two tool descriptions,
+# The Rust tools and the Pi extension carry the same forty-three tool descriptions,
 # word for word (plugins/pi/test/fixtures/contract.json lists them).
 if out="$(python3 - plugins/pi/test/fixtures/contract.json crates/clax-mcp/src/tools.rs plugins/pi/src/clax.ts 2>&1 <<'PY'
 import json, sys
@@ -231,11 +231,11 @@ for src in sys.argv[2:4]:
         quoted = '"' + t["description"].replace("\\", "\\\\").replace('"', '\\"') + '"'
         if quoted not in text:
             missing.append(f"{src}: {t['name']}")
-if len(tools) != 42 or missing:
-    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 42")
+if len(tools) != 43 or missing:
+    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 43")
     sys.exit(1)
 PY
-)"; then pass "the forty-two tool descriptions match in tools.rs and clax.ts"
+)"; then pass "the forty-three tool descriptions match in tools.rs and clax.ts"
 else fail "tool descriptions differ from plugins/pi/test/fixtures/contract.json: $out"; fi
 
 # Every Claude marketplace plugin source is an existing directory.
@@ -336,8 +336,8 @@ then pass "plugins/pi/package.json ships scripts/ (the wrapper)"; else fail "plu
 # packages as "*" peers (Pi's docs/packages.md, "Dependencies") marked
 # optional, so `npm install -g`, which Pi runs, does not install a second Pi
 # (about 200 MB) beside the package, no .qual files, and a LICENSE that
-# carries the GPL-2.0 text of LICENSES/.
-if out="$(python3 - plugins/pi/package.json plugins/pi/LICENSE LICENSES/GPL-2.0-only.txt 2>&1 <<'PY'
+# carries the GPL-2.0 text of docs/licenses/.
+if out="$(python3 - plugins/pi/package.json plugins/pi/LICENSE docs/licenses/GPL-2.0-only.txt 2>&1 <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 lic, gpl = open(sys.argv[2]).read(), open(sys.argv[3]).read()
@@ -351,7 +351,7 @@ meta = d.get("peerDependenciesMeta", {})
 if any(not meta.get(n, {}).get("optional") for n in peers): bad.append("a peer is not optional in peerDependenciesMeta")
 if "!**/.qual" not in d.get("files", []): bad.append('files lacks "!**/.qual"')
 if not (lic.startswith("Clax for Pi") and "Copyright (C) 2026 Empathic, Inc." in lic and lic.endswith(gpl)):
-    bad.append("plugins/pi/LICENSE does not end with LICENSES/GPL-2.0-only.txt under its copyright header")
+    bad.append("plugins/pi/LICENSE does not end with docs/licenses/GPL-2.0-only.txt under its copyright header")
 print("; ".join(bad))
 sys.exit(1 if bad else 0)
 PY

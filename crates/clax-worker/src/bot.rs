@@ -434,6 +434,8 @@ impl WorkerBot {
             inner: clax_http::bot::Settings {
                 store: parts.store.clone(),
                 enabled: parts.enabled,
+                // A hosted run is shown no image.
+                model_takes_images: false,
             },
         });
         let deps = Deps::new(
@@ -536,6 +538,7 @@ impl WorkerBot {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

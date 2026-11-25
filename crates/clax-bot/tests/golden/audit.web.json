@@ -1,0 +1,543 @@
+{
+  "kinds": [
+    "bot.run_start",
+    "bot.turn",
+    "bot.web",
+    "bot.web",
+    "bot.web",
+    "bot.web",
+    "bot.web",
+    "bot.web",
+    "bot.script",
+    "bot.call",
+    "bot.call",
+    "bot.call",
+    "bot.call",
+    "bot.call",
+    "bot.call",
+    "bot.turn",
+    "bot.run_end"
+  ],
+  "records": [
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "key_source": "instance",
+        "model": "claude-sonnet-5-5",
+        "request": "thread",
+        "run": "<run>",
+        "thread_ids": [
+          "<thread-1>"
+        ],
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.run_start"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "cache_write_tokens": 500,
+        "cached_tokens": 2000,
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": 1931,
+        "input_tokens": 1000,
+        "key_source": "instance",
+        "model": "claude-sonnet-5-5",
+        "output_tokens": 300,
+        "run": "<run>",
+        "step": 1,
+        "stop_reason": "tool_use",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.turn"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": 50,
+        "ok": true,
+        "op": "web.search",
+        "provider": "ceramic",
+        "query": "blue headings",
+        "request_id": "req-1",
+        "response": {
+          "hits": [
+            "https://example.org/found"
+          ]
+        },
+        "run": "<run>",
+        "step": 2,
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.web"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": 100,
+        "ok": true,
+        "op": "web.fetch",
+        "request_id": null,
+        "run": "<run>",
+        "source": "search #1",
+        "step": 2,
+        "url": "https://example.org/found",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.web"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": 100,
+        "ok": true,
+        "op": "web.fetch",
+        "request_id": "req-2",
+        "run": "<run>",
+        "source": "comment",
+        "step": 2,
+        "url": "https://example.com/a",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.web"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": 100,
+        "ok": true,
+        "op": "web.fetch",
+        "request_id": null,
+        "run": "<run>",
+        "source": "page #2",
+        "step": 2,
+        "url": "https://example.com/b",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.web"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": 0,
+        "ok": true,
+        "op": "web.fetch",
+        "run": "<run>",
+        "source": "comment",
+        "step": 2,
+        "stored": true,
+        "url": "https://example.com/a",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.web"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "code": "url_not_in_prior_context",
+        "credits_milli": 0,
+        "ok": false,
+        "op": "web.fetch",
+        "run": "<run>",
+        "step": 2,
+        "url": "https://elsewhere.example/x",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.web"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "calls": [
+          "web.search",
+          "web.fetch",
+          "web.fetch",
+          "web.fetch",
+          "web.fetch",
+          "web.fetch"
+        ],
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "code_sha256": "<sha256 of the code>",
+        "cpu_ms": "<measured>",
+        "credits_milli": "<charged from what the scripts measured>",
+        "error": null,
+        "mem_peak": "<measured>",
+        "run": "<run>",
+        "step": 2,
+        "title": "Web",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.script"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "ok": true,
+        "op": "web.search",
+        "run": "<run>",
+        "step": 2,
+        "target": null,
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.call"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "ok": true,
+        "op": "web.fetch",
+        "run": "<run>",
+        "step": 2,
+        "target": null,
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.call"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "ok": true,
+        "op": "web.fetch",
+        "run": "<run>",
+        "step": 2,
+        "target": null,
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.call"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "ok": true,
+        "op": "web.fetch",
+        "run": "<run>",
+        "step": 2,
+        "target": null,
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.call"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "ok": true,
+        "op": "web.fetch",
+        "run": "<run>",
+        "step": 2,
+        "target": null,
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.call"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "ok": false,
+        "op": "web.fetch",
+        "run": "<run>",
+        "step": 2,
+        "target": null,
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.call"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "cache_write_tokens": 500,
+        "cached_tokens": 2000,
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": 931,
+        "input_tokens": 1000,
+        "key_source": "instance",
+        "model": "claude-sonnet-5-5",
+        "output_tokens": 300,
+        "run": "<run>",
+        "step": 3,
+        "stop_reason": "tool_use",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.turn"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": "<charged from what the scripts measured>",
+        "outcome": "finished",
+        "reason": null,
+        "run": "<run>",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.run_end"
+    }
+  ]
+}

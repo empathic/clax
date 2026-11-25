@@ -1379,5 +1379,6 @@ impl JournalFs for MemFs {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 #[path = "segment_tests.rs"]
 mod tests;

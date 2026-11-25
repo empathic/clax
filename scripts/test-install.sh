@@ -19,6 +19,8 @@ ORIG_PATH="$PATH"
 FAILED=0
 # shellcheck source=scripts/fake-exe.sh
 . "$HERE/fake-exe.sh"
+# shellcheck source=scripts/lib/wait.sh
+. "$HERE/lib/wait.sh"
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
 V=0.3.0
@@ -41,7 +43,7 @@ REQLOG="$ROOT/requests.log"
 : > "$REQLOG"
 (FAKE_LATEST="$V" exec "$PY" "$HERE/fake-release-server.py" "$ROOT/release" "$REQLOG" "$ROOT/port") &
 SERVER_PID=$!
-for _ in $(seq 50); do [ -s "$ROOT/port" ] && break; sleep 0.1; done
+wait_for "the fake release server's port" test -s "$ROOT/port" || exit 1
 BASE="http://127.0.0.1:$(cat "$ROOT/port")"
 
 new_env() {
@@ -116,14 +118,13 @@ if [ "$RC" = 1 ] && echo "$OUT" | grep "was cut short" >/dev/null && [ ! -e "$HO
     pass "a partial download installs nothing"
 else fail "a partial download (rc=$RC out=$OUT)"; fi
 
+# The slow server never answers, so only the download timeout ends the install.
 new_env
 fake_uname Linux x86_64
-start=$(date +%s)
 CLAX_DOWNLOAD_TIMEOUT=2 inst slow "$V"
-took=$(( $(date +%s) - start ))
-if [ "$RC" = 1 ] && echo "$OUT" | grep "timed out after 2s" >/dev/null && [ "$took" -lt 10 ] && [ ! -e "$HOME/.local/bin/clax" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "timed out after 2s" >/dev/null && [ ! -e "$HOME/.local/bin/clax" ]; then
     pass "a stalled download times out within its bound"
-else fail "a stalled download times out (took=${took}s rc=$RC out=$OUT)"; fi
+else fail "a stalled download times out (rc=$RC out=$OUT)"; fi
 
 new_env
 fake_uname Linux x86_64

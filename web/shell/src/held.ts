@@ -7,6 +7,8 @@
 // so it finishes without a card. Otherwise the call reads it and says where
 // to confirm instead of taking the body for the decision's result.
 
+import { ApiError, readJson, reasonText } from "./trouble";
+
 /** A held decision: its confirmation, where to confirm it, and the line that says so. */
 export type Held = { id: string; url: string; message: string };
 
@@ -23,19 +25,23 @@ export async function heldOf(res: Response): Promise<Held | null> {
   return { id: typeof b.confirmation_id === "string" ? b.confirmation_id : "", url, message: `Confirm in your browser: ${url}` };
 }
 
-/** A route's refusal: its status, the daemon's message and code; `held`
- * when the decision waits for the owner's confirmation (status 202, code
- * `confirmation_pending`, the message saying where to confirm). */
-export class Refused extends Error {
-  constructor(public status: number, message: string, public code: string | null, public held: Held | null = null) {
-    super(message);
+/** A route's refusal, an `ApiError` whose `message` is the daemon's alone
+ * (no status); `held` when the decision waits for the owner's confirmation
+ * (status 202, code `confirmation_pending`, the message saying where to
+ * confirm). */
+export class Refused extends ApiError {
+  constructor(status: number, message: string, code: string | null, public held: Held | null = null, clax = code !== null) {
+    super(status, message, code, clax);
+    this.message = message;
     this.name = "Refused";
   }
+  /** The same refusal as a `Refused`; one that is not Clax's says so (`reasonText`), never nothing. */
+  static of(e: ApiError): Refused { return new Refused(e.status, e.clax ? e.reason : reasonText(e), e.code, null, e.clax); }
 }
 
 /** The header that presents a confirmation's ID with the call it confirms:
  * an ID the daemon handed this shell, never a page's. */
-const CONFIRMATION_HEADER = "x-clax-confirmation";
+export const CONFIRMATION_HEADER = "x-clax-confirmation";
 
 /** `fetch(path, init)` for a decision this page made: when the daemon
  * holds it and passkeys are required, it is confirmed here with the
@@ -64,8 +70,5 @@ export async function browserCall<T>(path: string, method = "GET", body?: unknow
   const res = await heldFetch(path, { method, headers, cache: "no-store", ...body !== undefined && { body: JSON.stringify(body) } }, hold || !!confirm);
   const held = await heldOf(res);
   if (held) throw new Refused(202, held.message, HELD, held);
-  if (res.ok) return (res.status === 204 ? {} : await res.json()) as T;
-  let b: { error?: { code?: string; message?: string } } = {};
-  try { b = await res.json(); } catch { /* not json */ }
-  throw new Refused(res.status, b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
+  try { return await readJson<T>(res); } catch (e) { throw e instanceof ApiError ? Refused.of(e) : e; }
 }

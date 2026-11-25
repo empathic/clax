@@ -6,13 +6,13 @@ use clax_mcp::tools::{
     WaitArgs, WatchArgs, WhereToAskArgs, WorkingArgs,
 };
 use clax_mcp::{ClaxTools, DaemonClient};
-use clax_testkit::{FAKE_PNG, TestServer};
+use clax_testkit::{FAKE_PNG, TestServer, until, within};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Tools attributed to a fresh `claude` session, and that session's ID.
 async fn session_tools(ts: &TestServer) -> (ClaxTools, String) {
@@ -394,25 +394,25 @@ async fn status_reports_the_sessions_push() {
 #[tokio::test]
 async fn wait_for_feedback_returns_on_a_send_and_asks_to_call_again() {
     let ts = TestServer::spawn().await;
-    let (t, _sid) = session_tools(&ts).await;
+    let (t, sid) = session_tools(&ts).await;
     let aid = publish(&t).await;
     let tid = ts.thread(&aid, 1, "live").await["id"]
         .as_str()
         .unwrap()
         .to_string();
+    // The longest wait, past the hang guard: only the send ends it in time.
     let waiting = t.wait_for_feedback(Parameters(WaitArgs {
         url_or_id: Some(aid.clone()),
-        timeout_s: Some(60),
+        timeout_s: Some(600),
     }));
     let sending = async {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        ts.wait_feedback_waiters(&sid, 1).await;
         ts.send_thread(&aid, &tid).await;
-        Instant::now()
     };
-    let (r, sent) = tokio::join!(waiting, sending);
-    let answered = Instant::now();
-    // Far inside the 60 s wait: the send woke it.
-    assert!(answered.saturating_duration_since(sent) < Duration::from_secs(20));
+    let (r, _) = within("the wait woken by the send", async {
+        tokio::join!(waiting, sending)
+    })
+    .await;
     let (v, trailing) = blocks(&r.unwrap());
     assert_eq!(v["feedback"].as_array().unwrap().len(), 1);
     assert_eq!(v["call_again"], false);
@@ -421,7 +421,6 @@ async fn wait_for_feedback_returns_on_a_send_and_asks_to_call_again() {
             .unwrap()
             .starts_with("---\n[clax] 1 comment sent to you:")
     );
-    let started = Instant::now();
     let (v, trailing) = blocks(
         &t.wait_for_feedback(Parameters(WaitArgs {
             url_or_id: None,
@@ -431,10 +430,9 @@ async fn wait_for_feedback_returns_on_a_send_and_asks_to_call_again() {
         .unwrap(),
     );
     // A wait that ran out: nothing, and a prompt to call again.
-    assert_ran_out(&v, 1, started);
+    assert_ran_out(&v, 1);
     assert!(trailing.is_none());
     // `timeout_s: 0` waits the one-second minimum, so a loop cannot spin.
-    let started = Instant::now();
     let (v, _) = blocks(
         &t.wait_for_feedback(Parameters(WaitArgs {
             url_or_id: None,
@@ -443,19 +441,17 @@ async fn wait_for_feedback_returns_on_a_send_and_asks_to_call_again() {
         .await
         .unwrap(),
     );
-    assert!(started.elapsed() >= Duration::from_secs(1));
-    assert_ran_out(&v, 1, started);
+    assert_ran_out(&v, 1);
 }
 
-/// `v` is the answer to a wait, called at `started`, that ran out after at
-/// least `secs` seconds. `waited_s` is the daemon's wall clock: at least the
-/// timeout, more on a loaded machine, and never more than the caller waited.
-fn assert_ran_out(v: &Value, secs: u64, started: Instant) {
+/// `v` is the answer to a wait that ran out after at least `secs` seconds.
+/// `waited_s` is the daemon's wall clock: at least the timeout, more on a
+/// loaded machine.
+fn assert_ran_out(v: &Value, secs: u64) {
     assert_eq!(v["feedback"], json!([]), "{v}");
     assert_eq!(v["call_again"], true, "{v}");
     let waited = v["waited_s"].as_u64().unwrap();
     assert!(waited >= secs, "{v}");
-    assert!(waited <= started.elapsed().as_secs(), "{v}");
     assert_eq!(v.as_object().unwrap().len(), 3, "{v}");
 }
 
@@ -1644,15 +1640,15 @@ async fn watch_says_whether_a_comment_wakes_the_idle_session_and_what_to_start()
         .get(format!("{}/api/sessions/{sid}/notices?wait=30", ts.base))
         .bearer_auth(&ts.token);
     let poll = tokio::spawn(async move { req.send().await.map(|r| r.status()) });
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let w = loop {
-        let w = wake_of(&t, &aid, true).await;
-        if w["when_idle"] == true {
-            break w;
-        }
-        assert!(Instant::now() < deadline, "the follower never counted: {w}");
-        tokio::task::yield_now().await;
-    };
+    let what = "the follower counted";
+    let w = within(
+        what,
+        until(what, || async {
+            let w = wake_of(&t, &aid, true).await;
+            (w["when_idle"] == true).then_some(w)
+        }),
+    )
+    .await;
     assert_eq!(w["via"], "follower", "{w}");
     assert!(w.get("follow_command").is_none(), "{w}");
     poll.abort();

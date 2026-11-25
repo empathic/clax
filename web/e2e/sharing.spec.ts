@@ -74,7 +74,7 @@ test("the owner shares one artifact with one person and a login, shares it by li
     await owner.waitForURL(`${origin}/`);
 
     // Sam's invite offers no rights: Sam gets their own space.
-    await owner.goto(`${origin}/people`);
+    await owner.goto(`${origin}/settings/people`);
     await owner.getByRole("button", { name: "Invite a person" }).click();
     await expect(owner.locator(".invite select")).toHaveCount(0);
     await expect(owner.locator(".invite")).toContainText("They get their own space");
@@ -129,7 +129,7 @@ test("the owner shares one artifact with one person and a login, shares it by li
     await expect(sam.locator("a.card")).toContainText("Launch plan");
     await sam.goto(`${origin}/a/${artifact.id}`);
     await expect(sam.frameLocator("iframe.frame").locator("h1")).toHaveText("Launch plan");
-    await expect(sam.locator(".topbar button.clone, .topbar .reload")).toHaveCount(0);
+    await expect(sam.locator(".topbar .reload")).toHaveCount(0);
     await expect(sam.getByRole("button", { name: "Share", exact: true })).toHaveCount(0);
 
     // No Public while the gallery is off; anyone with the link, Can view; Copy link.
@@ -268,6 +268,9 @@ test("comments switch refuses a guest comment", async ({ browser }) => {
     // Off again with that thread open: the sidebar says why its card has no reply box.
     await owner.getByRole("dialog").locator("label.sw").click();
     await expect(owner.getByRole("dialog").getByRole("switch", { name: "Comments" })).not.toBeChecked();
+    // The switch moves as it is clicked; the note follows once the daemon
+    // holds the change, which the guest's reload must read.
+    await expect(owner.getByRole("dialog").getByTestId("comments-note")).toHaveText("Off: nobody can comment, whatever their access.");
     await guest.reload();
     await expect(guest.locator("button.threads")).toHaveAttribute("aria-pressed", /^(true|false)$/);
     if ((await guest.locator("button.threads").getAttribute("aria-pressed")) === "false") await guest.locator("button.threads").click();

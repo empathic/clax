@@ -1,9 +1,9 @@
 use clax_realtime::feedback::FeedbackWaiters;
 use clax_store::sessions::RegisterSession;
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, within};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 async fn sent_thread(ts: &TestServer) -> (String, String, String) {
     let s = ts.register_session("claude", "h1").await;
@@ -27,24 +27,23 @@ async fn poll(ts: &TestServer, sid: &str, query: &str) -> Value {
     res.json().await.unwrap()
 }
 
+/// The poll waits 600 s, past the HANG guard: an answer at all is the
+/// send waking it.
 #[tokio::test]
 async fn long_poll_wakes_on_a_send_not_at_its_deadline() {
     let ts = TestServer::spawn().await;
     let (sid, aid, tid) = sent_thread(&ts).await;
     let req = ts.authed(
         ts.client
-            .get(format!("{}/api/sessions/{sid}/feedback?wait=60", ts.base)),
+            .get(format!("{}/api/sessions/{sid}/feedback?wait=600", ts.base)),
     );
     let waiter = tokio::spawn(async move {
         let body: Value = req.send().await.unwrap().json().await.unwrap();
-        (Instant::now(), body)
+        body
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
     ts.send_thread(&aid, &tid).await;
-    let sent = Instant::now();
-    let (answered, body) = waiter.await.unwrap();
-    // Far inside the 60 s wait: the send woke the poll.
-    assert!(answered.saturating_duration_since(sent) < Duration::from_secs(20));
+    let body = within("the woken poll's answer", waiter).await.unwrap();
     assert_eq!(body["feedback"].as_array().unwrap().len(), 1);
     assert!(
         body["text"]
@@ -64,20 +63,21 @@ async fn long_poll_wakes_on_a_send_not_at_its_deadline() {
 async fn a_wait_with_nothing_returns_empty_after_the_wait() {
     let ts = TestServer::spawn().await;
     let (sid, _aid, _tid) = sent_thread(&ts).await;
-    let started = Instant::now();
-    let body = poll(&ts, &sid, "?wait=1").await;
-    assert!(started.elapsed() >= Duration::from_millis(950));
+    let body = within(
+        "the poll's answer at its deadline",
+        poll(&ts, &sid, "?wait=1"),
+    )
+    .await;
     assert_eq!(body["feedback"], serde_json::json!([]));
     assert_eq!(body["text"], Value::Null);
-    // The daemon's wall clock: at least the wait, more on a loaded machine,
-    // and never more than this client waited for its answer.
+    // The daemon's clock: at least the wait, more on a loaded machine.
     let waited = body["waited_s"].as_u64().unwrap();
     assert!(waited >= 1, "{body}");
-    assert!(waited <= started.elapsed().as_secs(), "{body}");
 }
 
 /// A long-poll whose client goes away while it waits is dropped with its
-/// connection and takes nothing, so the row stays for the next tier. This
+/// connection and takes nothing, so the row stays for the next tier. The
+/// poll waits 600 s, so only the drop ends it before the send. This
 /// covers only a drop during the wait: a drop that lands after the wake, while
 /// the take runs on the blocking pool, still marks the rows delivered (and, for
 /// the in-band `wait` tier, acknowledged), and they are not resent.
@@ -87,14 +87,13 @@ async fn abandoned_long_poll_marks_nothing() {
     let (sid, aid, tid) = sent_thread(&ts).await;
     let req = ts.authed(
         ts.client
-            .get(format!("{}/api/sessions/{sid}/feedback?wait=5", ts.base)),
+            .get(format!("{}/api/sessions/{sid}/feedback?wait=600", ts.base)),
     );
     let waiter = tokio::spawn(async move { req.send().await });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
     waiter.abort();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ts.wait_feedback_waiters(&sid, 0).await;
     ts.send_thread(&aid, &tid).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
     let body = poll(&ts, &sid, "?tier=piggyback").await;
     assert_eq!(
         body["feedback"].as_array().unwrap().len(),
@@ -326,17 +325,12 @@ async fn long_poll_is_exempt_from_the_request_timeout() {
             changed.await;
         }
     };
-    tokio::time::timeout(Duration::from_secs(5), started)
-        .await
-        .expect("the poll is in progress");
+    within("the poll in progress", started).await;
     let cut = ts.get_authed("/api/_test/sleep/60000").await;
     assert_eq!(cut.status(), 408, "a timed request outliving the timeout");
     assert_eq!(waiters.count(&sid), 1, "the poll outlived it");
     stop.send(true).unwrap();
-    let res = tokio::time::timeout(Duration::from_secs(5), poll)
-        .await
-        .expect("shutting down ends the poll")
-        .unwrap();
+    let res = within("shutting down ends the poll", poll).await.unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["feedback"], serde_json::json!([]));
@@ -351,19 +345,17 @@ async fn an_ended_session_cannot_poll_or_ack() {
         .send()
         .await
         .unwrap();
-    let started = Instant::now();
-    let res = ts
-        .authed(
+    // Answered at once: a 600 s wait outlasts the HANG guard.
+    let res = within(
+        "the ended session's poll",
+        ts.authed(
             ts.client
-                .get(format!("{}/api/sessions/{sid}/feedback?wait=60", ts.base)),
+                .get(format!("{}/api/sessions/{sid}/feedback?wait=600", ts.base)),
         )
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "answered at once, not after the 60 s wait"
-    );
+        .send(),
+    )
+    .await
+    .unwrap();
     assert_eq!(res.status(), 400);
     assert_eq!(
         res.json::<Value>().await.unwrap()["error"]["code"],
@@ -396,7 +388,9 @@ async fn an_ended_session_cannot_poll_or_ack() {
 }
 
 /// A Pi session in `wait_for_feedback` with its injection loop also polling:
-/// the wait poll gets the rows, and the inject poll yields at once.
+/// the wait poll gets the rows, and the inject poll yields at once (its
+/// `waited_s: 0`, the yield's answer; every poll waits 600 s, past the HANG
+/// guard, so none ends at its deadline).
 #[tokio::test]
 async fn an_inject_poll_yields_to_a_wait_poll_of_the_same_session() {
     let ts = TestServer::spawn().await;
@@ -406,26 +400,24 @@ async fn an_inject_poll_yields_to_a_wait_poll_of_the_same_session() {
     let aid = a["artifact"]["id"].as_str().unwrap().to_string();
     let url = |q: &str| format!("{}/api/sessions/{sid}/feedback{q}", ts.base);
     // An inject poll already waiting when the wait poll starts.
-    let early_inject = ts.authed(ts.client.get(url("?tier=inject&wait=5")));
+    let early_inject = ts.authed(ts.client.get(url("?tier=inject&wait=600")));
     let early = tokio::spawn(async move {
-        let started = Instant::now();
         let body: Value = early_inject.send().await.unwrap().json().await.unwrap();
-        (started.elapsed(), body)
+        body
     });
     ts.wait_parked_feedback_polls(&sid, "inject", 1).await;
-    let wait = ts.authed(ts.client.get(url("?tier=wait&wait=5")));
+    let wait = ts.authed(ts.client.get(url("?tier=wait&wait=600")));
     let waiter = tokio::spawn(async move {
         let body: Value = wait.send().await.unwrap().json().await.unwrap();
         body
     });
     ts.wait_feedback_waiters(&sid, 1).await;
     // An inject poll that starts while the wait poll is in progress.
-    let started = Instant::now();
-    let late = poll(&ts, &sid, "?tier=inject&wait=60").await;
-    assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "yields at once, not after the 60 s wait"
-    );
+    let late = within(
+        "the late inject poll",
+        poll(&ts, &sid, "?tier=inject&wait=600"),
+    )
+    .await;
     assert_eq!(
         (
             late["feedback"].as_array().unwrap().len(),
@@ -435,7 +427,7 @@ async fn an_inject_poll_yields_to_a_wait_poll_of_the_same_session() {
         (0, &Value::Null, &Value::from(0))
     );
     // The wait poll's start woke the early inject poll, which yielded.
-    let (_took, early_body) = early.await.unwrap();
+    let early_body = within("the early inject poll", early).await.unwrap();
     assert_eq!(
         (
             early_body["feedback"].as_array().unwrap().len(),
@@ -444,17 +436,17 @@ async fn an_inject_poll_yields_to_a_wait_poll_of_the_same_session() {
         (0, &Value::from(0))
     );
     let t = ts.thread(&aid, 1, "@agent first").await;
-    let got = waiter.await.unwrap();
+    let got = within("the wait poll's answer", waiter).await.unwrap();
     assert_eq!(got["feedback"][0]["thread_id"], t["id"]);
     // With no wait poll in progress, inject takes the next comment.
-    let inject = ts.authed(ts.client.get(url("?tier=inject&wait=5")));
+    let inject = ts.authed(ts.client.get(url("?tier=inject&wait=600")));
     let injector = tokio::spawn(async move {
         let body: Value = inject.send().await.unwrap().json().await.unwrap();
         body
     });
     ts.wait_parked_feedback_polls(&sid, "inject", 1).await;
     let t2 = ts.thread(&aid, 1, "@agent second").await;
-    let got = injector.await.unwrap();
+    let got = within("the inject poll's answer", injector).await.unwrap();
     assert_eq!(got["feedback"][0]["thread_id"], t2["id"]);
     assert_eq!(got["feedback"].as_array().unwrap().len(), 1);
 }
@@ -483,9 +475,8 @@ async fn starting_a_wait_wakes_a_parked_inject_poll() {
         body
     });
     ts.wait_feedback_waiters(&sid, 1).await;
-    let yielded = tokio::time::timeout(Duration::from_secs(5), inject)
+    let yielded = within("the wait's start wakes the parked inject poll", inject)
         .await
-        .expect("the wait's start wakes the parked inject poll")
         .unwrap();
     assert_eq!(
         (
@@ -501,6 +492,6 @@ async fn starting_a_wait_wakes_a_parked_inject_poll() {
         "the wait poll still waits"
     );
     let t = ts.thread(&aid, 1, "@agent hello").await;
-    let got = waiter.await.unwrap();
+    let got = within("the wait poll's answer", waiter).await.unwrap();
     assert_eq!(got["feedback"][0]["thread_id"], t["id"]);
 }

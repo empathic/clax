@@ -22,6 +22,7 @@ import 'package:flutter_test/flutter_test.dart' hide Retry;
 import '../support/fake_inspector.dart';
 import '../support/paths.dart';
 import '../support/real_core.dart';
+import '../support/settle.dart' show stuckAfter;
 import 'queue_host_test.dart' show stateWhere;
 import 'worker_agent_test.dart'
     show page, reachable, scriptedModel, script, system, unscriptedFile;
@@ -86,7 +87,7 @@ void main() {
             }),
           ),
         ),
-        timeout: const Duration(minutes: 1),
+        timeout: stuckAfter,
       );
       expect(made.status, 201, reason: utf8.decode(made.body));
       final aid =

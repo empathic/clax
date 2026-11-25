@@ -18,12 +18,20 @@
 // 5. a second fix; "It's fixed" verifies the report;
 // 6. the owner's triage view shows the context card's commit and both fixes.
 //
+// A second test checks a fix on a preview deployment: the queue lists the
+// site and a pattern its previews match (`http://pr-*.localhost:<port>`),
+// with a service grant for previews only; a fix proposed with `preview`
+// gives a ticket, with which the preview's backend attaches its origin
+// (`ServiceClient.attachPreview`); the reporter, on the preview, reads the
+// overlay's banner and says "It's fixed"; triage reads the origin it was
+// verified on.
+//
 // Screenshots of the mode bar, the annotator, "What's sent", the reporter's
 // report view and the triage report view go where queues.spec.ts's go
 // ($CLAX_QUEUES_SHOTS_DIR, else the test's output directory).
 import type { Page } from "@playwright/test";
-import { McpAgent, NATIVE_MCP_PATH } from "../../demo/lib/http";
-import type { Report } from "../sdk/src/types";
+import { McpAgent, NATIVE_MCP_PATH, type ToolAnswer } from "../../demo/lib/http";
+import type { FixTicket, Report } from "../sdk/src/types";
 import { startDeployerSite } from "./deployer-site/server";
 import { expect, test } from "./fixtures";
 import { hostedDaemon, ownerOf } from "./hosted-helpers";
@@ -49,8 +57,17 @@ async function drag(page: Page, a: { x: number; y: number }, b: { x: number; y: 
   await page.mouse.up();
 }
 
+/** What `agent`'s `wait_for_feedback` reads once it names `text`. Its first
+ * wait starts with the call; a wait that ends without it (each holds up to
+ * 60 s, and a loaded machine can take longer to deliver) is followed by
+ * another, until the test's hang guard. */
+async function feedbackNaming(agent: McpAgent, text: string): Promise<ToolAnswer> {
+  let got = await agent.ok("wait_for_feedback", { timeout_s: 60 });
+  while (!got.text.includes(text)) got = await agent.ok("wait_for_feedback", { timeout_s: 60 });
+  return got;
+}
+
 test("a report with context and recent errors goes from capture to an agent's fix, is still broken, and is verified on the second fix", async ({ browser }, info) => {
-  test.setTimeout(120_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   let agent: McpAgent | null = null;
@@ -107,8 +124,7 @@ test("a report with context and recent errors goes from capture to an agent's fi
     expect(site.minted).toHaveLength(minted);
 
     // The filing wakes the agent's wait, naming the report.
-    const woke = await agent.ok("wait_for_feedback", { timeout_s: 60 });
-    expect(woke.text).toContain(`This is a new report in queue ${qid}`);
+    const woke = await feedbackNaming(agent, `This is a new report in queue ${qid}`);
 
     // The agent lists the queue's active reports: the release and the diagnostics count.
     const listed = (await agent.ok("queue_list", { queue: qid, state: "active" })).data as { reports: (Report & { context_summary?: { release?: unknown; mode?: string } })[] };
@@ -160,11 +176,10 @@ test("a report with context and recent errors goes from capture to an agent's fi
     await drag(emp1, { x: req2.x - 4, y: req2.y - 4 }, { x: req2.x + req2.width + 4, y: req2.y + req2.height + 4 });
     await expect(reopen.getByRole("img", { name: /^Screenshot of/ })).toBeVisible();
     await reopen.getByRole("textbox", { name: "What is still broken" }).fill("It still fails on this one.");
-    const reopenWait = agent.ok("wait_for_feedback", { timeout_s: 60 });
+    const reopenWait = feedbackNaming(agent, id);
     await reopen.getByRole("button", { name: "Send" }).click();
     await expect(reopen).toHaveCount(0);
     const reopened = await reopenWait;
-    expect(reopened.text).toContain(id);
     expect(JSON.stringify(reopened.data)).toContain("reopened");
 
     const after = (await agent.ok("queue_get", { queue: qid, report_id: id })).data as unknown as QueueGet;
@@ -205,6 +220,100 @@ test("a report with context and recent errors goes from capture to an agent's fi
     expect(await cspViolations(emp1)).toEqual([]);
   } finally {
     await agent?.close();
+    await site.stop();
+    await d.stop();
+  }
+});
+
+/** `owner`'s call to `path` on the instance, with `body` as JSON when given. */
+async function ownerCall<T>(owner: Page, method: string, path: string, body?: unknown): Promise<T> {
+  const got = await owner.evaluate(async ([m, p, b]) => {
+    const r = await fetch(p, { method: m, headers: b === undefined ? {} : { "content-type": "application/json" }, body: b === undefined ? undefined : JSON.stringify(b) });
+    return { status: r.status, text: await r.text() };
+  }, [method, path, body] as const);
+  if (got.status >= 300) throw new Error(`${method} ${path}: ${got.status} ${got.text}`);
+  return JSON.parse(got.text) as T;
+}
+
+test("a fix proposed for a preview is checked there: the preview attaches its origin, the reporter verifies it from the banner, and triage reads where", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  const site = await startDeployerSite(origin);
+  // Chromium takes every *.localhost name to the loopback address.
+  const preview = await startDeployerSite(origin, { host: "pr-538.localhost" });
+  const pattern = `http://pr-*.localhost:${new URL(preview.origin).port}`;
+  try {
+    const owner = await ownerOf(browser, origin);
+    await owner.goto(`${origin}/queues`);
+    await owner.getByRole("button", { name: "New queue" }).click();
+    const form = owner.locator("form.qform");
+    await form.getByLabel("Name", { exact: true }).fill("Leave app reports");
+    await form.getByLabel("Origins, one per line").fill(`${site.origin}\n${pattern}`);
+    await form.getByLabel("Their own reports").check();
+    await form.getByRole("button", { name: "Create queue" }).click();
+    const card = owner.locator("li.qcard", { has: owner.getByRole("heading", { name: "Leave app reports" }) });
+    await expect(card).toBeVisible();
+    const qid = (await card.getAttribute("data-id"))!;
+    await card.getByRole("button", { name: "Manage" }).click();
+
+    /** Makes a service grant named `name` on the Manage panel, for previews only when `previews`. */
+    const grant = async (name: string, previews: boolean) => {
+      await card.getByLabel("Name", { exact: true }).fill(name);
+      const only = card.getByLabel(`Previews only: mint only for ${pattern}`);
+      if (previews) await only.check();
+      await card.getByRole("button", { name: "Create service grant" }).click();
+      const secret = card.getByRole("region", { name: "New service grant" });
+      await expect(secret).toBeVisible();
+      const token = (await secret.locator("code").nth(0).textContent())!.trim();
+      const privateKey = (await secret.locator("code").nth(1).textContent())!.trim();
+      await secret.getByRole("button", { name: "Done" }).click();
+      await expect(secret).toHaveCount(0);
+      return { queue: qid, token, privateKey };
+    };
+    site.grant(await grant("leave app backend", false));
+    preview.grant(await grant("leave app previews", true));
+    await expect(card.locator("li.line", { hasText: "leave app previews" }).locator(".limit")).toHaveText(`previews: ${pattern}`);
+
+    // The reporter files a report on the site.
+    const emp1 = await reporterOn(browser, site, "emp-1");
+    await emp1.locator(".report-btn").click();
+    await emp1.keyboard.press("s");
+    const composer = emp1.getByRole("form", { name: "New report" });
+    await composer.getByRole("textbox", { name: "Report" }).fill("Approving Tomás's one-day request fails.");
+    await composer.getByRole("button", { name: "Send" }).click();
+    await expect(emp1.getByRole("status", { name: "Filed" })).toBeVisible();
+    const id = (await ownerCall<{ reports: Report[] }>(owner, "GET", `/api/queues/${qid}/reports`)).reports[0].id;
+
+    // A fix proposed for a preview; the preview's backend attaches its origin with the ticket.
+    const summary = "Single-day requests get their end date from the start date.";
+    const fixed = await ownerCall<{ report: Report; ticket: FixTicket }>(owner, "POST", `/api/queues/${qid}/reports/${id}/fix`, { summary, url: "https://github.com/example/leave/pull/538", preview: true });
+    expect(fixed.report.state).toBe("fix_proposed");
+    expect(fixed.ticket).toMatchObject({ n: 1, origins: [pattern] });
+    expect(fixed.ticket.token).toMatch(/^cxf_/);
+    const attached = await preview.attachPreview(fixed.ticket.token, "/");
+    expect(attached).toMatchObject({ changed: true, verify_url: `${preview.origin}/` });
+    expect((await preview.attachPreview(fixed.ticket.token, "/")).changed).toBe(false);
+
+    // On the preview, the reporter reads the banner and says it is fixed.
+    const onPreview = await reporterOn(browser, preview, "emp-1");
+    const banner = onPreview.getByRole("region", { name: "A fix for your report" });
+    await expect(banner).toContainText("This preview has a fix for your report");
+    await expect(banner).toContainText("Approving Tomás's one-day request fails.");
+    await expect(banner).toContainText(summary);
+    await expect(banner.getByRole("link", { name: "The change" })).toHaveAttribute("href", "https://github.com/example/leave/pull/538");
+    await banner.getByRole("button", { name: "It's fixed" }).click();
+    await expect(banner).toHaveCount(0);
+
+    const verified = (await ownerCall<{ report: Report }>(owner, "GET", `/api/queues/${qid}/reports/${id}`)).report;
+    expect(verified.state).toBe("verified");
+    expect(verified.fixes?.[0]).toMatchObject({ outcome: "verified", verified_origin: preview.origin });
+
+    // Triage reads the origin it was verified on.
+    await owner.goto(`${origin}/queues/${qid}/${id}`);
+    const fixes = owner.getByRole("region", { name: "Fixes" });
+    await expect(fixes.locator("li.fix[data-n='1'] .verdict")).toContainText(`verified on ${preview.origin}`);
+    expect(await cspViolations(onPreview)).toEqual([]);
+  } finally {
+    await preview.stop();
     await site.stop();
     await d.stop();
   }

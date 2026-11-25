@@ -209,6 +209,7 @@ pub fn install(state: &AppState) {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::limits_for;
     use clax_core::seats::{Claim, ENV_PEOPLE, SeatLimits, Seats};

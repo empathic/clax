@@ -1085,6 +1085,7 @@ impl LedgerRecord {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::questions::{Close, NewQuestion, Source};

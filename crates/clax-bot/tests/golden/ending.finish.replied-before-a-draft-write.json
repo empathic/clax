@@ -1,0 +1,91 @@
+{
+  "last_step": {
+    "kind": "finish",
+    "payload": {
+      "posted": true,
+      "sources": [],
+      "summary": "Wrote the stylesheet."
+    }
+  },
+  "notices_in_the_journal": [
+    {
+      "ok": true,
+      "op": "reply",
+      "seq": 1000000,
+      "step": 6
+    }
+  ],
+  "reason": null,
+  "replies": [
+    {
+      "text": "I will make the heading blue.",
+      "thread": "<thread-1>"
+    },
+    {
+      "text": "Wrote the stylesheet.",
+      "thread": "<thread-1>"
+    }
+  ],
+  "roster": {
+    "shown_working_at_no_step": 0,
+    "shown_working_before": [
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 1
+      },
+      {
+        "kind": "script",
+        "shown": true,
+        "step": 2
+      },
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 3
+      },
+      {
+        "kind": "script",
+        "shown": true,
+        "step": 4
+      },
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 5
+      },
+      {
+        "kind": "finish",
+        "shown": false,
+        "step": 6
+      }
+    ],
+    "stopped_showing": [
+      {
+        "calls_after_it": 0,
+        "run_status": "finished"
+      }
+    ]
+  },
+  "status": "finished",
+  "steps": [
+    "turn",
+    "script",
+    "turn",
+    "script",
+    "turn",
+    "finish"
+  ],
+  "writes_in_order": [
+    {
+      "key": "<run>:2:0",
+      "op": "threads.reply",
+      "thread": "<thread-1>"
+    },
+    {
+      "key": "<run>:6:1000000",
+      "op": "threads.reply",
+      "thread": "<thread-1>"
+    }
+  ]
+}

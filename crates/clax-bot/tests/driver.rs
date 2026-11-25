@@ -51,9 +51,11 @@ async fn the_driver_runs_one_persons_runs_one_at_a_time_to_the_end() {
         env.hub.clone(),
     );
     assert_eq!(driver.resume(true).unwrap(), 2);
-    let report = tokio::time::timeout(PROMPTLY, driver.run_until_idle(Duration::from_secs(600)))
-        .await
-        .unwrap();
+    let report = within(
+        "the driver goes idle",
+        driver.run_until_idle(Duration::from_secs(600)),
+    )
+    .await;
     assert_eq!(report.next_wake, None);
     for r in [&a, &b] {
         assert_eq!(env.run_row(r).status, RunStatus::Finished);
@@ -108,6 +110,29 @@ async fn a_stalled_run_waits_and_a_cancel_wakes_it_to_stop() {
     );
 }
 
+/// A message to a stalled run leaves its wait to run out; a wake ends it.
+#[tokio::test]
+async fn a_message_leaves_a_stalled_runs_wait_and_a_wake_ends_it() {
+    let env = Env::new().await;
+    env.api.push(env.script_turn("tu_1", "Edit", "return 1;"));
+    let run = env.run();
+    let driver = Driver::new(
+        DriverId::mint(),
+        Arc::new(env.deps_with(Arc::new(Unavailable))),
+        env.hub.clone(),
+    );
+    driver.wake(&run);
+    let report = driver.run_until_idle(Duration::from_secs(600)).await;
+    assert!(report.next_wake.is_some(), "the stalled run waits");
+    driver.messaged(&run);
+    let report = driver.run_until_idle(Duration::from_secs(600)).await;
+    assert!(report.ticks.is_empty(), "{report:?}");
+    assert!(report.next_wake.is_some(), "it still waits");
+    driver.wake(&run);
+    let report = driver.run_until_idle(Duration::from_secs(600)).await;
+    assert_eq!(report.ticks.len(), 1, "{report:?}");
+}
+
 #[tokio::test]
 async fn a_run_woken_while_another_streams_starts_at_once() {
     let env = Arc::new(Env::new().await);
@@ -124,22 +149,18 @@ async fn a_run_woken_while_another_streams_starts_at_once() {
         let driver = driver.clone();
         tokio::spawn(async move { driver.run_until_idle(Duration::from_secs(600)).await })
     };
-    tokio::time::timeout(PROMPTLY, env.api.arrived.notified())
-        .await
-        .expect("run a streams");
+    within("run a streams", env.api.arrived.notified()).await;
     env.api.push(text_turn("hello"));
     env.api.push(text_turn("still"));
     let b = env.run();
     driver.wake(&b);
-    tokio::time::timeout(PROMPTLY, env.api.arrived.notified())
-        .await
-        .expect("run b starts while a streams");
+    within("run b starts while a streams", env.api.arrived.notified()).await;
     assert_eq!(env.run_row(&a).status, RunStatus::Running);
     env.store
         .cancel_run(&clax_bot::run::bot_ctx("*owner"), &a)
         .unwrap();
     driver.cancel(&a);
-    let report = tokio::time::timeout(PROMPTLY, task).await.unwrap().unwrap();
+    let report = within("the driver goes idle", task).await.unwrap();
     assert_eq!(report.next_wake, None);
     assert_eq!(env.run_row(&a).status, RunStatus::Stopped);
     assert_eq!(env.run_row(&b).status, RunStatus::GaveUp);
@@ -154,7 +175,7 @@ async fn a_driver_starting_sweeps_artifacts_a_crash_left_without_a_version() {
     let db = clax_core::Home::at(env._dir.path().join("ax")).db_path();
     let open = || {
         let c = rusqlite::Connection::open(&db).unwrap();
-        c.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+        c.busy_timeout(HANG).unwrap();
         c
     };
     let orphan = |id: &str, kind: &str| {
@@ -254,7 +275,7 @@ async fn a_failed_sweep_does_not_stop_a_driver_resuming_its_runs() {
     // moment); the run is still queued.
     let db = clax_core::Home::at(env._dir.path().join("ax")).db_path();
     let c = rusqlite::Connection::open(&db).unwrap();
-    c.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+    c.busy_timeout(HANG).unwrap();
     c.execute_batch("ALTER TABLE artifacts RENAME COLUMN kind TO kind_gone")
         .unwrap();
     let driver = Driver::new(DriverId::mint(), Arc::new(env.deps()), env.hub.clone());

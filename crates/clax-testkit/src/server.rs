@@ -252,6 +252,30 @@ impl clax_core::content::ContentStore for Deferred {
     fn needs_executor(&self) -> bool {
         true
     }
+
+    fn keeps_blobs(&self) -> bool {
+        self.inner.keeps_blobs()
+    }
+
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> clax_core::Result<()> {
+        Self::executor().await?;
+        self.inner.put_blob(sha256, bytes).await
+    }
+
+    async fn read_blob(&self, sha256: &str) -> clax_core::Result<Option<Vec<u8>>> {
+        Self::executor().await?;
+        self.inner.read_blob(sha256).await
+    }
+
+    async fn delete_blob(&self, sha256: &str) -> clax_core::Result<()> {
+        Self::executor().await?;
+        self.inner.delete_blob(sha256).await
+    }
+
+    async fn blob_names(&self) -> clax_core::Result<Vec<String>> {
+        Self::executor().await?;
+        self.inner.blob_names().await
+    }
 }
 
 /// The handshake state [`TestServer::site_cookie`] binds its codes to.
@@ -1834,6 +1858,10 @@ impl TestServer {
     /// a few seconds, whichever is first; each answer short of `n` is asked
     /// again, so a slow machine only makes the wait longer. Panics, naming
     /// `what` and the last count, past the [`HANG`](crate::HANG) guard.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the waiter route's answers are asked again until the HANG guard"
+    )]
     async fn count_until(&self, path: &str, n: u64, what: &str) {
         let start = std::time::Instant::now();
         loop {

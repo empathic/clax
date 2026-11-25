@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { relativeTime } from "./format";
+import { LOAD_RETRY } from "./reach";
 import { FakeWorker, workerWith } from "./test/fake-worker";
 import { freshModules } from "./test/modules";
+import { settled } from "./test/settled";
 import { MOUNT_TIMEOUT_MS, WAIT_MS } from "./test/timeouts";
 
 describe("relativeTime", () => {
@@ -68,22 +72,39 @@ function stubApi(tokenStatus: number = 200, attention: "ok" | "fail" | "none" = 
 // each test unmounts its gallery before the next resets the module registry.
 let unmountGallery: (() => void) | null = null;
 
-async function mountGallery() {
+async function mountGallery(props: Record<string, unknown> = {}) {
   const { default: Gallery } = await import("./ui/Gallery.svelte");
   // From the same module registry as the gallery (each test resets it), so
   // both use one Svelte runtime.
   const { mount } = await import("./test/svelte");
-  const { root, unmount } = mount(Gallery, {});
+  const { root, unmount } = mount(Gallery, props);
   unmountGallery = unmount;
   await waitFor(() => root.querySelector("a.card, .empty, .empty-gallery"), "gallery to render");
   return root;
 }
 
+describe("the card's version badge", () => {
+  const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = strip(readFileSync(join(__dirname, "theme.css"), "utf8"));
+  const rule = (sel: string) => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(m => m[1].trim() === sel).map(m => m[2]).join(";");
+  it("is quiet: muted, no bigger than the meta line, and enlarged by no group or width", () => {
+    const v = rule(".card .v");
+    expect(v).toMatch(/color: var\(--muted\)/);
+    const size = Number(/font: \d+ (\d+(?:\.\d+)?)px/.exec(v)![1]);
+    const meta = Number(/font-size: (\d+(?:\.\d+)?)px/.exec(rule(".card .by"))![1]);
+    expect(size).toBeLessThanOrEqual(meta);
+    // Only the one rule sizes it: neither the phone width nor the "needs
+    // your eyes" group sets a display size on it again.
+    expect(css.match(/\.card \.v\b/g)).toHaveLength(1);
+    expect(strip(readFileSync(join(__dirname, "ui/NeedsGroup.svelte"), "utf8"))).not.toMatch(/\.v\b/);
+  });
+});
+
 describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
-  beforeEach(() => { vi.resetModules(); });
+  beforeEach(freshModules);
   afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); edits = {}; });
 
-  it("renders cards led by the version numeral, with title and link, and no description", async () => {
+  it("renders cards led by the title, with the version as a badge on the meta line, the link, and no description", async () => {
     stubApi();
     const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
@@ -91,14 +112,37 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(cards[0].getAttribute("href")).toBe("/a/7q3k9mzx2b4t");
     expect(cards[0].textContent).toContain("Pinned one");
     expect(cards[0].querySelector(".v")?.textContent).toBe("v3");
+    // The title comes first; the version heads the meta line, shown as
+    // "v3" to the eye and said as "Version 3" to a screen reader.
+    expect(cards[0].querySelector(".cb2")?.firstElementChild?.tagName).toBe("H3");
+    const v = cards[0].querySelector(".by > .v")!;
+    expect(v.getAttribute("aria-hidden")).toBe("true");
+    expect(v.nextElementSibling?.className).toBe("sr");
+    expect(v.nextElementSibling?.textContent).toBe("Version 3, ");
     expect(cards[0].querySelector("p")).toBeNull();
-    // One star: the Pin button's once the token is known, not the title's too.
-    await waitFor(() => root.querySelector('.card-tools button[title="Unpin"]'), "the Unpin button");
+    // One star: the owner's Pin button's, not the title's too.
+    expect(root.querySelector('.card-tools button[title="Unpin"]')).not.toBeNull();
     expect(root.querySelectorAll(".card-wrap")[0].textContent!.match(/★/g)).toHaveLength(1);
     expect(cards[0].querySelector(".pin")).toBeNull();
     expect(cards[1].querySelector(".by")?.textContent).toContain("command line");
-    await waitFor(() => root.querySelector(".gbar .sub")?.textContent?.includes("seen as Ada"), "the viewer's name in the bar");
     expect(root.querySelector(".gbar .sub")?.textContent).toBe("local artifacts · seen as Ada");
+  });
+
+  it("retries a first list that found no Clax (a CDN's page) until Clax answers, and shows no failure meanwhile", async () => {
+    stubApi();
+    const base = fetch as unknown as (u: string, i?: RequestInit) => Promise<Response>;
+    let down = true;
+    vi.stubGlobal("fetch", vi.fn(async (u: string, i?: RequestInit) => (down && u === "/api/artifacts" ? new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } }) : base(u, i))));
+    const { default: Gallery } = await import("./ui/Gallery.svelte");
+    const { mount } = await import("./test/svelte");
+    const { root, unmount } = mount(Gallery, {});
+    unmountGallery = unmount;
+    const clock = (globalThis as unknown as { claxTestClock: { dueIn(l: string): number | null; advance(ms: number): number } }).claxTestClock;
+    await waitFor(() => clock.dueIn(LOAD_RETRY) !== null, "the retry's wait");
+    expect(root.querySelector(".empty")).toBeNull();
+    down = false;
+    clock.advance(clock.dueIn(LOAD_RETRY)!);
+    await waitFor(() => root.querySelectorAll("a.card").length === 2, "the list");
   });
 
   it("names a hosted daemon's site in the bar, for its owner and for anyone else", async () => {
@@ -115,6 +159,8 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
       await waitFor(() => root.querySelector(".gbar .sub")?.textContent?.startsWith(location.host), `the site in the bar (token ${token})`);
       expect(root.querySelector(".gbar .sub")?.textContent).toBe(`${location.host} · seen as Ada`);
       expect(calls.length).toBeGreaterThan(0);
+      // Signing out is in Settings: the bar has no menu of its own for it.
+      expect(root.querySelector(".gbar .sub button, .gbar .acct-btn")).toBeNull();
       unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren();
     }
   });
@@ -160,8 +206,8 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     }));
     const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
-    // The chip loads after the first paint, with the other markers.
-    expect((await waitFor(() => cards[0].querySelector(".chip.live"), "the Live chip")).textContent).toBe("Live");
+    // At the cards' first render, with the other markers.
+    expect(cards[0].querySelector(".chip.live")?.textContent).toBe("Live");
     expect(cards[0].querySelector(".by")?.textContent).toContain("localhost:5173/settings");
     expect(cards[0].querySelector(".by")?.textContent).not.toContain("command line");
     expect(cards[1].querySelector(".chip.live")).toBeNull();
@@ -176,8 +222,7 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     }));
     const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
-    // The chips and rosters load after the first paint.
-    await waitFor(() => cards[0].querySelector(".chip.ag"), "the working chip");
+    // The chips and rosters are there at the cards' first render, from the list.
     expect(Array.from(cards[0].querySelectorAll(".chip.ag")).map(c => c.textContent)).toEqual(["claude working"]);
     expect(cards[1].querySelector(".chip.ag")).toBeNull();
     expect(cards[1].querySelector(".mks")).toBeNull();
@@ -281,7 +326,7 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const root = await mountGallery();
     await workerWith("gallery");
     await waitFor(() => calls.some(c => c.url === "/api/viewers/me"), "the viewer lookup");
-    await new Promise(r => setTimeout(r, 50));
+    await settled();
     expect(root.querySelector(".inbox-sum, .inbox-link")).toBeNull();
     expect(FakeWorker.all.some(w => w.topics.includes("inbox"))).toBe(false);
     expect(calls.some(c => /^\/api\/(inbox|questions)/.test(c.url))).toBe(false);
@@ -304,8 +349,7 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("without attention shows every card in one group and no needs group", async () => {
     stubApi(200, "fail");
     const root = await mountGallery();
-    // The grouping loads with the rosters, after the first paint.
-    await waitFor(() => root.querySelector(".ft .ros"), "the grouping to load");
+    expect(root.querySelector(".ft .ros")).not.toBeNull();
     expect(root.querySelector(".grp.needs")).toBeNull();
     expect(root.querySelectorAll(".card-wrap").length).toBe(2);
     expect(root.querySelector(".grp.rest h2")?.textContent).toContain("Artifacts");
@@ -362,8 +406,8 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("pin button sends PATCH with pinned true and refetches that card", async () => {
     const calls = stubApi();
     const root = await mountGallery();
-    // The live refreshes load with the rosters, after the first paint.
-    await waitFor(() => root.querySelector(".ft .ros"), "the live module to load");
+    // The live refreshes load with the haiku, once the cards are on screen.
+    await waitFor(() => root.querySelector(".gfoot"), "the live module to load");
     const pin = await waitFor(() => root.querySelectorAll(".card-wrap")[1]?.querySelector('button[title="Pin"]') as HTMLButtonElement | null, "pin button");
     const wrap = root.querySelectorAll(".card-wrap")[1];
     expect(wrap.querySelector("a button")).toBeNull();
@@ -393,6 +437,56 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(Array.from(root.querySelectorAll("a.card")).find(c => c.textContent!.includes("Pinned one"))?.querySelector(".v")?.textContent).toBe("v3");
   });
 
+  it("renders its content once, grouped, with the summary above it, and never an ungrouped list first", async () => {
+    const { item, view } = await import("./q/fixtures");
+    const qs = [view({ id: "Q1", created_at: "2026-10-07T09:01:00.000Z" })];
+    FakeWorker.all = [];
+    vi.stubGlobal("SharedWorker", FakeWorker);
+    stubApi(200, "ok", { summary: { unread: 2, questions: qs, latest: [item("reply")] }, questions: qs });
+    // Each change to the page: whether it shows cards, the needs group, the summary and the skeleton.
+    const seen: string[] = [];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const look = () => {
+      const q = (sel: string) => (host.querySelector(sel) ? 1 : 0);
+      const now = `cards ${q("a.card")} needs ${q(".grp.needs")} summary ${q(".inbox-sum:not([hidden]) .qcard")} skeleton ${q(".gskel")} sub ${host.querySelector(".gbar .sub")?.textContent ?? ""}`;
+      if (seen.at(-1) !== now) seen.push(now);
+    };
+    new MutationObserver(look).observe(host, { childList: true, subtree: true, characterData: true });
+    const { default: Gallery } = await import("./ui/Gallery.svelte");
+    const { mount } = await import("./test/svelte");
+    const m = mount(Gallery, {}, host);
+    unmountGallery = m.unmount;
+    await waitFor(() => host.querySelector("a.card"), "the cards");
+    look();
+    expect(seen.filter(x => x.startsWith("cards 1"))).toEqual(["cards 1 needs 1 summary 1 skeleton 0 sub local artifacts · seen as Ada"]);
+    expect(seen.some(x => /^cards 0 .* skeleton 0/.test(x))).toBe(false);
+    // The subtitle is written once, in its final form.
+    expect([...new Set(seen.map(x => x.replace(/.* sub /, "")).filter(Boolean))]).toEqual(["local artifacts · seen as Ada"]);
+  });
+
+  it("renders the daemon's first-load data at mount, asking nothing it holds", async () => {
+    const calls = stubApi(403);
+    const boot: import("./view/gallery-boot").GalleryBoot = {
+      v: 1, kind: "gallery",
+      status: { viewer: 200, hosted: 404, feedback: 200, bot: 404, summary: 403, artifacts: 200, attention: 200, questions: 403 },
+      viewer: { viewer: { public_id: "v1", display_name: "Ada" }, may_create: false }, hosted: null, feedback: { enabled: false }, bot: null, inbox: false,
+      summary: null, artifacts: { artifacts: ARTIFACTS }, attention: ATTENTION, questions: null,
+    };
+    const { default: Gallery } = await import("./ui/Gallery.svelte");
+    const { mount } = await import("./test/svelte");
+    const m = mount(Gallery, { boot });
+    unmountGallery = m.unmount;
+    // At mount, before any request answers: the header and the grouped cards.
+    expect(m.root.querySelector(".gbar .sub")!.textContent).toBe("local artifacts · seen as Ada");
+    expect(m.root.querySelector(".grp.needs a.card h3")!.textContent).toBe("Other");
+    expect(m.root.querySelector(".grp.rest a.card h3")!.textContent).toContain("Pinned one");
+    expect(m.root.querySelector(".gskel")).toBeNull();
+    await waitFor(() => m.root.querySelector(".gfoot"), "the live module");
+    const asked = calls.map(c => c.url).filter(u => !u.includes("haiku"));
+    expect(asked.filter(u => ["/api/viewers/me", "/api/hosted/me", "/api/me/bot", "/_app/feedback/config", "/api/artifacts", "/api/viewers/me/attention"].includes(u))).toEqual([]);
+  });
+
   it("delete calls DELETE only after confirm", async () => {
     const calls = stubApi();
     const confirmSpy = vi.fn(() => false);
@@ -409,8 +503,86 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 });
 
+describe("the gallery's pending states", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  beforeEach(async () => { await freshModules(); FakeWorker.all = []; vi.stubGlobal("SharedWorker", FakeWorker); });
+  afterEach(async () => {
+    unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", "/");
+    for (const m of ["./ui/gallery-working.ts", "./ui/TagsPage.svelte", "./q/index.ts", "./q/InboxPage.svelte"]) vi.doUnmock(m);
+    await freshModules();
+  });
+  /** Mounts the gallery at `path`, recording every state `main` passes through. */
+  async function mountAt(path: string) {
+    history.replaceState(null, "", path);
+    const { default: Gallery } = await import("./ui/Gallery.svelte");
+    const { mount } = await import("./test/svelte");
+    const { root, unmount } = mount(Gallery, {});
+    unmountGallery = unmount;
+    const main = root.querySelector("main.gal")!;
+    const states: string[] = [];
+    const look = () => {
+      const s = `busy ${main.getAttribute("aria-busy") ?? "-"} skeleton ${main.querySelector(".gskel") ? 1 : 0} status ${main.querySelectorAll("[role=status]").length} cards ${main.querySelectorAll("a.card").length} banner ${main.querySelector(":scope > .bbanner") ? 1 : 0} summary ${main.querySelector(".inbox-sum") ? 1 : 0}`;
+      if (states.at(-1) !== s) states.push(s);
+    };
+    look();
+    new MutationObserver(look).observe(root, { subtree: true, childList: true, attributes: true });
+    return { root, main, states };
+  }
+  const failing = (what: string) => () => { throw new Error(`${what} did not load`); };
+
+  it("is busy, with one polite status, until the content is in, then neither", async () => {
+    stubApi(403);
+    const { main, states } = await mountAt("/");
+    await waitFor(() => main.querySelector("a.card"), "the cards");
+    expect(states[0]).toBe("busy true skeleton 1 status 1 cards 0 banner 0 summary 0");
+    expect(states.at(-1)).toBe("busy - skeleton 0 status 0 cards 2 banner 0 summary 0");
+  });
+
+  for (const [path, chunk, mod] of [
+    ["/tags", "the lazy module", "./ui/gallery-working.ts"],
+    ["/tags", "the Tags page", "./ui/TagsPage.svelte"],
+    ["/inbox", "the question module", "./q/index.ts"],
+    ["/inbox", "the inbox page", "./q/InboxPage.svelte"],
+  ] as const) {
+    it(`ends the skeleton at ${path} with a message and a way to reload when ${chunk} does not load`, async () => {
+      vi.doMock(mod, failing(chunk));
+      stubApi(200, "ok", { summary: { unread: 0, questions: [], latest: [] }, questions: [] });
+      const { main, states } = await mountAt(path);
+      const alert = await waitFor(() => main.querySelector<HTMLElement>("[role=alert]"), "the message");
+      expect(alert.textContent).toContain("This page could not load.");
+      expect(alert.querySelector("button")!.textContent).toBe("Reload to try again");
+      expect(main.querySelector(".gskel")).toBeNull();
+      expect(main.hasAttribute("aria-busy")).toBe(false);
+      expect(states.at(-1)).toMatch(/^busy - skeleton 0/);
+    });
+  }
+
+  it("shows ClaxBot's usage banner from the content's first render, above the cards", async () => {
+    stubApi(403);
+    const plain = globalThis.fetch as (u: string, i?: RequestInit) => Promise<Response>;
+    const { meBot, week } = await import("./bot/fixtures");
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => (url === "/api/me/bot" ? new Response(JSON.stringify(meBot({ week: week({ spent_milli: 1_700_000 }) }))) : plain(url, init))));
+    const { main, states } = await mountAt("/");
+    await waitFor(() => main.querySelector("a.card"), "the cards");
+    // Never cards without the banner above them.
+    expect(states.filter(s => !/cards 0/.test(s))).toEqual(["busy - skeleton 0 status 1 cards 2 banner 1 summary 0"]);
+    expect(main.firstElementChild!.className).toContain("bbanner");
+    expect(document.querySelector(".gbar .bot-meter.warn")).not.toBeNull();
+  });
+
+  it("brings Inbox into the header, and not the summary over the cards, when the owner's browser is known only after them", async () => {
+    stubApi(500, "ok", { summary: { unread: 2, questions: [], latest: [] }, questions: [] });
+    const real = globalThis.fetch as (url: string, init?: RequestInit) => Promise<Response>;
+    // The owner check's own token request (uncached) answers that this is the owner's browser.
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => (url === "/api/token" && init?.cache === "no-store" ? new Response(JSON.stringify({ token: "t" })) : real(url, init))));
+    const { root, main, states } = await mountAt("/");
+    await waitFor(() => root.querySelector(".gbar .inbox-link"), "Inbox in the header");
+    expect(states.some(s => /summary 1/.test(s))).toBe(false);
+    expect(main.querySelectorAll("a.card")).toHaveLength(2);
+  });
+});
+
 describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
-  beforeEach(() => { vi.resetModules(); FakeWorker.all = []; vi.stubGlobal("SharedWorker", FakeWorker); });
+  beforeEach(async () => { await freshModules(); FakeWorker.all = []; vi.stubGlobal("SharedWorker", FakeWorker); });
   afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", "/"); });
   const COLLAB = [{ type: "clax-artifacts", actions: ["read"], locations: ["*"] }];
   /** The routes as a browser sees them: the owner's (the token is served), a connected person's, or a LAN viewer's. */
@@ -444,12 +616,15 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     return root;
   }
 
-  it("shows People in the header to the owner and to a connected person, and not to a LAN viewer", async () => {
+  it("shows the Settings gear in the header to the owner and to a connected person, and not to a LAN viewer", async () => {
     for (const who of ["owner", "person"] as const) {
       stubAs(who);
       const root = await mountAt("/");
-      const link = await waitFor(() => root.querySelector<HTMLAnchorElement>(".gbar a.people-link"), `People for the ${who}`);
-      expect(link.getAttribute("href")).toBe("/people");
+      const link = await waitFor(() => root.querySelector<HTMLAnchorElement>(".gbar a.settings-link"), `Settings for the ${who}`);
+      expect(link.getAttribute("href")).toBe("/settings");
+      // The gear ends the header's links, before the search box and the theme switch, which never move.
+      expect(root.querySelector(".gbar .glinks")!.lastElementChild).toBe(link);
+      expect([...root.querySelector(".gbar")!.children].slice(-2).map(e => e.className)).toEqual(["search", "icon theme-switch"]);
       expect(link.hasAttribute("aria-current")).toBe(false);
       unmountGallery!(); unmountGallery = null; await freshModules();
     }
@@ -457,9 +632,24 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const root = await mountAt("/");
     await waitFor(() => root.querySelector("a.card"), "the cards");
     await waitFor(() => calls.some(c => c.url === "/api/viewers/me") && calls.some(c => c.url === "/api/token"), "the viewer and token requests");
-    // The header's links come from the lazy module: once it has loaded, the viewer is known too.
-    await vi.dynamicImportSettled();
-    expect(root.querySelector(".people-link")).toBeNull();
+    // The header's links render with its subtitle, once its answers are in.
+    await waitFor(() => root.querySelector(".gbar .sub")?.textContent?.includes("seen as Sam"), "the header");
+    expect(root.querySelector(".settings-link")).toBeNull();
+  });
+
+  it("takes Settings away when a screen finds a person revoked, once the daemon says so", async () => {
+    const calls = stubAs("person");
+    const root = await mountAt("/");
+    await waitFor(() => root.querySelector(".gbar a.settings-link"), "the gear");
+    const plain = globalThis.fetch as (u: string, i?: RequestInit) => Promise<Response>;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/viewers/me") { calls.push({ url, method: "GET" }); return new Response(JSON.stringify({ viewer: { public_id: "v1", display_name: "Sam", person: true, person_revoked_at: "2026-10-12T10:00:00Z" } })); }
+      return plain(url, init);
+    }));
+    const before = calls.length;
+    dispatchEvent(new Event("clax:people-gone"));
+    await waitFor(() => !root.querySelector(".gbar a.settings-link"), "the gear to go");
+    expect(calls.slice(before).map(c => c.url).filter(u => u === "/api/viewers/me" || u === "/api/hosted/me").sort()).toEqual(["/api/hosted/me", "/api/viewers/me"]);
   });
 
   it("gives a connected person's browser its inbox at /inbox, Inbox in the header, and the inbox and questions topics", async () => {
@@ -473,11 +663,11 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(calls.some(c => c.url === "/api/inbox?limit=1")).toBe(false);
   });
 
-  it("is the People page at /people: no artifacts are fetched, and the page follows the people and agents topics", async () => {
+  it("is Settings at /settings/people, showing People: no artifacts are fetched, and the screen follows the people and agents topics", async () => {
     const calls = stubAs("owner");
-    const root = await mountAt("/people");
-    await waitFor(() => root.querySelector(".ppl .person"), "the People page");
-    expect(root.querySelector(".gbar a.people-link")!.getAttribute("aria-current")).toBe("page");
+    const root = await mountAt("/settings/people");
+    await waitFor(() => root.querySelector(".stg .ppl h2")?.textContent === "People" && root.querySelector(".stg .ppl .note"), "the People screen");
+    expect(root.querySelector(".gbar a.settings-link")!.getAttribute("aria-current")).toBe("page");
     expect(root.querySelector(".gbar .search")).toBeNull();
     expect(calls.some(c => c.url === "/api/artifacts")).toBe(false);
     await workerWith("people", "agents");
@@ -492,16 +682,16 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
       unmountGallery!(); unmountGallery = null; await freshModules();
     }
     const calls = stubAs("owner");
-    const root = await mountAt("/people/x");
+    const root = await mountAt("/tags/x");
     await waitFor(() => calls.some(c => c.url === "/api/artifacts") && root.querySelector("a.card"), "the gallery");
-    expect(root.querySelector(".ppl")).toBeNull();
+    expect(root.querySelector(".stg, .qview, .tagsp")).toBeNull();
   });
 });
 
 describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
   const Q4 = { id: "t_aaaaaaaaaa", name: "Q4", colour: "blue" };
   const DESIGN = { id: "t_bbbbbbbbbb", name: "design", colour: "purple" };
-  beforeEach(() => { vi.resetModules(); tagsOn = { "7q3k9mzx2b4t": [DESIGN, Q4], aaaaaaaaaaaa: [Q4] }; });
+  beforeEach(async () => { await freshModules(); tagsOn = { "7q3k9mzx2b4t": [DESIGN, Q4], aaaaaaaaaaaa: [Q4] }; });
   afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); tagsOn = {}; history.replaceState(null, "", "/"); });
   const titles = (root: Element) => [...root.querySelectorAll("a.card h3")].map(h => h.textContent);
   const bar = (root: Element) => [...root.querySelectorAll<HTMLButtonElement>(".tagbar button.tag")];
@@ -514,7 +704,7 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // The bar lists the tags in use, the filter's pressed; a filter shows one list.
     expect(bar(root).map(b => [b.textContent, b.getAttribute("aria-pressed"), b.dataset.c])).toEqual([["design", "true", "purple"], ["Q4", "false", "blue"]]);
     expect(bar(root)[1].getAttribute("aria-label")).toBe("Filter by tag Q4");
-    expect(root.querySelector(".grp h2")).toBeNull();
+    expect(root.querySelector(".grp:not(.inbox-sum) h2")).toBeNull();
     const manage = await waitFor(() => root.querySelector<HTMLAnchorElement>(".tagbar a.tb-m")?.textContent === "Manage tags" && root.querySelector<HTMLAnchorElement>(".tagbar a.tb-m"), "Manage tags");
     expect(manage.getAttribute("href")).toBe("/tags");
     // Clear shows everything, and takes the filter out of the address.
@@ -594,9 +784,8 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
         vi.stubGlobal("confirm", () => true);
         const loads = calls.filter(c => c.url === "/api/tags").length;
         rows[0].querySelector<HTMLButtonElement>("button.tdel")!.click();
-        await waitFor(() => calls.filter(c => c.url === "/api/tags").length > loads && m.root.querySelector(".terr"), "the refusal after the reload");
-        await new Promise(r => setTimeout(r, 20));
-        expect(m.root.querySelector(".terr")!.textContent).toBe("Could not delete Q4: no such tag");
+        await waitFor(() => calls.filter(c => c.url === "/api/tags").length > loads && m.root.querySelector(".terr")?.textContent === "Could not delete Q4: it was deleted.", "the refusal after the reload");
+        expect(m.root.querySelector(".terr")!.textContent).toBe("Could not delete Q4: it was deleted.");
       }
       unmountGallery(); unmountGallery = null; await freshModules(); vi.unstubAllGlobals();
     }
@@ -604,7 +793,7 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
 });
 
 describe("getToken", () => {
-  beforeEach(() => { vi.resetModules(); });
+  beforeEach(freshModules);
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it("retries after a transient failure", async () => {

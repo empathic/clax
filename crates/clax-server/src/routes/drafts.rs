@@ -15,7 +15,6 @@
 
 use super::artifacts::{body_within, path};
 use axum::Json;
-use axum::body::Body;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -411,10 +410,12 @@ pub async fn list(
 /// draft's bytes for a path it writes (its HTML marked and tinted), or the
 /// base version's for one it does not, as stored (never wrapped: a draft
 /// page does not greet the shell). Served like content (the content
-/// policy for its origin), never cached (`no-store`), and with
+/// policy for its origin, after its artifact's `content_security_policy`:
+/// a draft follows its app), never cached (`no-store`), and with
 /// `Referrer-Policy: no-referrer`, so the page's requests do not carry its
 /// token in `Referer` (a page's own `<meta name="referrer">` still
-/// overrides it). 404 for an
+/// overrides it). A byte range is answered as a version's file answers
+/// one ([`clax_http::http_cache::stored_file`]). 404 for an
 /// unknown, revised or ended draft, a path it removes, and a base file
 /// withheld from the drafting agent.
 pub(crate) async fn serve(
@@ -433,11 +434,15 @@ pub(crate) async fn serve(
         .drafts
         .file(id.as_str(), agent, token, &rel)
         .ok_or_else(ApiError::not_found)?;
-    let (body, content_type) = match served {
+    let i2 = id.clone();
+    let csp = s
+        .store_call(move |st| st.content_security_policy(&i2))
+        .await?;
+    let (bytes, content_type) = match served {
         Served::Draft {
             bytes,
             content_type,
-        } => (Body::from(bytes.to_vec()), content_type),
+        } => (bytes.to_vec(), content_type),
         Served::Base { n } => {
             let (bytes, meta) = s
                 .store_call_async(move |st| async move {
@@ -446,23 +451,25 @@ pub(crate) async fn serve(
                         .ok_or(CoreError::NotFound)
                 })
                 .await?;
-            (Body::from(bytes), meta.content_type)
+            (bytes, meta.content_type)
         }
     };
-    let mut res = (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CACHE_CONTROL, "no-store".to_string()),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-            (header::REFERRER_POLICY, "no-referrer".to_string()),
-        ],
-        body,
-    )
-        .into_response();
+    let mut res =
+        clax_http::http_cache::stored_file(req, bytes, None, "no-store", move |status, body| {
+            (
+                status,
+                [
+                    (header::CONTENT_TYPE, content_type),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                    (header::REFERRER_POLICY, "no-referrer".to_string()),
+                ],
+                body,
+            )
+                .into_response()
+        });
     res.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        super::content::content_policy(s, req),
+        super::content::content_policy(s, req, csp),
     );
     res.extensions_mut()
         .insert(clax_http::content_policy::ContentPolicySet);

@@ -1009,6 +1009,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::site::{KIND_JOIN, MoveBy};
@@ -1332,7 +1333,7 @@ mod tests {
     fn not_now_keeps_a_pair_unsuggested_for_a_day() {
         let (_d, st) = store();
         page(&st, A, "/", "App");
-        let t0 = chrono::Utc::now();
+        let t0 = st.now_utc();
         st.answer_join_at(DAEMON, B, A, ANSWER_LATER, t0).unwrap();
         let at = |h: i64| {
             st.join_suggestions_at(B, "/", "", t0 + chrono::Duration::hours(h))

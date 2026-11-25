@@ -11,6 +11,7 @@ import 'package:clax_app/core/origins.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'paths.dart';
+import 'settle.dart' show stuckAfter;
 
 /// The embedded core of crates/clax-embed as the host builds it (the
 /// library `CLAX_EMBED_LIB` names), opened by the app's [CoreHost] on a
@@ -61,7 +62,7 @@ class RealCore {
 
     host.state.addListener(check);
     check();
-    final s = await settled.future.timeout(const Duration(minutes: 1));
+    final s = await settled.future.timeout(stuckAfter);
     host.state.removeListener(check);
     if (s is! CoreReady) throw StateError('the core did not open: $s');
     return RealCore._(dir, host);

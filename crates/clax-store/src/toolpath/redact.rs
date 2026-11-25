@@ -333,7 +333,13 @@ fn body_class(kind: &str, field: &str) -> Class {
         // ClaxBot (spec 2026-10-21-claxbot-design §9.1): script code is kept
         // by hash, never in the body; a script's title and error are the
         // model's text.
-        ("bot.run_start", "run" | "request" | "thread_ids" | "model" | "key_source") => Safe,
+        // A run's kind is `<surface>.<kind>`, names of a definition; who
+        // started it and from which run are IDs.
+        (
+            "bot.run_start",
+            "run" | "request" | "thread_ids" | "model" | "key_source" | "kind" | "started_by"
+            | "parent_run",
+        ) => Safe,
         (
             "bot.turn",
             "run" | "step" | "model" | "input_tokens" | "cached_tokens" | "output_tokens"
@@ -366,6 +372,12 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("bot.cancel", "run" | "by") => Safe,
         // A refusal before any model call: who, why (a code) and where.
         ("bot.refused", "person" | "reason" | "artifact") => Safe,
+        // A registered surface: its name is one word of the host's, its
+        // definition is named by hash, and the rest are IDs.
+        (
+            "bot.surface.registered",
+            "registration" | "name" | "def_hash" | "registered_by" | "replaces",
+        ) => Safe,
         ("view.run", "run") => Safe,
         ("view.admin", "page" | "subject_person") => Safe,
         // A search's words are the reader's text.
@@ -403,7 +415,8 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("queue.create" | "queue.update", "name" | "grant_name") => Text,
         (
             "queue.create" | "queue.update",
-            "queue_id" | "origins" | "reporters_see" | "op" | "member" | "role" | "grant_id",
+            "queue_id" | "origins" | "reporters_see" | "op" | "member" | "role" | "grant_id"
+            | "grant_origins",
         ) => Safe,
         (
             "queue.claim" | "queue.release",
@@ -414,6 +427,21 @@ fn body_class(kind: &str, field: &str) -> Class {
             "queue.fix" | "queue.verify" | "queue.reopen",
             "queue_id" | "thread_id" | "n" | "commit" | "reopen_count" | "reason",
         ) => Safe,
+        ("queue.preview", "url") => Path,
+        ("queue.preview", "issued_by") => Name,
+        (
+            "queue.preview",
+            "queue_id" | "thread_id" | "n" | "origin" | "ticket_id" | "for_person",
+        ) => Safe,
+        // A queue request (`crate::queue_requests`): the queue's name and
+        // the agent's note are its words; the rest is Clax's.
+        ("queue_request.ask", "name" | "note") => Text,
+        (
+            "queue_request.ask",
+            "request_id" | "origins" | "reporters_see" | "approver" | "grant_id",
+        ) => Safe,
+        ("queue_request.answer", "request_id" | "answer" | "queue_id") => Safe,
+        ("queue_request.close", "request_id" | "status") => Safe,
         ("confirmation.answer", "confirmation_id" | "decision" | "answer") => Safe,
         ("passkey.add", "credential_id" | "alg") => Safe,
         ("passkey.remove", "credential_id" | "reason") => Safe,
@@ -425,7 +453,9 @@ fn body_class(kind: &str, field: &str) -> Class {
 fn actor_class(field: &str) -> Class {
     match field {
         "type" | "session_id" | "harness" | "harness_session_id" | "agent_handle" | "public_id"
-        | "reason" | "grant_id" | "person" | "channel" | "on_behalf_of" => Class::Safe,
+        | "reason" | "grant_id" | "person" | "channel" | "on_behalf_of" | "ticket_id" => {
+            Class::Safe
+        }
         "display_name" | "client_name" => Class::Name,
         "transcript_path" => Class::Path,
         _ => Class::Unclassified,
@@ -443,9 +473,14 @@ fn anchor_class(field: &str) -> Class {
 
 fn fields_class(field: &str) -> Class {
     match field {
-        "icon" | "pinned" | "link_access" | "link_listed" | "db_read_grants" | "colour" => {
-            Class::Safe
-        }
+        "icon"
+        | "pinned"
+        | "link_access"
+        | "link_listed"
+        | "db_read_grants"
+        | "colour"
+        | "content_security_policy"
+        | "analytics" => Class::Safe,
         // A cost line's figures (`admin.cost_line`).
         "unit"
         | "cost_micro_usd"
@@ -520,6 +555,7 @@ pub(crate) fn is_local_remote(url: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

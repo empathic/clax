@@ -22,8 +22,10 @@
 //! artifact's site is served at `<artifact ID>.<SITE_DOMAIN>` (at
 //! `<artifact ID>.localhost` without one; [`site_hosts`]),
 //! `RETIRED_CONTENT_ORIGIN` (when set) is the retired content origin, where
-//! an asset's old address only redirects to its artifact's site, and
-//! clients are named by `CF-Connecting-IP`. The owner's token
+//! an asset's old address only redirects to its artifact's site,
+//! clients are named by `CF-Connecting-IP`, and a page view's country is
+//! the `CF-IPCountry` the Worker sets from `request.cf.country` (the crate's
+//! Site analytics). The owner's token
 //! (`CLAX_TOKEN`, else one the object made and keeps) still works for the
 //! CLI. Without `HOSTED`, no request reaches the object over a connection
 //! of the owner's machine (`clax_http::auth::conn_of` is `None` on
@@ -105,9 +107,17 @@
 //! `AppState::next_sweep_in` (a working record or presence report lapsing,
 //! a gone viewer dropping, a draft going idle, a detached stream's grace
 //! ending, a live seat going idle, a question's grace ending: graces run
-//! on no timer here, `questions::SweptGraces`), the grant expiry by
-//! `Store::grants_next_due`, and the store's planner refresh an hour after
-//! the last one once a request that may write was served. An alarm that
+//! on no timer here, `questions::SweptGraces`; on a hosted instance, the
+//! batch of page views a minute old and the UTC day's rollover,
+//! `clax_http::analytics`), the grant expiry by
+//! `Store::grants_next_due`, a queue lease's lapse, which the sweep
+//! announces, by `Store::next_lease_lapse`, and the store's planner refresh an hour after
+//! the last one once a request that may write was served, with the prune
+//! of ended ClaxBot runs and of site analytics' daily totals past their
+//! 13 months ([`prune_pass`]). A server built anew reads whether a day of
+//! page views is still open at its first event, so a wake sets no alarm
+//! for that read alone; the views not yet written when the object is
+//! evicted are lost (at most a minute of them). An alarm that
 //! fires for any of them also refreshes the price catalog once its cache
 //! is a day old (`clax_server::catalog::refresh_if_stale`, tried at most
 //! once an hour, within 45 s), last, after ClaxBot's drive and the next
@@ -271,6 +281,8 @@ struct Instance {
     kept: RefCell<String>,
     /// Whether the open hook questions' graces were started.
     graced: Cell<bool>,
+    /// Whether the page views' open day was read (`InstanceDo::revive`).
+    analytics_read: Cell<bool>,
     /// ClaxBot's driver (`crate::bot`).
     bot: crate::bot::WorkerBot,
     /// ClaxBot's web source, when the Worker has one
@@ -303,6 +315,9 @@ pub struct InstanceDo {
     /// refresh.
     wrote: Cell<bool>,
     last_optimize: Cell<f64>,
+    /// Whether the last prune of ended ClaxBot runs left more: the next
+    /// alarm, [`MIN_ALARM_MS`] away, prunes again ([`prune_wanted`]).
+    prune_more: Cell<bool>,
     /// When the alarm last tried a price catalog refresh (ms), so a
     /// catalog that cannot be read is tried at most once in
     /// [`CATALOG_RETRY_MS`].
@@ -732,6 +747,7 @@ fn worker_bot(
             Arc::new(AdminWebView(worker::send::SendWrapper::new(w)))
                 as Arc<dyn clax_http::bot::AdminWebCheck>
         }),
+        joins: None,
     });
     (bot, web)
 }
@@ -746,6 +762,18 @@ fn resume_after(env: &Env) -> std::time::Duration {
         .flatten()
         .filter(|ms| *ms >= 1_000);
     set.map_or(crate::bot::RESUME_AFTER, std::time::Duration::from_millis)
+}
+
+/// How old a batch of page views is written, when not
+/// `clax_http::analytics::MAX_AGE` (`None`): with the test routes on,
+/// `CLAX_TEST_ANALYTICS_BATCH_MS`, at least 1 ms (a test that waits for the
+/// alarm to write a batch).
+fn analytics_batch_age(env: &Env) -> Option<std::time::Duration> {
+    (var(env, "CLAX_TEST_ROUTES") == "1")
+        .then(|| var(env, "CLAX_TEST_ANALYTICS_BATCH_MS").parse::<u64>().ok())
+        .flatten()
+        .filter(|ms| *ms >= 1)
+        .map(std::time::Duration::from_millis)
 }
 
 /// The storage key of the web fixtures `POST /_worker/web-fixtures` last
@@ -863,6 +891,9 @@ impl Instance {
         .map_err(rust_err)?;
         // Each artifact's object, not the default (no stores on wasm32).
         app.app_data = app_data;
+        if let Some(age) = analytics_batch_age(env) {
+            app.analytics = Arc::new(clax_http::analytics::Analytics::with_max_age(age));
+        }
         erase_deleted(&app);
         app.clax_app = Arc::new(clax_app(env)?);
         // Each person new to the instance is seeded with the web build's
@@ -903,6 +934,7 @@ impl Instance {
             sockets: RefCell::default(),
             kept: RefCell::new(kept_json),
             graced: Cell::new(false),
+            analytics_read: Cell::new(false),
             bot,
             web,
             test_web,
@@ -1279,6 +1311,16 @@ impl InstanceDo {
         if !inst.graced.replace(true) {
             let _ = clax_http::views::question::arm_open_hooks(&inst.app).await;
         }
+        // A server built anew does not know whether a day of page views is
+        // still open, and wants a sweep at once until it reads it
+        // (`Analytics::next_due_in`): read here, once, at its first event,
+        // so a wake sets no alarm for that read alone.
+        if inst.app.hosted.is_some() && !inst.analytics_read.replace(true) {
+            let a = inst.app.analytics.clone();
+            if let Err(e) = inst.app.store.call(move |st| a.sweep(st)).await {
+                worker::console_warn!("writing the page views failed: {e}");
+            }
+        }
         if self.revived.replace(true) {
             return;
         }
@@ -1391,15 +1433,23 @@ impl InstanceDo {
             // Unknown: look again a sweep period from now.
             Err(_) => Some(now),
         };
-        let optimize = self
-            .wrote
-            .get()
-            .then(|| self.last_optimize.get() + OPTIMIZE_MS);
+        // A queue lease's lapse, announced by the sweep.
+        let leases = match inst.app.store.call(|st| st.next_lease_lapse()).await {
+            Ok(t) => t.map(|t| t.timestamp_millis() as f64),
+            Err(_) => Some(now),
+        };
+        let optimize = prune_wanted(
+            self.wrote.get(),
+            self.last_optimize.get(),
+            self.prune_more.get(),
+            now,
+        )
+        .next;
         let unseen = match inst.app.next_unseen().await {
             Ok(t) => t.map(|t| t.timestamp_millis() as f64),
             Err(_) => Some(now),
         };
-        [sweep, grants, optimize, unseen]
+        [sweep, grants, leases, optimize, unseen]
             .into_iter()
             .flatten()
             .reduce(f64::min)
@@ -1564,9 +1614,11 @@ impl InstanceDo {
     /// - `POST /_worker/hibernate` drops the server and builds it again on
     ///   the same storage, as a wake from hibernation does, keeping the
     ///   sockets;
-    /// - `GET /_worker/alarm`: `{alarm, now, bot}`, the time the object's
-    ///   alarm is set for (ms, `null` with none), the object's time, and
-    ///   when ClaxBot's driver wants the alarm (`null`: never);
+    /// - `GET /_worker/alarm[?artifact=<ID>]`: `{alarm, now, bot,
+    ///   views_pending}`, the time the object's alarm is set for (ms,
+    ///   `null` with none), the object's time, when ClaxBot's driver wants
+    ///   the alarm (`null`: never), and how many page views of the artifact
+    ///   are not yet written (0 without one);
     /// - `GET` and `POST /_worker/sandbox`: the ClaxBot sandbox's
     ///   conformance cases against the Worker Loader sandbox, run on this
     ///   object (`crate::sandbox::checks`);
@@ -1632,9 +1684,26 @@ impl InstanceDo {
             let now = now_ms();
             // When ClaxBot's driver wants the alarm (ms), `null` for never.
             let bot = inst.bot.due(now).map(|t| t as i64);
-            return Some(Response::from_json(
-                &serde_json::json!({ "alarm": alarm, "now": now as i64, "bot": bot }),
-            ));
+            let aid = req
+                .uri()
+                .query()
+                .unwrap_or_default()
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("artifact="))
+                .unwrap_or_default();
+            let views_pending: u64 = inst
+                .app
+                .analytics
+                .pending(aid)
+                .iter()
+                .map(|(_, sums)| sums.views)
+                .sum();
+            return Some(Response::from_json(&serde_json::json!({
+                "alarm": alarm,
+                "now": now as i64,
+                "bot": bot,
+                "views_pending": views_pending,
+            })));
         }
         // What a wake finds: only what storage kept.
         inst.keep(&self.state);
@@ -1766,6 +1835,7 @@ impl DurableObject for InstanceDo {
             alarm: Cell::new(None),
             wrote: Cell::new(false),
             last_optimize: Cell::new(now_ms()),
+            prune_more: Cell::new(false),
             last_catalog_try: Cell::new(f64::NEG_INFINITY),
             bodies: BodyBudget::default(),
         }
@@ -1977,14 +2047,88 @@ impl InstanceDo {
         if unseen_due {
             let _ = inst.app.reap_unseen().await;
         }
-        if self.wrote.get() && now - self.last_optimize.get() >= OPTIMIZE_MS {
+        let wanted = prune_wanted(
+            self.wrote.get(),
+            self.last_optimize.get(),
+            self.prune_more.get(),
+            now,
+        );
+        if wanted.optimize {
             self.last_optimize.set(now);
             self.wrote.set(false);
             let _ = inst.app.store.call(|st| st.optimize()).await;
-            // Ended ClaxBot runs' journals and drafts past their keep, at
-            // the planner refresh's pace (a run's end is a write).
-            let _ = inst.app.store.call(|st| st.prune_ended_runs()).await;
         }
+        if wanted.prune {
+            // At the planner refresh's pace (a run's end is a write), and
+            // at every alarm while a pass leaves more.
+            let more = inst
+                .app
+                .store
+                .call(|st| Ok(prune_pass(st)))
+                .await
+                .unwrap_or(false);
+            self.prune_more.set(more);
+        }
+    }
+}
+
+/// The prune passes one alarm runs: one, bounded in its transactions'
+/// writes, which the hosted Worker caps; a pass that leaves more has the
+/// next alarm prune again ([`prune_wanted`]).
+const PRUNE_PASSES_PER_ALARM: usize = 1;
+
+/// One alarm's prune: [`PRUNE_PASSES_PER_ALARM`] passes of ended ClaxBot
+/// runs' journals and drafts past their keep, then as many retention
+/// passes of site analytics' daily totals past theirs
+/// (`clax_http::analytics::retention`, which an instance with no views,
+/// and so no rollover, still needs). Whether either left more; a failure
+/// is logged and leaves none.
+fn prune_pass(st: &Store) -> bool {
+    let runs = match st.prune_ended_runs_while(PRUNE_PASSES_PER_ALARM, None) {
+        Ok((p, _)) => p.more,
+        Err(e) => {
+            tracing::warn!(error = %e, "ClaxBot run prune failed");
+            false
+        }
+    };
+    let analytics = match clax_http::analytics::retention(st, PRUNE_PASSES_PER_ALARM) {
+        Ok(p) => p.more,
+        Err(e) => {
+            tracing::warn!(error = %e, "site analytics retention failed");
+            false
+        }
+    };
+    runs || analytics
+}
+
+/// What the alarm does of the planner refresh and the prune of ended
+/// ClaxBot runs ([`prune_wanted`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PruneWanted {
+    /// The planner refresh is due now.
+    optimize: bool,
+    /// The prune is due now.
+    prune: bool,
+    /// When either is next due (ms), with nothing more written: at once
+    /// (the alarm's soonest) while the last prune left more.
+    next: Option<f64>,
+}
+
+/// [`PruneWanted`] at `now` (ms): the planner refresh, and the prune with
+/// it, are due [`OPTIMIZE_MS`] after the last once a request that may
+/// write was served (`wrote`); the prune is due at every alarm besides
+/// while the last pass left more (`more`).
+fn prune_wanted(wrote: bool, last_optimize: f64, more: bool, now: f64) -> PruneWanted {
+    let optimize = wrote && now - last_optimize >= OPTIMIZE_MS;
+    let next = match (more, wrote) {
+        (true, _) => Some(now),
+        (false, true) => Some(last_optimize + OPTIMIZE_MS),
+        (false, false) => None,
+    };
+    PruneWanted {
+        optimize,
+        prune: optimize || more,
+        next,
     }
 }
 
@@ -2104,8 +2248,153 @@ impl InstanceDo {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    /// The planner refresh and the prune are due [`OPTIMIZE_MS`] after
+    /// the last once something was written, and the prune at every alarm
+    /// while its last pass left more.
+    #[test]
+    fn the_alarm_prunes_again_at_once_while_the_last_pass_left_more() {
+        let last = 1_000.0;
+        let soon = last + 1.0;
+        let late = last + OPTIMIZE_MS;
+        assert_eq!(
+            prune_wanted(false, last, false, soon),
+            PruneWanted {
+                optimize: false,
+                prune: false,
+                next: None
+            }
+        );
+        assert_eq!(
+            prune_wanted(true, last, false, soon),
+            PruneWanted {
+                optimize: false,
+                prune: false,
+                next: Some(late)
+            }
+        );
+        assert_eq!(
+            prune_wanted(true, last, false, late),
+            PruneWanted {
+                optimize: true,
+                prune: true,
+                next: Some(late)
+            }
+        );
+        for wrote in [false, true] {
+            assert_eq!(
+                prune_wanted(wrote, last, true, soon),
+                PruneWanted {
+                    optimize: false,
+                    prune: true,
+                    next: Some(soon)
+                },
+                "{wrote}"
+            );
+        }
+    }
+
+    /// A backlog over one pass is drained by alarms one after another,
+    /// each running one bounded pass, with no write between them.
+    #[test]
+    fn a_prune_backlog_drains_over_alarms_of_one_pass_each() {
+        use clax_store::bot_runs::{PRUNE_RUNS_PER_TX, PRUNE_TXS_PER_PASS};
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().join("clax"));
+        let clock = Arc::new(clax_core::working::ManualClock::at("2026-10-21T10:00:00Z"));
+        let st = clax_store::Store::open_with_clock(&home, clock).unwrap();
+        let capacity = PRUNE_RUNS_PER_TX * PRUNE_TXS_PER_PASS;
+        let runs = capacity * 2 + 5;
+        rusqlite::Connection::open(home.db_path())
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
+                        model, key_source, base_version, created_at, updated_at, ended_at)
+                 WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < {runs})
+                 SELECT printf('01JC%022d', i), 'a', 'u', 'thread', '[]', 'finished',
+                        'claude-sonnet-5-5', 'instance', 1, '2026-10-01T00:00:00.000Z',
+                        '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z'
+                   FROM n;
+                 INSERT INTO bot_calls (run_id, step_n, seq, attempt, op, args_hash, ok,
+                        result_json, at)
+                 SELECT id, 1, 0, 1, 'threads.read', 'h', 1, '{{}}', '2026-10-01T00:00:00.000Z'
+                   FROM bot_runs;"
+            ))
+            .unwrap();
+        // The first alarm is the planner refresh's, after a write.
+        let (mut wrote, mut more, mut now) = (true, false, OPTIMIZE_MS);
+        let mut alarms = Vec::new();
+        for _ in 0..5 {
+            let wanted = prune_wanted(wrote, 0.0, more, now);
+            if !wanted.prune {
+                break;
+            }
+            wrote = false;
+            let (p, passes) = st
+                .prune_ended_runs_while(PRUNE_PASSES_PER_ALARM, None)
+                .unwrap();
+            alarms.push((p.calls, passes));
+            more = p.more;
+            now = wanted.next.unwrap_or(now) + MIN_ALARM_MS;
+        }
+        assert_eq!(alarms, [(capacity, 1), (capacity, 1), (5, 1)]);
+    }
+
+    /// The alarm's prune deletes site analytics' daily totals past their
+    /// keep (13 calendar months), as an instance with no views still must.
+    #[test]
+    fn the_alarms_prune_deletes_site_analytics_past_their_keep() {
+        use clax_core::analytics::{Batch, DaySums, Device, Seen, View, parse_day};
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(clax_core::working::ManualClock::at("2026-11-19T10:00:00Z"));
+        let st =
+            clax_store::Store::open_with_clock(&clax_core::Home::at(dir.path().join("c")), clock)
+                .unwrap();
+        let p = clax_core::publish::validate(
+            serde_json::from_value(serde_json::json!({
+                "title": "Doc",
+                "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (a, _) = st
+            .create_artifact(&clax_core::audit::AuditCtx::DAEMON, p, None)
+            .unwrap();
+        let aid = clax_core::ArtifactId::parse(&a.id).unwrap();
+        let mut batch = Batch::default();
+        for d in ["2025-10-18", "2025-10-19"] {
+            let mut sums = DaySums::default();
+            sums.add(
+                &View {
+                    path: "index.html".into(),
+                    referrer: String::new(),
+                    country: "XX".into(),
+                    device: Device::Desktop,
+                    version: 1,
+                    framed: false,
+                    load_ms: None,
+                    lcp_ms: None,
+                },
+                Seen::default(),
+            );
+            batch.sums.insert((a.id.to_string(), d.into()), sums);
+        }
+        st.analytics_record(&batch).unwrap();
+        assert!(!prune_pass(&st), "nothing left for the next alarm");
+        let r = st
+            .analytics_range(
+                &aid,
+                parse_day("2025-10-18").unwrap(),
+                parse_day("2025-10-19").unwrap(),
+            )
+            .unwrap();
+        let views: Vec<u64> = r.days.iter().map(|d| d.views).collect();
+        assert_eq!(views, [0, 1], "2025-10-19 is the oldest day kept");
+    }
 
     /// Records the checks started and waited for, and the wait's bound.
     #[derive(Default)]

@@ -1,7 +1,9 @@
 //! A scripted stand-in for the Anthropic Messages API, for ClaxBot's
 //! daemon-backed tests: `POST /v1/messages` answers each request with the
 //! next scripted turn (as the streaming format's server-sent events, or a
-//! 400 once the script is spent), `GET /v1/models` lists two models.
+//! 400 once the script is spent; a turn scripted as a refusal,
+//! [`Turn::refused`], is answered as that error), `GET /v1/models` lists
+//! two models.
 //! Every request is kept ([`FakeMessages::requests`]). No model is called.
 
 use axum::Router;
@@ -17,6 +19,9 @@ use std::sync::{Arc, Mutex};
 pub struct Turn {
     blocks: Vec<Value>,
     stop: &'static str,
+    /// A refusal in place of a turn: its status, error type, message and
+    /// `request-id` header.
+    refusal: Option<(u16, String, String, String)>,
 }
 
 impl Turn {
@@ -25,6 +30,7 @@ impl Turn {
         Turn {
             blocks: vec![json!({"type": "text", "text": text})],
             stop: "end_turn",
+            refusal: None,
         }
     }
 
@@ -37,6 +43,7 @@ impl Turn {
                        "input": {"title": title, "code": code}}),
             ],
             stop: "tool_use",
+            refusal: None,
         }
     }
 
@@ -48,6 +55,29 @@ impl Turn {
                                 "input": {"summary": summary}}),
             ],
             stop: "tool_use",
+            refusal: None,
+        }
+    }
+
+    /// A turn that calls `give_up {reason}`.
+    pub fn give_up(reason: &str) -> Turn {
+        Turn {
+            blocks: vec![
+                json!({"type": "tool_use", "id": "tu_give_up", "name": "give_up",
+                                "input": {"reason": reason}}),
+            ],
+            stop: "tool_use",
+            refusal: None,
+        }
+    }
+
+    /// No turn: the request is refused with HTTP `status`, its error of
+    /// type `kind` saying `message`, and `request-id: <request_id>`.
+    pub fn refused(status: u16, kind: &str, message: &str, request_id: &str) -> Turn {
+        Turn {
+            blocks: Vec::new(),
+            stop: "",
+            refusal: Some((status, kind.into(), message.into(), request_id.into())),
         }
     }
 
@@ -129,6 +159,15 @@ async fn messages(State(i): State<Arc<Inner>>, body: axum::Json<Value>) -> Respo
         .unwrap_or_else(|e| e.into_inner())
         .pop_front();
     match next {
+        Some(Turn {
+            refusal: Some((status, kind, message, request_id)),
+            ..
+        }) => (
+            axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST),
+            [("request-id", request_id)],
+            axum::Json(json!({"type": "error", "error": {"type": kind, "message": message}})),
+        )
+            .into_response(),
         Some(t) => ([("content-type", "text/event-stream")], t.sse()).into_response(),
         None => (
             axum::http::StatusCode::BAD_REQUEST,

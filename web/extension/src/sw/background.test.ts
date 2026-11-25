@@ -6,11 +6,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { fakeChrome, type FakeChrome } from "../../test/fake-chrome";
 import { panelPath, startBackground } from "./background";
+import { settled } from "../../../shell/src/test/settled";
 
 const ORIGIN = "http://localhost:5173";
 const URL1 = `${ORIGIN}/`;
 const tab = (id: number, ...url: [string?]) => ({ id, url: url.length ? url[0] : URL1, windowId: 1, active: true }) as chrome.tabs.Tab;
-const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)); };
+const settle = settled;
 
 let c: FakeChrome;
 /** The tabs whose current document has the overlay, per fake Chrome. */

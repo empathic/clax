@@ -12,6 +12,7 @@
   // a press outside, or focus leaving it, closes it. While it is open no
   // printable key typed in it reaches the shell's keys.
   import { tick } from "svelte";
+  import { firstItem, menuKey } from "../ui/menu-keys";
   import { badge, feedback } from "./state.svelte";
 
   const fb = $derived(feedback.current);
@@ -21,27 +22,14 @@
   let menu: HTMLDivElement | undefined = $state();
   async function toggle() {
     open = !open;
-    if (open) { await tick(); menu?.querySelector<HTMLElement>("button")?.focus(); }
+    if (open) { await tick(); firstItem(menu)?.focus(); }
   }
   function close() { open = false; button?.focus(); }
   function act(f: () => void) { open = false; f(); }
   function outside(e: PointerEvent) {
     if (open && !menu?.contains(e.target as Node) && !button?.contains(e.target as Node)) open = false;
   }
-  function key(e: KeyboardEvent) {
-    if (!open) return;
-    if (e.key === "Tab") return;
-    const items = Array.from(menu?.querySelectorAll<HTMLElement>("button") ?? []);
-    const i = items.indexOf(document.activeElement as HTMLElement);
-    const to = { ArrowDown: (i + 1) % items.length, ArrowUp: (i - 1 + items.length) % items.length, Home: 0, End: items.length - 1 }[e.key];
-    if (e.key !== "Escape" && to === undefined) {
-      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) e.stopPropagation();
-      return;
-    }
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.key === "Escape") close(); else items[to!]?.focus();
-  }
+  function key(e: KeyboardEvent) { if (open) menuKey(e, menu, close); }
   function leave(e: FocusEvent) {
     if (open && !(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) open = false;
   }

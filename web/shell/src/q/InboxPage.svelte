@@ -7,7 +7,8 @@
   // quiet line when notifications are blocked). Search text and filters
   // (Unread, kind, page, agent, dates) are kept in the URL. Open questions,
   // approval requests (spec 2026-10-08-multi-agent-multi-person §9.5) and
-  // connection requests (§3.2) are pinned on top as cards under one heading
+  // connection requests (§3.2), agents' requests to connect another Clax
+  // and agents' requests for a report queue are pinned on top as cards under one heading
   // with their count ("Questions" when all are questions, else "Waiting on
   // you"). Below them each page appears once, as a group (`InboxGroup`),
   // newest group first, items about no page in one group, "Other". A group
@@ -22,7 +23,8 @@
   // list is fetched again when the search changes, on a bulk mark, and when
   // the stream resyncs. A row opens its item and marks it read; its dot
   // marks it without opening. `?q=<question>` scrolls to that question's
-  // card and focuses it, and `?approval=<request>` to that request's. A
+  // card and focuses it, and `?approval=<request>`, `?remote_request=<request>`
+  // and `?queue_request=<request>` to that request's. A
   // decided card stays where it is, saying how; a request decided before
   // shows as a card in its group. A machine that connected with an invite
   // and an agent that ended are rows.
@@ -39,6 +41,7 @@
   import { onMount } from "svelte";
   import { type InboxFilter, type InboxItem, type InboxKind, type StripAgent, type TagRef, getToken, listArtifacts } from "../api";
   import TagPicker from "../ui/TagPicker.svelte";
+  import { failureText } from "../trouble";
   import { filterLabel } from "../view/tag-picker-model";
   import { listTags } from "../view/tags-api";
   import { canonical, holds, refsForUrl, same, toggle as toggleTag } from "../view/tags-model";
@@ -55,6 +58,7 @@
   import { cardsOf, confirmations } from "./confirm.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
   import RemoteRequestCard from "./RemoteRequestCard.svelte";
+  import QueueRequestCard from "./QueueRequestCard.svelte";
   import InboxGroup from "./InboxGroup.svelte";
   import InboxRow from "./InboxRow.svelte";
   import { inboxAgents } from "./api";
@@ -70,6 +74,9 @@
     /** The page's stream, whose `tags` events refresh the Tags filter's list. */
     stream?: EventStream;
     now?: Date;
+    /** Called once the page shows its first data: its cards, groups and
+     * agent strip, its filters' artifacts and tags, and whether the owner's. */
+    onready?: () => void;
   };
   const p: Props = $props();
   const inbox = $derived(p.inbox ?? shared().inbox);
@@ -94,16 +101,16 @@
   /** How long typing waits before the search applies. */
   const DEBOUNCE_MS = 250;
   /** The kinds shown as cards above the groups, and how many such items one fetch lists. */
-  const CARD_KINDS: InboxKind[] = ["question", "approval", "connection", "remote_request"];
+  const CARD_KINDS: InboxKind[] = ["question", "approval", "connection", "remote_request", "queue_request"];
   const MAX_CARDS = 200;
-  /** A card's data attribute: `data-question`, `data-approval` or `data-request`. */
-  type CardKind = "question" | "approval" | "request";
+  /** A card's data attribute: `data-question`, `data-approval`, `data-request` or `data-queue-request`. */
+  type CardKind = "question" | "approval" | "request" | "queue-request";
   /** The `/inbox` query parameters naming a card to focus, and its kind. */
-  const CARD_PARAMS: [string, CardKind][] = [["q", "question"], ["approval", "approval"], ["remote_request", "request"]];
-  const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes", remote_request: "Connect a Clax" };
+  const CARD_PARAMS: [string, CardKind][] = [["q", "question"], ["approval", "approval"], ["remote_request", "request"], ["queue_request", "queue-request"]];
+  const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes", remote_request: "Connect a Clax", queue_request: "Queue requests" };
   const fmt = (n: number | "10000+") => (n === "10000+" ? "10,000+" : n.toLocaleString("en-US"));
   /** Says what failed: `what` ("load the inbox"), and why. */
-  const oops = (what: string) => (e: unknown) => { error = `Could not ${what}: ${e instanceof Error ? e.message : String(e)}`; };
+  const oops = (what: string) => (e: unknown) => { error = failureText(`Could not ${what}`, e); };
   const loadFailed = oops("load the inbox");
 
   /** The list's groups and the cursor of its next page of groups. */
@@ -112,7 +119,7 @@
   let filter = $state<InboxFilter>(initial);
   let search = $state(initial.q ?? "");
   const asked = new URLSearchParams(location.search);
-  // The card to focus once listed: a question's (`?q=`), an approval request's (`?approval=`) or a connection request's (`?remote_request=`).
+  // The card to focus once listed: a question's (`?q=`), an approval request's (`?approval=`), a connection request's (`?remote_request=`) or a queue request's (`?queue_request=`).
   type Target = { kind: CardKind; id: string };
   const targetOf = (u: URLSearchParams): Target | null => {
     for (const [param, kind] of CARD_PARAMS) { const id = u.get(param); if (id) return { kind, id }; }
@@ -153,8 +160,8 @@
   // A card's view: the question feed's (live), else the item's.
   const qview = (i: InboxItem) => (i.question && (questions.get(i.question.id) ?? i.question))!;
   const cards = $derived(cardItems.filter(i => asCard.includes(i.id)).map(qview).sort((a, b) => a.created_at.localeCompare(b.created_at)));
-  /** Whether `i` is a decision's card: an approval request, a machine's request to connect, or an agent's request to connect another Clax. */
-  const decision = (i: InboxItem) => i.kind === "approval" || i.kind === "remote_request" || (i.kind === "connection" && i.connection?.via !== "invite");
+  /** Whether `i` is a decision's card: an approval request, a machine's request to connect, an agent's request to connect another Clax, or an agent's request for a report queue. */
+  const decision = (i: InboxItem) => i.kind === "approval" || i.kind === "remote_request" || i.kind === "queue_request" || (i.kind === "connection" && i.connection?.via !== "invite");
   const decisions = $derived(cardItems.filter(decision).sort((a, b) => a.seq - b.seq));
   // The cards pinned above the groups, under one heading: "Questions" when all are, else "Waiting on you".
   const pinned = $derived(cards.length + decisions.length);
@@ -188,8 +195,13 @@
     asCard = [...asCard, ...items.filter(i => i.kind === "question" && i.question && qview(i).status === "open" && !asCard.includes(i.id)).map(i => i.id)];
   };
 
-  // Each fetch is for the search at its start: an answer for an older one is dropped.
+  // Each fetch is for the search at its start: an answer for an older one is
+  // dropped. `gen` counts the loads (each a new list), `refreshes` the
+  // refreshes of one list, which leave a Show more on its way alone;
+  // `loading` is the load on its way, with whether it keeps the cards closed.
   let gen = 0;
+  let refreshes = 0;
+  let loading: { keep: boolean } | null = null;
   /** The unread items shown as cards: open questions and decisions. */
   const fetchCards = async (): Promise<InboxItem[]> => {
     const kind = filter.kind?.length ? CARD_KINDS.filter(k => filter.kind!.includes(k)) : CARD_KINDS;
@@ -214,11 +226,15 @@
     return [...kept, ...c];
   };
 
+  // The first load's end, with its strip's (`onready`).
+  let loadedOnce: (() => void) | null = null;
+  const firstLoad = new Promise<void>(r => { loadedOnce = r; });
   /** Fetches the cards and the first page of groups, replacing the list;
    * `keep` keeps the cards closed here, for the same search. */
   async function load(keep = true): Promise<void> {
     const g = ++gen;
-    void loadStrip();
+    loading = { keep };
+    const stripped = loadStrip();
     try {
       const [c, l] = await Promise.all([fetchCards(), fetchGroups()]);
       if (g !== gen) return;
@@ -227,11 +243,14 @@
       list = l;
       opening(l.groups, l.groups.length === 1);
       void fill(g);
-      // `?q=`, `?approval=` or `?remote_request=`: that card takes focus, once.
+      // `?q=`, `?approval=`, `?remote_request=` or `?queue_request=`: that card takes focus, once.
       const t = target;
       if (t) queueMicrotask(() => { if (toCard(t.id, t.kind)) target = null; });
     } catch (e) {
       if (g === gen) loadFailed(e);
+    } finally {
+      if (g === gen) loading = null;
+      void stripped.then(() => { loadedOnce?.(); loadedOnce = null; });
     }
   }
 
@@ -241,12 +260,16 @@
    * and a live change refresh; a new search loads. */
   async function refresh(): Promise<void> {
     if (!list) return load();
-    const g = ++gen;
+    // A load still on its way replaces the list: merging into the list it
+    // replaces would keep the groups the new search leaves out.
+    if (loading) return load(loading.keep);
+    const g = gen;
+    const r = ++refreshes;
     void loadStrip();
     try {
       const shown = list.groups.length;
       const [c, l] = await Promise.all([fetchCards(), fetchGroups(null, Math.min(MAX_GROUP_PAGE, Math.max(GROUP_PAGE, shown)))]);
-      if (g !== gen || !list) return;
+      if (g !== gen || r !== refreshes || !list) return;
       error = null;
       cardItems = keepCards(c, true);
       // Under the Unread filter a group read since drops out of the fetch:
@@ -255,7 +278,7 @@
       list = { groups: mergeGroups(list.groups, l.groups, gone), next: list.next ?? l.next };
       opening(l.groups, false);
     } catch (e) {
-      if (g === gen) loadFailed(e);
+      if (g === gen && r === refreshes) loadFailed(e);
     }
   }
 
@@ -298,7 +321,7 @@
 
   /** Scrolls to question `id`'s card (or approval or connection request `id`'s) and focuses it; false when no card shows it. */
   const toCard = (id: string, kind: CardKind = "question"): boolean => {
-    const el = [...document.querySelectorAll<HTMLElement>(`.inbox [data-${kind}]`)].find(e => e.dataset[kind] === id);
+    const el = [...document.querySelectorAll<HTMLElement>(`.inbox [data-${kind}]`)].find(e => e.getAttribute(`data-${kind}`) === id);
     el?.scrollIntoView?.({ block: "center" });
     el?.focus({ preventScroll: true });
     return !!el;
@@ -369,7 +392,7 @@
 
   // Where an item leads; a question's (`/inbox?q=…`) is this page, whose card, if shown, takes focus.
   const go = (url: string) => {
-    const m = /^\/inbox\?(q|approval|remote_request)=([^&]+)$/.exec(url);
+    const m = /^\/inbox\?(q|approval|remote_request|queue_request)=([^&]+)$/.exec(url);
     const kind = m && CARD_PARAMS.find(([param]) => param === m[1])?.[1];
     if (m && kind) toCard(decodeURIComponent(m[2]), kind);
     else (p.go ?? (u => location.assign(u)))(url);
@@ -403,10 +426,14 @@
 
   onMount(() => {
     document.title = "Inbox · Clax";
-    void getToken().then(t => { owner = !!t; });
-    void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
-    void loadTags();
-    void confirming.refresh();
+    const firsts = [
+      getToken().then(t => { owner = !!t; }),
+      listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {}),
+      loadTags(),
+      confirming.refresh(),
+      firstLoad,
+    ];
+    void Promise.all(firsts.map(f => Promise.resolve(f).catch(() => {}))).then(() => p.onready?.());
     // The tags themselves changed (made, renamed, recoloured, deleted).
     const offTags = p.stream?.watch(["gallery"], e => { if (e.type === "tags" && e.artifact_id == null) void loadTags(); });
     // An agent started, ended or was renamed, with no inbox item for it.
@@ -420,7 +447,7 @@
 
 {#snippet decided(list: InboxItem[])}
   {#if list.length}
-    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else if i.kind === "remote_request"}<RemoteRequestCard item={i} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} onRead={toggle} />{/if}{/each}</div>
+    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else if i.kind === "remote_request"}<RemoteRequestCard item={i} now={p.now} />{:else if i.kind === "queue_request"}<QueueRequestCard request={i.queue_request ?? null} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} onRead={toggle} />{/if}{/each}</div>
   {/if}
 {/snippet}
 

@@ -21,6 +21,18 @@ use std::time::Duration;
 
 #[derive(clap::Subcommand)]
 pub enum Cmd {
+    /// Make a report queue, or, run by an agent, ask its person for one.
+    ///
+    /// Run by hand, it makes the queue (you are its admin) and one service
+    /// grant for it. Run by an agent (under a harness, or on another
+    /// machine's Clax), it files a queue request and waits until the person
+    /// approves or denies it in Clax; once approved the queue is theirs and
+    /// the grant is the agent's, once. The grant's token and private key go
+    /// to --write-env when given (appended as CLAX_QUEUE, CLAX_QUEUE_TOKEN
+    /// and CLAX_QUEUE_KEY), else to stdout. --json gives the queue request
+    /// tool's result for an agent, `{queue, grant, token, private_key}` by
+    /// hand.
+    Create(CreateArgs),
     /// List the queue's reports, oldest first (without a queue, your
     /// queues).
     ///
@@ -56,6 +68,11 @@ pub enum Cmd {
     Reply(ReplyArgs),
     /// Propose a fix for a report you claimed; it then waits in
     /// fix_proposed for the reporter's verdict, and your claim ends.
+    ///
+    /// --preview also prints the fix's ticket (`cxf_…`, shown once): set
+    /// it as `CLAX_FIX_TICKET` on the pull request's preview deployment,
+    /// which attaches its own origin as the fix's verify URL. --json gives
+    /// `{report, ticket}`.
     Fix(FixArgs),
     /// Resolve a report you claimed, with a reason.
     Resolve(ResolveArgs),
@@ -83,6 +100,52 @@ pub struct QueueArg {
     /// The queue's ID (default: CLAX_QUEUE).
     #[arg(long, env = "CLAX_QUEUE")]
     pub queue: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct CreateArgs {
+    /// The queue's name (at most 120 characters).
+    pub name: String,
+    /// An origin the queue takes reports from: exact
+    /// (`https://app.example.com`) or a pattern
+    /// (`https://app-pr-*.example.com`). Repeat for more.
+    #[arg(long = "origin", value_name = "ORIGIN")]
+    pub origins: Vec<String>,
+    /// What reporters see: `own` (only their own reports, the default) or
+    /// `all`.
+    #[arg(long, value_enum)]
+    pub reporters_see: Option<SeeArg>,
+    /// Why an agent asks, shown to its person beside the request.
+    #[arg(long)]
+    pub note: Option<String>,
+    /// An env file to append the queue's ID and grant to (made, owner-only,
+    /// if missing) instead of printing the grant.
+    #[arg(long, value_name = "PATH")]
+    pub write_env: Option<std::path::PathBuf>,
+    /// For an agent: file the request and print its ID without waiting
+    /// (wait on it later with `--request <ID>`).
+    #[arg(long, conflicts_with = "request")]
+    pub no_wait: bool,
+    /// For an agent: wait on a request filed before, by its ID, instead of
+    /// filing one (the name and origins are then ignored).
+    #[arg(long, value_name = "ID")]
+    pub request: Option<String>,
+}
+
+/// What a queue's reporters see, as `create --reporters-see` takes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum SeeArg {
+    Own,
+    All,
+}
+
+impl SeeArg {
+    fn wire(self) -> &'static str {
+        match self {
+            SeeArg::Own => "own",
+            SeeArg::All => "all",
+        }
+    }
 }
 
 #[derive(clap::Args)]
@@ -165,6 +228,11 @@ pub struct FixArgs {
     /// When the fix can be checked, such as `release:0.6.1`.
     #[arg(long)]
     pub verify_after: Option<String>,
+    /// Also issue the fix's ticket, for its preview deployment to attach
+    /// its own origin as the fix's verify URL (the queue must list an
+    /// origin pattern).
+    #[arg(long)]
+    pub preview: bool,
 }
 
 #[derive(clap::Args)]
@@ -254,6 +322,7 @@ pub fn run(cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
     }
     let c = Client::connect(home, cli.port_for(home)?)?;
     match cmd {
+        Cmd::Create(a) => create(cli, home, &c, a),
         Cmd::Ls(a) => ls(cli, home, &c, a),
         Cmd::Show(a) => show(cli, home, &c, a),
         Cmd::Clip(a) => clip(cli, &c, a),
@@ -284,6 +353,9 @@ pub fn run(cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
                     body[k] = json!(v);
                 }
             }
+            if a.preview {
+                body["preview"] = json!(true);
+            }
             act(cli, &c, &a.act, "fix", body)
         }
         Cmd::Resolve(a) => {
@@ -295,6 +367,161 @@ pub fn run(cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
         }
         Cmd::Follow(_) => unreachable!("handled above"),
     }
+}
+
+/// `clax queue create`: the queue made directly by hand, or, for an
+/// agent (an agent channel, or a remote daemon's grant), a queue request
+/// filed and waited on through the `queue_request` tool until it is
+/// answered.
+fn create(cli: &crate::Cli, home: &Home, c: &Client, a: &CreateArgs) -> anyhow::Result<()> {
+    let env = match &a.write_env {
+        Some(p) => {
+            let p = std::path::absolute(p)?;
+            clax_mcp::tools::open_env_file(&p)
+                .with_context(|| format!("cannot append to {}", p.display()))?;
+            Some(p)
+        }
+        None => None,
+    };
+    if c.agent || c.remote().is_some() {
+        return request(cli, home, c, a, env);
+    }
+    if a.request.is_some() || a.no_wait {
+        bail!(
+            "invalid_args: --request and --no-wait are for an agent's request; by hand the queue is made at once"
+        );
+    }
+    let mut body = json!({"name": a.name, "origins": a.origins});
+    if let Some(see) = a.reporters_see {
+        body["reporters_see"] = json!(see.wire());
+    }
+    let made = c.request_with(reqwest::Method::POST, "/api/queues", Some(&body), None, &[])?;
+    let qid = made["queue"]["id"].as_str().unwrap_or_default().to_string();
+    let grant = c.request_with(
+        reqwest::Method::POST,
+        &format!("/api/queues/{qid}/service-grants"),
+        Some(&json!({"name": "clax queue create"})),
+        None,
+        &[],
+    )?;
+    let (token, key) = (
+        grant["token"].as_str().unwrap_or_default(),
+        grant["private_key"].as_str().unwrap_or_default(),
+    );
+    if let Some(p) = &env {
+        clax_mcp::tools::append_env(p, &qid, token, key)
+            .with_context(|| format!("cannot append to {}", p.display()))?;
+    }
+    if cli.json {
+        let mut v = json!({"queue": made["queue"], "grant": grant["grant"]});
+        match &env {
+            Some(p) => v["wrote"] = json!(p.to_string_lossy()),
+            None => {
+                v["token"] = json!(token);
+                v["private_key"] = json!(key);
+            }
+        }
+        return print_json(&v);
+    }
+    println!("made queue {qid}: {}", term::clean_line(&a.name));
+    print_grant(&qid, token, key, env.as_deref());
+    Ok(())
+}
+
+/// The grant's lines: where they were written, or the variables
+/// themselves.
+fn print_grant(qid: &str, token: &str, key: &str, env: Option<&std::path::Path>) {
+    let [q, t, k] = clax_mcp::tools::QUEUE_ENV_NAMES;
+    match env {
+        Some(p) => println!("wrote {q}, {t} and {k} to {}", p.display()),
+        None => {
+            println!("its service grant, shown this once (keep it in the app's secrets):");
+            println!("{q}={qid}");
+            println!("{t}={}", term::clean_line(token));
+            println!("{k}={}", term::clean_line(key));
+        }
+    }
+}
+
+/// `clax queue create` for an agent: the request filed (or `--request`'s)
+/// and waited on, call after call, until answered.
+fn request(
+    cli: &crate::Cli,
+    home: &Home,
+    c: &Client,
+    a: &CreateArgs,
+    env: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    use clax_mcp::tools::{QueueRequestArgs, ReportersSeeArg};
+    let write_env = env.as_ref().map(|p| p.to_string_lossy().into_owned());
+    let mut args = match &a.request {
+        Some(id) => {
+            check_id(id, "request")?;
+            QueueRequestArgs {
+                request_id: Some(id.clone()),
+                ..QueueRequestArgs::default()
+            }
+        }
+        None => QueueRequestArgs {
+            name: Some(a.name.clone()),
+            origins: Some(a.origins.clone()),
+            reporters_see: a.reporters_see.map(|s| match s {
+                SeeArg::Own => ReportersSeeArg::Own,
+                SeeArg::All => ReportersSeeArg::All,
+            }),
+            note: a.note.clone(),
+            ..QueueRequestArgs::default()
+        },
+    };
+    args.write_env = write_env.clone();
+    if a.no_wait {
+        args.timeout_s = Some(clax_mcp::tools::MIN_WAIT_S);
+    }
+    let mut told = false;
+    let v = loop {
+        let call = args.clone();
+        let v = tools::call_on(c, home, |t| async move {
+            t.queue_request(Parameters(call)).await
+        })?;
+        let id = v["request_id"].as_str().unwrap_or_default().to_string();
+        if v["call_again"] != true || a.no_wait {
+            break v;
+        }
+        if !told && !cli.json {
+            eprintln!(
+                "clax queue create: asked your person for queue {}; waiting for their answer in Clax (request {id})",
+                term::clean_line(&a.name)
+            );
+            told = true;
+        }
+        args = QueueRequestArgs {
+            request_id: Some(id),
+            write_env: write_env.clone(),
+            ..QueueRequestArgs::default()
+        };
+    };
+    if cli.json {
+        return print_json(&without_feedback(v));
+    }
+    let id = cell(&v["request_id"]);
+    match v["status"].as_str().unwrap_or_default() {
+        "pending" => println!(
+            "request {id} waits for your person: `clax queue create --request {id}` waits on it"
+        ),
+        "approved" => {
+            let qid = v["request"]["queue_id"].as_str().unwrap_or_default();
+            println!("approved: queue {qid}");
+            match (v["token"].as_str(), v["private_key"].as_str()) {
+                (Some(t), Some(k)) => print_grant(qid, t, k, None),
+                _ if v["wrote"].is_string() => print_grant(qid, "", "", env.as_deref()),
+                _ => println!(
+                    "its service grant was handed over before; your person can make another on the Queues page"
+                ),
+            }
+        }
+        other => bail!("request {id} {other}: no queue was made"),
+    }
+    Ok(())
 }
 
 /// The queue `q` names, or `CLAX_QUEUE`'s; an error saying how to name one
@@ -762,7 +989,18 @@ fn act(cli: &crate::Cli, c: &Client, a: &ActArgs, action: &str, body: Value) -> 
         "renew" => println!("renewed {tid} until {}", cell(&v["expires_at"])),
         "release" => println!("released {tid}: {}", cell(&r["state"])),
         "comments" => println!("replied on {tid} (comment {})", cell(&v["comment"]["id"])),
-        "fix" => println!("proposed a fix for {tid}: {}", cell(&r["state"])),
+        "fix" => {
+            println!("proposed a fix for {tid}: {}", cell(&r["state"]));
+            let t = &v["ticket"];
+            if t.is_object() {
+                println!(
+                    "fix ticket, shown once (set CLAX_FIX_TICKET on the preview deployment; \
+                     it ends {} or at the fix's verdict): {}",
+                    cell(&t["expires_at"]),
+                    cell(&t["token"])
+                );
+            }
+        }
         _ => println!(
             "resolved {tid}: {} ({})",
             cell(&r["state"]),
@@ -819,6 +1057,7 @@ fn follow(home: &Home, a: &FollowArgs) -> anyhow::Result<()> {
         home,
         &target,
         &pace,
+        Some(qid.as_str()),
         |c, sid, cred| {
             let q = qid.clone();
             let s = InSession::new(sid.to_string(), cred);
@@ -869,6 +1108,7 @@ fn follow(home: &Home, a: &FollowArgs) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

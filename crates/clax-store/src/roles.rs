@@ -88,7 +88,8 @@ pub fn actor_person(actor: &Actor) -> Option<String> {
         | Actor::Anonymous
         | Actor::System { .. }
         | Actor::Reporter { .. }
-        | Actor::Service { .. } => None,
+        | Actor::Service { .. }
+        | Actor::FixTicket { .. } => None,
     }
 }
 
@@ -258,6 +259,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) mod tests {
     use super::*;
     use crate::people::tests::approved;

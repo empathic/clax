@@ -115,6 +115,25 @@ describe("ReportView", () => {
     expect(m.root.querySelector(".acts .stat")!.textContent).toBe("Marked verified for the reporter.");
   });
 
+  it("names the origin a reporter verified a fix from", async () => {
+    const fix = { n: 1, summary: "Rounds the total", proposer_name: "Mia", proposer_kind: "person" as const, created_at: "2026-10-29T09:00:00Z", verdict_at: "2026-10-29T10:00:00Z" };
+    const r = report(1, { state: "verified", status: "resolved", fixes: [
+      { ...fix, outcome: "verified", verified_origin: "https://app-pr-538.fly.dev" },
+    ] });
+    stubFetch({ [`GET ${R}`]: { report: r } });
+    const m = view();
+    await settle();
+    expect(m.root.querySelector('.fix[data-n="1"] .verdict')!.textContent).toContain("verified on https://app-pr-538.fly.dev");
+  });
+
+  it("names no origin for a verdict given without one", async () => {
+    const fix = { n: 1, summary: "Rounds the total", proposer_name: "Mia", proposer_kind: "person" as const, created_at: "2026-10-29T09:00:00Z", verdict_at: "2026-10-29T10:00:00Z" };
+    stubFetch({ [`GET ${R}`]: { report: report(1, { state: "verified", status: "resolved", fixes: [{ ...fix, outcome: "verified" }] }) } });
+    const m = view();
+    await settle();
+    expect(m.root.querySelector('.fix[data-n="1"] .verdict')!.textContent).not.toContain("verified on");
+  });
+
   it("shows a refusal from the daemon", async () => {
     stubFetch({ [`GET ${R}`]: { report: report(1, { state: "fix_proposed" }) }, [`POST ${R}/verify`]: [409, { error: { code: "not_fix_proposed", message: "no fix waits for a verdict" } }] });
     const m = view();

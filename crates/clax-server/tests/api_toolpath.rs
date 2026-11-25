@@ -298,9 +298,7 @@ fn nudge_never_blocks() {
         }
         done_tx.send(()).unwrap();
     });
-    done_rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("100 000 nudges return without a reader");
+    clax_testkit::recv_within("100 000 nudges' return without a reader", &done_rx);
     // They coalesce into one wake-up.
     assert!(rx.try_recv().is_ok());
     assert!(rx.try_recv().is_err());
@@ -3453,12 +3451,13 @@ async fn recording_never_waits_on_a_wedged_journal() {
     let t = std::thread::spawn(move || a.run(rx, thread_stop));
     // The appender is stuck in its first write; every publish still
     // returns, each nudging a full channel.
-    let started = std::time::Instant::now();
-    for i in 0..20 {
-        ts.publish(&format!("Page {i}"), &[("index.html", "<h1>p</h1>")])
-            .await;
-    }
-    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    clax_testkit::within("20 publishes beside a wedged journal", async {
+        for i in 0..20 {
+            ts.publish(&format!("Page {i}"), &[("index.html", "<h1>p</h1>")])
+                .await;
+        }
+    })
+    .await;
     assert!(
         fs.state().files.values().all(|f| f.is_empty()),
         "nothing written yet"
@@ -3513,16 +3512,17 @@ fn a_wedged_appender_does_not_hold_the_daemons_exit() {
     let rx = wake.take_receiver().unwrap();
     let h = clax_http::audit::spawn_appender(a, rx, wake.clone()).unwrap();
     // Its first write never returns; the stop gives up at its limit.
-    let started = std::time::Instant::now();
     let stopped = rt.block_on(h.stop_within(std::time::Duration::from_millis(300)));
     assert!(!stopped, "a wedged appender cannot close its segment");
-    drop(ts);
-    drop(rt);
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(3),
-        "the stop and the runtime's drop took {:?}",
-        started.elapsed()
-    );
+    // The runtime's drop returns while the appender stays wedged: a drop
+    // that waited for it would wait until the gate opens below.
+    let (dropped, gone) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(ts);
+        drop(rt);
+        let _ = dropped.send(());
+    });
+    clax_testkit::recv_within("the runtime's drop beside a wedged appender", &gone);
     // Released, the left-behind thread finishes on its own.
     let (open, cv) = &*gate;
     *open.lock().unwrap() = true;
@@ -3539,7 +3539,7 @@ async fn a_responsive_appender_stops_within_its_limit() {
     let a = appender(&ts, &fs, manual_clock(), JournalStatus::off(None));
     let rx = wake.take_receiver().unwrap();
     let h = clax_http::audit::spawn_appender(a, rx, wake.clone()).unwrap();
-    assert!(h.stop_within(std::time::Duration::from_secs(10)).await);
+    assert!(h.stop_within(clax_testkit::HANG).await);
     let text = String::from_utf8(fs.state().files.values().next().unwrap().clone()).unwrap();
     assert!(text.ends_with("{\"PathClose\":{}}\n"));
 }

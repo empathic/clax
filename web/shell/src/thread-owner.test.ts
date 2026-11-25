@@ -5,6 +5,7 @@ import type { Thread, Viewer } from "./threads";
 import ShellSidebar from "./ui/ShellSidebar.svelte";
 import Sidebar from "./ui/Sidebar.svelte";
 import { waitingLabel } from "./waiting";
+import { settled } from "./test/settled";
 
 const TID = "01J9T0000000000000000000AA";
 const base = { artifact_id: "7q3k9mzx2b4t", version_n: 1, has_clip: false, clip_url: null, created_at: "2026-10-09T10:00:00.000Z", resolved_at: null, resolved_by: null, feedback_state: null };
@@ -23,7 +24,7 @@ await import("./people/ApprovalCard.svelte");
 await import("./ui/thread-approvals");
 await import("./ui/ThreadApproval.svelte");
 await import("./ui/NewComment.svelte");
-const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+const settle = settled;
 
 function render(threads: Thread[], more: Record<string, unknown> = {}) {
   return mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: {}, now: new Date("2026-10-09T10:05:00.000Z"), selected: null,
@@ -35,6 +36,8 @@ function shell(threads: Thread[], me: Viewer, more: Record<string, unknown> = {}
     agents: [], attention: null, decided: null, selection: { ids: [], anchor: null }, batchNote: "", batchBusy: false, sendTo: null, ...more };
   return mount(ShellSidebar, { ctl: { holds: () => true, shown: () => 1, ...ctl } as never, s: s as never });
 }
+/** Waits for the shell's sidebar to list its threads: its views load apart. */
+const listed = (m: { root: Element }) => vi.waitFor(() => expect(m.root.querySelector(".thread-card")).not.toBeNull());
 const chip = (root: Element) => root.querySelector<HTMLElement>(".thread-card .owner-chip");
 
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
@@ -219,20 +222,22 @@ describe("the Send target (spec 2026-10-08 §10, §11)", () => {
     expect(entry.textContent).toBe("sam-notes Sam's agent Sam approves first");
   });
 
-  it("in the artifact view, a Send with none chosen goes to this viewer's own agent, chosen as it sends", () => {
+  it("in the artifact view, a Send with none chosen goes to this viewer's own agent, chosen as it sends", async () => {
     const calls: string[] = [];
     const ctl = { chooseTarget: (h: string) => calls.push(`choose ${h}`), sendThread: (t: Thread) => calls.push(`send ${t.id}`) };
     const m = shell([unsent], OWNER, { agents: [sams, mine] }, ctl);
+    await listed(m);
     expect(button(m.root).textContent).toBe("Send to codex");
     flush(() => button(m.root).click());
     expect(calls).toEqual(["choose a_cx", `send ${TID}`]);
   });
 
-  it("for a LAN viewer, one press sends to the owner's newest live agent, named on the button, with no caret for one agent", () => {
+  it("for a LAN viewer, one press sends to the owner's newest live agent, named on the button, with no caret for one agent", async () => {
     // A single-owner install: the owner's one live agent.
     const calls: string[] = [];
     const ctl = { chooseTarget: (h: string) => calls.push(`choose ${h}`), sendThread: (t: Thread) => calls.push(`send ${t.id}`), sendUnsent: () => calls.push("unsent") };
     const m = shell([unsent], LAN, { agents: [{ ...mine, name: "claude" }] }, ctl);
+    await listed(m);
     expect(button(m.root).textContent).toBe("Send to claude");
     expect(button(m.root).getAttribute("aria-haspopup")).toBeNull();
     expect(m.root.querySelector('[aria-label="Choose the agent"]')).toBeNull();
@@ -241,6 +246,7 @@ describe("the Send target (spec 2026-10-08 §10, §11)", () => {
     m.unmount();
     // With people: still the owner's, never Sam's listed first; the caret offers Sam's.
     const p = shell([unsent], LAN, { agents: [sams, mine] }, ctl);
+    await listed(p);
     expect(button(p.root).textContent).toBe("Send to codex");
     expect(p.root.querySelector('[aria-label="Choose the agent"]')).not.toBeNull();
   });
@@ -249,6 +255,7 @@ describe("the Send target (spec 2026-10-08 §10, §11)", () => {
     await import("./ui/SendMenu.svelte");
     const ctl = { chooseTarget: vi.fn(), sendThread: vi.fn() };
     const m = shell([unsent], LAN, { agents: [sams] }, ctl);
+    await listed(m);
     expect(button(m.root).textContent).toBe("Send to …");
     flush(() => button(m.root).click());
     await settle();
@@ -260,6 +267,7 @@ describe("the Send target (spec 2026-10-08 §10, §11)", () => {
     await import("./ui/SendMenu.svelte");
     const other = { ...mine, handle: "a_cl", harness: "claude", name: "claude" };
     const m = shell([unsent], LAN, { agents: [mine, other] }, { chooseTarget: vi.fn(), sendThread: vi.fn() });
+    await listed(m);
     flush(() => m.root.querySelector<HTMLButtonElement>('.thread-card [aria-label="Choose the agent"]')!.click());
     await settle();
     const menu = m.root.querySelector('[role="menu"]')!;

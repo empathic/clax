@@ -7,7 +7,9 @@
 # cover. The textual guard
 # `every_command_reaches_the_daemon_through_the_marked_clients` in
 # src/commands/tools.rs stays as a second net.
-# A crate's clippy.toml hides the workspace's: this repeats the root one.
+# A crate's clippy.toml hides the workspace's: this repeats the root one's
+# settings, not its timing rules for test code, which the workspace's run
+# (the root clippy.toml) applies to this crate's tests.
 too-many-arguments-threshold = 8
 
 disallowed-methods = [

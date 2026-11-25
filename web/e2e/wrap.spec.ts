@@ -1,5 +1,5 @@
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, commentModeIn, contentFrame, openArtifact, publish, publishWith, streamLive } from "./fixtures";
+import { test, expect, type Daemon, commentModeIn, contentFrame, frameAt, openArtifact, publish, publishWith, streamLive } from "./fixtures";
 import { advance, settle } from "./time";
 
 let d: Daemon;
@@ -38,10 +38,9 @@ const bridges = (f: Frame) => f.evaluate(() => Array.from(document.querySelector
 // requests reach the bridge before `<body>` exists.
 const SLOW = `<!doctype html><html><head><title>Slow</title><script src="slow.js"></script></head><body><main><h2>Quarterly goals</h2><p>Grow revenue.</p></main></body></html>`;
 
-async function frameAt(page: Page, id: string, file: string): Promise<Frame> {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/1/${file.replace(".", "\\.")})$`);
-  await expect.poll(() => page.frame({ url }) !== null, { timeout: 30_000 }).toBe(true);
-  return page.frame({ url })!;
+/** The frame showing `file` of version 1. */
+function fileFrame(page: Page, id: string, file: string): Promise<Frame> {
+  return frameAt(page, new RegExp(`(${id}\\.localhost:\\d+/_clax/v/1/${file.replace(".", "\\.")})$`));
 }
 
 {
@@ -103,7 +102,7 @@ async function frameAt(page: Page, id: string, file: string): Promise<Frame> {
     const { artifact } = await publish(d.base, d.token, `Early sub`, { "index.html": index, "early.html": EARLY });
     const home = await openArtifact(page, d.base, artifact.id, 1);
     await home.locator("#go").click();
-    const f = await frameAt(page, artifact.id, "early.html");
+    const f = await fileFrame(page, artifact.id, "early.html");
     await expect(f.locator("#out")).toHaveText("function");
     expect(await f.evaluate(() => (document.head.firstElementChild as HTMLScriptElement).dataset.file)).toBe("early.html");
     expect(await bridges(f)).toEqual([{ first: true, version: "1" }]);
@@ -144,6 +143,9 @@ async function frameAt(page: Page, id: string, file: string): Promise<Frame> {
     const f = await openArtifact(page, d.base, id, 1);
     const toggle = page.getByRole("button", { name: "Comment", exact: true });
     await toggle.click();
+    // The toggle shows comment mode before the frame has heard of it, and a
+    // click there before then goes to the page rather than picking.
+    await commentModeIn(f);
     await f.locator("h2").hover();
     await f.locator("h2").click();
     const composer = page.locator(".composer");

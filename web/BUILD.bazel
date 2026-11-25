@@ -110,6 +110,8 @@ copy_to_bin(
             "shell/test-setup.ts",
             "e2e/**",
             "perf/**",
+            # The test-timing rules (oxlint's second run in `lint`).
+            "lint/**",
         ],
         exclude = ["**/.qual"],
         # Not every directory has unit tests of its own.
@@ -176,7 +178,7 @@ npm_script_build(
     srcs = [
         ":files_sdk",
         ":node_modules",
-        "//:lgpl_license",
+        "//docs:lgpl_license",
     ],
     out_dirs = ["dist-sdk"],
     script = "build:sdk",
@@ -293,10 +295,14 @@ UNIT_DATA = [
     "//demo:files",
 ]
 
-# pnpm run lint, typecheck and test.
+# pnpm run lint, typecheck and test. The lint's test-timing rules
+# (lint/timing.json) also read Pi's tests and the Worker's test scripts.
 npm_script_test(
     name = "lint",
-    data = UNIT_DATA,
+    data = UNIT_DATA + [
+        "//crates/clax-worker:js_sources",
+        "//plugins/pi:files",
+    ],
     script = "lint",
 )
 
@@ -324,7 +330,7 @@ npm_script_test(
         ":dist_sdk",
         ":files",
         ":node_modules",
-        "//:lgpl_license",
+        "//docs:lgpl_license",
         "@nodejs//:npm_bin",
         "@nodejs//:npm_files",
     ],

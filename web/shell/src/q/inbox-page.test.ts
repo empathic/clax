@@ -5,9 +5,16 @@ import { flush, mount } from "../test/svelte";
 import { InboxFeed, QuestionFeed } from "./feed.svelte";
 import { approvalCard, item, view } from "./fixtures";
 import InboxPage from "./InboxPage.svelte";
+import { settled } from "../test/settled";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
-const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+const settle = settled;
+/** Moves the shell's clock past InboxPage's 250 ms debounce (its refetch, strip
+ * and search timers run on it), then lets the work it started land. */
+const pastDebounce = async () => {
+  (globalThis as unknown as { claxTestClock: { advance(ms: number): void } }).claxTestClock.advance(300);
+  await settled();
+};
 const now = new Date("2026-10-07T09:17:03.120Z");
 
 const Q = item("question", { id: "IQ", seq: 9 });
@@ -119,7 +126,7 @@ describe("InboxPage", () => {
     expect(groups[0].querySelector(".irow .title")!.textContent).toBe("claude replied");
     expect(groups[1].querySelector<HTMLElement>(".gbody")!.hidden).toBe(true);
     expect(groups[1].querySelector(".gread")).toBeNull();
-    expect(calls.map(c => c.url)).toEqual(expect.arrayContaining(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]));
+    expect(calls.map(c => c.url)).toEqual(expect.arrayContaining(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request%2Cqueue_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]));
     // The quiet line opens in place: its newest read rows, then more of it.
     click(second);
     expect(second.getAttribute("aria-expanded")).toBe("true");
@@ -148,6 +155,43 @@ describe("InboxPage", () => {
     expect(calls.at(-1)!.url).toBe("/api/inbox?artifact=7q3k9mzx2b4t&read=read&limit=20");
     expect(rowIds(g)).toEqual(["U12", "U11", "U10", "U9", "R7", "R6"]);
     expect(g.querySelector(".gmore")).toBeNull();
+  });
+
+  /** Holds every request whose URL `held` matches until the result is called. */
+  function hold(held: (url: string) => boolean): () => void {
+    const inner = fetch as unknown as (url: string, init?: RequestInit) => Promise<Response>;
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => { if (held(url)) await gate; return inner(url, init); }));
+    return release;
+  }
+
+  it("appends a Show more's rows though the list was refreshed while they were on their way", async () => {
+    const unread = [12, 11, 10, 9].map(n => item("reply", { id: `U${n}`, seq: n }));
+    stubRoutes({ "": unread }, []);
+    const release = hold(u => u.includes("before="));
+    const { m, inbox } = page();
+    await settle();
+    click(groupEl(m.root, "7q3k9mzx2b4t").querySelector(".gmore")!);
+    tell(inbox, { refetch: true });
+    await pastDebounce();
+    release();
+    await settle();
+    expect(rowIds(groupEl(m.root, "7q3k9mzx2b4t"))).toEqual(["U12", "U11", "U10", "U9"]);
+  });
+
+  it("shows a new search's list alone though a refresh came while it was on its way", async () => {
+    stubRoutes();
+    const release = hold(u => u.includes("read=unread&group=artifact"));
+    const { m, inbox } = page();
+    await settle();
+    expect(m.root.querySelectorAll(".igroup").length).toBeGreaterThan(1);
+    click([...m.root.querySelectorAll<HTMLButtonElement>(".kind")].find(b => b.textContent === "Unread")!);
+    tell(inbox, { refetch: true });
+    await pastDebounce();
+    release();
+    await settle();
+    expect([...m.root.querySelectorAll(".igroup .gtitle")].map(t => t.textContent)).toEqual(["Quarterly Review"]);
   });
 
   it("narrows the list to groups with something new with the Unread chip, kept in the URL", async () => {
@@ -218,8 +262,7 @@ describe("InboxPage", () => {
     expect(groupEl(m.root, "pg0").hasAttribute("data-fresh")).toBe(false);
     // A live refetch (the stream resynced) keeps them too.
     tell(inbox, { refetch: true });
-    await new Promise(r => setTimeout(r, 300));
-    await settle();
+    await pastDebounce();
     expect(keys()).toEqual(before);
     expect(rowIds(groupEl(m.root, "7q3k9mzx2b4t"))).toHaveLength(5);
   });
@@ -306,8 +349,7 @@ describe("InboxPage", () => {
     // The fourth, not listed, is read in another tab.
     lists[""] = [R, ...more.map(i => (i.id === "I5" ? { ...i, read: true } : i))];
     tell(inbox, { item: { ...more[2], read: true } });
-    await new Promise(r => setTimeout(r, 300));
-    await settle();
+    await pastDebounce();
     expect(meta()).toBe("4 new · 5m");
   });
 
@@ -328,7 +370,7 @@ describe("InboxPage", () => {
     await vi.advanceTimersByTimeAsync(1);
     flush();
     expect(location.search).toBe("?search=dash");
-    expect(calls.slice(n).map(c => c.url)).toEqual([`/api/inbox?q=dash&kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200`, "/api/inbox?q=dash&group=artifact&rows=3"]);
+    expect(calls.slice(n).map(c => c.url)).toEqual([`/api/inbox?q=dash&kind=question%2Capproval%2Cconnection%2Cremote_request%2Cqueue_request&read=unread&limit=200`, "/api/inbox?q=dash&group=artifact&rows=3"]);
     await vi.advanceTimersByTimeAsync(0);
     flush();
     expect([...m.root.querySelectorAll(".irow")].map(r => r.getAttribute("data-item"))).toEqual(["IR"]);
@@ -375,13 +417,11 @@ describe("InboxPage", () => {
     // Answered: read now, so the daemon no longer lists it as unread.
     lists[""] = [R];
     (inbox as unknown as { tell(c: unknown): void }).tell({ refetch: true });
-    await new Promise(r => setTimeout(r, 300));
-    await settle();
+    await pastDebounce();
     expect(m.root.querySelector(".qcard")!.hasAttribute("data-closed")).toBe(true);
     const box = m.root.querySelector<HTMLInputElement>(".isearch")!;
     flush(() => { box.value = "dash"; box.dispatchEvent(new Event("input", { bubbles: true })); });
-    await new Promise(r => setTimeout(r, 300));
-    await settle();
+    await pastDebounce();
     expect(m.root.querySelector(".qcard")).toBeNull();
   });
 
@@ -395,9 +435,8 @@ describe("InboxPage", () => {
     const pages = () => calls.filter(c => c.url.startsWith("/api/inbox?")).map(c => c.url);
     expect(pages()).toEqual([]);
     handlers[0]({ type: "ready" });
-    await new Promise(r => setTimeout(r, 300));
-    await settle();
-    expect(pages()).toEqual(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]);
+    await pastDebounce();
+    expect(pages()).toEqual(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request%2Cqueue_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]);
     expect(m.root.querySelectorAll(".irow").length).toBeGreaterThan(0);
   });
 
@@ -486,8 +525,7 @@ describe("InboxPage", () => {
     // Fetched again, the daemon no longer lists it as unread: the card stays.
     lists[""] = [R];
     (inbox as unknown as { tell(c: unknown): void }).tell({ refetch: true });
-    await new Promise(r => setTimeout(r, 300));
-    await settle();
+    await pastDebounce();
     expect(m.root.querySelectorAll(".acard")).toHaveLength(1);
     expect(m.root.querySelector(".acard .outcome")!.textContent).toContain("Allowed in this thread");
   });
@@ -508,8 +546,7 @@ describe("InboxPage", () => {
     (inbox as unknown as { tell(c: unknown): void }).tell({ item: decided });
     await settle();
     (inbox as unknown as { tell(c: unknown): void }).tell({ refetch: true });
-    await new Promise(r => setTimeout(r, 300));
-    await settle();
+    await pastDebounce();
     expect(m.root.querySelectorAll('.acard[data-approval="01J9R0000000000000000000AA"]')).toHaveLength(1);
   });
 
@@ -536,6 +573,16 @@ describe("InboxPage", () => {
     const { m } = page();
     await settle();
     expect(document.activeElement).toBe(m.root.querySelector(".rcard"));
+  });
+
+  it("goes to the queue request's card for `?queue_request=`, focused", async () => {
+    history.replaceState(null, "", "/inbox?queue_request=01J9Q0000000000000000000QR");
+    stubRoutes({ "": [item("queue_request", { id: "IQR", seq: 6 }), R] });
+    const { m } = page();
+    await settle();
+    const card = m.root.querySelector(".qrcard")!;
+    expect(card.getAttribute("data-queue-request")).toBe("01J9Q0000000000000000000QR");
+    expect(document.activeElement).toBe(card);
   });
 
   it("filters by the approval, connection and ended kinds", async () => {

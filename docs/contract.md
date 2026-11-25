@@ -14,7 +14,7 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Forty-two tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+Forty-three tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 `tag` and `tags` (see "Tags"), `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
@@ -26,7 +26,7 @@ public Clax"), and the data tools `db_get`, `db_list`,
 `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`,
 `db_batch` (see "Runtime capabilities"), and the report queue tools
 `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`,
-`queue_resolve`, `queue_get`, `queue_fix` and `queue_watch` (see "Report queue tools"). The MCP implementation lives in
+`queue_resolve`, `queue_get`, `queue_fix`, `queue_watch` and `queue_request` (see "Report queue tools"). The MCP implementation lives in
 `crates/clax-mcp` and is served two ways:
 
 - the stdio shim `clax mcp --agent <claude|codex|grok>`, which a harness
@@ -45,7 +45,7 @@ public Clax"), and the data tools `db_get`, `db_list`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same forty-two tools in TypeScript against the daemon's REST API, with the same
+the same forty-three tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -687,6 +687,7 @@ Errors: `invalid_id`, `not_found`, `unknown_version`, `not_permitted`.
 | `question_id` | string | no | The approval question an earlier call returned (`call_again`), to keep waiting on it. |
 | `timeout_s` | integer | no | Seconds to wait for the person's answer, 1 to 600 (default 600); under Codex 1 to 50 (default 50). |
 | `site_access` | string | no | Instead of publishing on a public Clax: `world` opens the artifact's own site to anyone once the person approves, `private` closes it at once. Takes no `remote` or `mode`. |
+| `content_security_policy` | string | no | Instead of publishing on a public Clax: `unrestricted` serves the artifact's own site without Clax's Content Security Policy once the person approves, `self` holds its pages to their own site again at once. Takes no `remote`, `mode` or `site_access`. |
 
 With `site_access`, the tool sends `PATCH /api/artifacts/<id>
 {site_access, question_id}` (see "Security model"): opening asks the
@@ -696,6 +697,14 @@ the result is `{status: "open" | "private", site_access, site_url}`, or
 (call again with the same `site_access` and `question_id`). Errors:
 `not_approved`, `approval_used`, `admin_only`, `no_session`,
 `invalid_args`.
+
+With `content_security_policy`, the tool sends `PATCH /api/artifacts/<id>
+{content_security_policy, question_id}` in the same way: `unrestricted`
+asks the person `Serve it unrestricted` or `Keep it to its own site` and
+waits, and the result is `{status: "self" | "unrestricted",
+content_security_policy, site_url}`, or the same `approval_pending` answer
+(call again with the same `content_security_policy` and `question_id`),
+with the same errors.
 
 Publishes an artifact on a public Clax this Clax is signed in to (see
 "Publishing to a public Clax"). Making content public is the person's
@@ -1125,17 +1134,20 @@ already. A hosted daemon answers these routes, and the push routes, 404.
 **The public side's device sign-in** (a hosted daemon; the Worker serves
 the same routes):
 
-- `POST /api/hosted/device/code {client_name, client_kind?}` (no
+- `POST /api/hosted/device/code {client_name, client_kind?, scope?}` (no
   credential, no `Origin` needed) → `{device_code, user_code,
   verification_uri, verification_uri_complete, expires_at, expires_in,
-  interval}`. Codes last 600 s and are used once; at most 5 sign-ins per
+  interval}`. `scope` is `["queue.request"]` or absent (400 `invalid_args`
+  for any other, or beside `client_kind`): a scoped sign-in's token may
+  only ask its person for a report queue ("Queue requests"), and the
+  approval page says so instead of signing the machine in as them. Codes last 600 s and are used once; at most 5 sign-ins per
   client address a minute (429 `rate_limited`), and 1,000 waiting in all
   (400 `limit_reached`). `client_kind` is `clax-app` (the Clax app) or
   absent; any other is 400 `invalid_args`.
 - `GET /device[?code=<user code>]`: the approval page, the shell's; it
   names the machine and its address, and the person it signs in as.
 - `GET /api/hosted/device/<user code>` (a member's browser) →
-  `{client_name, peer_ip, client_kind, created_at, expires_at,
+  `{client_name, peer_ip, client_kind, scope, created_at, expires_at,
   same_address}` (`same_address`: the sign-in asked from this browser's
   address; the page warns when it did not; `client_kind` `clax-app` or
   null); `POST
@@ -1149,7 +1161,8 @@ the same routes):
   the public origin's `Origin`. Rate-limited as sign-in codes are.
 - `POST /api/hosted/device/token {device_code}` (the machine) → once
   approved, `{token, token_type: "Bearer", grant_id, person: {public_id,
-  display_name}, origin, mcp_url}`, this once. Before that 400
+  display_name}, origin, mcp_url}`, this once; a scoped sign-in's also
+  carries `scope` and `expires_at`, its grant's end. Before that 400
   `authorization_pending`; 400 `slow_down` for a poll sooner than `interval`
   after the last; 400 `access_denied` once denied (or the token revoked
   before the poll); 400 `expired_token` for a code unknown, expired or
@@ -2614,7 +2627,12 @@ artifact is its maker's own, so its live seat is reserved for them (see
 "Live seats and spectators"): a person who is a spectator on another
 artifact starts one, and writes and sends its brief, as anyone does.
 `GET /api/viewers/me` says whether this browser may, in `may_create`,
-and the gallery shows the tile only then.
+and the gallery shows the tile only then. Its `queues` (`{member,
+may_make}`) says how many report queues the browser's person made or is
+a member of and whether they may make one ("Report queue routes",
+Administering a queue); the shell shows Queues in its header and
+Settings only to the owner, a member of a queue, and anyone who may make
+one.
 
 The tile opens a dialog asking for a name (the title) and a description
 (the brief). Where ClaxBot is on for the person, the dialog's "ClaxBot
@@ -2871,7 +2889,10 @@ answer made in the owner's browser). The decisions:
    decision 4 does);
 3. widening who may open a page: its site to the world (`PATCH
    /api/artifacts/<aid>` `{site_access: "world"}` for a site not open
-   yet), and its public copy's link access (`PUT
+   yet), its site served without Clax's Content Security Policy
+   (`{content_security_policy: "unrestricted"}` for a site still at
+   `self`; returning to `self` never asks),
+   and its public copy's link access (`PUT
    /api/remotes/<rid>/artifacts/<raid>/sharing/link` with an `access`,
    or `listed: true`), a share of the public copy with a person (`PUT
    …/sharing/shares`), and its comments turned on (`PUT
@@ -4347,8 +4368,9 @@ the copy's remote, the link holds the copy's address alone.
 | `queue_release` | `queue`, `report_id` | `{report}`, open again |
 | `queue_reply` | `queue`, `report_id`, `body` | `{comment, report}`, under the session's live lease or, while the fix it proposed waits (`fix_proposed`), without one; `claim_required`, `lease_lost` or `thread_taken` |
 | `queue_resolve` | `queue`, `report_id`, optional `reason` (`fixed`, `duplicate`, `wontfix`, `cannot_reproduce` or `other`, the default) | `{report}`, resolved with `resolve_reason`; `claim_required`, `lease_lost` or `thread_taken` |
-| `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after` | `{report}`, `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix` or `not_claimable` |
+| `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after`, `preview` | `{report}`, and with `preview: true` the fix's `ticket` ("Fix tickets"), `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix`, `not_claimable` or `no_preview_origins` |
 | `queue_watch` | `queue`, optional `stop` | `{queue, watching: true, wake}` (`POST /api/queues/<queue>/watch`; `wake` as `watch` gives it), or with `stop: true` `{queue, watching: false}` (`DELETE`) |
+| `queue_request` | `name` and `origins` (optional `reporters_see`, `note`) to ask, or `request_id` alone to keep waiting; optional `timeout_s`, `write_env` (an absolute path on the tools' machine; refused on the remote MCP endpoint) | `{request_id, status, request, call_again}` (`POST /api/queue-requests`, then `GET /api/queue-requests/<id>?wait=` until answered or the wait ends, then `POST …/take`; the card opens in the person's browser), and once approved `grant` with either `wrote` and `variables` (`CLAX_QUEUE`, `CLAX_QUEUE_TOKEN`, `CLAX_QUEUE_KEY` appended to `write_env`, made 0600 if missing) or `token`, `private_key` and `secret`; `grant_taken` when an earlier take took it ("Queue requests") |
 
 #### Report queue tools
 
@@ -4404,6 +4426,41 @@ A deployer's app files reports into a queue and its reporters give their
 verdict on fixes through the reporter routes; the queue's triage members
 and their agents work them through the triage routes.
 
+**Administering a queue.** A queue's admins, in their browser (or the
+owner by hand), never an agent (403 `not_for_agents`), make and change it,
+its members and its service grants:
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /api/queues` | | `{queues: [{id, name, origins, reporters_see, created_at, role, member}]}`, oldest first: the queues the caller made or is a member of; for the owner and the instance's administrators, every live queue, `role` `admin` and `member` false where they are no member (an agent's `queue_list` reads its person's queues alone, without `member`) |
+| `POST /api/queues` | `{name, origins?, reporters_see?}` | 201 `{queue}`: the caller is its maker, listed first among its members as `admin`; a connected person who administers nothing makes one only while `queues.members_create` is on (below), else 403 `queues_admin_only` |
+| `PATCH /api/queues/<qid>`, `DELETE /api/queues/<qid>` | `{name?, origins?, reporters_see?}` | `{queue}`; 204 |
+| `GET /api/queues/<qid>/members` | | `{members: [{public_id, name, role, maker, owner}]}`: the maker first (`maker` true, always `admin`), then in the order they were added; `owner` marks the owner, whose `public_id` is their viewer's (`*owner` before they have one) |
+| `PUT /api/queues/<qid>/members/<public_id>`, `DELETE` the same | `{role}` (`admin` or `triage`) | 204: adds a connected, unrevoked person, or the owner (`*owner` or the owner's public ID), or changes their role; removes one. 404 `not_found` for anyone else; 400 `queue_maker` for the maker, who stays its admin |
+| `GET /api/queues/<qid>/people?q=<text>` | | `{people: [{public_id, name, avatar_url, owner}]}`: at most 20 of the people an admin may add, the owner first, then by name: the owner and the connected, unrevoked people (a hosted Clax's members) whose name holds `q` ignoring case, or whose public ID is `q`; `avatar_url` their linked GitHub account's. Nothing else of a person (`GET /api/people` stays the owner's). A blank `q` finds no one; one over 100 characters is 400 `invalid_argument` |
+| `GET /api/queues/<qid>/service-grants`, `POST` the same `{name}`, `DELETE …/<gid>` | | as in "Report queue routes" below |
+
+The owner and the instance's administrators (the owner and the people the
+owner makes admin, as ClaxBot's admin pages name them) oversee every
+queue in their browser: each queue is theirs to read, triage and
+administer as an admin's, member or not, and the owner's browser streams
+are told of every queue's report changes. Their agents work only the
+queues they are members of, so the owner adds themselves to a member's
+queue to have their agents triage it. Anyone else's queue they are no
+member of answers 404 `not_a_member`, as an unknown one does; a triage
+member's change is 403 `not_queue_admin`.
+
+`GET /api/admin/queues` → `{members_create, source}` and `PUT
+/api/admin/queues {members_create: true|false|null}` (the owner and
+administrators; 403 `forbidden` for anyone else): whether a connected
+person who administers nothing may make a report queue, the
+`queues.members_create` instance setting. With no value set (`null` puts
+it back, `source` `default`) it is on for a local Clax, whose members are
+people its owner connected, and off for a hosted one; `source` is `db`
+once an administrator sets it. A change is recorded as `admin.settings
+{fields: ["queues.members_create"], values}`. It governs making a queue
+alone: existing queues, their admins and their members keep working.
+
 **States.** A report is `open` (waiting for someone: filed, released, its
 lease lapsed, or reopened), `claimed` (an agent's session holds its
 lease), `fix_proposed` (a fix waits for the reporter's verdict; the thread
@@ -4416,6 +4473,8 @@ never changes a report's state; only a reopen opens a closed one.
 **The report.** Beside the milestone-1 fields (`id, queue_id, artifact,
 anchor, status, state, reporter_id, metadata, metadata_version, has_clip,
 comments, claim, created_at`), a report carries, when they apply:
+`mine` (on a reporter's read: whether that reporter filed it, the only
+reports it may give a verdict on or reopen; absent on a member's),
 `context` (what the reporter's browser said at capture, below), `server`
 (`{version, commit?, build?, received_at}`: the receiving server's
 version, the commit and build `/healthz` reports, and when it received
@@ -4530,6 +4589,54 @@ matches cannot use the token. A report keeps the URL its page sent; the
 pattern is never stored on a token or a report, nor named in a CORS
 answer.
 
+**Grants limited to some origins.** A service grant may be limited to
+some of its queue's origins and patterns (`POST
+/api/queues/<qid>/service-grants {name, origins}`, each one the queue
+lists, as it lists it; 400 `invalid_origin` for an empty list or one it
+does not list): it then mints only for an origin one of them allows and
+the queue still allows (403 `wrong_origin` otherwise). A grant limited to
+the queue's preview pattern is what preview deployments hold, so none of
+them holds a grant that mints for the production site. A grant without
+`origins` (`null` in its listing) mints for every origin the queue allows.
+
+**Fix tickets.** A fix proposed with `preview: true` (`POST
+…/reports/<tid>/fix`, `queue_fix`, `clax queue fix --preview`) is issued
+a ticket, in that answer alone: `ticket: {token, expires_at, n, origins,
+attach_path}`. `token` is `cxf_<queue ID>.<report ID>.<n>.<secret>`, kept
+as its SHA-256; `origins` are the queue's origin patterns when it was
+issued (400 `no_preview_origins`, and no fix, when the queue lists
+none). It is bound to fix `n` of that report and does one thing: its
+holder, the fix's preview deployment, attaches its own exact origin to
+that fix (`POST …/reports/<tid>/fixes/<n>/preview`, below), which sets the
+fix's `verify_url` to the origin and `path` (default `/`), replacing what
+it named. The origin must be one of the ticket's patterns matches and the
+queue still allows (403 `wrong_origin`); an exact origin, never a
+pattern (400 `invalid_origin`); `path` starts with one `/`, at most 1 KiB,
+and keeps the URL on the origin (400 `invalid_args`). The ticket reads
+nothing, files nothing, mints nothing and gives no verdict: on any other
+route it is 401 `invalid_token`, as it is on another fix's, report's or
+queue's route. It ends 14 days after it was issued, or as soon as its fix
+no longer waits for a verdict (verified, rejected, superseded or closed),
+whichever is first: 401 `token_expired`. The request is server to server,
+unsigned (`Authorization: Clax-Fix <token>`, no `Origin` and no cookie:
+403 `forbidden_origin`). Attaching the URL the fix names already changes
+nothing (`changed: false`), so a redeploy may attach again. An attach that
+changes the URL posts a notice on the report as the ticket's issuer (the
+issuing agent's comment through its session, or the issuing person's),
+`A preview with fix <n> is ready: check it at <url>`, which the reporter
+reads, and which counts in its badge, as a fix's summary does; it is
+recorded as `queue.preview`, by actor `fix_ticket`.
+
+**Previews.** A reporter's page on a preview deployment asks `GET
+/api/queues/<qid>/reporter/previews` for the reports it filed whose fix
+waits for its verdict at a `verify_url` on the token's own origin (the one
+the token was minted for, never one the request names), and offers its
+own verdict there through the same verify, reopen and comment routes. A
+verdict given on a preview counts as one given anywhere: the report is
+`verified`, and the fix keeps the reporter token's origin as its
+`verified_origin`, which triage reads beside the verdict (absent for a
+verdict a person gives).
+
 Reporter routes (`Authorization: Clax-Reporter <token>`, a
 `Clax-Signature` by the reporter's key, the token's `Origin`; each answers
 CORS for the origins the queue allows, naming the request's own exact
@@ -4570,6 +4677,7 @@ reporter routes' tests fail on a refusal whose code it lacks.
 | `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}`, bound to exact `origin`; 403 `wrong_origin` for one the queue does not allow, 400 `invalid_origin` for a pattern |
 | `POST /api/queues/<qid>/reporter/reports` | multipart `external_id?`, `url`, `title`, `anchor` (JSON), `body`, `metadata?` (JSON), `revision?`, `clip?` (PNG), `context?` (JSON), `diagnostics?` (JSON lines, `diagnostics.jsonl`) | 201 `{report}`, with `server` |
 | `GET /api/queues/<qid>/reporter/reports?cursor=` | | `{reports, next}`; 400 `invalid_query` for another query |
+| `GET …/reporter/reports/<tid>` | | `{report}`, one it sees (an overlay opened from a link to it); 404 `not_found` for one it does not |
 | `POST …/reporter/reports/<tid>/comments` | `{body}` | `{report}` |
 | `GET …/reporter/reports/<tid>/clip` | | the filing's PNG |
 | `GET …/reporter/reports/<tid>/comments/<cid>/clip` | | a reopen's PNG |
@@ -4578,6 +4686,8 @@ reporter routes' tests fail on a refusal whose code it lacks.
 | `GET …/reporter/reports/<tid>/diagnostics?capture=` | | `{lines}` of a report it filed (404 `not_found` for another reporter's, `reporters_see: all` or not): capture `capture`'s, else the latest capture's that has any; `[]` for none; 400 `invalid_query` for a `capture` that is not a number, or another query |
 | `POST …/reporter/reports/<tid>/seen` | | 204: comments before now leave the badge |
 | `GET /api/queues/<qid>/reporter/badge` | | `{waiting, report_ids}`: its reports with a fix waiting for its verdict or a comment not its own since it last read them, oldest first |
+| `GET /api/queues/<qid>/reporter/previews` | | `{reports}`: the reports it filed whose fix waits for its verdict at a `verify_url` on the token's origin, oldest first; `[]` for none |
+| `POST /api/queues/<qid>/reports/<tid>/fixes/<n>/preview` (`Clax-Fix`, the fix's ticket, unsigned, no `Origin`, no CORS) | `{origin, path?}` | `{report, verify_url, changed}`; 403 `wrong_origin`, 400 `invalid_origin` or `invalid_args`, 401 `invalid_token` or `token_expired` (above) |
 
 Triage routes (a queue member, or a member's agent as "Report queue
 tools" says; 404 `not_a_member` otherwise):
@@ -4585,7 +4695,7 @@ tools" says; 404 `not_a_member` otherwise):
 | Route | Body | Answer |
 |---|---|---|
 | `GET /api/queues/<qid>/reports?state=&order=&cursor=` | | `{reports, next}`; `state` one of the five states or `active`; 400 `invalid_state` for another; `order` `oldest` (the default: in order of arrival) or `newest` (the latest filed first, each page after `cursor` holding the ones filed before it); 400 `invalid_query` for another |
-| `POST …/reports/<tid>/fix` | `{summary, url?, commit?, release?, verify_url?, verify_after?, fence?}` | `{report}`, `fix_proposed`: the summary is posted as the writer's comment, the lease ends (`queue.release`, reason `fix_proposed`); an agent needs its live lease, a person none; 400 `invalid_fix` (blank summary, summary over 4 KiB, a `url` or `verify_url` not http(s) or over 2048 bytes, `commit`, `release` or `verify_after` over 256 bytes); 409 `not_claimable` for a `verified` or `resolved` report |
+| `POST …/reports/<tid>/fix` | `{summary, url?, commit?, release?, verify_url?, verify_after?, fence?, preview?}` | `{report}`, and with `preview: true` its `ticket` (above; 400 `no_preview_origins` when the queue lists no pattern), `fix_proposed`: the summary is posted as the writer's comment, the lease ends (`queue.release`, reason `fix_proposed`); an agent needs its live lease, a person none; 400 `invalid_fix` (blank summary, summary over 4 KiB, a `url` or `verify_url` not http(s) or over 2048 bytes, `commit`, `release` or `verify_after` over 256 bytes); 409 `not_claimable` for a `verified` or `resolved` report |
 | `POST …/reports/<tid>/verify` | `{note?}` | `{report}`, `verified`, on the reporter's behalf and recorded as the person's; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
 | `POST …/reports/<tid>/reopen` | `{body}` | `{report}`, `open`, as the reporter's reopen; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
 | `POST …/reports/<tid>/resolve` | `{reason?}` (default `other`) | `{report}`, `resolved` with `resolve_reason`; 400 `invalid_args` for another reason |
@@ -4657,8 +4767,9 @@ An undelivered wake of a session that ends is deleted, never handed to
 another session: the report waits in its queue.
 
 Error codes besides the common ones: `invalid_context`,
-`invalid_diagnostics`, `invalid_profile`, `invalid_fix` (400);
-`not_fix_proposed`, `not_claimable`, `lease_lost` (409).
+`invalid_diagnostics`, `invalid_profile`, `invalid_fix`,
+`no_preview_origins` (400); `not_fix_proposed`, `not_claimable`,
+`lease_lost` (409).
 
 **The instance's own feedback queue.** An instance files its people's
 reports about Clax itself into one of its queues, as an integrating
@@ -4798,6 +4909,50 @@ or thread is gone), `no_session` (`watch` and `wait_for_feedback` through
 sent). Through a session, replies and resolves on a thread that was not sent
 to the agent are not errors: the result carries `guidance` and nothing
 changes.
+
+#### Queue requests
+
+No agent makes a queue: `POST /api/queues` and the service-grant routes
+refuse every agent. An agent asks its person for one instead, and the
+person answers in their browser (`crates/clax-server/src/routes/queue_requests.rs`,
+`crates/clax-store/src/queue_requests.rs`). The `queue_request` tool and
+`clax queue create`, run by an agent, use these routes.
+
+| Route | Who | Answer |
+|---|---|---|
+| `POST /api/queue-requests {name, origins?, reporters_see?, note?}` | any agent: the owner's (the daemon token naming a session or the agent channel), a connected person's, an agent token's, a scoped token's | 201 `{request}`, pending; the fields as `POST /api/queues` checks them (400 `invalid_name`, `invalid_origin`), `note` at most 500 characters (400 `invalid_args`); 403 `not_an_agent` for a person or the owner by hand; 409 `request_exists` for a scoped token that asked once; 429 `limit_reached` with five of the agent's requests pending |
+| `GET /api/queue-requests/<id>[?wait=<s>]` | the agent that asked (its grant; any agent of the owner's for the owner's agents' requests), or the request's person | `{request}`, as soon as it is not pending or after `wait` seconds (at most 60), and `grant_taken: true` once an approved request's grant was taken. A read changes nothing. 404 for anyone else |
+| `POST /api/queue-requests/<id>/take` | the agent that asked (403 `not_an_agent` for a person) | once the request is answered, `{request}`; the first take of an approved one also carries `grant: {id, name, created_at}`, `token` (`cxq_…`) and `private_key` (as `POST /api/queues/<qid>/service-grants` gives them): the service grant is made by that take, named `Requested by <agent>`, and neither secret is kept; later takes carry `grant_taken: true`. A take ends a scoped token. 409 `request_pending` (with `request` in `error`) while it waits; 404 for anyone else |
+| `GET /api/queue-requests[?status=]` | the person's browser, or the owner by hand | `{requests}`: those the caller answers, newest first, at most 200; `status` one of `pending`, `approved`, `denied`, `cancelled`, `expired` (400 `invalid_query` for another) |
+| `POST /api/queue-requests/<id>/approve` | the person's browser (403 `browser_required` for the token by hand; agents refused), same origin | `{request, queue}`: the queue is made with the person as its admin, nothing else granted. A connected person who administers nothing approves only while `queues.members_create` is on, as for `POST /api/queues`: else 403 `queues_admin_only`, and the request stays pending. While an agent of the owner's is live a local daemon may hold it for a confirmation (202 `confirmation_pending`, "Confirming decisions") |
+| `POST /api/queue-requests/<id>/deny` | as approve, with no confirmation | `{request}` |
+
+Deciding a request no longer pending is 409 `request_closed`, with
+`request` in `error`; another person's request is 404. A request is
+`{id, status, name, origins, reporters_see, note, agent, person,
+created_at, expires_at, decided_at, queue_id}`: `agent` the asking
+session's client name or harness, else its grant's machine name; `person`
+the approver's public ID, `null` for the owner. A pending request expires
+an hour after it was made (or with its scoped token, if sooner); ending
+the asking grant (revoked on People, `DELETE /api/hosted/agent-token`,
+expiry) cancels its pending requests. The person is told by an inbox item
+of kind `queue_request` (`queue_request`: the request, `null` once gone;
+`url` `/inbox?queue_request=<id>`), read once the request stops waiting;
+the Queues page lists pending ones too. Audit: `queue_request.ask`,
+`queue_request.answer` (with `queue.create`), `queue_request.close`
+(expired, cancelled), and the take's grant as `queue.update` (`op`
+`grant`).
+
+**A token for asking alone.** A device sign-in with `scope:
+["queue.request"]` ("The public side's device sign-in") makes a grant with
+no rights whose token reaches `POST /api/queue-requests`, `GET
+/api/queue-requests/<id>`, the session routes the remote MCP endpoint
+keeps its session by (`POST /api/sessions`, `GET` and `PATCH
+/api/sessions/<id>`), `POST /api/queue-requests/<id>/take`, `/mcp` (whose tools' requests are checked the same
+way) and `DELETE /api/hosted/agent-token`; every other route answers 403
+`forbidden`. It makes one request, and ends (its token 401) once its agent
+has taken that request's answer, an hour after it was approved, or when
+revoked on People, whichever comes first.
 
 ### Working
 
@@ -5142,7 +5297,10 @@ wake, "Queue wakes" above, which needs no watch), and it sets
 waits for tiers 1, 2 and 4, which deliver it once under the rules above,
 so a monitor never causes a second delivery. Retargeting a row clears
 `notified_at`. While the session is inside `wait_for_feedback`, the
-notices poll answers empty at once and announces nothing. The command
+notices poll answers empty at once and announces nothing. With
+`queue=<qid>` the poll announces only the rows on that queue's reports
+and leaves the session's others unannounced, for another follower
+(`clax queue follow` polls so). The command
 finds the session by `--session`, by `--agent` and `--harness-session`,
 or by `GROK_SESSION_ID`; it never starts a daemon, follows the session
 across daemon restarts, and exits 0 once the session has ended (at once
@@ -5233,7 +5391,29 @@ the version button gets a dot, the top bar's summary reads "v5 addressed 3",
 the sidebar's "Addressed in v5" group lists the threads it addressed that
 the viewer is in, with your reply shown as "<agent> · addressed in v5", and
 the version menu lists every version's note. Each thread's history line
-shows what happened on which version. When the person sends several
+shows what happened on which version.
+
+The artifact view's sidebar has two tabs, Timeline and Threads, and the
+browser remembers which was last chosen (Timeline at first). The Timeline
+lists what happened, newest first under day headings: each version with
+its note, the comments made, sent, replied to and resolved. Each thread is
+one row under the newest line about it, with its state at the right
+("✓ v5" for addressed, "Send" for unsent, "Reply" when an agent answered
+without a version, "sent" or "working" while an agent has it); a row opens
+into the thread's card. Earlier days fold to a summary line that still
+shows their pending threads. A grey band on the sidebar's outer edge
+shows how many threads were pending after each line, the part waiting on a
+person in orange. A thread is pending until a version addresses it or it
+is resolved; one a version addressed stays open, and is pending again when
+a person replies. The Threads tab is the thread list, with the "Addressed
+in v5" group and the Open, Detached and Resolved sections. Hidden while
+docked left or right on a screen wider than a phone, the sidebar leaves a
+56 px strip on that edge with the pending count, how many need the
+viewer, and the band; activating it shows the threads. An artifact with
+no threads leaves no strip. The extension's side panel shows the thread
+list alone.
+
+When the person sends several
 threads, or several agents work on one artifact, the person picks the agent;
 the payload is the same.
 
@@ -5987,7 +6167,7 @@ thread views carry `feedback_state: null`.
 
 A person's machine connects in one of two ways:
 
-- **An invite.** The owner, in People (`/people`) in a browser, makes one:
+- **An invite.** The owner, in Settings, People (`/settings/people`) in a browser, makes one:
   `POST /api/people/invites {name | viewer | me, rights?}` → 201 `{invite:
   {id, command, expires_at, person}}`. `name` makes a new person, `viewer`
   makes an existing LAN viewer (by public ID) a person, and `me` invites a
@@ -6395,6 +6575,9 @@ router), and a test fails when it differs:
 | `GET /api/sessions/{id}/where-to-ask` | Own | `clax-ask` `ask` | 2 MiB | yes |
 | `POST /api/sessions/{id}/terminal` | Own | none | 2 MiB | yes |
 | `GET /api/queues` | Own | none | 2 MiB | yes |
+| `POST /api/queue-requests` | Own | none | 2 MiB | yes |
+| `GET /api/queue-requests/{id}` | Own | none | 2 MiB | yes |
+| `POST /api/queue-requests/{id}/take` | Own | none | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports` | Own | `clax-comments` `read` | 2 MiB | yes |
 | `POST /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `DELETE /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
@@ -6444,10 +6627,13 @@ router), and a test fails when it differs:
 | `POST /api/admin/pricing/tokenulator` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/provider` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/admin/provider` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/admin/provider/failures` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/admin/provider/key` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/admin/provider/key` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/provider/models` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/provider/test` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/admin/queues` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/queues` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/shutdown` | Denied | no |
 | `GET /api/admin/usage` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/web` | Denied | yes: 403 `not_for_agents` |
@@ -6465,6 +6651,7 @@ router), and a test fails when it differs:
 | `POST /api/approvals` | Denied | yes: 403 `browser_required` |
 | `POST /api/approvals/requests/{rid}/decide` | Denied | yes: 403 `browser_required` |
 | `DELETE /api/approvals/{id}` | Denied | yes: 403 `browser_required` |
+| `GET /api/artifacts/{aid}/analytics` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/approves-first` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/artifacts/{aid}/capability-approval` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/artifacts/{aid}/capability-approval/{name}` | Denied | yes: 403 `not_for_agents` |
@@ -6508,6 +6695,15 @@ router), and a test fails when it differs:
 | `GET /api/bot/runs/{id}/draft/` | Denied | no |
 | `GET /api/bot/runs/{id}/draft/{*path}` | Denied | no |
 | `GET /api/bot/runs/{id}/events` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/bot/surfaces` | Denied | no |
+| `PUT /api/bot/surfaces/{name}` | Denied | no |
+| `PUT /api/bot/surfaces/{name}/content` | Denied | no |
+| `GET /api/bot/surfaces/{name}/content/{id}` | Denied | no |
+| `PUT /api/bot/surfaces/{name}/joins` | Denied | no |
+| `POST /api/bot/surfaces/{name}/runs` | Denied | no |
+| `GET /api/bot/surfaces/{name}/runs/{id}` | Denied | no |
+| `POST /api/bot/surfaces/{name}/runs/{id}/messages` | Denied | no |
+| `POST /api/bot/surfaces/{name}/serve` | Denied | no |
 | `DELETE /api/browser-login` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/browser-login` | Denied | no |
 | `POST /api/browser-login` | Denied | no |
@@ -6590,12 +6786,16 @@ router), and a test fails when it differs:
 | `POST /api/questions/{qid}/decline` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/pull` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/questions/{qid}/release` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queue-requests` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queue-requests/{id}/approve` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queue-requests/{id}/deny` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}` | Denied | yes: 403 `not_for_agents` |
 | `PATCH /api/queues/{qid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/people` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/reports/{tid}/reopen` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/reports/{tid}/verify` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
@@ -6667,6 +6867,7 @@ router), and a test fails when it differs:
 | `GET /queues/{qid}` | Denied | no |
 | `GET /queues/{qid}/{tid}` | Denied | no |
 | `GET /settings` | Denied | no |
+| `GET /settings/{screen}` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
 | `GET /tags` | Denied | no |
 <!-- route-table:end -->
@@ -6947,11 +7148,9 @@ versions is a snapshot of the page, taken when a comment is posted.
   any other fragment is dropped, and the route is cut to 512 bytes at a
   character boundary. `http://LOCALHOST:5173/settings?tab=billing&utm_source=x#top`
   is origin `http://localhost:5173`, path `/settings`, route `?tab=billing`.
-  A URL on the daemon's own port whose host is `localhost`, any
-  `*.localhost`, a loopback or unspecified IP address (`127.0.0.0/8`,
-  `[::1]`, `0.0.0.0`, `[::]`), or the host the daemon is reached at is
-  refused with 400 `own_origin`: Clax's own pages have their own comment
-  mode.
+  The daemon's own pages are live pages like any other: the shell's
+  screens, and an artifact's view, whose live-page threads are kept apart
+  from the artifact's own.
 - **`GET /api/live/pages?url=<page URL>`** answers `{page, route, rule}`:
   the live page the URL names, or `null`, the URL's route, or `null`, and
   the merge rule that maps the URL's path (see "Site-wide threads"), or
@@ -7002,7 +7201,7 @@ versions is a snapshot of the page, taken when a comment is posted.
   replies_armed}, page, covered}` (`covered`: the artifact IDs of the
   covered pages); 400 `unknown_session` for a missing or ended session
   (checked before anything is written, so it makes no page), and the URL
-  errors above (`own_origin` too). The page is made before the scope watch
+  errors above. The page is made before the scope watch
   is written: when the page cannot be made, the call fails and leaves no
   scope watch. Watching the same URL again
   sets its `replies_armed`. A `scope` watch is armed while any of the
@@ -7115,7 +7314,7 @@ the extension's credential; anything else is 403 `forbidden`.
   `pattern` (that rule's pattern, else `null`). A canonical page's
   `page_url` is not a URL to open; its threads' `page_url`s are.
 - **`GET /api/live/site?origin=<origin>`** (`origin` may be any URL of the
-  origin; the daemon's own origin is 400 `own_origin`) answers `{origin,
+  origin) answers `{origin,
   rules, pages}`. `rules` are the origin's merge rules in force, oldest
   first. `pages` are the origin's live pages that have threads, newest
   activity first, each `{page, summary, threads}`: `summary` is `{open,
@@ -7168,7 +7367,7 @@ the extension's credential; anything else is 403 `forbidden`.
   topics (`artifact:<aid>`, `gallery`) but not `site:`, `thread_deleted`
   (for clients that know only that), then the thread's `thread` on the new
   page. 400 `cross_origin` for a page of another origin, writing nothing;
-  the URL errors of `POST /api/live/threads` (`own_origin` too); 404 for a
+  the URL errors of `POST /api/live/threads`; 404 for a
   missing thread, or one that is not a live page's.
 - **Merge rules.** A rule `{origin, pattern}` says that the live pages of
   `origin` whose path `pattern` matches are one page: the **canonical
@@ -7189,8 +7388,7 @@ the extension's credential; anything else is 403 `forbidden`.
   always names its canonical page. Otherwise, when several rules of the
   origin match a path, the one with the most literal segments wins, then
   the one with the most `:name` segments, then the oldest. An origin holds
-  at most 64 rules in force (400 `too_many_rules`); the daemon's own origin
-  is 400 `own_origin`. A rule is `{id, origin, pattern, page_url,
+  at most 64 rules in force (400 `too_many_rules`). A rule is `{id, origin, pattern, page_url,
   created_at, deleting}`, where `page_url` is the canonical page's URL
   (the origin followed by the pattern).
   - `POST /api/live/rules` `{origin, pattern}` (`origin` may be any URL of
@@ -7240,8 +7438,7 @@ suggests a join and the owner confirms; nothing joins on its own. The
 routes are under `/api/live/` (hidden from the LAN), take the `Origin` rule
 of the viewer routes, and follow the owner rules above: reads need an owner
 credential, writes the token or the extension's credential (else 403
-`forbidden`). Each origin a route takes may be any URL of it; the daemon's
-own origin is 400 `own_origin`.
+`forbidden`). Each origin a route takes may be any URL of it.
 
 - **A site** is `{key, name, joined, origins}`: `key` is the origin its
   live pages and merge rules are kept under, `name` its most recently used
@@ -7402,11 +7599,19 @@ dark mode, and on a phone:
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
   `/...` paths or hard-coded hosts.
-- A page loads and fetches only its own files, its assets, `data:` and
-  `blob:` URLs: no scripts, styles, fonts or images from CDNs or other
-  sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or `EventSource` to
-  anywhere else. The daemon's content policy refuses the rest. Data from
-  the web comes through the `net` capability.
+- By default a page loads and fetches only its own files, its assets,
+  `data:` and `blob:` URLs: no scripts, styles, fonts or images from CDNs
+  or other sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or
+  `EventSource` to anywhere else. The daemon's content policy refuses the
+  rest. Data from the web comes through the `net` capability. A page that
+  needs more bundles those files with it, or its person serves the clax
+  without Clax's Content Security Policy (`content_security_policy:
+  "unrestricted"`, see "Security model"; an agent asks with
+  `publish_public`'s `content_security_policy`): its pages may then load
+  from, connect to and post to any site, and register a service worker of
+  their own.
+- On a hosted Clax the bridge reports one page view per page load to the
+  site's own `/_clax/api/analytics`; a page needs to do nothing.
 - `icon.svg` at the top of the files is the app's icon, a square
   full-bleed design. Every publish refuses one that breaks these rules
   (`invalid_icon`), and a version a git push makes leaves it out, naming
@@ -7974,9 +8179,11 @@ grants only the hosts in force and answers 400 `not_declared` when none is.
 
 An app page cannot connect anywhere itself, nor load anything from another
 site: its content security policy lets it fetch only its own files and
-assets, and load only those, `data:` and `blob:` (see "Security model"). It
-fetches from the web through the daemon instead, from hosts it declares and
-the owner allows.
+assets, and load only those, `data:` and `blob:` (see "Security model"),
+unless its `content_security_policy` is `unrestricted`, which `net` does
+not need. It fetches from the web through the daemon instead, from hosts
+it declares and the owner allows; at `unrestricted` too, `net` keeps its
+declaration, approval and grants.
 
 **Declaring.** `{"net": {"hosts": ["api.example.com", "cdn.example.com"]}}`:
 1 to 32 lowercase host names (at least two labels, the last not numeric;
@@ -8367,7 +8574,7 @@ except as noted:
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
 | `docs:<B>?reader=<A>` | B's `doc` events that `view` with no viewer may read, each only while app A may read B (checked as it is dispatched); subscribing needs A to exist and to be allowed to read B then (403 `not_granted` or `not_declared`). See "Reading another app's documents". |
 | `agents` | `agents` (`{topic}`, naming nothing) whenever the agents roster may have changed: an agent started, ended, was renamed or got watches back, a thread's owner changed, or a working record, question or approval request changed. Refetch `GET /api/agents`. Only the owner's and connected people's streams take it (403 `forbidden` otherwise). |
-| `queue:<qid>` | `report` whenever a report of report queue `<qid>` is filed, claimed, renewed, released (by its agent, or ended by a person), given a fix, verified, reopened, resolved, commented on, or given new metadata (its own or its page artifact's). A claim that lapses publishes none. Only a member of the queue takes it (404 `not_a_member` otherwise, as its triage routes answer, and 400 `invalid_topic` for a `<qid>` that is not a queue ID); each event reaches only the streams of the queue's members at the change, so a member removed hears no more though their stream still holds the topic. |
+| `queue:<qid>` | `report` whenever a report of report queue `<qid>` is filed, claimed, renewed, released (by its agent, or ended by a person), given a fix, verified, reopened, resolved, commented on, or given new metadata (its own or its page artifact's), and when its claim lapses (the daemon's sweep, every 5 s, or a hosted instance's alarm, set for the earliest lease's expiry, publishes it, so the event can come up to a sweep after the expiry). Only a member of the queue takes it (404 `not_a_member` otherwise, as its triage routes answer, and 400 `invalid_topic` for a `<qid>` that is not a queue ID); each event reaches only the streams of the queue's members at the change, so a member removed hears no more though their stream still holds the topic. |
 | `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin's site (every origin joined to it, those joined later too: see "Joined sites"), those made later included, and `site` when an origin joins the site or is split off. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
 **Events.** Every event but `ready` and `resync` carries `id:
@@ -8500,11 +8707,25 @@ each harness whose CLI is on `PATH`: `claude plugin marketplace add` and
 `grok plugin uninstall clax-grok --confirm` (failure ignored) and
 `grok plugin install ~/.clax/marketplace/plugins/clax-grok --trust`.
 It first removes the existing Clax registrations and any under Clax's
-previous name, and records what it registered in
+previous name. A removal command that fails is named in the harness's
+`detail` as ignored, unless the harness's registry, read without error,
+does not list what the command removes. It records what it registered in
 `~/.clax/registrations.json`. `--agent` (repeatable) limits it to named
 harnesses. A harness whose CLI is missing or fails is reported, and the
 others still run. Re-running is safe: it reinstalls the plugin, which
 enables it again where it was disabled.
+
+When `<pi dir>/settings.json` already lists the Clax Pi package from npm
+(`npm:@empathic/clax-pi`, with or without a version) or from git (a git
+source whose installed copy under `<pi dir>/git` has that package name),
+`clax init` keeps that registration and runs no `pi install`: with two
+copies, Pi reports each tool as a conflict and does not start. It reports Pi with the status `"kept"` and a detail that names
+the source and the commands that switch to the binary's copy, and records
+nothing for Pi, so `clax uninit` does not remove that registration. When
+the working directory's `.pi/settings.json` lists a Clax Pi package other
+than the user's (the kept registration, or the copy `init` installs), the
+detail names the two copies in that project and the `pi remove -l` command.
+An entry Pi counts as the same package as the user's adds no note.
 
 `clax uninit` removes the registrations, then deletes `~/.clax/marketplace/`
 unless a harness's registry still refers to it or cannot be read. Both
@@ -8548,7 +8769,9 @@ the GitHub repository to be public.
 
 `clax init` also sets the `bin` setting (below) to its own executable, so
 the plugins it registers, which match that binary, run it; it reports
-`"bin": {"status": "set" | "failed", "detail": ...}`. `clax uninit` removes
+`"bin": {"status": "set" | "failed", "detail": ...}`, with a `note` when it
+kept Pi's registration: that package then runs this binary, not the release
+it pins. `clax uninit` removes
 the setting when it names its own executable (`"cleared"`), and otherwise
 leaves it (`"kept"`).
 
@@ -9107,6 +9330,17 @@ harness and the daemon, each `ok` or failed with the fix:
   version, with the build, the reason, when the hold ends, and what to do.
 - `plugin`: the harness's installed copy of the plugin; failed when none is
   found, or its manifest version or its wrapper differs from this binary's.
+  For Pi, the copies are the Clax packages that `<pi dir>/settings.json` and
+  the working directory's `.pi/settings.json` lead to (npm, git or local
+  sources) and those `pi list --no-approve` prints; the detail names a
+  user package that only one of the two finds.
+- `double_load` (Pi only): each settings entry that loads the Clax package,
+  when there is more than one, with its scope and the `pi remove` command
+  for it (`-l` for a project entry). Pi then reports each tool of a later
+  copy as a conflict and does not start. Entries Pi counts as one package
+  count once. Failed when two of the entries are user entries; not failed
+  when the second copy is a project entry, which Pi loads only in a project
+  it trusts.
 - `skill`: the installed skill's stated version and tool count, and whether
   it is the skill this binary was built with.
 - `mcp`: whether the daemon has a live session of the harness.
@@ -9242,12 +9476,13 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   answer; no result carries the session's waiting feedback, which still
   arrives through its delivery tiers. `follow [<queue>]` watches the queue
   as that session (`POST /api/queues/<qid>/watch`, again whenever the
-  session is registered anew) and long-polls its notices, printing one
-  JSON line per notice of the queue: `{event, queue, report_id, title,
+  session is registered anew) and long-polls its notices of that queue
+  (`GET /api/sessions/<sid>/notices?queue=<qid>`), printing one
+  JSON line per notice: `{event, queue, report_id, title,
   url}`, `event` being `filed`, `reopened` or `comment` (a comment on a
   report sent to the session), with `reopened_by` when the notice has it.
-  It passes over notices of anything else (they still arrive through the
-  tiers), never starts a daemon, follows the session across daemon
+  It never takes a notice of anything else, so a `clax feedback follow` of
+  the same session still announces those; it never starts a daemon, follows the session across daemon
   restarts, exits 0 once the session has ended (or, with `--once`, after
   the first poll that printed a line), exits 1 on a refused watch (such
   as `not_a_member`), and exits 2 without a session.
@@ -9411,8 +9646,34 @@ pings each tab every 10 s; a visible tab that has heard nothing from it for
 35 s counts it gone and starts a new one. Once the stream has been down for
 1.5 s, every tab shows a quiet notice ("Live updates paused.
 Reconnecting…") until it is back. A first load of the gallery or the
-artifact that has not answered within 8 s, or failed to connect, is
-abandoned and retried the same way, with a notice.
+artifact that has not answered within 8 s, failed to connect, or got an
+answer that is not Clax's, is abandoned and retried the same way, with a
+notice.
+
+Every request a shell page makes to its own origin tells that notice what
+it found. An answer counts as Clax's when it is JSON (a refusal naming
+`error.code`); anything else, such as a proxy's or a CDN's page (a 520–530
+answer, an HTML page where the API answers), is not Clax's. The notice then
+says, by kind: "This Clax is not answering. It may have been taken down or
+moved." for an answer that is not Clax's (in the warning's colours); "You
+are offline. Clax will catch up when you are back." when the browser is
+offline; "Clax is not answering on this computer. Retrying…" (a local
+daemon) or "Cannot reach Clax. Retrying…" (a hosted one) for no answer;
+"Clax is not answering yet. Still waiting…" for a write still pending after
+8 s; and "Part of Clax could not load. Try again in a moment." for a panel
+whose code did not load. The first kind outranks the others, which outrank
+the stream's own words; the stream's reason uses the same words when its
+own request found the same. While a composer, a reply box or the New
+comment box holds text not yet sent, the notice adds "What you wrote is
+kept." While it shows, the page asks `GET /healthz` with the same backoff
+(not while hidden) until Clax answers, and the notice clears by itself.
+A failed action says why after its prefix ("Could not post: …", "Not sent:
+…"): "this Clax is not answering. It may have been taken down or moved.",
+"you are offline.", "Clax did not answer.", "you are signed out.", "it was
+deleted.", "too many requests. Try again in a moment.", or else the
+daemon's own message, never a status number or the browser's error text.
+A reply or a New comment that fails keeps its text and says why beside its
+box; a stage action says it in the stage's banner.
 
 ## Toolpath journal and export
 
@@ -9477,8 +9738,9 @@ the body below.
 | `thread.reopen` | none | a reopen of a resolved thread |
 | `queue.claim` | `queue_id, thread_id, session, lease_id, fence, expires_at` | a claim of a report that makes a new lease |
 | `queue.release` | `queue_id, thread_id, session, lease_id, reason (explicit\|member_removed\|fix_proposed\|person)` | a lease ended by its session, by its person's removal from the queue, by a fix, or by a triage person (`…/release`; the actor is the person) |
-| `queue.fix` | `queue_id, thread_id, n, url?, commit?` | a fix proposed on a report, after its summary's `comment.add` |
-| `queue.verify` | `queue_id, thread_id, n` | a verdict that a report's fix works, after its `thread.resolve` (`reason: fixed`) |
+| `queue.fix` | `queue_id, thread_id, n, url?, commit?, ticket_id?` (`ticket_id` the fix ticket's, with `preview`) | a fix proposed on a report, after its summary's `comment.add` |
+| `queue.verify` | `queue_id, thread_id, n, origin?` (`origin` the reporter token's, when the reporter gave it) | a verdict that a report's fix works, after its `thread.resolve` (`reason: fixed`) |
+| `queue.preview` | `queue_id, thread_id, n, origin, url, ticket_id, issued_by, for_person` (`issued_by` the agent's or person's name; `for_person` the person's public ID, or `owner`) | a preview deployment attached to a fix through its ticket, after its notice's `comment.add`: "Preview <origin> attached to fix <n> of report <report ID>, ticket issued by <issued_by> for <for_person>" |
 | `queue.reopen` | `queue_id, thread_id, n?, reopen_count` (`n` the latest fix's, when there is one) | a report said still broken, after its `comment.add` and `thread.reopen` |
 | `thread.delete` | `moved` | delete |
 | `thread.send` | `target ("watchers" \| {session_id, agent_handle}), feedback_ids[], batch_id?, thread_ids[]` | a send that changes something, automatic forwards included |
@@ -9519,13 +9781,14 @@ the body below.
 | `tag.create` | `tag_id, name, colour, description` | a tag made |
 | `tag.update` | `tag_id, fields{name?, colour?, description?}` | a tag renamed, recoloured or redescribed |
 | `tag.delete` | `tag_id, name, artifacts` (how many carried it) | a tag deleted, and so removed from every artifact |
-| `bot.run_start` | `run, request (thread\|brief), thread_ids[], model, key_source (instance\|own)` | a ClaxBot run made, on its artifact |
+| `bot.run_start` | `run, request (thread\|brief\|other), thread_ids[], model, key_source (instance\|own)`; for a run of another surface's kind (`request: other`) also `kind` (`<surface>.<kind>`), `started_by` (a registration) and `parent_run?` | a ClaxBot run made, on its artifact; a run of another surface's kind has none and is found by its person |
 | `bot.turn` | `run, step, model, key_source (instance\|own), input_tokens, cached_tokens, output_tokens, stop_reason, credits_milli` | a model turn's step committed |
 | `bot.script` | `run, step, title, code_sha256, calls[op], cpu_ms, mem_peak, credits_milli, error` (the code itself is in the run's step, never the body) | a script's step committed |
 | `bot.call` | `run, step, op, target, ok` | every API op a script called, reads included, with its step |
 | `bot.web` | `run, step, op (web.search\|web.fetch), query` or `url, source, provider, request_id, credits_milli` | a web call answered, with its charge, in the transaction that journals it |
 | `bot.run_end` | `run, outcome (finished\|gave_up\|stopped), reason, credits_milli` (the run's total) | a run's terminal step committed |
-| `bot.cancel` | `run, by` (the person key of who asked) | someone asked a queued or running run to stop |
+| `bot.cancel` | `run, by` (the person key of who asked) | someone asked a queued, running or parked run to stop |
+| `bot.surface.registered` | `registration, name, def_hash, registered_by, prompt_sha256?` (its prompt file's), `replaces?` (the registration it takes the place of), `changed?` | a surface registered for ClaxBot runs, or a registration gone on with a changed definition, prompt file or settings (`changed: true`), filed on the person who registered it |
 | `view.run` | `run` | someone opened a run's panel |
 | `view.admin` | `page, subject_person?` | an admin page opened |
 | `view.audit` | `filters` | the audit view opened or filtered |
@@ -9584,6 +9847,7 @@ taken from the request's identity and session:
 | an anonymous viewer | `human:clax-anonymous` | `name` "Anonymous viewer" |
 | a report queue's reporter (a reporter token's requests) | `human:clax-reporter/<queue ID>.<reporter ID>` | `name` the reporter ID (none under `--no-names`); identity `{system: "clax-reporter", id: "<install ID>/<queue ID>/<reporter ID>"}`; the actor is `{"type": "reporter", "queue_id", "reporter_id"}` |
 | a report queue's service grant (the deployer's backend; minting a reporter token records nothing) | `tool:clax-service/<grant ID>` | `name` "Report queue service"; identities `{system: "clax-queue-grant", id: <grant ID>}` and `{system: "clax-queue", id: "<install ID>/<queue ID>"}`; the actor is `{"type": "service", "queue_id", "grant_id"}` |
+| a fix ticket (a preview deployment attaching its origin) | `tool:clax-fix-ticket/<ticket ID>` | `name` "Preview deployment"; identities `{system: "clax-fix-ticket", id: <ticket ID>}` and `{system: "clax-queue", id: "<install ID>/<queue ID>"}`; the actor is `{"type": "fix_ticket", "queue_id", "ticket_id"}` |
 | ClaxBot acting for a person | `agent:claxbot/<person>` (`agent:claxbot/owner` for the owner) | `name` "ClaxBot"; identity `{system: "clax-person", id: "<install ID>/<person key>"}`; the actor is `{"type": "bot", "on_behalf_of": "<public ID>\|*owner"}` |
 | Clax itself | `tool:clax/<recording version>` | `name` "Clax"; identity `{system: "clax-build", id: <commit>}`; the reason (`ttl`, `rule`, `backfill`, `daemon`) is `meta.clax.system_reason` |
 
@@ -9910,7 +10174,9 @@ owner's public ID is.
   sealing, the slot bound as associated data. The KEK file is written
   complete in a temporary directory that is then renamed to `secrets`, so
   no reader sees a partial key, and racing makers agree on one. Reads give `last4`,
-  `set_at`, `set_by`, `last_ok_at` and `use_own`, never the key.
+  `set_at`, `set_by`, `last_ok_at`, `use_own`, `host` and `last_problem`
+  (`last_problem_json`, migration 66: the last failed request made with
+  the key), never the key.
 
 **Units.** No floats anywhere in credits: credits are integer
 milli-credits, money integer micro-USD, margins integer basis points. A
@@ -10070,9 +10336,101 @@ the people the owner made admins. Agents get 403 `not_for_agents` on every
 route above but the sends (an agent of another machine gets the grant
 gate's 403 `forbidden`), no credential 401, a LAN viewer or a member on an
 admin route 403 `forbidden`. A key is write-only: no answer, event or log
-carries it, only `{set, last4, set_at, set_by, last_ok_at}`; without a
-key-encryption key the key routes answer 503 `no_kek`. A view is recorded
-at most once in five minutes per viewer and subject.
+carries it, only `{set, last4, set_at, set_by, last_ok_at, host,
+problem, last_problem}`; without a key-encryption key the key routes
+answer 503 `no_kek`. A view is recorded at most once in five minutes per
+viewer and subject.
+
+A stored key's `last_problem` is the last failed request made with it, by
+a run's model call or by the provider's test or model list:
+`{at, class, status, type, message, request_id}`, `at` when Clax noted it
+and the rest the failure's detail (below). It is `null` when no request
+failed since the key was set or since a request with it last succeeded;
+setting the key again clears it, as a success does. `problem` is a
+sentence in Clax's own words, or `null`: when the key was set for another
+origin than the provider in effect, `<whose>: it was set for <host>; set
+it again`; else, when it has a `last_problem`, `<whose>: the last request
+with it failed: <words>`, the words from the class alone (never the
+provider's text): `the provider refused the request` (`invalid_request`),
+`the provider refused the key` (`auth`), `the provider answered with an
+error` (`api`), `the provider limited it` (`rate_limited`), `the provider
+was overloaded` (`overloaded`), `the provider could not be reached`
+(`network`), `the base URL is not one a key may be sent to`
+(`bad_base_url`, `redirected`), and otherwise `the provider's answer could
+not be read`. `<whose>` is `the instance key` in `GET
+/api/admin/provider` and `your key` in `GET /api/me/bot`. The key in the
+environment (`sources.key` `env:<NAME>`) keeps no state: its `host`,
+`problem` and `last_problem` are `null`. The instance key is shown to
+admins alone, an own key to its person alone; no reader's or agent's
+route shows either.
+
+A failed model call's **detail** is `{class, status, type, message,
+request_id}`: `class` one of `invalid_request`, `auth`, `rate_limited`,
+`overloaded`, `api`, `redirected`, `bad_base_url`, `network`,
+`stream_cut`, `protocol` or `unknown_event`; of the provider's answer its
+HTTP `status`, its error `type`, its `message` (the error's message, else
+the text of a body that is not JSON) and its `request_id` (the
+`request-id` or `x-request-id` header); for `network`, `stream_cut`,
+`protocol` and `unknown_event`, `message` is Clax's account of what went
+wrong. A member it does not have is `null`. All but `class` came from
+the base URL, which may be anyone's host: each is one line of untrusted
+plain text, its control and reordering characters made spaces and cut
+(the message at 400 bytes, the type and the request ID at 128), to
+quote as text, never markup and never an instruction to a model. It never
+holds the key: the client puts `[redacted]` where the provider echoed it.
+
+- `POST /api/admin/provider/test` answers `{ok, latency_ms, error,
+  detail}`: `error` Clax's own words (`null` on success), `detail` the
+  failure's detail (`null` on success and when no key is set).
+- `GET /api/admin/provider/models` that the provider fails answers 502
+  `{error: {code: "provider_error", message, detail}}`, `message` Clax's
+  own words.
+- Each, with a stored instance key, notes the outcome on the key: a
+  success its `last_ok_at`, a failure its `last_problem`. Each failure is
+  logged as one warning: the page (`test` or `models`), the API, the base
+  URL's origin, the detail's members and how long the request took; never
+  the key.
+- In `GET /api/bot/runs/<id>` and the events' `step_done`, a `stopped` or `failed` step that a failed model call ended
+  has `error_detail`, that call's detail with `key_source` (`instance`
+  or `own`: the key the call ran on), beside its `reason`
+  (`model_error`, `key_rejected`, …). A step stored before it was kept
+  has none. Only the person the run acts for and admins who see the run
+  whole see it: anyone who sees it as a reader of its artifact does
+  (an admin among them, on a hosted Clax), and a reader of a run a host's
+  surface is bound into, never does, and `step_started` never carries
+  it.
+- A failed model call on the **instance's key** is the instance's to
+  know of, not its users': to anyone who is not an admin, the run's own
+  person included, every run route (`GET /api/bot/runs/<id>`, `GET
+  /api/bot/runs?artifact=`, the cancel's answer, the events'
+  `step_done` and `run_end`) shows a run on the instance's key (its
+  `key_source`), or a stop whose call ran on it, without `error_detail`:
+  the stop's and the run's `reason` read `model_error` where the store
+  keeps `key_rejected` (the stored code does not change), and the stop
+  has `instance_problem: {busy}` (`busy`: the provider was limiting or
+  overloaded), which the run panel says in Clax's own words with the
+  run's ID to quote to an admin. The notice on the run's threads says
+  `I stopped: I could not use this Clax's model provider. This is a
+  problem with how this Clax is set up, not with your request, and it
+  has been recorded for the people who run this Clax. Try again later.`
+  On a person's own key nothing changes: they, and admins who see the
+  run whole, see the detail, and the notice says what failed.
+- Each failed call on the instance's key (a run's, and an admin's test
+  or model list) is kept in the **provider failure log**
+  (`bot_provider_failures`, migration 66) for admins: `GET
+  /api/admin/provider/failures?person=&run=&model=&class=&status=&since=&until=&before=&limit=`
+  (admins only, as the provider page; recorded as `view.admin {page:
+  "provider.failures", subject_person?}`) answers `{failures: [{id, at,
+  person: {id, name}, run_id, request, model, api, host, key_source,
+  class, status, type, message, request_id, since_key_change}], next}`,
+  newest first, `limit` 1 to 200 (50), `next` the `before` of the page
+  after it (`null` at the last); `request` is a run's kind (`clax.thread`,
+  …) or the admin action (`provider.test`, `provider.models`), `host`
+  the base URL's host, and `since_key_change` whether it came after the
+  instance key was last set. Kept: at most 100 entries of one person, so
+  one person's failures push out no one else's, 1,000 in all, none past
+  30 days. The provider's words are plain text, bounded, never the
+  key.
 
 On a hosted Clax being an admin is a power over runs, not a window into
 pages (the reach, see "Security model"): no account, the owner's
@@ -10261,6 +10619,904 @@ output_credits_milli_per_mtok}`: the source its four token units share
 any unit is priced from the catalog or the default rates; and the
 milli-credits a million input and output tokens charge now (`source` and
 the credits `null` when the model resolves to no price).
+
+## ClaxBot surfaces
+
+A **surface** is what a host gives ClaxBot's runs: typed operations a
+run's script calls, and kinds of request a run is started with, written
+as one definition (design
+`docs/superpowers/specs/2026-11-10-claxbot-surfaces-design.md`). A host
+registers its surface with a daemon at run time and then serves it: it
+long-polls for its operations' calls and answers them. This section is
+the protocol a host implements from. Its messages are the types of
+`crates/clax-surface/src/wire.rs` but three, which this section alone
+gives: the joins' body and answer, the listing, and a content handle.
+Its rules are `crates/clax-bot/src/bot_surfaces.rs`, and
+`docs/claxbot-surfaces/contract.json` ("The fixture") holds examples of
+every message of `wire.rs` and one scripted life of two registrations,
+which the tests of both replay and a host's own tests can.
+
+The local daemon serves these routes. A hosted Clax and the Worker have
+none of them (404).
+
+| Route | Body | Answer |
+|---|---|---|
+| `PUT /api/bot/surfaces/<name>` | `{clax_surface, notation, definition, registration?, prompt?, settings?}` | `{registration, hash, clax_surface, withheld?}` |
+| `POST /api/bot/surfaces/<name>/serve` | `{registration, wait_ms, answers?}` | `{calls, ignored?}` |
+| `POST /api/bot/surfaces/<name>/runs` | `{registration, kind, request, allow?, bind?}` | `{run}` |
+| `POST /api/bot/surfaces/<name>/runs/<id>/messages` | `{registration, message, key?}` | `{message, seq, waiting}` |
+| `GET /api/bot/surfaces/<name>/runs/<id>?registration=<id>` | none | `{run, kind, status, steps, waiting_on?, messages_waiting, undelivered?, end?, result?}` |
+| `PUT /api/bot/surfaces/<name>/joins` | `{registration, clax: [{artifact, allow?}]}` | the same, as kept |
+| `GET /api/bot/surfaces` | none | `{surfaces: [{name, registration, hash, connected, withheld, registered_at, last_served_at, joins}]}` |
+| `PUT /api/bot/surfaces/<name>/content?registration=…&run=…` | the bytes, typed by `Content-Type` | a handle ("Content") |
+| `GET /api/bot/surfaces/<name>/content/<id>?registration=…&run=…` | none | the bytes |
+
+**How a request is made.** Each carries the daemon's token as the CLI
+and an agent of the owner's do, `Authorization: Bearer <token>`, and a
+JSON body of 8 MiB at the most (read as JSON whatever its
+`Content-Type`), but for `PUT …/content`, whose body is an item's bytes
+under the content limits ("Content"). A success is 200 with a JSON body
+(of `GET …/content/<id>`, the item's bytes). Every refusal is
+`{error: {code, message}}` with the status of its code.
+
+**Who may.** The daemon's token and nothing else: whoever holds the
+token itself (the `clax` commands, a host process on the machine, the
+owner's agents), from the machine itself: a request from another
+machine is 403 `forbidden_host`, token or not. An owner browser session's cookie, a person's or a
+viewer's cookie and no credential are 401 (`unauthorized`, or the
+daemon's own `no_credential` before the route). An extension's
+credential (`Authorization: Clax-Extension`) is 403 before the route:
+`forbidden_origin` from any origin but the extension's, and `forbidden`
+from the extension's (it may not use these routes). An agent's token
+(`Bearer cxa_…`) is 401 `invalid_token`: a local daemon takes none;
+sent with an `Origin` or a cookie it is 403 `forbidden_origin` first. A
+grant (`Authorization: Clax-Grant`, an agent of another machine) is
+answered by the grant flow before the route while its headers do not
+verify (401 `invalid_token`, `grant_revoked`, `invalid_signature`,
+`stale_request` or `replayed_request`, 403 `forbidden_origin`, 429
+`limit_reached`), and once they do is 403 `forbidden`, whatever its
+rights. The token's holder acts as the owner: a registration is the
+owner's, and a run started through one acts for the owner, on the
+owner's credits and key.
+
+**When the daemon restarts.** The daemon makes a new token each time it
+starts and writes it to `<CLAX_HOME>/daemon.json`; the token a host read
+before then no longer works, and the daemon no longer holds the host's
+registration. A host that outlives the daemon therefore treats 401
+`unauthorized` on any of these routes as "the daemon restarted": it
+reads `daemon.json` again, registers again naming the `registration` it
+was issued (see "Registering"), and goes on serving. Calls that waited
+for it are kept across the restart, each as far on with its attempts as
+it was, and are sent to it once it has gone on as its registration. A
+host that still gets 401 with the token it has just read holds the
+wrong `CLAX_HOME`.
+
+**How long a request is held.** A `serve` is held for its `wait_ms`, 12 s
+at the most, on top of the deadline every request has (30 s); the other
+routes answer within that deadline, or are 408 `timeout`.
+
+**The listing.** `GET /api/bot/surfaces` lists the registrations the
+daemon holds now that the token's person made, in the order they were
+first registered: `connected` is whether its host is serving it (a
+`serve` open, or closed within 15 s, or registered within 15 s), `withheld` what a `Registered`
+says, `last_served_at` when a `serve` of it was last taken (`null`
+before the first). A registration is held until it is dropped
+("Registering"), and none is held across a restart of the daemon; one
+that is not held is not listed, and its host goes on as it by
+registering again with its ID.
+
+The refusals' codes, on every route of the protocol. They are the
+whole list: a route's refusals are those of every route (the gates
+before it: its credential, its host, the deadline) and its own. A
+method a route does not take is 405 with no body. Each row says which
+routes give it; R is a registration, Sv a `serve`, St a start, M a
+message, S a run's state, J a joins `PUT`, L the listing, U an upload
+and D a download.
+
+| Code | Status | When |
+|---|---|---|
+| `invalid_request` | 400 | The body (or a `GET`'s query) is not the route's message: not JSON, a member missing, of the wrong type (`null` where its type has none among them), or a member the message does not have (R Sv St M S J U D). Of a start, also: a kind the definition does not have, a request not of the kind's type or holding content, an `allow` that is not allow patterns. Of a message: one not of the kind's message type, or holding content. Of a join: more than 256 artifacts, one named twice, an `allow` that is none. Of an upload: a `Content-Type` or `name` that is none, a `Content-Length` that is no number, a body that could not be read ("Content") |
+| `invalid_path_param` | 400 | The route's `<name>` or `<id>` does not decode (`%FF`), on every route but L |
+| `unsupported_version` | 400 | R: `clax_surface` is not `1`, whatever else the registration holds (it is read first). `error.supported` lists the versions the daemon speaks: `[1]` |
+| `invalid_definition` | 400 | R: the definition does not read. `error.errors` lists its mistakes in the text's order, each `{line, message}` for a `.d.ts` file or `{pointer, message}` (a JSON Pointer) for a manifest; `error.unread` is how many entries of a manifest were not looked at, when not 0 |
+| `name_mismatch` | 400 | R: the definition's surface is not named `<name>` |
+| `invalid_settings` | 400 | R: a setting is not one (an allow pattern that is none), or is past its bounds |
+| `prompt_too_large` | 400 | R: `prompt` is longer than 64 KiB |
+| `invalid_prompt` | 400 | R: `prompt` is not a prompt file of the surface: the message says why, with the line when it is one line's |
+| `too_many_answers` | 400 | Sv: more than 1,024 answers. None was taken |
+| `takes_no_messages` | 400 | M: a message to a run whose kind takes none |
+| `content_mismatch` | 400 | U: the bytes are not what the `Content-Type` or the query says |
+| `run_invalid`, `surface_hash_invalid`, `no_content_store` | 400 | The store's refusal of what the route has checked already (St; U for the last): no request a host can write gives them |
+| `no_credential` | 401 | Every route: the request carries no credential at all, refused before the route |
+| `unauthorized` | 401 | Every route: the daemon's token is missing or refused (an owner browser session's or a viewer's cookie, another `Authorization`): after a restart of the daemon, the token read before it |
+| `invalid_token` | 401 | Every route: an agent's token (`Bearer cxa_…`), which a local daemon takes none of; a grant's token that is not one; a report queue's, a reporter's or a fix ticket's credential (`Clax-Queue`, `Clax-Reporter`, `Clax-Fix`) |
+| `grant_revoked` | 401 | Every route: a grant whose grant was revoked, refused before the route |
+| `invalid_signature`, `stale_request`, `replayed_request` | 401 | Every route: a grant whose headers do not verify, refused before the route |
+| `forbidden_host` | 403 | Every route: the request comes from another machine (a token does not let it in), or its `Host` is not one the daemon answers |
+| `forbidden_origin` | 403 | Every route: an extension's credential from an origin that is not the extension's; a grant, or an agent's token, sent with an `Origin` or a cookie |
+| `forbidden` | 403 | Every route: a grant that verifies, or a request from the extension's origin: these routes take the daemon's token and nothing else |
+| `read_only`, `not_granted` | 403 | Every route: a request with `X-Clax-Reader` (an app reading for another), which these routes take none of |
+| `no_flag`, `credits_exhausted`, `not_configured`, `model_not_priced` | 403 | St: refused as any run of its person is ("Starting a run"). No run was started |
+| `join_artifact_refused` | 403 | J: an artifact the token's person did not make. Nothing was changed |
+| `unknown_registration` | 404 | Sv, St, J: the daemon holds no registration of `<name>` with the ID the request names. R: the registration names one to go on as that the daemon never gave a registration of `<name>`, or has forgotten. M and S never answer it |
+| `join_artifact_unknown` | 404 | J: an artifact that is not here, or is deleted. Nothing was changed |
+| `unknown_run` | 404 | M, S: a run the registration did not start (a run a join bound it into among them), or that is not there |
+| `not_found` | 404 | U, D: a registration the daemon does not hold, or a run, call or item that is not the registration's ("Content") |
+| `timeout` | 408 | Every route: not answered within its deadline ("How long a request is held"). What it asked may have been done |
+| `run_ended` | 409 | M: a message to a run that has ended |
+| `key_conflict` | 409 | M: the `key` names another message of the run |
+| `too_large` | 413 | R Sv St M J: the body is longer than 8 MiB: nothing of it was read. M: a message longer than 64 KiB of JSON, found after it is read and checked ("Messages to a run") |
+| `content_too_large` | 413 | U: longer than an item may be (20 MiB) |
+| `run_content_full` | 413 | U: it would take the run's content past 100 MiB |
+| `too_many_messages` | 429 | M: the run holds 32 messages it has not been given |
+| `too_many_uploads` | 429 | U: the registration has 2 uploads in flight |
+| `too_many_changes` | 429 | R: a registration that is held was gone on with, with its definition, prompt file or settings changed, eight times in the last minute. It is as it was; going on with nothing changed is not counted |
+| `too_many_runs` | 429 | St: the registration has 16 runs that have not ended, starts made at the same time counted together. No run was started |
+| `too_many_registrations` | 429 | R: the daemon holds 32 registrations, or 8 of this name, and every one that could make room is connected |
+| `limit_reached` | 429 | Every route: a grant past its rate, refused before the route |
+| `internal_error` | 500 | R, St: the daemon could not do what was asked, through no fault of the request's (an ID it drew was taken; a kept registration that does not read). Nothing was done |
+| `storage_failed` | 500 | Sv, R: the daemon could not read or write its store; the message says no more than that, and the daemon's log why. A `serve` gives no other code for its store. Of a `serve`, some answers may have been taken: the host sends them all again, and one that was taken is taken again as it was, not listed in `ignored`; calls it had accepted that the daemon was to send it again (it went on as its registration, or was not connected) are still planned at its next `serve` |
+| `internal` | 500 | Every route but Sv: a store failure (of R, outside the hub's own: its audit record), answered as on the daemon's other routes; of S, a kept end that does not read; of D, bytes that could not be read. A code of 500 or more that a host does not know is the daemon's failure too, and what it asked may have been done |
+| `not_yet` | 501 | St: `bind` is given: this Clax binds no other surface to a run yet. No run was started. U: a daemon whose store keeps no blobs (none that `clax serve` runs) |
+| `read_timeout` | 503 | Every route but Sv: a read of the store ran past its limit (10 s). A retry may get through |
+| `content_store_full` | 507 | U: it would take the content of all runs past 1 GiB |
+
+**What is read strictly, and what leniently.** A message a host sends is
+refused (`invalid_request`) when it has a member the message does not
+have: a misspelt `wait_ms` or a setting this daemon lacks is said, never
+ignored. `null` is not "left out": a member that is there has a value of
+its type. A message a daemon sends may gain members in a later Clax. A
+host ignores a member it does not know; skips a delivery whose `call`
+it does not know (such a delivery may have no `id`, needs no answer,
+and is not listed again for want of one); reads an `end` it does not know
+as the run having ended; reads a run state's `status` it does not know
+as text, of a run that has ended when the state has `end`; and reads a
+`withheld` reason it does not know as "withheld". A `calls` that is left
+out is empty.
+
+**The version.** `clax_surface: 1` is the protocol's version, named as a
+manifest's is. A host states it when it registers and the daemon answers
+with the one it speaks; `serve` and `runs` carry none, and belong to
+the registration they name. It changes only when a message changes
+meaning: a new optional member of a host's message, a new member of a
+daemon's, a new kind of delivery and a new way for a run to end do not
+change it.
+
+**IDs.** A registration's ID is 32 lowercase hexadecimal digits, drawn
+at random by the daemon. A delivery's `id` and a run's are strings of
+the daemon's, 256 bytes at the most, which a host sends back as it was
+given them; an answer that names a longer one is ignored.
+
+### Registering
+
+```json
+{ "clax_surface": 1, "notation": "dts", "definition": "declare const desk: { … };",
+  "prompt": "…", "settings": { "allow": ["desk.*"],
+    "max_effects_per_run": 5, "call_timeout_s": 30, "wait_limit_s": 86400,
+    "runs": { "max_steps": 40, "max_run_minutes": "none" } } }
+→ { "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55", "hash": "550f6805…", "clax_surface": 1 }
+```
+
+- `notation` is `"dts"` or `"manifest"`, and `definition` the text in
+  that notation (both are specified in `crates/clax-surface/src/lib.rs`,
+  and `clax bot surface check` reads either). The surface's name is the
+  route's `<name>`, and not one Clax reserves.
+- `hash` is the SHA-256, in lowercase hex, of the definition's canonical
+  bytes: the same for one definition in either notation.
+- `prompt`, when there is one, is the **prompt file** that runs of the
+  surface's kinds are sent in place of the core's standard one
+  (`crates/clax-bot/src/standard.prompt.md`), in the format
+  `crates/clax-bot/src/prompt/file.rs` documents: a `--- system ---`
+  section with words of its own, `{declarations}` once and `{surfaces}`
+  alone on its last line, and a place for every rule of the surface
+  (`{rules}`; or, when neither the surface itself nor a namespace inside
+  another has rules, `{rules.<namespace>}` for each ruled namespace
+  directly on it); a `--- request ---` section
+  with `{instructions}` (which strings of the request are the person's
+  words) on a line before `{request}`, which it has once, and `{fence}`
+  for the fence of the block around it. A host's file has no slot of the
+  surface's own, and an `--- opener <kind> ---` section for each kind
+  only when its request section has `{opener}`. A file that is not one
+  is refused, `invalid_prompt`; the fixture's `desk.prompt.md` is a
+  small one. Left out, runs are sent the standard prompt.
+- `settings` are each optional, by the names the daemon's configuration
+  will give them. Each holds a run the registration starts, and is
+  within the instance's own: a setting narrows and never widens.
+
+  | Setting | What it does to a run the registration starts |
+  |---|---|
+  | `allow` | Allow patterns: the operations the run is offered at all, fixed in its binding. `clax`, and a pattern whose first name is `clax`, is none: Clax's own operations are named without it |
+  | `call_timeout_s` | How long a call of an operation not tagged `@waits` may go unanswered: the lesser of this and the instance's |
+  | `wait_limit_s` | The same, for an operation tagged `@waits` |
+  | `max_effects_per_run` | How many calls of the surface's operations tagged `@effect` the run may make in all its steps. The call that would be one more is refused before the host is sent anything: the script is thrown `effect_limit` (not retryable), which it can catch, and the refusal is journaled. A call is counted once whatever happens to its step (run again after a crash, or after the run parked on it), by the run's journal, so a daemon that restarts counts the same; a call the daemon refused before its host was sent it (`unknown_op`, `invalid_args`, `effect_limit`) or that was `unavailable` (nothing happened) is not counted, and every other call is: one its host answered with an error of its own (a code its `@throws` declares) was performed, and so was one answered `invalid_result`, `expired` or `unknown_outcome`. A call the host was sent whose journal row could not be written is counted for the rest of that run of its step. `0` allows none. A run under a limit is told it, with the operations it counts, in its declaration |
+  | `runs.max_steps` | The run's cap on steps: the lesser of this and the instance's `max_steps`. A run that reaches it stops `run_cap`, as at the instance's |
+  | `runs.max_run_minutes` | The run's cap on minutes at work, parked time not counted: the lesser of this and the instance's `max_run_minutes`, stopping as above |
+  | `reader_view` | Not supported yet: a registration that gives it, `"none"` or `"names"`, is refused `invalid_settings` |
+
+  `"none"` sets no limit of the registration's (the instance's stands).
+  A setting is left out or given: `null` is no setting's value (it is
+  not "no limit", which is `"none"`, nor "left out"). A setting the
+  daemon does not have, a limit that is not a whole number of zero or
+  more or `"none"` (a negative, a fraction, text, `null`), and `null`
+  for any setting (`"runs": null`, `"allow": null`) is no message at
+  all: `invalid_request`, as any member a message does not have. Their bounds, past which a registration
+  is refused (`invalid_settings`): the settings are 16 KiB of JSON at
+  the most; `allow` lists 128 patterns at the most, each of 34 names at
+  the most and no name longer than 64 bytes; a limit is `"none"` or a
+  whole number, from 1 to 31,536,000 for `call_timeout_s` and
+  `wait_limit_s` (a year), from 0 to 1,000,000 for
+  `max_effects_per_run`, from 1 to 1,000,000 for `runs.max_steps`, and
+  from 1 to 525,600 for `runs.max_run_minutes`. A start's `allow` is
+  held to the same bounds as the setting.
+- `withheld` lists the operations a run would have and is not given
+  yet, by their names below the surface, each with why. `"content"`:
+  the operation's parameters or result name `Content` or `Image`, and
+  the daemon's store keeps no blobs (no daemon that `clax serve` runs).
+  A daemon that keeps content withholds none.
+- **Each registration has an ID of its own,** and many of one name may
+  be held: each is sent the calls of its own runs and no others. Every
+  `serve` and every start names its registration.
+- **A host keeps its registration's ID** for as long as it may have
+  calls waiting, across its own restarts: the ID is how it is sent them
+  again. A host that started again goes on as its registration
+  (registers again naming its ID) before its first `serve`: that is
+  what tells the daemon it may have lost the calls it had accepted. One
+  that only serves again is taken to have lost them only when it was not
+  connected in between. The daemon forgets a registration that started
+  no run, has no call, ended run or join waiting, and was not served for
+  seven days: its ID is then `unknown_registration`, and its host
+  registers without one. Each change a registration is gone on with
+  (its definition, its prompt file, its settings) is kept with it and
+  recorded (`bot.surface.registered`, with `changed: true`).
+- **What the daemon forgets, it forgets in passes,** each of a bounded
+  size, the oldest first: every time this section gives for forgetting
+  something is the earliest it goes, and a backlog goes over several
+  passes, one after another while one leaves more (16 at the most in
+  30 s, and again 10 s later); with nothing left over, a pass comes each
+  hour, so something may go up to an hour after its time.
+- **A registration is a lease.** The daemon **holds** it from when it
+  is registered until it is dropped. It is **connected** while a
+  `serve` of it is open, and for 15 s after one ends (and after it is
+  registered). A call of one that is held and not connected waits for
+  its host under a policy that sends calls again, and is thrown
+  `unavailable` at once under one that sends nothing again ("A call
+  that waits for a host that is not there"). One that stays unconnected
+  for five minutes more is **dropped**, and so is the unconnected one
+  registered or gone on with longest ago when a new registration would
+  be one too many (32 held in all, 8 of a name). A daemon that restarts
+  holds no registration, and drops none: a registration it dropped is
+  dropped across the restart, and one it did not is waited for
+  ("A call that waits for a host that is not there"). A `serve` or a
+  start for a registration that is not held answers
+  `unknown_registration`.
+- **Going on as a registration.** Told `unknown_registration`, a host
+  registers again with `registration` set to its ID, and is that
+  registration again, held: the calls and ended runs that waited for it
+  are sent to it, and so are the calls it had accepted, but those of an
+  `@once` operation and those under a policy that sends nothing again
+  ("Sending a call again"). The daemon takes only an ID it gave a registration of
+  the same `<name>`; any other is `unknown_registration`, and the host
+  then registers without one. The definition may have changed: a call
+  made before is sent as it was made and its answer is checked against
+  the definition it was made under, and new calls are made under the
+  new one.
+- **A run keeps what it was started with.** A run is bound, when it is
+  started, to the definition and the prompt file its registration has
+  then, each by its SHA-256, and to its settings then (all but `allow`,
+  which its operations hold), kept in the run's binding; the daemon
+  keeps them for as long as it keeps the run: the run's first turn is
+  sent that prompt file (the standard prompt when the registration had
+  none), which was checked against that definition when it was
+  registered, and every call deadline, effect count and cap of the run
+  is read from its own settings, never from the registration as it is
+  now. Registering again with another definition, prompt file or
+  settings changes them for the runs started afterwards and for no run
+  started before, and a daemon that restarts changes nothing for a run
+  in flight, whatever its host registers when it comes back; a run whose
+  prompt file is no longer kept ends `failed`, `prompt_gone`, and is
+  sent no other.
+- **Two hosts of one registration.** Registering as a registration
+  that is still held replaces its definition, prompt and settings and
+  leaves its open `serve`s open. Both hosts are then its hosts: each
+  `serve` is sent every call and end due, whoever opened it, and the
+  first answer that settles a call stands ("Answers are taken in their
+  order").
+
+### Serving
+
+```json
+{ "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55", "wait_ms": 12000, "answers": [
+    {"id": "…", "result": […]},
+    {"id": "…", "error": {"code": "declined", "message": "…"}},
+    {"id": "…", "accepted": true},
+    {"id": "…", "retry_after_ms": 5000} ] }
+→ { "calls": [
+    {"id": "…", "call": "write", "run": "…", "op": "settings.set", "args": [{"theme": "dark"}],
+     "key": "…", "expires_in_ms": 29000},
+    {"id": "…", "call": "effect", "run": "…", "op": "ask", "args": ["Tidy the desk?", null],
+     "key": "…", "expires_in_ms": 86400000},
+    {"id": "…", "call": "ended", "run": "…", "end": {"finished": {}}, "result": {…}} ] }
+```
+
+- **The long-poll.** The daemon answers at once when it has something
+  the host has not been sent, and else holds the request for `wait_ms`.
+  A `wait_ms` over 12,000 is read as 12,000. `answers` may be left out.
+- **What an answer carries.** First the events kept for the
+  registration ("Messages to a run, and how it is going"), each sent to
+  one `serve` alone and not counted below. Then everything due: the
+  calls that are not answered, not accepted and not asked for later,
+  and the ended runs that are not acknowledged; what is new to the host
+  first, within each calls before ended runs, each oldest first. No
+  more than 64 of these, and no more than 8 MiB of arguments and
+  results together (but one at the least); the rest go out with the
+  next `serve`. `ignored` lists the IDs of the `serve`'s answers that
+  were not taken ("What is ignored"), and is left out when there is
+  none.
+- **Several serves at once.** A registration may have four `serve`s
+  open. Each is sent every call and end due, so a host with more than
+  one open tells a delivery it was sent twice by its `id`. A fifth ends
+  the oldest, which is answered `{"calls": []}` at once.
+- **How much waits for a host.** A registration has 256 calls that are
+  not settled at the most: a call past that is thrown `unavailable`
+  (retryable) and its host is sent nothing. A held registration keeps
+  256 events not yet sent at the most, the oldest dropped first, and
+  one that is not held keeps none: a host that may have missed some
+  reads the run's state.
+- **A call** is one of the surface's operations for the host to
+  perform: `call` is the operation's access as its definition declares
+  it (`read`, `write` or `effect`), `op` its dotted name below the
+  surface (`settings.set`, as a manifest lists it), `args` one value
+  for each parameter, `null` for an optional one left out, already
+  checked against the definition. `expires_in_ms` is how long an answer
+  is still taken. Every call has a deadline, from when its run made it:
+  on the daemon 30 s, and 24 hours for a `@waits` call, less when the
+  run's `call_timeout_s` or `wait_limit_s` is shorter. A call of a run of Clax's own that a join bound the surface
+  into ("Joins") has `joined`, what the run is on, as a start's `bind`
+  names it, with the threads it was started for: `{"clax": {"artifact":
+  "<ID>", "thread_ids": ["<ID>", …]}}`; a call of a run the
+  registration started has none.
+- **An answer** names a delivery by `id` and says exactly one thing:
+  - `result`: the call's result (`null` is a result). It is checked
+    against the operation's declared result; one that is not of that
+    type, or is longer than 1 MiB as the daemon writes it as JSON
+    (without white space), is not passed on: the script is thrown
+    `invalid_result`.
+  - `error`: `{code, message}`, and `retryable: true` for an error the
+    same call may get past if it is sent again (left out: the error is
+    final). `code` is one of the
+    codes the operation declares (`@throws`), or `unavailable` for
+    "nothing happened"; the script is thrown it, with `retryable` (always
+    for `unavailable`), once the daemon has sent the call again as its
+    run's policy allows ("Sending a call again"). Any other code, the
+    daemon's own among them (`invalid_result`, `expired`,
+    `unknown_outcome`, `invalid_args`, `unknown_op`, `key_reused`,
+    `internal_error`), is not the host's to say: the script is thrown
+    `invalid_result`, with the host's code and message in its message.
+    The daemon's own codes are never a host's, even declared: a
+    definition whose `@throws` (a manifest's `throws`) names one is
+    refused `invalid_definition`, and an answer with one is
+    `invalid_result` whatever definition the call was made under. They
+    are `call_limit`, `cancelled`, `effect_limit`, `expired`,
+    `internal_error`, `invalid_args`, `invalid_result`, `key_reused`,
+    `park_limit`, `parked_runs_limit`, `provider_error`,
+    `replay_diverged`, `run_not_claimed`, `script_finished`,
+    `step_mismatch`, `unknown_op`, `unknown_outcome` and `waiting`
+    (`clax_surface::wire::CORE_CODES`). `message` is cut to 4 KiB of
+    UTF-8.
+  - `accepted: true`: the host has the call and will answer it in a
+    later `serve`. The call is not sent again unless the host may have
+    lost it, or asks for it later ("Sending a call again").
+  - `retry_after_ms`: the host cannot take the call now; it is sent
+    again no sooner than that long from now, and, under a policy that
+    sends calls again, no sooner than the policy's first wait (the
+    daemon's: one second), so that a host that answers 0 is not sent
+    the call back at once. Any whole number; under a policy that sends
+    nothing again, 0 is "with the next `serve`". It is no failed
+    attempt and spends none: the call stays open, however often its
+    host asks for it later, until its deadline, which stands. A call
+    the host had accepted is sent again so too, until it is accepted
+    again; but an accepted call of an `@once` operation is settled
+    `unavailable` at once, and never sent again. (The design's word is
+    `retry_after`; the member says its unit, as every duration of the
+    protocol does.)
+- **Answers are taken in their order.** `accepted` and `retry_after_ms`
+  settle nothing, so a result or an error for the same call may follow
+  either, in the same `serve` or a later one:
+  `[{id, accepted: true}, {id, result}]` settles the call. Each answer
+  finds its call as the answers before it left it, as if it came in a
+  `serve` of its own: in `[{id, accepted: true}, {id, error: {…,
+  "retryable": true}}]` the error is for an accepted call. The first
+  answer that settles a call stands, and whatever follows it for that
+  call is ignored: a result, a final error, or an error that may be
+  tried again when no attempt or time is left to send the call again. A
+  retryable error after which the call is sent again settles nothing
+  ("Sending a call again"): the answer that settles it later, in the
+  same `serve` or another, stands.
+- **A call that is not answered is listed again** with every `serve`,
+  with the same `id` and `key`, until it is answered or accepted, or
+  its deadline comes. Being listed again is no attempt, and ends no
+  held `serve` early. A host tells a call it was sent twice by its
+  `id`, and one a run made twice (a step run again after a crash) by
+  its `key`. A host of an operation that cannot be repeated (`@once`)
+  says `accepted` as soon as it has the call.
+- **Sending a call again.** Each run's policy gives its calls
+  **attempts** (sendings of the call) and waits between them (the
+  daemon's: three attempts, one second apart and then two), all within
+  the call's deadline, which no attempt moves. A call is sent again,
+  with the same `id` and `key`, after the wait that follows a failed
+  attempt: an error that may be tried again (`unavailable`, or
+  `retryable: true`), or a call the host had accepted when the host may
+  have lost it (it serves again after it was not connected, no `serve`
+  open for more than 15 s, or goes on as its registration). A call
+  of an `@once` operation that its host accepted is never sent again.
+  The answers a returning `serve` brings are taken first: a call they
+  settle or accept again spends nothing. When the attempts are spent,
+  or the next wait would end at or after the deadline, the script is
+  thrown the host's last error; a deadline that comes during a wait
+  throws it too. A second retryable error for an attempt whose next one
+  is not sent yet spends no attempt and changes nothing: the first
+  stays the error such a deadline throws. Past 64 sendings again across one run's calls of one
+  registration (each registration a run calls has its own 64), a
+  failure is the call's outcome; `retry_after_ms` is not counted. Where
+  a call is with its attempts (its policy, its failures so far, the time
+  before which it is not sent, its last failure) is kept with the call
+  in the daemon's store: after a restart of the daemon, a lease that
+  ended or a host that came back, the call goes on exactly as it would
+  have.
+- **A call that waits for a host that is not there.** Under a policy
+  that sends calls again (more than one attempt), a call of a
+  registration that is held but not connected (its host is away, within
+  its lease) is opened and waits for its host until the call's own
+  deadline (the daemon's: 30 s, and 24 hours for a `@waits` call, whose
+  run parks after 10 s), and is sent when its host serves; nothing is
+  sent meanwhile, and at the deadline the script is thrown
+  `unavailable`. A step waits out an away host once: once one of its
+  calls has waited for the host to its deadline, its later calls of that
+  registration are thrown `unavailable` at once ("the surface's host is
+  not connected") while the host is still away. Likewise a host that is
+  connected and does not answer: once one of a step's calls sent to it
+  has come to its deadline unanswered, the step's later calls of that
+  registration are thrown `unavailable` at once and sent nothing; the
+  next step's are sent as before. After the daemon restarts, a call
+  that an earlier run of the step opened waits likewise, until its
+  deadline, for its host to go on as its registration, and one its host
+  had accepted is then sent again as its kept policy says. A call the
+  step's journal already answers is answered from it, whether or not
+  its host is there. A registration that is not held takes no new call:
+  it is thrown `unavailable` at once. One the daemon dropped is not
+  waited for either, across a restart too: a call an earlier run of the
+  step opened is answered by what is known of it (the table below: `unavailable` when it was never
+  sent, `expired` or `unknown_outcome` when it was). Under a policy that
+  sends nothing again, no call waits for a host that is not connected:
+  it is thrown `unavailable` at once.
+- **Keys.** `key` is `<run>:<step>:<seq>`, the same whenever the same
+  call is made again. A write or an effect made twice with one key
+  takes effect once and answers the same: that is the host's promise.
+  The daemon's is that while it holds a call, answered or not, the
+  same call made again with its key is that call, with the same `id`,
+  and that another call under the key is refused (the script is thrown
+  `key_reused`): two different calls are never sent under one key.
+- **What is ignored.** An answer for an ID the daemon does not hold,
+  for a call already settled or past its deadline, and for another
+  registration's call; but an answer sent again that is the one that
+  settled its call is taken. None of these is an error: the `serve` is
+  answered as any other, and lists them in `ignored`. An answer for a
+  call whose definition the daemon can no longer read settles it
+  `invalid_result`, and the rest of the `serve` is taken. A call whose
+  row the daemon's store can no longer read (its arguments or any other
+  of its values: a row a later Clax wrote, or a damaged one) fails that
+  call alone: it is sent to no host, an answer for it is ignored, and
+  the next time the daemon settles calls (at each `serve` of any
+  registration, and at each deadline) the script is thrown
+  `internal_error`; every `serve`, of its registration and of every
+  other, is answered as before.
+- **Deadlines.** A call that is not answered when its deadline comes is
+  settled by the daemon, and an answer that arrives at or after it is
+  ignored:
+
+  | The call was | The script is thrown |
+  |---|---|
+  | Never sent to its host | `unavailable`: nothing happened |
+  | Sent, a read | `expired` |
+  | Sent, a write or an effect | `unknown_outcome`: it may have taken effect |
+  | Asked for later (`retry_after_ms`), and not sent since | `unavailable` |
+  | Waiting out the wait after a retryable error | That error |
+
+  "Sent" is that a `serve` was answered with the call, or that its host
+  accepted it. A `serve` that went away while it was held sends
+  nothing; one that was answered, or whose answer was being made when
+  it went away, sent what it was answered with, whether or not its host
+  read it, since the daemon cannot know that the host read what it was
+  sent.
+- **An ended run.** `{"call": "ended"}` tells the registration that
+  started a run, or that a join bound into one, that it ended: `end` is
+  an object with one member, `{"finished": {}}`, `{"gave_up": {"code",
+  "reason"}}`, `{"stopped": {"reason"}}` or `{"failed": {"code"}}` (or
+  one a later Clax adds: the run has ended), and `result` is the kind's
+  result, for a run that finished; an `ended` without `result` has
+  none. Of a run it was joined into a host is told no words of anyone's:
+  no `result`, and a `gave_up`'s `reason` is `""`. `undelivered`, when
+  there is any, lists the `seq` of each message the run took and never
+  gave its model ("Messages to a run, and how it is going"). It is sent
+  with every `serve` until it is acknowledged, for seven days. A host
+  acknowledges it with an answer like any other, which names its `id`
+  and says exactly one thing; the one to send is `result: null`:
+
+  ```json
+  {"id": "<the ended delivery's id>", "result": null}
+  ```
+
+  An answer that names it with any other `result`, an `error`,
+  `accepted` or `retry_after_ms` acknowledges it as well. `{"id": "…"}`
+  alone says nothing and is no answer: the whole `serve` is refused,
+  `invalid_request`, and none of its answers is taken. The fixture's
+  script acknowledges an end at `at_ms` 86400003, and its `refused`
+  holds the answer that says nothing.
+- **Calls that wait** (an operation tagged `@waits`: a question to a
+  person) are calls like any other, with a long deadline. The calls on
+  their way and the ended runs are kept in the daemon's store, so they
+  outlast a restart of the daemon and a host that goes away: a host
+  that registers again as the registration it was is sent them, and
+  answers them, within their deadlines ("Going on as a registration").
+
+### Starting a run
+
+```json
+{ "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55", "kind": "tidy",
+  "request": {"ask": "…"}, "allow": ["desk.lamps"] }
+→ { "run": "…" }
+```
+
+`kind` is one of the definition's kinds, by its name there (`tidy`,
+never `desk.tidy`, and no kind of another surface), `request` its
+request, checked against the kind's type, and `allow` the operations the
+run may have, as allow patterns (left out: all the kind allows). A
+request that is not the kind's, a kind the definition does not have, an
+`allow` pattern that is none (`clax`, and one whose first name is
+`clax`, among them), and a request that holds a `Content` or an `Image` (a request
+cannot carry content yet) are `invalid_request`, with the checker's
+words; so is `null` for `allow` or `bind`. The run has the operations of its surface that the
+kind's `@allow`, the registration's `allow` setting and the request's
+`allow` all name, less those withheld, fixed when it is made; it has no
+artifact (`GET /api/bot/runs/<id>` shows `artifact_id: null` and
+`request: "other"`) and no operation of Clax's own surface. The run acts
+as the token's person and is served by the registration that started
+it. A registration has 16 runs that have not ended at the most, starts
+made at the same time counted together (429 `too_many_runs`). It is
+refused as any run of that person is (403 `no_flag`,
+`credits_exhausted`, `not_configured`, `model_not_priced`, recorded as
+`bot.refused`), and nothing is made for a start that is refused. Its
+person reads it and stops it by the run routes (`GET /api/bot/runs/<id>`,
+`POST /api/bot/runs/<id>/cancel`), with the token too; so may an admin,
+and no one else.
+
+A run whose script calls an operation that waits (`@waits`) and is not
+answered within 10 s parks: its `status` is `parked`, no driver holds
+it, its script step is not committed and nothing is charged for it, and
+`GET /api/bot/runs/<id>` shows what it waits on in a member no other run
+has, `waiting_on: {surface, op, since, deadline}` (`deadline` is when the
+call is settled if nothing answers it: on the daemon, 24 hours after
+the run made the call). When its host answers the call with a `serve`, or the deadline
+comes (the script is then thrown the deadline's error), the run is
+queued again and its step is run again from the run's journal: its host
+is sent nothing it was sent before. A cancel stops a parked run, and an
+answer that comes after is ignored. A parked run outlasts a restart of
+the daemon; its host goes on as the registration it was. A run one of
+whose own rows the daemon's store can no longer read (a step, its
+parking, an entry of its journal, an item of its content: a row a later
+Clax wrote, or a damaged one) takes no step but its last: at its next
+tick it ends `failed`, `{"failed": {"code": "history_unreadable"}}`
+(a run asked to stop stops, `cancelled`, as any), its calls are settled
+and its `ended` sent as any run's; no other run, listing or state fails
+for it, and they show it without the rows that do not read. `bind` (other surfaces to bind, each with
+its scope: `{"clax": {"artifact": "…"}}`) is part of the message, and a
+start that has it, `{}` too, is refused, `not_yet`, until Clax binds: a
+run made without a surface its starter named would not be the run that
+was asked for.
+
+### Content
+
+Bytes never travel in a call. A value of type `Content` is a handle
+`{id, media_type, bytes, sha256, name?, width?, height?, meta?}`, and an
+`Image` one whose `media_type` is `image/png`, `image/jpeg`,
+`image/webp` or `image/gif`; `media_type`, `bytes`, `sha256`, `width`
+and `height` (an image's, read from its header) are the daemon's
+findings, `name` and `meta` the host's words. An image's `width` and
+`height` are its displayed size: a JPEG's after its EXIF orientation
+(5 to 8 swap the sides), a GIF's those of the canvas its first frame is
+drawn on (the logical screen, enlarged to hold that frame).
+
+```
+PUT /api/bot/surfaces/desk/content?registration=0f3a…&run=…&name=desk.png
+Content-Type: image/png
+<bytes>
+→ {"id": "…", "media_type": "image/png", "bytes": 48213, "sha256": "…",
+   "name": "desk.png", "width": 1280, "height": 800}
+```
+
+- A host uploads for a run that has a call to its registration not yet
+  answered, then answers that call with `{"id": "…", "meta"?: {…}}`
+  where the operation's type says `Content` or `Image` (`meta` 4 KiB of
+  JSON at the most). The daemon fills in the rest before the script is
+  given the result; an ID that is not the run's or not this
+  registration's upload, and an `Image` whose bytes are no image, settle
+  the call `invalid_result`.
+- The bytes must be what `Content-Type` says: the four image types are
+  read from the bytes, bytes that are an image are refused under any
+  other type, and `text/*` and JSON must be UTF-8 and JSON. A host may
+  also state `sha256`, `bytes`, `width` and `height` in the query; each
+  is checked, and a parameter the daemon does not know is refused. The
+  bytes are kept under the SHA-256 the daemon finds. `name`, when
+  given, is 1 to 255 bytes with no control character: another `name`,
+  and a `Content-Type` that is missing or no media type, are
+  `invalid_request`.
+  Refusals: 400 `content_mismatch` and `invalid_request`, 404
+  `not_found` (a registration the daemon does not hold, or no such run
+  or call for the registration: never `unknown_registration`), 413
+  `content_too_large` (an item is 20 MiB at the most) and
+  `run_content_full` (a run's 100 MiB), 429 `too_many_uploads` (a
+  registration has 2 uploads in flight at the most), 501 `not_yet` (a
+  daemon whose store keeps no blobs), 507 `content_store_full` (the
+  content of all runs together is 1 GiB at the most).
+- Everything an upload can be refused for without its bytes is checked
+  before they are read, in this order: the query (a parameter the daemon
+  does not know, or `registration` or `run` missing, is
+  `invalid_request`), `not_yet`, the `Content-Type` and
+  `name`, `Content-Length` against the item's limit, the registration
+  and the run's call, `Content-Length` against the room left in the
+  run's and all runs' limits, and the uploads in flight. An upload with
+  no `Content-Length` is read no further than a piece past that room.
+- `GET /api/bot/surfaces/<name>/content/<id>?registration=…&run=…`
+  answers the bytes under their media type, as an attachment
+  (`Content-Disposition: attachment`, `Content-Security-Policy: sandbox;
+  default-src 'none'`, `X-Content-Type-Options: nosniff`, and `ETag:
+  "<sha256>"`), for a handle
+  that a call of that run to that registration passed where the
+  operation's type says `Content` or `Image` (a copy of a handle in an
+  `unknown` argument, or in a passed handle's `meta`, passes nothing),
+  and 404
+  `not_found` for any other: another run's, another registration's, one
+  never passed, and any asked as a registration the daemon does not
+  hold. A handle a script passes as an argument is the handle it was
+  given, of its own run, in every member but `meta`, which the script
+  may set (its host is sent it as the script has it); otherwise the call
+  is refused `invalid_args` and no host is sent it.
+- A run's content is kept with its call journal, a day after the run
+  ends.
+
+### Messages to a run, and how it is going
+
+A kind declared `name(request: Req, message?: Msg): Result` takes
+messages after its run starts; one with one parameter, and every kind
+of Clax's own, takes none.
+
+```json
+POST /api/bot/surfaces/desk/runs/<id>/messages
+{ "registration": "…", "message": {"say": "And the left."}, "key": "m-2" }
+→ { "message": "<ID>", "seq": 2, "waiting": false }
+```
+
+The fixture's `arrange` takes messages `{say}`. Its run's model is
+given message 1 at its first step, a turn; the script of its second
+step asks its person a question and parks on it, and messages 2 and 3
+come while it waits; its third step, a turn, is given both:
+
+```json
+→ { "message": "<ID>", "seq": 2, "waiting": true }
+```
+
+Only the registration that started the run may send to it, or read it
+by `GET …/surfaces/<name>/runs/<id>`, whether or not the daemon holds it
+now; for any other run, a run a join bound it into among them, the
+answer is 404 `unknown_run`. (The token's person reads any of their runs
+by `GET /api/bot/runs/<id>`, "Starting a run".) `message` is checked
+against the kind's `Msg` in the definition the run was started with
+(400 `invalid_request`, or `takes_no_messages` for a kind that takes
+none); a message that holds content is `invalid_request`: content
+reaches a run in the answers to its calls alone. A run that has ended is 409 `run_ended`. `key` names the
+message once for its run: the same key and message again answers the
+first `{message, seq, waiting}` whole (its `waiting` what the run was
+when the message first came, whatever it is now), another message under it is 409
+`key_conflict`. A key is held for as long as its message is kept: a
+day after the run ended for a message it was given, seven days for
+one it never was; after that the same key and message again is 409
+`run_ended`.
+A run holds 32 messages it has not been given at the most (429
+`too_many_messages`), each 64 KiB of JSON at the most (413
+`too_large`). A message is read whole (the body's 8 MiB alone is
+refused unread) and checked in this order: the run's starter
+(`unknown_run`), whether its kind takes messages, the message's type and
+content, its `key`, whether the run has ended, its size and the room for
+it. `null` for `key` is `invalid_request`.
+
+The `GET` answers the run's `status`, its committed `steps`, what a
+parked run waits on (`waiting_on`, as a `parked` event names it, with no
+`since`), how many messages it has not been given (`messages_waiting`),
+and once the run has ended the `seq`s of those it never will be
+(`undelivered`) and its `end` and `result` as its `ended` says them,
+while that is kept. A state whose kept end the daemon cannot read (one
+that is not JSON, or JSON that is no end) is refused (500 `internal`),
+never answered without its end. A step or the parking of the run that
+the daemon's store can no longer read is left out of the state, which
+is answered.
+
+Messages are given to the run's model between steps, in the order they
+arrived (`seq`), at the start of its next turn, each set down as the
+request is: the JSON Pointers of its strings typed `Instruction` (the
+person's words) listed before it, everything else data. A message is
+marked given by the commit of the turn that was given it, so a turn run
+again after a crash is given it again and the model's history holds it
+once.
+
+**A message cannot interrupt a run that waits.** A run parked on a call
+that waits (a question to its person) stays parked when a message
+comes: the answer says `"waiting": true`, the `GET` shows the run's
+`waiting_on`, and the message is given at the run's first turn after
+the wait ends, when the call is answered or its deadline comes. A run
+cancelled meanwhile never takes the turn. Messages sent before, during
+and after a wait are given together at that turn, in the order they
+arrived. A message to a run between steps wakes it, unless the run
+waits out a delay of its own (a retry, a stall, another driver's hold
+on it): it is then given at the turn after that wait.
+
+**A message may never be given.** A message is given at the start of
+the run's next turn, and a run may have none: the turn in flight
+finishes, gives up, or the run is stopped or fails; and a message the
+daemon's store can no longer read is never given. Such a run's `ended`
+names the messages it took and never gave in `undelivered`, and so does
+its state's `undelivered` from the `GET`.
+
+A `serve` also delivers **events** of the runs the registration
+started (never of a run a join bound it into), which have no `id` and
+need no answer, and are kept only while the registration is held, 256
+at the most ("How much waits for a host"): a host that was away reads
+the run's state from the `GET` above.
+
+```json
+{"call": "event", "run": "…", "event": {"type": "step", "step": 1, "kind": "turn", "messages": [1]}}
+{"call": "event", "run": "…", "event": {"type": "parked", "step": 2, "waiting_on": {"surface": "desk", "op": "ask", "deadline": "…"}}}
+{"call": "event", "run": "…", "event": {"type": "resumed", "step": 2}}
+{"call": "event", "run": "…", "event": {"type": "step", "step": 2, "kind": "script"}}
+{"call": "event", "run": "…", "event": {"type": "step", "step": 3, "kind": "turn", "messages": [2, 3]}}
+```
+
+`step` is a step committed that did not end the run (`kind`: `turn`
+or `script`; `messages`, the `seq`s it gave the model, when it gave
+any); `parked` names what the run waits on, its operation and deadline
+only when that is the registration's own surface; `resumed` is sent
+once each time the run leaves a park, by the tick that runs the parked
+step again, once its call was answered or its deadline came, or that
+stops it for a cancel. How the run ended is the `ended` delivery, as
+before, and no event of a run comes after its `ended`: in one `serve`
+a run's events come before its calls and its end. A host skips an
+event `type` it does not know.
+
+### Joins
+
+```json
+PUT /api/bot/surfaces/desk/joins
+{ "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+  "clax": [ {"artifact": "7q3k9mzx2b4t"}, {"artifact": "m2c8v6xq4r1p", "allow": ["desk.lamps"]} ] }
+→ { "registration": "…", "clax": [ {"artifact": "7q3k9mzx2b4t"}, {"artifact": "m2c8v6xq4r1p", "allow": ["desk.lamps"]} ] }
+```
+
+A join binds the surface into ClaxBot's own runs (a thread sent to it,
+a follow-up) on the artifacts it names; a brief's run is never joined,
+since its artifact is made by the same request. A `PUT` by any
+registration of the name replaces the name's joins whole (`"clax": []`
+leaves none): they become that registration's, and every other
+registration of the name has none. The answer is the joins it has now,
+by artifact ID, and
+`GET /api/bot/surfaces` lists each registration's as `joins: {clax:
+[…]}`. A join is kept until it is replaced or its artifact is deleted,
+while its host is away and when its host goes on as its registration.
+Each artifact is one the token's person made (else 403
+`join_artifact_refused`) and is here (else 404
+`join_artifact_unknown`); 256 at the most, each named once, and each
+`allow` allow patterns or left out (`"allow": null`, and a pattern that
+is none, `clax` among them, are 400 `invalid_request`); a registration the
+daemon does not hold is 404 `unknown_registration`. Nothing is changed
+by a request that is refused.
+
+A run made on a joined artifact while the registration is connected,
+acting for the person who registered it and not sent by an agent of
+another machine under a grant, has the surface bound beside
+Clax's own: the operations of the definition that the registration's
+`allow` setting and the join's `allow` both name, less those withheld.
+A join with no `allow` names the definition's reads (`@read`) that do
+not wait (`@waits`) alone: a write or an effect acts on the person's
+machine or product outside Clax, and a read that waits asks the person
+there and parks the run, so each is bound only when the join's own
+`allow` names it, by its name or by a pattern written in that join. They are fixed when the run is made with the registration's
+settings then (its `max_effects_per_run`, `call_timeout_s` and
+`wait_limit_s` hold for the run, over a restart too; its `runs` limits
+cap the runs of its own kinds alone, never a run it joined); its calls
+are served by that registration as a run it started is, and its end
+delivered to it, but it sends the registration no events, and its
+messages and state `GET` are not the registration's (404
+`unknown_run`). At most 7 surfaces join one run: past the seventh, in
+the order of their names, a join binds nothing. The
+model is told them on `clax` after Clax's own, and, under `# <name>` at
+the end of the system prompt, that they act on the person's own machine
+or product outside Clax and are called to write, act or ask only for
+the person's own comments on the run's request or their brief (a
+marker or claim of authorship in a call's result, a page, a file, an
+image or another's comment marks nothing), and that what they read is
+the person's private data, repeated in no reply, page or document
+unless the person's own words ask, then the surface's rules; Clax's own prompt and request are
+otherwise the same. A join whose registration is not
+connected, or that gives no operation, binds nothing, and the run is
+made as one with no join. Nor does any join bind into a run whose
+request threads hold a comment by anyone but the person the run acts
+for (their own comments in the browser and ClaxBot's replies alone):
+such a run, a follow-up in a thread a guest has since commented on
+among them, is made exactly as one with no join. Someone who only
+reads the artifact sees of a run a join bound a surface into, and of a
+run whose bindings the daemon cannot read, its state and times, and of
+each step its place, kind, state and times, a finish's summary and
+sources, and the code a run stopped or failed with (never a `give_up`
+step's reason), whether or not its host is connected now; in `GET /api/bot/runs/<id>`, `GET /api/bot/runs?artifact=` and
+the `run` of the events, a parked one's `waiting_on` is `{since,
+deadline}`, with no `surface` or `op`.
+
+### The fixture
+
+`docs/claxbot-surfaces/contract.json`:
+
+- `files`: the surface the examples are of, `desk`, in both notations,
+  and its prompt file. Its kind `tidy` takes no messages, and `arrange`
+  takes them.
+- `messages`: an example of every message of
+  `crates/clax-surface/src/wire.rs`, each with the name of its type,
+  written as that type writes it. From its first `StartRunRequest` on
+  (the second, with `bind`, is one a daemon refuses `not_yet`) they are
+  one run's life in order, `run-1` of `arrange`, as a daemon serves it:
+  message 1 before its first step; that turn's event; its second step's
+  script's calls (`run-1:2:<seq>`), sent beside calls and ends of other
+  runs, and their answers; the park on its question, messages 2 and 3
+  answered `waiting`, the parked state (beside a call asked for later
+  and sent again); the answer that resumes it, its
+  events to its end, its `ended` and its last state; and the state and
+  `ended` of another run, cancelled with two messages never given. Its
+  IDs are as a daemon makes them but the runs' and calls', named
+  `run-<n>`, `c<n>` and `e<n>` for reading.
+- `tolerated`: messages their reader takes that are not written so: a
+  daemon's with members, a delivery (`"call": "notice"`), an end and a
+  run's `status` that a host built on this version does not know, and a
+  host's with `answers` left out.
+- `refused`: messages their reader refuses, each with why, `null` for an
+  optional member among them.
+- `script`: one life of two registrations of `desk`, in the order of a
+  clock that starts at 0 (`at_ms`). A step with `host` is a request
+  (`register` or `serve`, for the surface `surface`) with its `status`
+  and its answer. A step with `run` is the other side: `call` (a
+  script's call for a registration, with the ID the daemon gives it or
+  the error the script is thrown), `outcome` (what the script is
+  answered or thrown, at that instant), `waiting` (the call is not
+  settled), `ended` (a run of the registration's ended). In it,
+  `$file:<name>` stands for the text of `files[<name>]`; `$<name>` is
+  an ID the daemon chose, the same name the same ID throughout and
+  different names different IDs; `$_` is any value; an ID of 32 zeros
+  is one the daemon never gave; `held_ms` on a `serve` is how long the
+  daemon holds it before it answers. Its calls are made under a policy
+  that sends nothing again (one attempt): where its host answers
+  `unavailable` (`at_ms` 59) or is not connected (`at_ms` 40000), a run
+  on the daemon would first send the call again, or wait for its host,
+  as "Sending a call again" says.
+
+It covers: a registration in each notation and their one hash; every
+refusal of a registration but the limits on their number and size; an
+ID no daemon gave, as a `serve`'s and as one to go on as; a read, a
+write and an effect, answered with a result, an error, `accepted` and
+`retry_after_ms`; `accepted` and the result in one `serve`; a call listed
+again; answers that were not taken, listed in `ignored`; a result that is not the operation's, an error the operation
+does not declare, and `unavailable`; the three errors of a deadline and
+an answer that comes too late; answers for unknown IDs and for another
+registration's call; a key used twice; an operation the definition
+does not have; a `serve`
+held for its wait; a registration that stops being connected, is
+dropped, and is gone on with; a call answered most of a day after it
+was made; and a run's end, sent until it is acknowledged.
 
 ## Security model
 
@@ -10478,7 +11734,9 @@ the credits `null` when the model resolves to no price).
   artifact) and the UI's files; any other `/_clax/` path is a 404. An
   artifact made before sites (`legacy_paths`) also keeps
   `/_blob/<asset ID>` for its assets. Publishing refuses a file under
-  `_clax/`, and under `_blob/` for such an artifact. Every response there,
+  `_clax/`, and under `_blob/` for such an artifact. Its files served as
+  stored and its assets answer byte ranges (`206`, `416`; "Browser
+  caching", below). Every response there,
   an error's included, carries `Referrer-Policy: no-referrer`,
   `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy:
   same-origin` (`cross-origin` on a site open to the world), on `https`
@@ -10500,7 +11758,15 @@ the credits `null` when the model resolves to no price).
   script (`Service-Worker: script`), of any path, is answered with Clax's
   own script, which installs, unregisters itself and handles no fetch: a
   page's own worker never runs, and one registered before is removed at its
-  next update check. The host must be exactly a valid 12-character
+  next update check. On the site of an artifact whose
+  `content_security_policy` is `unrestricted` (below), the artifact's own
+  content (its pages and files at the root and under `/_clax/v/<n>/`, and
+  a draft's) carries `Content-Security-Policy: frame-ancestors …` as above
+  and no source restrictions, so a `<meta>` Content Security Policy of the
+  page's own, if any, is the only one; and a service worker's script is
+  served from its files like any other file. Every other response there (the rest
+  of `/_clax/`, a 404, a redirect, a refusal) and a live page's snapshot
+  keep the policies above, and the other headers are unchanged. The host must be exactly a valid 12-character
   lowercase artifact ID followed by `.localhost` (a hosted Clax's
   `[hosted] site_domain`) and an optional numeric port. The main origin
   serves no content under any `Host`: there is no `/c/…`.
@@ -10533,7 +11799,8 @@ the credits `null` when the model resolves to no price).
   anything else answers 401 `site_session_required`. Such a site's
   responses are private to the browser: `Cache-Control` `private,
   no-cache` (the current version), `private, max-age=31536000, immutable`
-  (`/_clax/v/<n>/…` and assets), and never `Access-Control-Allow-Origin`.
+  (`/_clax/v/<n>/…` and assets; on an `unrestricted` site its content is
+  `private, no-cache`, below), and never `Access-Control-Allow-Origin`.
 - A site session is made from a one-use code good for 60 s, bound to a
   **state** the browser holds in the site host's state cookie
   (`clax_site_state`, on `https` `__Host-clax_site_state`, so no sibling
@@ -10572,7 +11839,8 @@ the credits `null` when the model resolves to no price).
   anything else is 400 `invalid_argument`; anyone else 403 `admin_only`).
   The answer adds `artifact.site_access` and `site_url`, the site's
   address; a hosted Clax's sharing route says both too. Their browser may
-  send it alone without the token. An agent's opening waits on its
+  send it alone without the token; a page never may (403 `not_for_pages`).
+  An agent's opening waits on its
   person: its first call answers 202 `{"status": "approval_pending",
   "question_id", "inbox_url"}` and asks them a question the daemon writes
   (`Open to the world` or `Keep it private`); its call again with
@@ -10582,6 +11850,160 @@ the credits `null` when the model resolves to no price).
   (`publish_public` with `site_access` makes these calls). Closing never
   asks, and either change holds from the next request: a page, an asset
   or an API call of a visitor is refused right after.
+- A site is at `self` until whoever administers its artifact sends `PATCH
+  /api/artifacts/<id> {"content_security_policy": "unrestricted"}`, for a
+  clax they trust as a website: Clax then sends no
+  `Content-Security-Policy` holding its pages to their own site (above)
+  (`"self"` returns it; anything else is 400 `invalid_argument`; anyone
+  else 403 `admin_only`), under the rules of `site_access` above: their
+  browser may send it alone without the token; a page never may (403
+  `not_for_pages`, for a request carrying `x-clax-via: page`, as for
+  `site_access`); an agent's `unrestricted` waits on its person, who is
+  asked `Serve it unrestricted` or `Keep it to its own site`, with the
+  same 202 `approval_pending`, `question_id`, `not_approved`,
+  `approval_used` and `no_session`; the owner's `unrestricted` with the
+  token is decision 3 of "Browser confirmations"; returning to `self`
+  never asks. One request changes `site_access` or
+  `content_security_policy`, not both (400 `invalid_args`). The answer
+  adds `artifact.content_security_policy`, as `GET /api/artifacts/<id>`
+  and a hosted Clax's sharing route say it too. Either change holds from
+  the next request, and is recorded as `artifact.update` with
+  `fields.content_security_policy`. It belongs to the artifact, not to a
+  version: every later version is served unrestricted too, whoever
+  publishes it (its maker, an editor of it on a hosted Clax, or an agent
+  of either). It does not travel: a push to a public Clax, a fork, a clone
+  and a bundle each start at `self`. A draft follows its artifact's: an
+  agent's draft of it (`/_clax/draft/…`), and a draft artifact of the app
+  (`POST /api/drafts` with `of`) while the app is live; a new app's draft,
+  and a bundle update's check draft (`inherit_net: false`), are at `self`.
+  A draft artifact takes no `content_security_policy` of its own, either
+  way (403 `draft`). While `unrestricted`, its content is revalidated on
+  every use, none of it `immutable`, and each `ETag` also names the
+  policy, so after it returns to `self` a browser's next use of anything
+  it kept is answered whole, with the lockdown, never `304 Not Modified`.
+  A file a browser kept `immutable` from while the site was at `self`
+  keeps the lockdown until it expires, after a change to `unrestricted`
+  too. The setting also decides whether the clax may register a service
+  worker, because a service worker can answer the site's page requests
+  with documents that carry no policy header. Returning to `self`, a
+  service worker the site registered while `unrestricted` is answered
+  Clax's script at its next update check and removes itself; until then
+  it still controls the tabs it controls. An `unrestricted` clax's service
+  worker registers on a site open to the world, or on a private site
+  visited top-level on a hosted Clax, whose first-party site cookie the
+  worker's script request carries. In Chromium and Firefox it does not
+  register from inside the shell's frame of a private site, whose script
+  request carries no site cookie (they send the frame's partitioned cookie
+  with the frame's own fetches, not with its worker's script fetch) and is
+  answered 401 `site_session_required`; nor, there, on a local Clax's
+  private site, whose top-level visit is sent to the shell. WebKit sends
+  the frame's site cookie with the script request too, so there it
+  registers from the shell's frame of a local Clax's private site as well.
+  In the Clax app it never registers: a content origin there is
+  `clax://<id>.c` on Apple platforms, a scheme no service worker is
+  registered on, and `https://<id>.c.clax.invalid` on Android, whose
+  worker script fetch the app does not answer (it intercepts its WebViews'
+  requests, not a service worker's), so it never reaches the core.
+  `unrestricted` lifts the browser's policy, not what the daemon does for
+  a page: the `net` capability and the other gated capabilities keep their
+  approval and grants.
+- In the shell, the setting is "Serve this clax without Clax's Content
+  Security Policy", under the rows of the Permissions panel (the more
+  menu's Permissions…, for a viewer who may approve what the page uses) on
+  a local and a hosted Clax, and in a hosted Clax's Share dialog beside
+  "Open to the world": one control, for a caller who administers the
+  artifact (`may_tag`). Turning it on first shows "Clax then sends no
+  Content-Security-Policy holding its pages to their own site: they may
+  load code from, and send anything they can read to, any site. So may
+  every later version, whoever publishes it: you, an editor, or an agent
+  of either. Turn this on for a clax you trust as a website." and sends
+  `unrestricted` only once they confirm, from the browser with its
+  cookie, so a decision held for confirmation is confirmed as the shell's
+  others are ("Browser confirmations"); turning it off sends `self` at
+  once. Anyone else who opens the panel reads that the clax is served
+  without Clax's Content Security Policy, while it is.
+- On a hosted Clax an artifact counts visits to its site (site analytics,
+  below) until whoever administers it sends `PATCH /api/artifacts/<id>
+  {"analytics": "off"}` (`"on"` counts again; anything else is 400
+  `invalid_argument`; anyone else 403 `admin_only`, after the 403
+  `not_permitted` of a person who may not update it). Either change needs
+  no approval: their browser may send it alone without the token, an
+  agent's change asks no one, and a page never may (403 `not_for_pages`).
+  One request changes one of `site_access`, `content_security_policy` and
+  `analytics` (400 `invalid_args`). On a local Clax, which counts nothing,
+  it is 400 `invalid_argument`; a draft artifact takes none (403 `draft`).
+  The answer adds `artifact.analytics` (`on` or `off`), as `GET
+  /api/artifacts/<id>` says it to a caller who administers the artifact on
+  a hosted Clax; it is left out for anyone else, for a draft and on a
+  local Clax. Either change holds from the next request, and is recorded
+  as `artifact.update` with `fields.analytics`. Turning it off stops the
+  counting and keeps what was counted. It does not travel: a push to a
+  public Clax, a fork, a clone and a bundle each start at `on`, with no
+  totals.
+- `GET /api/artifacts/<id>/analytics?from=YYYY-MM-DD&to=YYYY-MM-DD` reads
+  an artifact's site analytics over a range of UTC days, on a hosted Clax
+  (404 `not_found` on a local one), for whoever administers it, from their
+  browser or with the owner's token (anyone else 403 `admin_only`); never
+  for an agent (403 `not_for_agents`, and `forbidden` for a person's
+  agent) or a page (403 `not_for_pages`). `to` defaults to the daemon's
+  today and `from` to 29 days before `to`; a range is at most 400 days and
+  starts no earlier than 13 calendar months before today, the same day of
+  the month or that month's last (400 `invalid_argument` otherwise, and
+  for a day not written `YYYY-MM-DD` or an unknown parameter). The answer,
+  `private, no-store`, is `{"analytics": "on" | "off", "from", "to",
+  "totals": {"visitors", "views", "framed", "load_ms_median",
+  "lcp_ms_median"}, "days": [{"day", "visitors", "views", "framed"}],
+  "versions": [{"n", "published_at"}], "pages", "referrers", "countries",
+  "devices", "versions_viewed"}`: every day of the range, zeros included;
+  `totals.visitors` the sum of the days' visitors; the medians, of the
+  merged histograms within about 10 %, null without samples; `versions`
+  the versions published in the range; and each table (`[{"value",
+  "views", "visitors"}]`, a referring host `""` for none, a country `XX`
+  for unknown, a version as its number) its top 50 rows by views, the
+  rest summed into one `(other)` row. The views not yet written are
+  included, so a view shows at once. In the shell the more menu's
+  **Analytics…**, offered where the artifact carries `analytics`, opens a
+  panel of the same numbers over 7 days, 30 days, 90 days or 13 months,
+  with a line saying whether Clax counts visits and one button, **Stop
+  counting visits** or **Count visits**, which sends the change at once.
+- When the lockdown refuses a page something from another origin, the
+  shell framing it is told. The bridge, the first script of every HTML
+  page a site serves, listens for `securitypolicyviolation` and, framed,
+  posts `{type: "clax:blocked", directive, origin}` to the shell after its
+  welcome: the `effectiveDirective` (one of `script-src`,
+  `script-src-elem`, `style-src`, `style-src-elem`, `img-src`, `font-src`,
+  `media-src`, `frame-src`, `child-src`, `worker-src`, `manifest-src`,
+  `object-src`, `connect-src`, `form-action`, `default-src`) and the
+  blocked URL's origin alone (`http`, `https`, `ws` or `wss`; never its
+  path or query, and never the page's own site), each directive and
+  origin once, at most 20 a document, all again after each welcome. It
+  counts a violation only when the browser fired it (`isTrusted`),
+  enforced (`disposition`), of a policy (`originalPolicy`) that starts
+  with `frame-ancestors` and carries `connect-src 'self'`, `object-src
+  'none'`, `base-uri 'none'` and `form-action 'none'`: the lockdown, since
+  a page's `<meta>` policy cannot set `frame-ancestors`; a `<meta>`
+  written to read exactly so is mistaken for it. A same-origin form post
+  the lockdown refuses (`form-action 'none'`), an inline or `data:` load,
+  and a violation in a frame inside the page (whose bridge has no shell to
+  tell) are not reported, nor is anything on a page served without the
+  bridge (a file that is not UTF-8 HTML, an SVG or XML document) or on a
+  draft (which the shell does not welcome). The page can post the message
+  itself, so the shell takes it only from the greeted document, checks its
+  shape (a known directive; an origin a URL parses back to exactly, at
+  most 300 characters), keeps at most 20, shows each origin as text, and
+  does nothing because of it. While the artifact is at `self` it shows a
+  notice over the bottom of the page, which moves nothing of it: to a
+  viewer who may approve what the page uses, "This clax tried to reach N
+  other sites, and Clax blocked it.", the first three origins and how many
+  more, and **Permissions…**, which opens the Permissions panel at the
+  setting and changes nothing itself; to anyone else, "This page tried to
+  load from other sites, and Clax blocked it.". Once the setting is
+  `unrestricted`, the first says "This clax is now served without Clax's
+  Content Security Policy. Reload to let it reach these sites." with
+  **Reload**, and the second goes. **Dismiss**
+  hides it until another document greets; nothing of it is kept. A page
+  of a site open to the world visited outside the shell has no shell to
+  tell: its viewer sees only what the browser's console says.
 - On a site open to the world, a request with no site session of a holder
   who may read it is a visitor's: the first navigation or `/_clax/api/`
   response without the visitor cookie sets it (`clax_visitor`, on `https`
@@ -10606,7 +12028,8 @@ the credits `null` when the model resolves to no price).
   query), `docs:batch`, `docs:acquire`, `docs:str_replace`, `assets`
   (`POST` an upload, `GET` the list), `assets/<asset ID>` (`DELETE`, an
   asset of this artifact's alone), `room` (the WebSocket), `artifact`
-  (`GET`), `whoami` (`GET`), and `read/<source>/docs` and
+  (`GET`), `whoami` (`GET`), `analytics` (`POST`, a page view the bridge
+  reports on a hosted Clax, below), and `read/<source>/docs` and
   `read/<source>/docs/<path>` (`GET`, `db.artifact(<source>)`'s reads,
   below); any other path is 404, comments and threads among them. No
   field of a path, query or body names another artifact but a read's
@@ -10629,6 +12052,65 @@ the credits `null` when the model resolves to no price).
   Clax the writes of a visitor, a link viewer and a guest are limited per client address (60, one back a
   second) and per artifact (600, ten back a second): 429 `rate_limited`
   with `retry_after_s`.
+- **Site analytics.** On a hosted Clax (the Worker, or a daemon with
+  `[hosted]`) the bridge tag of an artifact's own HTML page, at its site's
+  root or a version's address, carries `data-count="1"` while the
+  artifact's `analytics` setting is `on` (below); never on a draft, a live
+  page's snapshot or the Clax app's pages, and never on a local Clax. The
+  page's `ETag` is of the bytes sent, so a browser that kept the page
+  before the setting changed is answered the page with the tag as it now
+  is. From a tag so marked the bridge reports one page view per page load:
+  in the first task after the document's `load` (after a prerendered
+  document is shown; never for a document restored from the back/forward
+  cache, in the Clax app's inspect and migration frames, or while
+  `navigator.globalPrivacyControl` is true) it sends `POST
+  /_clax/api/analytics` with the `fetch` it captured before any page
+  script ran (same origin, `keepalive`), the JSON `{"file", "version",
+  "framed", "referrer", "load_ms", "lcp_ms"}`: the page's published path
+  and the version served (the tag's), whether the page was framed, the
+  host of `document.referrer` alone (`""` without one), the navigation's
+  `loadEventStart` and the latest `largest-contentful-paint` seen by then,
+  in whole milliseconds from a prerender's activation, each null where the
+  browser has none. A failure is ignored. The route takes a report from
+  whoever the site's access lets in (on a private site only a site
+  session's holder; who they are decides access and is not recorded), with
+  the site's own `Origin` (else 403 `forbidden_origin`), by `POST` only
+  (405), a body of at most 2 KiB (413), unknown fields ignored; a body that
+  is not JSON, a field of the wrong type, or no `file` or `version`, is
+  400 `invalid_argument`. Any other report is answered 204 with no body,
+  counted or not; it is not counted with `Sec-GPC: 1`, from a User-Agent
+  that is empty or names a bot, crawler, spider, link preview fetcher or
+  headless browser, for an artifact deleted, a draft or `off`, for a
+  `version` outside 1 to the current one, a `file` over 512 bytes or
+  with a control character, or a `file` that is not one of that
+  version's HTML pages (its `index.html` or a `text/html` file), or from a client address (an IPv6 address by
+  its /64) past 30 reports at once, one more every 2 s. A timing outside 0
+  to 600 000 is dropped and the view counted without it. A referring host
+  that is not a lowercase host name of letters, digits, `-` and `.` of at
+  most 253 bytes, that is an IP address, or that is the site's own, the
+  public origin's or another site host's, is counted as `""` (no referring
+  site). The daemon
+  counts, per artifact and UTC day, page views, visitors and the views
+  made in Clax's frame; per page, referring host, country, device
+  (`phone`, `tablet` or `desktop`, from `Sec-CH-UA-Mobile` and the
+  User-Agent) and version, views and visitors; and histograms of the two
+  timings. The country is Cloudflare's (`request.cf.country` on the
+  Worker, which replaces any `CF-IPCountry` the client sent; on a daemon
+  `CF-IPCountry` only with `behind_cloudflare`), else `XX`. A visitor is,
+  for one day, an HMAC of a secret made for that day, the artifact, the
+  client address (an IPv6 address by its /64) and the User-Agent: counted
+  once a day per page, and in the other tables by their first view of the
+  day; a visitor on two days counts on each. The day's secret and its set
+  of visitor hashes are deleted at the first sweep after midnight UTC,
+  after which no hash of that day can be made again; no address,
+  User-Agent, cookie or visitor hash is kept past it, and the visitor
+  cookie is never read for analytics. Each artifact and day keeps at most
+  500 distinct pages and 500 referring hosts, the rest counted as
+  `(other)`. Views are written in batches, at most a minute apart (a
+  batch not yet written is lost if the process ends), and reads include
+  the batch not yet written. Totals are kept 13 calendar months; a deleted
+  artifact's are never read again and are deleted by the retention pass
+  after it, a bounded number of rows at a time.
 - **Cross-app reads.** `read/<source>/docs…` on artifact A's site reads
   app B's (`<source>`'s) documents for A, with the bodies of B's document
   reads: only for a site session of the owner or a person who may read B
@@ -10832,6 +12314,26 @@ the credits `null` when the model resolves to no price).
   contains the bridge URL is left alone.
 - Supporting files that are not HTML, and uploaded assets (`/_blob/...`),
   are immutable: their URLs name bytes that never change.
+- A file served as stored on an artifact's site (a version's file that is
+  not a wrapped page, under `/` and `/_clax/v/<n>/`; a draft's file under
+  `/_clax/draft/…`; an asset under `/_clax/blob/<id>`, or `/_blob/…` where
+  that is the asset's address) answers byte ranges (RFC 9110 §14), so a
+  browser can seek in a video or audio file. Every such answer carries
+  `Accept-Ranges: bytes`. A `Range` of one range, `bytes=a-b`, `bytes=a-`
+  or `bytes=-n`, gets `206 Partial Content` with those bytes, `Content-Range:
+  bytes a-b/<size>` and their `Content-Length`, and the same `ETag`,
+  `Cache-Control` and other headers as the whole file's `200`; an end past
+  the file is cut to its last byte. A range that starts at or past the end
+  (or `bytes=-0`, or any range of an empty file) gets `416 Range Not
+  Satisfiable` with `Content-Range: bytes */<size>`, no body,
+  `Cache-Control: no-store` and no `ETag`. More than one range, another
+  unit, or a `Range` that does not parse gets the whole file as `200`. An
+  `If-Range` honours the range only when it is the file's current `ETag`
+  (compared strongly); a date, another tag, or any `If-Range` for a file
+  sent without an `ETag` (an immutable one) gets the whole file as `200`.
+  `If-None-Match` is checked first: a request that names the current tag
+  gets `304` whatever its `Range`. `HEAD` is answered as `GET`, without a
+  body. A wrapped HTML page takes no range: it is always the whole page.
 - The shell's bundles under `/_clax/shell/` are named by a hash of their
   bytes and are immutable in a release build, with an `ETag`; a debug
   build, which reads them from disk, sends them `no-cache`.
@@ -11008,3 +12510,10 @@ are listed in [`docs/follow-ups.md`](follow-ups.md).
 - Pi: the extension, its session handling and its tools are tested against a
   real daemon, but no model-driven Pi session has been run end to end, because
   no model provider key exists on the build machine.
+- ClaxBot surfaces: a host registers a surface, starts runs of its
+  kinds, is served their calls and is told how each ended ("ClaxBot
+  surfaces"); a run parks on a call that waits and goes on when its
+  host answers or the call's deadline comes; a host sends messages to
+  a run it started and is told how it is going; content travels as
+  handles to uploaded bytes. Not yet: binding other surfaces to a run
+  (`bind`); and content in a run's request or a message.

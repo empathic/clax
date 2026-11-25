@@ -1,7 +1,8 @@
 // The git token API the Clone button and dialog use (hosted spec §9
 // "Tokens"; docs/contract.md "Git remotes"). Loaded with the Clone button,
 // after the first paint.
-import { ApiError, getToken } from "../api";
+import { getToken } from "../api";
+import { readJson } from "../trouble";
 
 export type CloneScope = "read" | "write";
 
@@ -45,19 +46,7 @@ async function headers(json: boolean): Promise<Record<string, string>> {
   return h;
 }
 
-async function answer<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    let msg = res.statusText;
-    let code: string | null = null;
-    try {
-      const e = (await res.json()).error;
-      msg = e?.message ?? msg;
-      code = e?.code ?? null;
-    } catch { /* not JSON */ }
-    throw new ApiError(res.status, msg, code);
-  }
-  return res.json() as Promise<T>;
-}
+const answer = readJson;
 
 /** What the viewer may ask for on artifact `id`. */
 export async function cloneOptions(id: string): Promise<CloneOptions> {

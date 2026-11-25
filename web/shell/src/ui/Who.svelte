@@ -16,6 +16,7 @@
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import { presenceMap, roster, viewingLabel } from "../view/presence-model";
   import { withPeople } from "../view/agent-display";
+  import { partFailed } from "../conn-notice";
   import { agentNames, summary } from "../view/working-model";
   import Roster from "./Roster.svelte";
   import { ticker } from "./ticker.svelte";
@@ -26,7 +27,8 @@
   const p: { ctl: ArtifactController; s: ViewState & { data: Loaded }; open: number } = $props();
   // The people panel's code loads on first open (no await block, as the version menu).
   let Panel: typeof PeoplePanelT | null = $state(null);
-  $effect(() => { if (p.s.menu === "people" && !Panel) void import("./PeoplePanel.svelte").then(m => { Panel = m.default; }, () => {}); });
+  // A panel that cannot load says so and closes, so the next press tries again.
+  $effect(() => { if (p.s.menu === "people" && !Panel) void import("./PeoplePanel.svelte").then(m => { Panel = m.default; }, () => { partFailed(); p.ctl.closeMenu(); }); });
   // ClaxBot's part loads where it is on for this browser, where the address
   // names a run, or where the artifact's agents list ClaxBot (`builtin`:
   // shown disabled with why, and anyone's runs read-only); each listing of
@@ -82,7 +84,7 @@
     .topbar.working::after { content: ""; position: absolute; left: 0; bottom: -1px; height: 2px; width: 20%; background: var(--agent); animation: sweep 2.4s cubic-bezier(.4,0,.2,1) infinite; }
     @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
     @media (prefers-reduced-motion: reduce) { .topbar.working::after { animation: none; display: none; } }
-    /* At phone width the pill gives way, clipped, before the top bar would scroll sideways. */
-    @media (max-width: 700px) { .who { height: 36px; padding: 0 5px; gap: 0; flex: 0 1 auto; overflow: hidden; } .who .sum { display: none; } .who .viewing { padding: 0 5px 0 4px; } }
+    /* At phone width the pill shows only while someone works, clipped and giving way before the title does (the title's basis is 80px, theme.css), so the top bar never scrolls sideways; the more menu's People and agents item opens the people panel at any time. */
+    @media (max-width: 700px) { .who { height: 36px; padding: 0 5px; gap: 0; flex: 0 1000 auto; overflow: hidden; } .who .sum { display: none; } .who .viewing { padding: 0 5px 0 4px; } .topbar:not(.working) .who { display: none; } }
   }
 </style>

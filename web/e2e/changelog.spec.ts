@@ -1,5 +1,5 @@
 import { type Page } from "@playwright/test";
-import { test, expect, type Daemon, lookedMarks, contentFrame, openArtifact, publishAs, publishNext, reach, registerSession, seenOf } from "./fixtures";
+import { test, expect, type Daemon, lookedMarks, contentFrame, openArtifact, publishAs, publishNext, reach, registerSession, requestFence, seenOf } from "./fixtures";
 import { advance, settle } from "./time";
 
 let d: Daemon;
@@ -53,14 +53,14 @@ async function commentAs(page: Page, aid: string, name: string, body: string): P
     const tid = await commentAs(page, artifact.id, "alex", "Two columns");
     await publishNext(d.base, d.token, s.id, artifact.id, 1, { addresses: [tid], note: "Two columns" });
     await openArtifact(page, d.base, artifact.id, 2);
-    await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
+    await page.getByRole("button", { name: /^Latest, version 2\b/ }).click();
     const dialog = page.getByRole("dialog", { name: "Versions" });
     await expect(dialog.locator(".vrow").first()).toContainText("Two columns");
     await expect(dialog.locator(".vrow").first().locator(".pc")).toHaveCount(1);
     await expect(dialog.locator("a[aria-current=page]")).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
-    await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
+    await page.getByRole("button", { name: /^Latest, version 2\b/ }).click();
     await dialog.getByRole("link", { name: /^v1\b/ }).click();
     await expect(page).toHaveURL(new RegExp(`/a/${artifact.id}/v/1$`));
   });
@@ -80,12 +80,22 @@ async function commentAs(page: Page, aid: string, name: string, body: string): P
     // enough to count as looked at while the pinned view waits.
     const size = page.viewportSize()!;
     await page.setViewportSize({ width: 800, height: size.height });
+    const heard: string[] = [];
+    const marks: (string | null)[] = [];
+    page.on("request", r => {
+      const u = new URL(r.url());
+      heard.push(u.pathname + u.search);
+      if (r.method() === "PUT" && u.pathname === "/api/viewers/me/seen") marks.push(r.postData());
+    });
     await page.goto(`${d.base}/a/${artifact.id}/v/1`);
-    // The view is up, and past the time any mark would go out.
+    // The view is up, and past the time any mark would go out: the shell has
+    // asked for nothing that writes one.
     await contentFrame(page, artifact.id, 1);
     await settle(page);
     await advance(page, 2000);
     await settle(page);
+    await requestFence(page, () => heard);
+    expect(marks).toEqual([]);
     expect(await seenOf(page, artifact.id)).toBe(1);
     await page.setViewportSize(size);
     const frame = await openArtifact(page, d.base, artifact.id, 2);

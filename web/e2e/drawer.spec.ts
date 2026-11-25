@@ -119,12 +119,13 @@ test("docked right by default, its edge drags and keys resize it, a double click
   await page.reload();
   await expect(page.locator(".drawer .drawer-bar")).toBeVisible();
   expect((await box(drawer(page))).width).toBe(442);
-  // Hide threads, from the keyboard, closes the drawer and leaves focus on
-  // the top bar's Threads, which opens it again.
+  // Hide threads, from the keyboard, closes the drawer, leaving the 56 px
+  // strip on its edge, and leaves focus on the top bar's Threads, which
+  // opens it again.
   await page.getByRole("button", { name: "Hide threads" }).focus();
   await page.keyboard.press("Enter");
   await expect(drawer(page)).toHaveCount(0);
-  expect((await box(stage(page))).width).toBe(1440);
+  expect((await box(stage(page))).width).toBe(1440 - 56);
   const toggle = page.locator(".topbar button.threads");
   await expect(toggle).toBeFocused();
   await page.keyboard.press("Enter");

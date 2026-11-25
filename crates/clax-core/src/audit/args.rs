@@ -182,6 +182,7 @@ fn escape_into(s: &str, buf: &mut Vec<u8>) {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) mod tests {
     use super::*;
     use serde_json::json;

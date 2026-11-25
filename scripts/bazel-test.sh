@@ -165,15 +165,15 @@ for name in sorted(set(sys.stdin.buffer.read().split(b"\0")) - {b""}):
     else:
         print("gone", name.decode(errors="replace"))
 '
-    } | shasum -a 256 | cut -d' ' -f1
+    } | if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1
 }
 
 # _run_keyed <name> <pathspec...> -- <command...>: a check outside Bazel
 # that reads only the files its pathspecs name (and the v* tags), skipped
 # when it passed before on the same files, in any worktree, as Bazel caches
 # a passed test. A pass is recorded as an empty file named by its key under
-# CLAX_CHECKS_CACHE (default ~/.cache/clax-checks), which CI does not keep,
-# so CI runs every one.
+# CLAX_CHECKS_CACHE (default ~/.cache/clax-checks). CI sets it to a
+# directory on its Bazel sticky disk, which keeps main's records.
 checks_cache="${CLAX_CHECKS_CACHE:-$HOME/.cache/clax-checks}"
 _run_keyed() {
     local name="$1" specs=() key stamp
@@ -210,7 +210,10 @@ if [ "$ci" = 1 ]; then
     for toml in crates/*/clippy.toml; do
         [ -f "$toml" ] || continue
         crate="$(dirname "$toml")"
+        # The lint .bazelrc's build:clippy allows for the timing rules is
+        # turned back on, so the crate's own disallowed methods are errors.
         _build "rust clippy ($crate)" --keep_going --config=clippy --output_groups=clippy_checks \
+            "--@rules_rust//rust/settings:clippy_flag=-Wclippy::disallowed_methods" \
             "--@rules_rust//rust/settings:clippy.toml=//$crate:clippy.toml" "//$crate/..."
     done
     # Not the hosted Worker's builds (//bazel/wasm/...): a wasm32 build of

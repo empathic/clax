@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, reach, contentFrame, openArtifact, publishWith, streamLive } from "./fixtures";
+import { test, expect, type Daemon, reach, contentFrame, frameAt, openArtifact, publishWith, streamLive } from "./fixtures";
 import { guestOn, hostedDaemon, ownerOf, shareByLink } from "./hosted-helpers";
-import { advance, settle } from "./time";
+import { advance, quietEval, settle } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -16,8 +16,7 @@ async function current(id: string): Promise<number> {
 /** The frame showing `file` of version `n`. */
 async function fileFrame(page: Page, id: string, n: number, file: string): Promise<Frame> {
   const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)${file.replace(/[.]/g, "\\.")}$`);
-  await expect.poll(() => page.frame({ url }) !== null, { timeout: 15_000 }).toBe(true);
-  return page.frame({ url })!;
+  return frameAt(page, url);
 }
 
 test(`a vote republishes the page and every open view reloads to it`, async ({ browser }) => {
@@ -161,40 +160,28 @@ test(`a second viewer's vote 2 s after another viewer's vote reloaded it publish
 });
 
 test(`a click inside the frame gives the shell window sticky activation`, async ({ page }) => {
-  // Playwright's evaluate runs as a user gesture, so the shell samples its own
-  // activation, reports its first true sample through a binding (which is no
-  // gesture), and the click is a raw mouse event inside the frame's box.
-  const act: { seen: { falseSamples: number; firstActive: number } | null } = { seen: null };
-  await page.exposeFunction("claxActivated", (falseSamples: number, firstActive: number) => { act.seen ??= { falseSamples, firstActive }; });
+  // Playwright's evaluate runs as a user gesture, so the shell's activation
+  // is read with no gesture (quietEval), and the click is a raw mouse event
+  // inside the frame's box.
   await page.addInitScript(() => {
-    if (window !== window.top) { addEventListener("click", () => { (window as unknown as { clicked: boolean }).clicked = true; }); return; }
-    let falseSamples = 0;
-    const tick = () => {
-      if (!navigator.userActivation.hasBeenActive) { falseSamples++; setTimeout(tick, 10); return; }
-      (window as unknown as { claxActivated: (n: number, t: number) => void }).claxActivated(falseSamples, Date.now());
-    };
-    tick();
+    if (window !== window.top) addEventListener("click", () => { (window as unknown as { clicked: boolean }).clicked = true; });
   });
+  const active = () => quietEval<boolean>(page, "navigator.userActivation.hasBeenActive");
   const { artifact } = await publishWith(d.base, d.token, `Activation`, pageHtml("poll.html"), { artifact: {} });
   const f = await openArtifact(page, d.base, artifact.id, 1);
   await f.waitForLoadState();
   await settle(page);
-  expect(act.seen, "the shell is not active before the click").toBeNull();
-  const before = Date.now();
+  expect(await active(), "the shell is not active before the click").toBe(false);
   await page.mouse.click(300, 400);
-  await expect.poll(() => act.seen, { timeout: 20_000 }).not.toBeNull();
-  const seen = act.seen!;
-  console.log(`shell activation samples before the frame click: ${seen.falseSamples} x false; first true ${seen.firstActive - before} ms after the click started`);
+  await expect.poll(active, "the shell is active after the click").toBe(true);
   expect(await f.evaluate(() => (window as unknown as { clicked?: boolean }).clicked), "the click landed inside the frame").toBe(true);
-  expect(seen.falseSamples).toBeGreaterThanOrEqual(1);
-  expect(seen.firstActive).toBeGreaterThanOrEqual(before);
 });
 
 test(`a page that publishes on load publishes nothing`, async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, `On load`, pageHtml("publish-on-load.html"), { artifact: {} });
   const f = await openArtifact(page, d.base, artifact.id, 1);
+  // The page's one publish was refused in the shell, so it never reached the daemon.
   await expect(f.locator("#status")).toHaveText("rate_limited: publish from the viewer's own input in the page, never on load or a timer");
-  await settle(page);
   expect(await current(artifact.id)).toBe(1);
 });
 

@@ -2611,9 +2611,8 @@ async fn room_clears(site: &Site, aid: &str) -> Value {
         .expect("upgrade");
     let (mut tx, mut rx) = ws.split();
     let mut next = async || loop {
-        let m = tokio::time::timeout(std::time::Duration::from_secs(5), rx.next())
+        let m = clax_testkit::within("a frame", rx.next())
             .await
-            .expect("a frame within 5 s")
             .expect("open")
             .expect("readable");
         if let Message::Text(t) = m {
@@ -4036,9 +4035,8 @@ async fn live_socket(site: &Site, b: &Browser, aid: &str) -> Result<Value, u16> 
     }
     match tokio_tungstenite::connect_async(req).await {
         Ok((mut ws, _)) => loop {
-            let m = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            let m = clax_testkit::within("a frame", ws.next())
                 .await
-                .expect("a frame within 5 s")
                 .expect("open")
                 .expect("readable");
             if let Message::Text(t) = m {
@@ -4689,12 +4687,7 @@ async fn held_body(site: &Site, path: &str, token: &str, len: usize) -> tokio::n
 async fn held_response(mut stream: tokio::net::TcpStream) -> (u16, String) {
     use tokio::io::AsyncReadExt;
     let mut buf = Vec::new();
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        stream.read_to_end(&mut buf),
-    )
-    .await
-    .expect("a response within 10 s");
+    let _ = clax_testkit::within("a response", stream.read_to_end(&mut buf)).await;
     let text = String::from_utf8_lossy(&buf);
     let status = text
         .split(' ')
@@ -6388,9 +6381,8 @@ async fn batch_naming(ws: &mut Ws, person: &str) -> Value {
     use futures::StreamExt;
     use tokio_tungstenite::tungstenite::Message;
     loop {
-        let m = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+        let m = clax_testkit::within("a batch", ws.next())
             .await
-            .expect("a batch within 10 s")
             .unwrap()
             .unwrap();
         if let Message::Text(t) = m {
@@ -6655,18 +6647,11 @@ async fn a_browser_holds_at_most_its_cap_of_streams_and_sockets() {
         .await
         .unwrap();
     drop(ws);
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    let r = loop {
+    let r = clax_testkit::until("the closed socket's place", || async {
         let r = stream(&sam).await.unwrap();
-        if r.status() == 200 {
-            break r;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the closed socket's place within 10 s"
-        );
-        tokio::task::yield_now().await;
-    };
+        (r.status() == 200).then_some(r)
+    })
+    .await;
     held.push(r);
     assert_eq!(held.len(), MAX_PER_SESSION);
 }
@@ -9173,6 +9158,7 @@ impl BotWorld {
                     content_type: Some("text/html".into()),
                 }],
                 reason: None,
+                delivered: Vec::new(),
             },
         )
         .unwrap();
@@ -10156,4 +10142,274 @@ async fn a_queue_wake_reaches_a_members_agent_whole_only_when_it_reads_reports()
         t.contains(&third) && !t.contains("The third total is wrong"),
         "{t}"
     );
+}
+
+// Queue requests on a hosted Clax (`routes::queue_requests`): a scoped
+// device sign-in's token asks a member for a report queue and does nothing
+// else; an ordinary agent token asks too; the member answers in their
+// browser.
+
+impl Site {
+    /// A scoped device sign-in (`scope: ["queue.request"]`) approved by
+    /// `b`: the token, its grant's ID and the token answer.
+    async fn scoped_token(&self, b: &Browser) -> (String, String, Value) {
+        let body = json!({"client_name": "setup agent", "scope": ["queue.request"]});
+        let (s, v) = self.machine("/api/hosted/device/code", body).await;
+        assert_eq!(s, 200, "{v}");
+        let (dc, uc) = (
+            v["device_code"].as_str().unwrap().to_string(),
+            v["user_code"].as_str().unwrap().to_string(),
+        );
+        // The approval page names the scope.
+        let (s, peek) = self.get(b, &format!("/api/hosted/device/{uc}")).await;
+        assert_eq!(s, 200, "{peek}");
+        assert_eq!(peek["scope"], json!(["queue.request"]));
+        let (s, v) = self
+            .post(b, &format!("/api/hosted/device/{uc}/approve"), json!({}))
+            .await;
+        assert_eq!(s, 200, "{v}");
+        self.clock.advance(5);
+        let (s, v) = self.poll_device(&dc).await;
+        assert_eq!(s, 200, "{v}");
+        (
+            v["token"].as_str().unwrap().to_string(),
+            v["grant_id"].as_str().unwrap().to_string(),
+            v,
+        )
+    }
+
+    /// `POST /api/queue-requests` as agent token `token`.
+    async fn ask_queue(&self, token: &str, name: &str) -> (u16, Value) {
+        self.bearer(
+            token,
+            reqwest::Method::POST,
+            "/api/queue-requests",
+            json!({"name": name, "origins": ["https://app.example.com"]}),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn a_device_sign_in_takes_only_the_queue_request_scope() {
+    let site = Site::new().await;
+    for bad in [
+        json!({"client_name": "box", "scope": ["queue.request", "publish"]}),
+        json!({"client_name": "box", "scope": ["clax:full"]}),
+        json!({"client_name": "box", "scope": []}),
+        json!({"client_name": "box", "scope": ["queue.request"], "client_kind": "clax-app"}),
+    ] {
+        let (s, v) = site.machine("/api/hosted/device/code", bad.clone()).await;
+        assert_eq!((s, code(&v)), (400, "invalid_args"), "{bad}: {v}");
+    }
+    // Without a scope, nothing changes: the peek says none.
+    let owner = site.owner().await;
+    let sam = site.person(&owner, "Sam").await;
+    let plain = site.start_device("box").await;
+    let uc = plain["user_code"].as_str().unwrap();
+    let (_, v) = site.get(&sam, &format!("/api/hosted/device/{uc}")).await;
+    assert!(v["scope"].is_null(), "{v}");
+}
+
+#[tokio::test]
+async fn a_scoped_token_asks_for_one_queue_and_reaches_nothing_else() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.person(&owner, "Sam").await;
+    let (token, gid, issued) = site.scoped_token(&sam).await;
+    assert_eq!(issued["scope"], json!(["queue.request"]));
+    // An hour from its approval, five seconds before the poll.
+    assert_eq!(issued["expires_at"], "2026-10-12T11:00:00.000Z", "{issued}");
+    // Nothing of Sam's: no artifacts, no queues, no publishing.
+    for (m, path, body) in [
+        (reqwest::Method::GET, "/api/artifacts", json!(null)),
+        (reqwest::Method::GET, "/api/queues", json!(null)),
+        (
+            reqwest::Method::POST,
+            "/api/artifacts",
+            json!({"html": "<title>x</title>"}),
+        ),
+        (reqwest::Method::POST, "/api/queues", json!({"name": "Q"})),
+    ] {
+        let (s, v) = site.bearer(&token, m.clone(), path, body).await;
+        assert_eq!((s, code(&v)), (403, "forbidden"), "{m} {path}: {v}");
+    }
+    let (s, v) = site.ask_queue(&token, "Invoices").await;
+    assert_eq!(s, 201, "{v}");
+    let r = &v["request"];
+    assert_eq!(r["agent"], "setup agent");
+    let (_, me) = site.get(&sam, "/api/hosted/me").await;
+    assert_eq!(r["person"], me["person"]["public_id"]);
+    let id = r["id"].as_str().unwrap().to_string();
+    // One request a token.
+    let (s, v) = site.ask_queue(&token, "Another").await;
+    assert_eq!((s, code(&v)), (409, "request_exists"), "{v}");
+    // Sam sees it waiting; the owner does not.
+    let (_, v) = site.get(&sam, "/api/queue-requests?status=pending").await;
+    assert_eq!(v["requests"][0]["id"], id.as_str(), "{v}");
+    let (_, v) = site.get(&owner, "/api/queue-requests").await;
+    assert_eq!(v["requests"], json!([]), "{v}");
+    let (s, _) = site
+        .post(
+            &owner,
+            &format!("/api/queue-requests/{id}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 404, "another person's request");
+
+    // Approving makes a queue, so a member approves only where members
+    // make queues: off on a hosted Clax until an administrator says so.
+    let (s, v) = site
+        .post(
+            &sam,
+            &format!("/api/queue-requests/{id}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "queues_admin_only"), "{v}");
+    let (_, v) = site.get(&sam, &format!("/api/queue-requests/{id}")).await;
+    assert_eq!(v["request"]["status"], "pending", "{v}");
+    let (s, v) = site
+        .put(&owner, "/api/admin/queues", json!({"members_create": true}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .post(
+            &sam,
+            &format!("/api/queue-requests/{id}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let qid = v["queue"]["id"].as_str().unwrap().to_string();
+    let (_, v) = site.get(&sam, "/api/queues").await;
+    assert_eq!(v["queues"][0]["id"], qid.as_str(), "Sam's queue: {v}");
+    assert_eq!(v["queues"][0]["role"], "admin");
+
+    // The token reads the answer, takes the grant once, and then it ends.
+    let path = format!("/api/queue-requests/{id}");
+    let (s, v) = site
+        .bearer(&token, reqwest::Method::GET, &path, json!(null))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["request"]["status"], "approved");
+    assert!(v.get("token").is_none(), "{v}");
+    let take = format!("{path}/take");
+    let (s, v) = site
+        .bearer(&token, reqwest::Method::POST, &take, json!({}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(
+        v["token"].as_str().is_some_and(|t| t.starts_with("cxq_")),
+        "{v}"
+    );
+    assert!(v["private_key"].is_string(), "{v}");
+    let (s, _) = site
+        .bearer(&token, reqwest::Method::POST, &take, json!({}))
+        .await;
+    assert_eq!(s, 401, "its one answer taken, the scoped token is spent");
+    let (_, list) = site.get(&sam, "/api/hosted/agent-tokens").await;
+    let t = list["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == gid.as_str())
+        .unwrap_or_else(|| panic!("{list}"));
+    assert_eq!(t["status"], "expired", "no longer a live token: {list}");
+}
+
+#[tokio::test]
+async fn revoking_a_scoped_token_cancels_its_request_and_an_hour_ends_it() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.person(&owner, "Sam").await;
+    let (token, gid, _) = site.scoped_token(&sam).await;
+    let (_, v) = site.ask_queue(&token, "Invoices").await;
+    let id = v["request"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .put(&owner, "/api/admin/queues", json!({"members_create": true}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, _) = site
+        .send(
+            &sam,
+            reqwest::Method::DELETE,
+            &format!("/api/hosted/agent-tokens/{gid}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200);
+    let (_, v) = site.get(&sam, &format!("/api/queue-requests/{id}")).await;
+    assert_eq!(v["request"]["status"], "cancelled", "{v}");
+    let (s, v) = site
+        .post(
+            &sam,
+            &format!("/api/queue-requests/{id}/approve"),
+            json!({}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (409, "request_closed"), "{v}");
+    assert_eq!(v["error"]["request"]["status"], "cancelled");
+
+    // A scoped token unused for its hour is spent, and its request expires
+    // with it.
+    let (token, _, _) = site.scoped_token(&sam).await;
+    let (s, v) = site.ask_queue(&token, "Later").await;
+    assert_eq!(s, 201, "{v}");
+    let id = v["request"]["id"].as_str().unwrap().to_string();
+    site.clock.advance(3600);
+    let (s, _) = site
+        .bearer(
+            &token,
+            reqwest::Method::GET,
+            &format!("/api/queue-requests/{id}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 401);
+    let (_, v) = site.get(&sam, &format!("/api/queue-requests/{id}")).await;
+    assert_eq!(v["request"]["status"], "expired", "{v}");
+}
+
+#[tokio::test]
+async fn an_ordinary_agent_token_asks_too_and_a_denial_is_read() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.person(&owner, "Sam").await;
+    let (token, _gid) = site.device_token(&sam, None).await;
+    let (s, v) = site
+        .bearer(
+            &token,
+            reqwest::Method::POST,
+            "/api/queues",
+            json!({"name": "Q"}),
+        )
+        .await;
+    assert_eq!(
+        (s, code(&v)),
+        (403, "forbidden"),
+        "agents make no queue: {v}"
+    );
+    let (s, v) = site.ask_queue(&token, "Invoices").await;
+    assert_eq!(s, 201, "{v}");
+    let id = v["request"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(&sam, &format!("/api/queue-requests/{id}/deny"), json!({}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .bearer(
+            &token,
+            reqwest::Method::GET,
+            &format!("/api/queue-requests/{id}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["request"]["status"], "denied");
+    assert!(v.get("token").is_none(), "{v}");
+    // An ordinary token lives on, and may ask again.
+    let (s, _) = site.ask_queue(&token, "Second").await;
+    assert_eq!(s, 201);
 }

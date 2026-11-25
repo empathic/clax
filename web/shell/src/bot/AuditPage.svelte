@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // `/audit` (spec 2026-10-21-claxbot §9.2): the audit log, newest first, as
+  // Settings, Audit log (spec 2026-10-21-claxbot §9.2): the audit log, newest first, as
   // the daemon lets this person see it (admins: everything; anyone else: what
   // they did, on what they own, and runs for them). Filters (text, who
   // acted, kind group, artifact, time range) are the address's query, so a
@@ -17,6 +17,7 @@
   import { isAdmin, myBot, myRole } from "./me";
   import { GROUPS, RANGES, type Range, actorLabel, rangeFrom } from "./model";
   import BotPage from "./BotPage.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   let { now }: { now?: () => Date } = $props();
   const url = new URLSearchParams(location.search);
@@ -46,7 +47,7 @@
     if (artifact) p.set("artifact", artifact);
     if (range !== "7d") p.set("range", range);
     const s = p.toString();
-    history.replaceState(history.state, "", `/audit${s ? `?${s}` : ""}`);
+    history.replaceState(history.state, "", `${location.pathname}${s ? `?${s}` : ""}`);
   }
   async function load(more = false) {
     const t = ++ticket;
@@ -87,19 +88,24 @@
   const time = (iso: string) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const title = (id: string | null) => (id ? artifacts.find(a => a.id === id)?.title ?? id : null);
   const body = (b: unknown) => JSON.stringify(b, null, 2);
+  // Shown in Settings, the screen waits for the first page of events, the
+  // artifacts' titles, whether it may export, and an admin's people to filter by.
+  const release = holdReveal();
   onMount(() => {
-    document.title = "Audit · Clax";
-    void load();
-    void listArtifacts().then(l => { artifacts = l.map(a => ({ id: a.id, title: a.title })); }, () => {});
-    void myBot().then(b => { canExport = !!b?.can_export; });
-    void myRole().then(r => { if (isAdmin(r)) void adminPeople().then(p => { people = p; }, () => {}); });
+    document.title = "Audit log · Settings · Clax";
+    void Promise.allSettled([
+      load(),
+      listArtifacts().then(l => { artifacts = l.map(a => ({ id: a.id, title: a.title })); }, () => {}),
+      myBot().then(b => { canExport = !!b?.can_export; }),
+      myRole().then(r => isAdmin(r) ? adminPeople().then(p => { people = p; }, () => {}) : undefined),
+    ]).then(release);
     return () => clearTimeout(typing);
   });
 </script>
 
 {#snippet actions()}{#if canExport}<button type="button" disabled={exporting} onclick={exp}>{exporting ? "Exporting…" : "Export Toolpath"}</button>{/if}{/snippet}
 
-<BotPage title="Audit" lede="Every view and every change, by people, admins and ClaxBot, as the Toolpath journal records them." {actions}>
+<BotPage title="Audit log" lede="Every view and every change, by people, admins and ClaxBot, as the Toolpath journal records them." {actions}>
   <form class="aud-f" role="search" aria-label="Filter the audit log" onsubmit={e => { e.preventDefault(); void load(); }}>
     <input type="search" aria-label="Search the audit log" placeholder="Search" bind:value={q} oninput={typed} />
     <select aria-label="Who acted" onchange={e => { actor = e.currentTarget.value; void load(); }}>

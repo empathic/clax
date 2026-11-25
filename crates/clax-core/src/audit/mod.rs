@@ -120,6 +120,7 @@ kinds! {
     BotRunEnd = "bot.run_end",
     BotCancel = "bot.cancel",
     BotRefused = "bot.refused",
+    BotSurfaceRegistered = "bot.surface.registered",
     ViewRun = "view.run",
     ViewAdmin = "view.admin",
     ViewAudit = "view.audit",
@@ -143,9 +144,13 @@ kinds! {
     QueueFix = "queue.fix",
     QueueVerify = "queue.verify",
     QueueReopen = "queue.reopen",
+    QueuePreview = "queue.preview",
     RemoteRequestAsk = "remote_request.ask",
     RemoteRequestAnswer = "remote_request.answer",
     RemoteRequestClose = "remote_request.close",
+    QueueRequestAsk = "queue_request.ask",
+    QueueRequestAnswer = "queue_request.answer",
+    QueueRequestClose = "queue_request.close",
     ConfirmationAnswer = "confirmation.answer",
     PasskeyAdd = "passkey.add",
     PasskeyRemove = "passkey.remove",
@@ -263,6 +268,13 @@ pub enum Actor {
         queue_id: String,
         grant_id: String,
     },
+    /// A preview deployment, through the fix ticket an agent or a triage
+    /// person was issued for one fix of one report: the queue and the
+    /// ticket's ID (never its token).
+    FixTicket {
+        queue_id: String,
+        ticket_id: String,
+    },
 }
 
 /// The kind groups the audit view filters by (spec
@@ -275,7 +287,7 @@ pub enum KindGroup {
     /// Every kind outside `view.*`, `bot.*` and `admin.*`: changes to
     /// artifacts, threads, people and their agents.
     Changes,
-    /// `bot.*`: ClaxBot runs.
+    /// `bot.*`: ClaxBot runs, and the surfaces registered for them.
     Bot,
     /// `admin.credits` and `admin.cost_line`: credits and limits.
     Credits,
@@ -713,6 +725,7 @@ pub fn content_manifest_sha256(files: &BTreeMap<String, crate::model::FileMeta>)
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::gitctx::MAX_HEADER_BYTES;
@@ -839,6 +852,7 @@ mod tests {
             "bot.run_end",
             "bot.cancel",
             "bot.refused",
+            "bot.surface.registered",
             "view.run",
             "view.admin",
             "view.audit",
@@ -862,9 +876,13 @@ mod tests {
             "queue.fix",
             "queue.verify",
             "queue.reopen",
+            "queue.preview",
             "remote_request.ask",
             "remote_request.answer",
             "remote_request.close",
+            "queue_request.ask",
+            "queue_request.answer",
+            "queue_request.close",
             "confirmation.answer",
             "passkey.add",
             "passkey.remove",
@@ -977,6 +995,13 @@ mod tests {
             ),
             (Actor::Anonymous, json!({"type":"anonymous"})),
             (
+                Actor::FixTicket {
+                    queue_id: "q1".into(),
+                    ticket_id: "t1".into(),
+                },
+                json!({"type":"fix_ticket","queue_id":"q1","ticket_id":"t1"}),
+            ),
+            (
                 Actor::Bot {
                     on_behalf_of: "u_77c0".into(),
                 },
@@ -1031,7 +1056,7 @@ mod tests {
             in_group(KindGroup::Views),
             ["view.run", "view.admin", "view.audit", "view.usage"]
         );
-        assert_eq!(in_group(KindGroup::Bot).len(), 8);
+        assert_eq!(in_group(KindGroup::Bot).len(), 9);
         assert_eq!(in_group(KindGroup::Admin).len(), 7);
         assert_eq!(
             in_group(KindGroup::Credits),

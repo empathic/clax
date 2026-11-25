@@ -59,6 +59,15 @@ describe("ConfirmationCard", () => {
     }
   });
 
+  it("says a Clax taken down is not answering, rather than nothing, and keeps the buttons", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } })));
+    const m = mount(ConfirmationCard, { c: view(), now });
+    click(buttons(m.root)[0]);
+    await settle();
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("this Clax is not answering. It may have been taken down or moved.");
+    expect(buttons(m.root)).toHaveLength(2);
+  });
+
   it("shows the daemon's refusal and keeps the buttons", async () => {
     stubFetch({ [`POST /api/confirmations/${ID}`]: [403, { error: { code: "browser_required", message: "a confirmation is answered in the owner's browser: open the inbox in Clax" } }] });
     const m = mount(ConfirmationCard, { c: view(), now });

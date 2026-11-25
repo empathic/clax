@@ -15,13 +15,12 @@
 import type { Lease, Report, ReportPage } from "../sdk/src/types";
 import { startDeployerSite } from "./deployer-site/server";
 import { expect, test } from "./fixtures";
-import { hostedDaemon, ownerOf } from "./hosted-helpers";
+import { hostedDaemon, memberOf, ownerOf } from "./hosted-helpers";
 import { agentOf, agentTokenOf, cspViolations, openReports, queueWithGrant, refocus, reporterOn, shotPath } from "./queues-helpers";
 
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 test("a site's user files a report through the overlay; an agent claims, replies and resolves; only that reporter reads it", async ({ browser }, info) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
@@ -112,7 +111,8 @@ test("a site's user files a report through the overlay; an agent claims, replies
     const lease = await agent.ok<Lease>("POST", `/api/queues/${qid}/reports/${report.id}/claim`);
     expect(lease.lease_id).toBeTruthy();
     expect(typeof lease.fence).toBe("number");
-    expect(Date.parse(lease.expires_at)).toBeGreaterThan(Date.now());
+    // Its expiry is after the report was filed, both on the daemon's clock.
+    expect(Date.parse(lease.expires_at)).toBeGreaterThan(Date.parse(lease.report.created_at));
     expect(lease.report).toMatchObject({ id: report.id, state: "claimed" });
     expect(lease.report.claim).not.toBeNull();
     const reply = "The request is for 3 to 6 November; the end date is fixed in the next deploy.";
@@ -185,8 +185,37 @@ test("a site's user files a report through the overlay; an agent claims, replies
   }
 });
 
+test("the overlay's host has no style attribute, and the page's !important rules neither hide nor move it", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  const site = await startDeployerSite(origin);
+  try {
+    const owner = await ownerOf(browser, origin);
+    await queueWithGrant(owner, origin, site);
+    const emp1 = await reporterOn(browser, site, "emp-1");
+    await expect(emp1.locator(".launcher")).toBeVisible();
+    // The page's own rules, through a constructed sheet its policy allows.
+    const host = await emp1.evaluate(() => {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(`clax-overlay { display: none !important; position: static !important; visibility: hidden !important; opacity: 0 !important; z-index: 0 !important; width: 50vw !important; }
+        * { letter-spacing: 0.5em !important; pointer-events: auto !important; }`);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      const el = [...document.querySelectorAll("clax-overlay")].find(h => h.shadowRoot?.querySelector(".launcher"))!;
+      const cs = getComputedStyle(el);
+      return {
+        style: el.getAttribute("style"),
+        computed: [cs.display, cs.position, cs.left, cs.top, cs.width, cs.height, cs.visibility, cs.opacity, cs.zIndex, cs.pointerEvents, cs.letterSpacing],
+      };
+    });
+    expect(host).toEqual({ style: null, computed: ["block", "fixed", "0px", "0px", "0px", "0px", "visible", "1", "2147483647", "none", "normal"] });
+    await expect(emp1.locator(".launcher")).toBeVisible();
+    expect(await cspViolations(emp1)).toEqual([]);
+  } finally {
+    await site.stop();
+    await d.stop();
+  }
+});
+
 test("a reporter files the visible page, says a fix is still broken with a new capture, then confirms the next fix", async ({ browser }) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
@@ -273,7 +302,6 @@ test("a reporter files the visible page, says a fix is still broken with a new c
 });
 
 test("a redaction drawn on a tall capture, scrolled in its stage, lands where it was drawn in the PNG sent", async ({ browser }) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
@@ -356,7 +384,6 @@ test("a redaction drawn on a tall capture, scrolled in its stage, lands where it
 });
 
 test("the triage views stay current: a filing, an agent's claim and a person's release show without a reload", async ({ browser }) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
@@ -410,6 +437,49 @@ test("the triage views stay current: a filing, an agent's claim and a person's r
     await expect(mine).not.toContainText("Stuck since Monday");
   } finally {
     await site.stop();
+    await d.stop();
+  }
+});
+
+test("a member added to a queue by name gets the Queues link; while members may not make queues, they get no New queue", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const owner = await ownerOf(browser, origin);
+    const mia = await memberOf(browser, owner, origin, "Mia", []);
+    // A hosted Clax's members make no queue by default, and Mia is in none.
+    await expect(mia.locator("a.queues-link")).toHaveCount(0);
+
+    await owner.goto(`${origin}/queues`);
+    await owner.getByRole("button", { name: "New queue" }).click();
+    const form = owner.locator("form.qform");
+    await form.getByLabel("Name", { exact: true }).fill("Team reports");
+    await form.getByRole("button", { name: "Create queue" }).click();
+    const card = owner.locator("li.qcard", { has: owner.getByRole("heading", { name: "Team reports" }) });
+    await card.getByRole("button", { name: "Manage" }).click();
+    // The owner, its maker, is listed first; Mia is found by name.
+    await expect(card.locator("li.line[data-member]").first()).toContainText("made this queue");
+    await card.getByLabel("Add a person").fill("mi");
+    await card.getByRole("list", { name: "People found" }).getByRole("button", { name: /Mia/ }).click();
+    await card.getByRole("button", { name: "Add member" }).click();
+    await expect(card.locator("li.line[data-member]")).toHaveCount(2);
+    await expect(card.locator("li.line[data-member]").nth(1)).toContainText("Mia");
+
+    await mia.reload();
+    await mia.locator("a.queues-link").click();
+    await expect(mia.getByRole("heading", { name: "Team reports" })).toBeVisible();
+    await expect(mia.locator(".qcard .role").first()).toHaveText("Triage");
+    await expect(mia.getByRole("button", { name: "New queue" })).toHaveCount(0);
+    await expect(mia.getByText("An administrator makes new queues on this Clax.")).toBeVisible();
+
+    // The owner lets members make queues in Settings; Mia then may.
+    await owner.goto(`${origin}/settings/report-queues`);
+    const sw = owner.getByRole("switch", { name: "Members may make report queues" });
+    await expect(sw).toHaveAttribute("aria-checked", "false");
+    await sw.click();
+    await expect(sw).toHaveAttribute("aria-checked", "true");
+    await mia.reload();
+    await expect(mia.getByRole("button", { name: "New queue" })).toBeVisible();
+  } finally {
     await d.stop();
   }
 });

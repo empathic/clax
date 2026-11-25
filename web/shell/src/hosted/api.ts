@@ -6,6 +6,7 @@
 // cookie, from the public origin. A refusal throws `Refused` with the
 // daemon's own message, which the page shows as it is. Names and titles
 // are people's and agents' text: untrusted, rendered as text.
+import type { ContentSecurityPolicy } from "../api";
 import { browserCall, Refused } from "../held";
 
 export { Refused };
@@ -36,12 +37,13 @@ export type Share = { id: string; access: ShareAccess; github_login: string | nu
 export type ShareCandidate = { person: string; name: string | null; github_login: string | null };
 /** Whether an artifact's site is open to anyone, without signing in, or only to those it is shared with. */
 export type SiteAccess = "private" | "world";
+export type { ContentSecurityPolicy };
 /** `GET /api/hosted/artifacts/<id>/sharing`: everything for whoever may share it, else `can_share: false` alone;
- * `site_access` and its site's address, `site_url`, where the daemon says them. `comments` is its Comments
- * switch: off, nobody comments there, whatever their access. */
+ * `site_access`, `content_security_policy` and its site's address, `site_url`, where the daemon says them. `comments`
+ * is its Comments switch: off, nobody comments there, whatever their access. */
 export type Sharing =
   | { artifact_id: string; can_share: false }
-  | { artifact_id: string; can_share: true; comments: boolean; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[]; site_access?: SiteAccess; site_url?: string };
+  | { artifact_id: string; can_share: true; comments: boolean; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[]; site_access?: SiteAccess; content_security_policy?: ContentSecurityPolicy; site_url?: string };
 /** An artifact in the public gallery. */
 export type PublicArtifact = { artifact_id: string; title: string; url: string };
 
@@ -68,8 +70,8 @@ export const signOut = () => call<unknown>("/api/hosted/signout", "POST");
 export const tokens = () => call<{ tokens: AgentToken[] }>("/api/hosted/agent-tokens");
 export const mintToken = (label: string) => call<NewAgentToken>("/api/hosted/agent-tokens", "POST", { label });
 export const revokeToken = (id: string) => call<{ token: AgentToken | null }>(`/api/hosted/agent-tokens/${e(id)}`, "DELETE");
-/** A waiting device sign-in: the machine it names, its kind (`clax-app` for the Clax app), and the loopback page of that machine's Clax to send the person back to once they decide. */
-export type DeviceRequest = { client_name: string; peer_ip: string; client_kind?: string | null; created_at: string; expires_at: string; same_address?: boolean; return_to?: string | null };
+/** A waiting device sign-in: the machine it names, its kind (`clax-app` for the Clax app), the loopback page of that machine's Clax to send the person back to once they decide, and the scope it asks for (null for a whole sign-in; `queue.request`: a token that may only ask the person for a report queue). */
+export type DeviceRequest = { client_name: string; peer_ip: string; client_kind?: string | null; created_at: string; expires_at: string; same_address?: boolean; return_to?: string | null; scope?: string[] | null };
 export const peekDevice = (code: string) => call<DeviceRequest>(`/api/hosted/device/${e(code)}`);
 export const approveDevice = (code: string) => call<{ token: AgentToken }>(`/api/hosted/device/${e(code)}/approve`, "POST");
 export const denyDevice = (code: string) => call<unknown>(`/api/hosted/device/${e(code)}/deny`, "POST");
@@ -81,6 +83,9 @@ export const sharing = (aid: string) => call<Sharing>(`/api/hosted/artifacts/${e
 /** Opens `aid`'s site to the world, or makes it private again. */
 export const setSiteAccess = (aid: string, access: SiteAccess) =>
   call<unknown>(`/api/artifacts/${e(aid)}`, "PATCH", { site_access: access });
+/** Serves `aid`'s site without Clax's Content Security Policy (`unrestricted`), or holds it to its own site again (`self`). */
+export const setContentSecurityPolicy = (aid: string, policy: ContentSecurityPolicy) =>
+  call<{ artifact?: { content_security_policy?: ContentSecurityPolicy } }>(`/api/artifacts/${e(aid)}`, "PATCH", { content_security_policy: policy });
 /** Shares `aid` with a GitHub login or a person (by public ID), or changes their access. */
 export const share = (aid: string, to: { github_login: string } | { person: string }, access: ShareAccess) =>
   call<{ share: Share }>(`/api/hosted/artifacts/${e(aid)}/shares`, "PUT", { ...to, access });

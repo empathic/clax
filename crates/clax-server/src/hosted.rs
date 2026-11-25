@@ -203,7 +203,7 @@ async fn legal_page(
 /// [`Hosted::with_reel`]: clax_http::hosted::Hosted::with_reel
 async fn landing(
     State(s): State<AppState>,
-    d: clax_http::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     uri: axum::http::Uri,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -215,7 +215,7 @@ async fn landing(
     }
     let file = uri.path().strip_prefix(LANDING).unwrap_or("");
     if file.is_empty() {
-        return crate::shell::gallery_page(State(s), d, req).await;
+        return crate::shell::bare_gallery(&s, &req);
     }
     if let Some(to) = reel_elsewhere(&s, file) {
         return Ok(axum::response::Redirect::temporary(&to).into_response());
@@ -941,11 +941,13 @@ fn share_view(sh: &clax_store::shares::Share) -> Value {
 /// their own device, [`browser_or_device`]) → for
 /// whoever may share it ([`may_share`]) `{artifact_id, can_share: true,
 /// comments, general, link_access, url, people: [{id, access, github_login,
-/// person, name, pending}], suggestions, site_access, site_url}`, `comments`
-/// its Comments switch, the suggestions (people here, with their GitHub
-/// logins) for the owner alone, and whether its site (at `site_url`) is
-/// open to the world (`world` or `private`, `PATCH /api/artifacts/<aid>`
-/// changes it); for another member who may
+/// person, name, pending}], suggestions, site_access,
+/// content_security_policy, site_url}`, `comments` its Comments switch,
+/// the suggestions (people here, with their GitHub logins) for the owner
+/// alone, whether its site (at `site_url`) is open to the world (`world`
+/// or `private`) and the `Content-Security-Policy` Clax sends on its own
+/// content (`self` or `unrestricted`), each of which `PATCH
+/// /api/artifacts/<aid>` changes; for another member who may
 /// read it, `{artifact_id, can_share: false}`. 404 for an artifact the
 /// caller may not read, and for the owner one out of the owner's reach but
 /// for its link ([`owner_reaches`]); 401 without a session, 403 for a
@@ -1002,6 +1004,7 @@ async fn get_sharing(
                 "people": people,
                 "suggestions": suggestions,
                 "site_access": crate::routes::artifacts::site_access_of(st, &aid)?,
+                "content_security_policy": crate::routes::content_security_policy::of(st, &aid)?,
                 "site_url": site_url,
             }))
         })
@@ -1236,10 +1239,10 @@ async fn public_list(State(s): State<AppState>) -> Result<Response, ApiError> {
 /// code).
 async fn signin_page(
     State(s): State<AppState>,
-    d: clax_http::agent::DeniedToGrants,
+    _d: clax_http::agent::DeniedToGrants,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let mut res = crate::shell::gallery_page(State(s), d, req).await?;
+    let mut res = crate::shell::bare_gallery(&s, &req)?;
     res.headers_mut().insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
@@ -1279,9 +1282,14 @@ struct DeviceCodeBody {
     /// sign-in is decided.
     #[serde(default)]
     return_to: Option<String>,
+    /// What the token may do, when less than its person's rights:
+    /// `["queue.request"]` alone (ask the person for a report queue,
+    /// [`clax_store::queue_requests`]).
+    #[serde(default)]
+    scope: Option<Vec<String>>,
 }
 
-/// `POST /api/hosted/device/code {client_name, client_kind?, return_to?}`
+/// `POST /api/hosted/device/code {client_name, client_kind?, return_to?, scope?}`
 /// (another machine's Clax, no credential) → `{device_code, user_code, verification_uri,
 /// verification_uri_complete, expires_at, expires_in, interval}`: starts a
 /// device sign-in ([`clax_store::device`]). The machine shows the
@@ -1289,9 +1297,11 @@ struct DeviceCodeBody {
 /// signed-in member approves it, then polls `POST
 /// /api/hosted/device/token` every `interval` seconds. Rate-limited per
 /// client; 400 `invalid_args` for a bad name, a `client_kind` other
-/// than `clax-app` or a `return_to` that is not a loopback page
-/// ([`clax_http::loopback::loopback_return`]), 400 `limit_reached` with too
-/// many waiting.
+/// than `clax-app`, a `return_to` that is not a loopback page
+/// ([`clax_http::loopback::loopback_return`]) or a `scope` other than
+/// `["queue.request"]` (or beside a `client_kind`), 400 `limit_reached`
+/// with too many waiting. A scoped sign-in's token holds a grant of that
+/// scope alone: no rights, the scope's routes, and an end of its own.
 async fn device_code(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1319,14 +1329,30 @@ async fn device_code(
             )
         })?),
     };
+    let scope = match b.scope.as_deref() {
+        None => None,
+        Some([one])
+            if one == clax_store::queue_requests::QUEUE_REQUEST_SCOPE
+                && b.client_kind.is_none() =>
+        {
+            Some(one.clone())
+        }
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                "scope is [\"queue.request\"] or absent, and names no client_kind",
+            ));
+        }
+    };
     let peer = h.client(&headers, &extensions).to_string();
     let start = s
         .store_call(move |st| {
-            st.start_device_kind(
+            st.start_device_scoped(
                 &b.client_name,
                 &peer,
                 b.client_kind.as_deref(),
                 return_to.as_deref(),
+                scope.as_deref(),
             )
         })
         .await?;
@@ -1354,7 +1380,8 @@ struct DeviceTokenBody {
 /// `POST /api/hosted/device/token {device_code}` (the machine) → once the
 /// sign-in is approved, `{token, token_type, grant_id, person: {public_id,
 /// display_name}, origin, mcp_url}`, this once: an agent token of the
-/// person who approved it. Before that, 400 `authorization_pending`; 400
+/// person who approved it; a scoped sign-in's also carries `scope` (its
+/// one scope, in an array) and `expires_at`, its grant's end. Before that, 400 `authorization_pending`; 400
 /// `slow_down` for a poll sooner than `interval` after the last; 400
 /// `access_denied` once denied (or the token revoked before this poll);
 /// 400 `expired_token` for an unknown, expired or spent code.
@@ -1392,23 +1419,29 @@ async fn device_token(
             grant_id,
             person,
             person_name,
-        } => Ok(no_store(
-            Json(json!({
+            scope,
+        } => {
+            let mut v = json!({
                 "token": token.expose(),
                 "token_type": "Bearer",
                 "grant_id": grant_id,
                 "person": {"public_id": person, "display_name": person_name},
                 "origin": h.origin,
                 "mcp_url": h.url(crate::routes::mcp_http::PATH),
-            }))
-            .into_response(),
-        )),
+            });
+            if let Some((scope, ends)) = scope {
+                v["scope"] = json!([scope]);
+                v["expires_at"] = json!(ends);
+            }
+            Ok(no_store(Json(v).into_response()))
+        }
     }
 }
 
 /// `GET /api/hosted/device/<user code>` (a member's browser) →
-/// `{client_name, peer_ip, client_kind, return_to, created_at, expires_at,
-/// same_address}`: the machine a waiting sign-in names, and its kind
+/// `{client_name, peer_ip, client_kind, return_to, scope, created_at,
+/// expires_at, same_address}`: the machine a waiting sign-in names, the
+/// scope it asked for (`["queue.request"]`, else `null`), and its kind
 /// (`clax-app` for the Clax app, whose token may manage the sharing of
 /// the person's artifacts; else `null`), the loopback page it asked to
 /// send its person to once decided (`return_to`, else `null`), for its
@@ -1546,6 +1579,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     /// Every route [`super::router`] mounts is one the gate takes as hosted
     /// mode's own (`clax_http::hosted::own_route`), so none is sent through

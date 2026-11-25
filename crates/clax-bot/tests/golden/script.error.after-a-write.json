@@ -1,0 +1,612 @@
+{
+  "audit": {
+    "kinds": [
+      "bot.run_start",
+      "bot.turn",
+      "bot.script",
+      "bot.call",
+      "bot.call",
+      "bot.turn",
+      "bot.script",
+      "bot.call",
+      "bot.turn",
+      "bot.run_end"
+    ],
+    "records": [
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "key_source": "instance",
+          "model": "claude-sonnet-5-5",
+          "request": "thread",
+          "run": "<run>",
+          "thread_ids": [
+            "<thread-1>"
+          ],
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.run_start"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "cache_write_tokens": 500,
+          "cached_tokens": 2000,
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "credits_milli": 1931,
+          "input_tokens": 1000,
+          "key_source": "instance",
+          "model": "claude-sonnet-5-5",
+          "output_tokens": 300,
+          "run": "<run>",
+          "step": 1,
+          "stop_reason": "tool_use",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.turn"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "calls": [
+            "files.write",
+            "threads.reply"
+          ],
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "code_sha256": "<sha256 of the code>",
+          "cpu_ms": "<measured>",
+          "credits_milli": "<charged from what the scripts measured>",
+          "error": "Error: after the write (line 3)",
+          "mem_peak": "<measured>",
+          "run": "<run>",
+          "step": 2,
+          "title": "Script",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.script"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "ok": true,
+          "op": "files.write",
+          "run": "<run>",
+          "step": 2,
+          "target": "extra.css",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.call"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "ok": true,
+          "op": "threads.reply",
+          "run": "<run>",
+          "step": 2,
+          "target": "<thread-1>",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.call"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "cache_write_tokens": 500,
+          "cached_tokens": 2000,
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "credits_milli": 931,
+          "input_tokens": 1000,
+          "key_source": "instance",
+          "model": "claude-sonnet-5-5",
+          "output_tokens": 300,
+          "run": "<run>",
+          "step": 3,
+          "stop_reason": "tool_use",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.turn"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "calls": [
+            "files.read"
+          ],
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "code_sha256": "<sha256 of the code>",
+          "cpu_ms": "<measured>",
+          "credits_milli": "<charged from what the scripts measured>",
+          "error": null,
+          "mem_peak": "<measured>",
+          "run": "<run>",
+          "step": 4,
+          "title": "Script",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.script"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "ok": true,
+          "op": "files.read",
+          "run": "<run>",
+          "step": 4,
+          "target": "extra.css",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.call"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "cache_write_tokens": 500,
+          "cached_tokens": 2000,
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "credits_milli": 931,
+          "input_tokens": 1000,
+          "key_source": "instance",
+          "model": "claude-sonnet-5-5",
+          "output_tokens": 300,
+          "run": "<run>",
+          "step": 5,
+          "stop_reason": "tool_use",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.turn"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "credits_milli": "<charged from what the scripts measured>",
+          "outcome": "finished",
+          "reason": null,
+          "run": "<run>",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.run_end"
+      }
+    ]
+  },
+  "draft": [
+    {
+      "deleted": false,
+      "path": "extra.css"
+    }
+  ],
+  "journal": [
+    {
+      "attempt": 1,
+      "ok": true,
+      "op": "files.write",
+      "result": null,
+      "seq": 0,
+      "step": 2
+    },
+    {
+      "attempt": 1,
+      "ok": true,
+      "op": "threads.reply",
+      "result": {
+        "comment_id": "<comment>"
+      },
+      "seq": 1,
+      "step": 2
+    },
+    {
+      "attempt": 1,
+      "ok": true,
+      "op": "files.read",
+      "result": null,
+      "seq": 0,
+      "step": 4
+    }
+  ],
+  "next_script_step": {
+    "attempt": 1,
+    "committed_at": "2026-10-21T10:00:00.000Z",
+    "kind": "script",
+    "n": 4,
+    "payload": {
+      "base": null,
+      "calls": [
+        {
+          "code": null,
+          "ms": "<measured>",
+          "ok": true,
+          "op": "files.read",
+          "target": "extra.css"
+        }
+      ],
+      "changed": [],
+      "code": "return await clax.files.read(\"extra.css\");",
+      "created": false,
+      "outcome": {
+        "busy_us": "<measured>",
+        "calls": [
+          {
+            "args_bytes": 13,
+            "code": null,
+            "ok": true,
+            "op": "files.read",
+            "us": "<measured>"
+          }
+        ],
+        "cpu_us": "<measured>",
+        "error": null,
+        "logs": [],
+        "mem_peak_bytes": "<measured>",
+        "value": "h1 { color: blue; }",
+        "wall_us": "<measured>"
+      },
+      "published": null,
+      "replied": [],
+      "result": {
+        "content": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.read\"}],\"logs\":[],\"value\":\"h1 { color: blue; }\"}",
+        "tool_use_id": "tu_2",
+        "type": "tool_result"
+      },
+      "title": "Script",
+      "tool_use_id": "tu_2"
+    },
+    "started_at": "2026-10-21T10:00:00.000Z"
+  },
+  "result": {
+    "content": {
+      "calls": [
+        {
+          "code": null,
+          "ok": true,
+          "op": "files.write"
+        },
+        {
+          "code": null,
+          "ok": true,
+          "op": "threads.reply"
+        }
+      ],
+      "error": {
+        "kind": "thrown",
+        "message": "Error: after the write (line 3)"
+      },
+      "logs": [],
+      "value": null
+    },
+    "content_bytes": 192,
+    "is_error": true
+  },
+  "step": {
+    "attempt": 1,
+    "committed_at": "2026-10-21T10:00:00.000Z",
+    "kind": "script",
+    "n": 2,
+    "payload": {
+      "base": null,
+      "calls": [
+        {
+          "code": null,
+          "ms": "<measured>",
+          "ok": true,
+          "op": "files.write",
+          "target": "extra.css"
+        },
+        {
+          "code": null,
+          "ms": "<measured>",
+          "ok": true,
+          "op": "threads.reply",
+          "target": "<thread-1>"
+        }
+      ],
+      "changed": [
+        "extra.css"
+      ],
+      "code": "await clax.files.write(\"extra.css\", \"h1 { color: blue; }\");\nawait clax.threads.reply(\"<thread-1>\", \"Written.\");\nthrow new Error(\"after the write\");",
+      "created": false,
+      "outcome": {
+        "busy_us": "<measured>",
+        "calls": [
+          {
+            "args_bytes": 35,
+            "code": null,
+            "ok": true,
+            "op": "files.write",
+            "us": "<measured>"
+          },
+          {
+            "args_bytes": 41,
+            "code": null,
+            "ok": true,
+            "op": "threads.reply",
+            "us": "<measured>"
+          }
+        ],
+        "cpu_us": "<measured>",
+        "error": {
+          "kind": "thrown",
+          "message": "Error: after the write (line 3)"
+        },
+        "logs": [],
+        "mem_peak_bytes": "<measured>",
+        "value": null,
+        "wall_us": "<measured>"
+      },
+      "published": null,
+      "replied": [
+        "<thread-1>"
+      ],
+      "result": {
+        "content": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.write\"},{\"code\":null,\"ok\":true,\"op\":\"threads.reply\"}],\"error\":{\"kind\":\"thrown\",\"message\":\"Error: after the write (line 3)\"},\"logs\":[],\"value\":null}",
+        "is_error": true,
+        "tool_use_id": "tu_1",
+        "type": "tool_result"
+      },
+      "title": "Script",
+      "tool_use_id": "tu_1"
+    },
+    "started_at": "2026-10-21T10:00:00.000Z"
+  },
+  "usage": [
+    {
+      "absorbed": false,
+      "credits_milli": 280,
+      "line": "claude-sonnet-5-5.input",
+      "qty": 1000,
+      "step": 1
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 56,
+      "line": "claude-sonnet-5-5.cached_input",
+      "qty": 2000,
+      "step": 1
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 175,
+      "line": "claude-sonnet-5-5.cache_write",
+      "qty": 500,
+      "step": 1
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 420,
+      "line": "claude-sonnet-5-5.output",
+      "qty": 300,
+      "step": 1
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 1000,
+      "line": "harness.run",
+      "qty": 1,
+      "step": 1
+    },
+    {
+      "absorbed": false,
+      "credits_milli": "<measured>",
+      "line": "script.compute",
+      "qty": "<measured>",
+      "step": 2
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 280,
+      "line": "claude-sonnet-5-5.input",
+      "qty": 1000,
+      "step": 3
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 56,
+      "line": "claude-sonnet-5-5.cached_input",
+      "qty": 2000,
+      "step": 3
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 175,
+      "line": "claude-sonnet-5-5.cache_write",
+      "qty": 500,
+      "step": 3
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 420,
+      "line": "claude-sonnet-5-5.output",
+      "qty": 300,
+      "step": 3
+    },
+    {
+      "absorbed": false,
+      "credits_milli": "<measured>",
+      "line": "script.compute",
+      "qty": "<measured>",
+      "step": 4
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 280,
+      "line": "claude-sonnet-5-5.input",
+      "qty": 1000,
+      "step": 5
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 56,
+      "line": "claude-sonnet-5-5.cached_input",
+      "qty": 2000,
+      "step": 5
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 175,
+      "line": "claude-sonnet-5-5.cache_write",
+      "qty": 500,
+      "step": 5
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 420,
+      "line": "claude-sonnet-5-5.output",
+      "qty": 300,
+      "step": 5
+    }
+  ]
+}

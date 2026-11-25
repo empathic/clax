@@ -1,0 +1,636 @@
+[
+  {
+    "case": "the run's caps: 1 search and 1 fetch",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": null,
+            "ok": true,
+            "op": "web.search"
+          },
+          {
+            "code": null,
+            "ok": true,
+            "op": "web.fetch"
+          },
+          {
+            "code": "web_cap",
+            "ok": false,
+            "op": "web.search"
+          },
+          {
+            "code": "web_cap",
+            "ok": false,
+            "op": "web.fetch"
+          },
+          {
+            "code": null,
+            "ok": true,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "returned": {
+              "contentType": "text/markdown",
+              "finalUrl": "https://example.com/a",
+              "left": {
+                "credits": 1997.919,
+                "fetches": 0,
+                "searches": 0
+              },
+              "nextOffset": null,
+              "offset": 0,
+              "status": 200,
+              "text": "# Doc title\nbody",
+              "totalChars": 16,
+              "url": "https://example.com/a"
+            }
+          },
+          "web.fetch: a page the run's store keeps, at the cap": {
+            "returned": {
+              "contentType": "text/markdown",
+              "finalUrl": "https://example.com/a",
+              "left": {
+                "credits": 1997.919,
+                "fetches": 0,
+                "searches": 0
+              },
+              "nextOffset": null,
+              "offset": 0,
+              "status": 200,
+              "text": "# Doc title\nbody",
+              "totalChars": 16,
+              "url": "https://example.com/a"
+            }
+          },
+          "web.fetch: past the run's cap": {
+            "code": "web_cap",
+            "message": "this run has used its 1 fetches; work with what you have",
+            "retryable": false,
+            "threw": "HostError: this run has used its 1 fetches; work with what you have"
+          },
+          "web.search": {
+            "returned": {
+              "left": {
+                "credits": 1998.019,
+                "fetches": 1,
+                "searches": 0
+              },
+              "results": [
+                {
+                  "snippet": "About blue headings",
+                  "title": "Found",
+                  "url": "https://example.org/found"
+                }
+              ]
+            }
+          },
+          "web.search: past the run's cap": {
+            "code": "web_cap",
+            "message": "this run has used its 1 searches; work with what you have",
+            "retryable": false,
+            "threw": "HostError: this run has used its 1 searches; work with what you have"
+          }
+        }
+      },
+      "content_bytes": 1424,
+      "is_error": null
+    }
+  },
+  {
+    "case": "a run that declared fetch alone",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.search"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.search": {
+            "code": "web_disabled",
+            "message": "clax.web.search is not available to this run",
+            "retryable": false,
+            "threw": "HostError: clax.web.search is not available to this run"
+          }
+        }
+      },
+      "content_bytes": 262,
+      "is_error": null
+    }
+  },
+  {
+    "case": "a run that declared search alone",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "code": "web_disabled",
+            "message": "clax.web.fetch is not available to this run",
+            "retryable": false,
+            "threw": "HostError: clax.web.fetch is not available to this run"
+          }
+        }
+      },
+      "content_bytes": 258,
+      "is_error": null
+    }
+  },
+  {
+    "case": "the admin turned search off since the run started",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.search"
+          },
+          {
+            "code": null,
+            "ok": true,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "returned": {
+              "contentType": "text/markdown",
+              "finalUrl": "https://example.com/a",
+              "left": {
+                "credits": 1997.969,
+                "fetches": 19,
+                "searches": 0
+              },
+              "nextOffset": null,
+              "offset": 0,
+              "status": 200,
+              "text": "# Doc title\nbody",
+              "totalChars": 16,
+              "url": "https://example.com/a"
+            }
+          },
+          "web.search": {
+            "code": "web_disabled",
+            "message": "the admin turned clax.web.search off since this run started; do without it",
+            "retryable": false,
+            "threw": "HostError: the admin turned clax.web.search off since this run started; do without it"
+          }
+        }
+      },
+      "content_bytes": 624,
+      "is_error": null
+    }
+  },
+  {
+    "case": "the admin turned fetch off since the run started",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": null,
+            "ok": true,
+            "op": "web.search"
+          },
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "code": "web_disabled",
+            "message": "the admin turned clax.web.fetch off since this run started; do without it",
+            "retryable": false,
+            "threw": "HostError: the admin turned clax.web.fetch off since this run started; do without it"
+          },
+          "web.search": {
+            "returned": {
+              "left": {
+                "credits": 1998.019,
+                "fetches": 0,
+                "searches": 9
+              },
+              "results": [
+                {
+                  "snippet": "About blue headings",
+                  "title": "Found",
+                  "url": "https://example.org/found"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "content_bytes": 537,
+      "is_error": null
+    }
+  },
+  {
+    "case": "the admin turned both off since the run started",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.search"
+          },
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "code": "web_disabled",
+            "message": "web use was turned off (admin_off) since this run started; do without it",
+            "retryable": false,
+            "threw": "HostError: web use was turned off (admin_off) since this run started; do without it"
+          },
+          "web.search": {
+            "code": "web_disabled",
+            "message": "web use was turned off (admin_off) since this run started; do without it",
+            "retryable": false,
+            "threw": "HostError: web use was turned off (admin_off) since this run started; do without it"
+          }
+        }
+      },
+      "content_bytes": 603,
+      "is_error": null
+    }
+  },
+  {
+    "case": "the person turned web use off since the run started",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.search"
+          },
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "code": "web_disabled",
+            "message": "web use was turned off (person_off) since this run started; do without it",
+            "retryable": false,
+            "threw": "HostError: web use was turned off (person_off) since this run started; do without it"
+          },
+          "web.search": {
+            "code": "web_disabled",
+            "message": "web use was turned off (person_off) since this run started; do without it",
+            "retryable": false,
+            "threw": "HostError: web use was turned off (person_off) since this run started; do without it"
+          }
+        }
+      },
+      "content_bytes": 607,
+      "is_error": null
+    }
+  },
+  {
+    "case": "a source that can no longer search",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.search"
+          },
+          {
+            "code": null,
+            "ok": true,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "returned": {
+              "contentType": "text/markdown",
+              "finalUrl": "https://example.com/a",
+              "left": {
+                "credits": 1997.969,
+                "fetches": 19,
+                "searches": 0
+              },
+              "nextOffset": null,
+              "offset": 0,
+              "status": 200,
+              "text": "# Doc title\nbody",
+              "totalChars": 16,
+              "url": "https://example.com/a"
+            }
+          },
+          "web.search": {
+            "code": "web_disabled",
+            "message": "clax.web.search was turned off (not_configured) since this run started; do without it",
+            "retryable": false,
+            "threw": "HostError: clax.web.search was turned off (not_configured) since this run started; do without it"
+          }
+        }
+      },
+      "content_bytes": 646,
+      "is_error": null
+    }
+  },
+  {
+    "case": "a source that can no longer search, and the admin turned fetch off",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "code": "web_disabled",
+            "message": "web use was turned off (not_configured) since this run started; do without it",
+            "retryable": false,
+            "threw": "HostError: web use was turned off (not_configured) since this run started; do without it"
+          }
+        }
+      },
+      "content_bytes": 326,
+      "is_error": null
+    }
+  },
+  {
+    "case": "a source that cannot be used here",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_unavailable",
+            "ok": false,
+            "op": "web.search"
+          },
+          {
+            "code": "web_unavailable",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "code": "web_unavailable",
+            "message": "Workers AI cannot run here. Continue without the web.",
+            "retryable": false,
+            "threw": "HostError: Workers AI cannot run here. Continue without the web."
+          },
+          "web.search": {
+            "code": "web_unavailable",
+            "message": "Workers AI cannot run here. Continue without the web.",
+            "retryable": false,
+            "threw": "HostError: Workers AI cannot run here. Continue without the web."
+          }
+        }
+      },
+      "content_bytes": 539,
+      "is_error": null
+    }
+  },
+  {
+    "case": "an instance without the web cost lines",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_unavailable",
+            "ok": false,
+            "op": "web.search"
+          },
+          {
+            "code": "web_unavailable",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "code": "web_unavailable",
+            "message": "web pricing is not configured on this instance (it has no cost line web.fetch); do without clax.web.fetch",
+            "retryable": false,
+            "threw": "HostError: web pricing is not configured on this instance (it has no cost line web.fetch); do without clax.web.fetch"
+          },
+          "web.search": {
+            "code": "web_unavailable",
+            "message": "web pricing is not configured on this instance (it has no cost line web.search.ceramic); do without clax.web.search",
+            "retryable": false,
+            "threw": "HostError: web pricing is not configured on this instance (it has no cost line web.search.ceramic); do without clax.web.search"
+          }
+        }
+      },
+      "content_bytes": 767,
+      "is_error": null
+    }
+  },
+  {
+    "case": "a person with 1 credit left, and a search that costs 5",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "credits_exhausted",
+            "ok": false,
+            "op": "web.search"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.search": {
+            "code": "credits_exhausted",
+            "message": "the person you act for has 1 credits left this week and clax.web.search costs 5; finish with what you have",
+            "retryable": false,
+            "threw": "HostError: the person you act for has 1 credits left this week and clax.web.search costs 5; finish with what you have"
+          }
+        }
+      },
+      "content_bytes": 396,
+      "is_error": null
+    }
+  },
+  {
+    "case": "a request that cannot be read",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_unavailable",
+            "ok": false,
+            "op": "web.fetch"
+          },
+          {
+            "code": null,
+            "ok": true,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "code": "web_unavailable",
+            "message": "the request this run answers could not be read, so no URL can be checked against it; do without this page",
+            "retryable": false,
+            "threw": "HostError: the request this run answers could not be read, so no URL can be checked against it; do without this page"
+          },
+          "web.fetch: again, the request readable": {
+            "returned": 200
+          }
+        }
+      },
+      "content_bytes": 487,
+      "is_error": null
+    }
+  },
+  {
+    "case": "the instance's own hosts",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "url_not_allowed",
+            "ok": false,
+            "op": "web.fetch"
+          },
+          {
+            "code": "url_not_allowed",
+            "ok": false,
+            "op": "web.fetch"
+          },
+          {
+            "code": "url_not_allowed",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch: a redirect to the instance's public origin": {
+            "code": "url_not_allowed",
+            "message": "the page redirected to clax.example, this instance's own host, which a fetch never reaches; use another source",
+            "retryable": false,
+            "threw": "HostError: the page redirected to clax.example, this instance's own host, which a fetch never reaches; use another source"
+          },
+          "web.fetch: a site of the instance": {
+            "code": "url_not_allowed",
+            "message": "abcdefghijkl.sites.example is this instance's own host, which a fetch never reaches; use another source",
+            "retryable": false,
+            "threw": "HostError: abcdefghijkl.sites.example is this instance's own host, which a fetch never reaches; use another source"
+          },
+          "web.fetch: the instance's public origin": {
+            "code": "url_not_allowed",
+            "message": "clax.example is this instance's own host, which a fetch never reaches; use another source",
+            "retryable": false,
+            "threw": "HostError: clax.example is this instance's own host, which a fetch never reaches; use another source"
+          }
+        }
+      },
+      "content_bytes": 1174,
+      "is_error": null
+    }
+  },
+  {
+    "case": "an instance that fetches from *.example.com alone",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "url_not_allowed",
+            "ok": false,
+            "op": "web.fetch"
+          },
+          {
+            "code": "url_not_allowed",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch: a host off the list": {
+            "code": "url_not_allowed",
+            "message": "other.example is a host this instance does not fetch from",
+            "retryable": false,
+            "threw": "HostError: other.example is a host this instance does not fetch from"
+          },
+          "web.fetch: a redirect to a host off the list": {
+            "code": "url_not_allowed",
+            "message": "the page redirected to other.example, a host this instance does not fetch from",
+            "retryable": false,
+            "threw": "HostError: the page redirected to other.example, a host this instance does not fetch from"
+          }
+        }
+      },
+      "content_bytes": 651,
+      "is_error": null
+    }
+  },
+  {
+    "case": "an instance that fetches any public URL",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": null,
+            "ok": true,
+            "op": "web.fetch"
+          },
+          {
+            "code": "url_not_allowed",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch: a URL that looks credentialed and is not the sender's": {
+            "code": "url_not_allowed",
+            "message": "the URL looks like it holds a credential; it is fetched only when the person you act for wrote it themselves",
+            "retryable": false,
+            "threw": "HostError: the URL looks like it holds a credential; it is fetched only when the person you act for wrote it themselves"
+          },
+          "web.fetch: a URL the run was not given (its status)": {
+            "returned": 200
+          }
+        }
+      },
+      "content_bytes": 561,
+      "is_error": null
+    }
+  }
+]

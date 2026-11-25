@@ -1,4 +1,4 @@
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, within};
 use futures::StreamExt;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -19,38 +19,39 @@ struct Reader {
 impl Reader {
     async fn next(&mut self) -> Ev {
         loop {
+            let block = self.next_block().await;
+            if block.starts_with(':') {
+                continue;
+            }
+            let field = |k: &str| {
+                block
+                    .lines()
+                    .find_map(|l| l.strip_prefix(k))
+                    .map(str::to_string)
+            };
+            return Ev {
+                name: field("event: ").unwrap_or_else(|| "message".into()),
+                data: serde_json::from_str(&field("data: ").unwrap_or("null".into())).unwrap(),
+                id: field("id: "),
+            };
+        }
+    }
+
+    /// The next SSE block, keep-alive comments included, without its
+    /// blank line.
+    async fn next_block(&mut self) -> String {
+        loop {
             if let Some(end) = self.buf.find("\n\n") {
                 let block = self.buf[..end].to_string();
                 self.buf.drain(..end + 2);
-                if block.starts_with(':') {
-                    continue;
-                }
-                let field = |k: &str| {
-                    block
-                        .lines()
-                        .find_map(|l| l.strip_prefix(k))
-                        .map(str::to_string)
-                };
-                return Ev {
-                    name: field("event: ").unwrap_or_else(|| "message".into()),
-                    data: serde_json::from_str(&field("data: ").unwrap_or("null".into())).unwrap(),
-                    id: field("id: "),
-                };
+                return block;
             }
-            let chunk = tokio::time::timeout(Duration::from_secs(20), self.stream.next())
+            let chunk = within("an SSE chunk", self.stream.next())
                 .await
-                .expect("SSE chunk within 20 s")
                 .expect("stream still open")
                 .unwrap();
             self.buf.push_str(std::str::from_utf8(&chunk).unwrap());
         }
-    }
-
-    /// Whether another event arrives within `ms`.
-    async fn quiet_for(&mut self, ms: u64) -> bool {
-        tokio::time::timeout(Duration::from_millis(ms), self.next())
-            .await
-            .is_err()
     }
 }
 
@@ -206,7 +207,24 @@ async fn one_stream_carries_each_subscribed_topic_as_small_deltas() {
             }),
         )],
     });
-    assert!(r.quiet_for(300).await);
+    // A gallery event after it: the stream's next event, with nothing of
+    // the artifact topic before it.
+    ts.events.publish(clax_core::Event::Version {
+        artifact_id: b.clone(),
+        n: 3,
+        by_page: false,
+        title: None,
+        at: None,
+    });
+    let e = r.next().await;
+    assert_eq!(
+        (
+            e.name.as_str(),
+            e.data["topic"].as_str(),
+            e.data["n"].as_u64()
+        ),
+        ("version", Some("gallery"), Some(3))
+    );
 }
 
 #[tokio::test]
@@ -423,7 +441,17 @@ async fn doc_events_follow_the_level_fixed_when_the_stream_opened() {
         "shared/s",
         "B never sees A's private path"
     );
-    assert!(rb.quiet_for(200).await);
+    // Nor after: B's next event is the next shared write.
+    let res = ts
+        .client
+        .put(format!("{}/api/artifacts/{aid}/docs/shared/t", ts.base))
+        .header("cookie", format!("clax_viewer={}", a.cookie))
+        .json(&json!({"data": {"n": 1}, "lww": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(rb.next().await.data["path"], "shared/t");
 }
 
 #[tokio::test]
@@ -443,7 +471,12 @@ async fn a_reconnect_with_last_event_id_resumes_the_same_stream() {
     assert_eq!(publish(2).await.status(), 201);
     let last = r.next().await.id.unwrap();
     drop(r);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Detached once the daemon has seen the connection go: the publish
+    // below is a missed event, not one sent to the old connection.
+    clax_testkit::until("the dropped stream detached", || async {
+        (!ts.state.stream.is_attached(&sid)).then_some(())
+    })
+    .await;
     assert_eq!(publish(3).await.status(), 201);
     let (mut r, ready) = open_with(&ts, |b| b.header("last-event-id", &last)).await;
     assert_eq!(ready["stream"], sid.as_str());
@@ -523,4 +556,16 @@ async fn the_old_event_stream_still_works_alongside() {
     );
     assert!(data.get("title").is_none(), "/api/events keeps its shape");
     assert_eq!(r.next().await.data["artifact_id"], a.as_str());
+}
+
+/// An idle stream sends a keep-alive comment every `sse_keep_alive`: a
+/// short period on the daemon's real timers, and the test waits on the
+/// comments, not on time.
+#[tokio::test]
+async fn an_idle_stream_sends_keep_alives() {
+    let ts = TestServer::spawn_with(|s| s.sse_keep_alive = Duration::from_millis(50)).await;
+    let (mut r, _sid) = open(&ts).await;
+    for _ in 0..2 {
+        assert_eq!(r.next_block().await, ": keep-alive");
+    }
 }

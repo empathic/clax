@@ -1,5 +1,10 @@
 import { afterAll, afterEach, expect, vi } from "vitest";
+import { trackWork } from "./src/test/settled";
 import { WAIT_MS } from "./src/test/timeouts";
+
+// `settled()` (src/test/settled.ts) waits for the zero-delay timers and
+// response reads the code under test starts: track them from the first.
+trackWork();
 
 // `vi.waitFor` and `vi.waitUntil` give up after one second unless told
 // otherwise, which a loaded machine can take to load one lazy module. Here
@@ -22,6 +27,11 @@ if (!waits.claxWaitsPatient) {
 // jsdom's. Tests get the page's storage, as a browser has.
 const page = (globalThis as { jsdom?: { window: Window } }).jsdom?.window;
 if (page) Object.defineProperty(globalThis, "localStorage", { value: page.localStorage, configurable: true, writable: true });
+
+// The artifact view's sidebar opens on the thread list, where the tests of
+// the whole view find their cards, as the browser tests' contexts do
+// (web/e2e/fixtures.ts); the timeline's tests choose their view themselves.
+if (page) page.localStorage.setItem("clax.sidebar", '{"view":"threads"}');
 
 // No unit test reaches a daemon over a WebSocket (jsdom's needs Node's `ws`,
 // which the browser build resolves away, and fails unhandled): a socket the

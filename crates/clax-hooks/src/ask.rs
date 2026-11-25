@@ -233,6 +233,7 @@ pub fn asked(input: &HookInput, daemon: &dyn Daemon) -> anyhow::Result<HookOutpu
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::cell::RefCell;

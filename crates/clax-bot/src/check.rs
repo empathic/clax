@@ -375,6 +375,7 @@ pub fn check(draft: &Draft) -> Report {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::draft::DraftEntry;

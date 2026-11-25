@@ -891,6 +891,7 @@ pub async fn site_access_layer(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

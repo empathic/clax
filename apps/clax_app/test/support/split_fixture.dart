@@ -10,6 +10,9 @@ import 'package:clax_app/home/home_host.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/making_screen.dart' show MakeUpdate;
+import 'package:clax_app/ui/split/sidebar_model.dart';
+
+import 'settle.dart' show waitUntil;
 
 const _page = {'index.html': '<!doctype html><title>x</title>'};
 
@@ -110,6 +113,14 @@ class SplitFixture {
     );
     if (making) makes.start('A tide table');
   }
+
+  /// Turns the real event loop until [model] shows the arrangement [start]
+  /// wrote: the apps listed and `layout/main` read. Run it where [start]
+  /// ran (in a widget test, inside `tester.runAsync`).
+  Future<void> arranged(SidebarModel model) => waitUntil(
+    () => model.canArrange,
+    what: 'the apps listed and their arrangement read',
+  );
 
   /// Whether the host offers Get my apps ([HomeHost.offersGetApps]).
   final bool offersGetApps;

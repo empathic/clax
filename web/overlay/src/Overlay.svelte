@@ -23,6 +23,18 @@
   // reports" call it in place of opening the panel. `showReports()`, the
   // host's own ask, still opens the panel, and so does going back to it
   // from a "Still broken" note.
+  //
+  // A link to one report (`?clax-report=<report ID>`, `takeReportLink`)
+  // opens the overlay on it once mounted, when the reporter's token reads
+  // it (else the page shows as ever); the parameter leaves the URL as it
+  // is read. With `onShowReports` the report is handed to the host.
+  //
+  // On a preview deployment, a fix waiting on the reporter's verdict at
+  // this page's origin (`client.previews`, asked with each badge) shows as
+  // a banner naming the report and the fix (the first, with a count of the
+  // rest), whose verdicts are the panel's own: "It's fixed" verifies,
+  // "Still broken" reopens, "Add a note…" opens the report in "Your
+  // reports". A server without the route shows none.
   import { onDestroy, onMount, untrack } from "svelte";
   import type { Report } from "../../sdk/src/types";
   import { type FlattenDeps, type Shape, browserFlatten, flatten } from "./annotate";
@@ -31,7 +43,8 @@
   import { displayCaptureSupported } from "../../bridge/src/display-capture";
   import {
     BadgeWatch, type Draft, POLL_MS, Poll, type ReporterApi, type Session, type Timers, canSend, carryShapes, clipOf, clipStatus, defaultShapes,
-    failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, summaryOf, withCapture,
+    failureText, newDraft, pageUrl, previewFix, quoteOf, realTimers, reopenOf, reportOf, safeLink, summaryOf, takeReportLink,
+    withCapture,
   } from "./model";
   import ModeBar from "./ModeBar.svelte";
   import type { Mode } from "./options";
@@ -85,7 +98,11 @@
   let pulse = $state(false);
   let reportBtn = $state<HTMLButtonElement | null>(null);
   let viewBtn = $state<HTMLButtonElement | null>(null);
+  /** The reports whose fix waits for the reporter's verdict on this page's origin. */
+  let previews = $state<Report[]>([]);
 
+  /** The report a link opened, kept in "Your reports" when no page listed holds it. */
+  let linked: Report | null = null;
   /** The report newly waiting on the reporter, which "Your reports" opens on next. */
   let waitingId: string | null = null;
   /** The pick a draft's capture came from, for the exact screenshot. */
@@ -103,9 +120,12 @@
   onMount(() => {
     const made = makePicker(onPick, () => closeBar(), what => { outlined = what; });
     picker = made;
+    void openLinked();
     return () => made.destroy();
   });
+  let destroyed = false;
   onDestroy(() => {
+    destroyed = true;
     poll.stop();
     badge.stop();
     revokeClip();
@@ -354,6 +374,7 @@
         expanded = r.id;
         showReports();
         badge.now();
+        loadPreviews();
         say("Sent. The report is open again.");
         return;
       }
@@ -383,7 +404,7 @@
   const poll = untrack(() => new Poll(async () => {
     const page = await client.myReports();
     if (!open) return;
-    reports = page.reports;
+    reports = withLinked(page.reports);
     loadError = null;
   }, timers, POLL_MS, e => { loadError = failureText(e); }));
 
@@ -448,7 +469,48 @@
   async function verify(id: string): Promise<void> {
     const context = await session.verdictContext();
     merge(await client.verify(id, { context }));
+    previews = previews.filter(r => r.id !== id);
     badge.now();
+  }
+
+  /** Opens the overlay on the report a link in the page's URL names, when
+   * the reporter's token reads it; nothing otherwise. */
+  async function openLinked(): Promise<void> {
+    const id = takeReportLink(win);
+    if (!id) return;
+    let r: Report;
+    try {
+      r = await client.report(id);
+    } catch {
+      return;
+    }
+    if (destroyed) return;
+    linked = r;
+    if (onShowReports) { handOff(r); return; }
+    waitingId = null;
+    showReports();
+    expand(r.id);
+  }
+
+  /** `list`, with the linked report after it when the list lacks it. */
+  function withLinked(list: Report[]): Report[] {
+    const l = linked;
+    if (!l || list.some(x => x.id === l.id)) return list;
+    return [...list, reports?.find(x => x.id === l.id) ?? l];
+  }
+
+  /** "It's fixed" on the preview banner, once at a time; a refusal is the notice's. */
+  let verifying = false;
+  function verifyPreview(id: string): void {
+    if (verifying) return;
+    verifying = true;
+    verify(id).catch(e => say(`Not sent: ${failureText(e)}`)).finally(() => { verifying = false; });
+  }
+
+  /** "Add a note…" on the preview banner: "Your reports", open on `r`. */
+  function noteOn(r: Report): void {
+    expand(r.id);
+    showReports();
   }
 
   /** "Still broken": a note, and the mode bar for a new capture. */
@@ -465,10 +527,20 @@
     bar = { mode: null };
   }
 
+  // ---- Previews ----
+
+  let previewAsk = 0;
+  /** Asks which fixes wait on this origin; a failed ask (a server without
+   * the route among them) shows no banner. Only the latest ask's answer is kept. */
+  function loadPreviews(): void {
+    const n = ++previewAsk;
+    Promise.resolve().then(() => client.previews()).then(rs => { if (n === previewAsk) previews = rs; }, () => { if (n === previewAsk) previews = []; });
+  }
+
   // ---- The badge ----
 
   let pulseTimer: unknown = null;
-  const badge = untrack(() => new BadgeWatch(() => client.badge(), win as never, {
+  const badge = untrack(() => new BadgeWatch(() => { loadPreviews(); return client.badge(); }, win as never, {
     changed: n => { count = n; onBadge?.(n); },
     rose: ids => {
       waitingId = ids[0] ?? waitingId;
@@ -556,6 +628,21 @@
       <div class="actions">
         <button type="button" class="ghost" aria-label="Dismiss" onclick={() => { filed = null; }}>✕</button>
         <button type="button" class="primary" bind:this={viewBtn} onclick={viewFiled}>View in {reportsLabel}</button>
+      </div>
+    </section>
+  {/if}
+
+  {#if previews.length && !open && !draft}
+    {@const r = previews[0]}
+    {@const fix = previewFix(r)}
+    <section class="filed" aria-label="A fix for your report">
+      <p><strong>This preview has a fix for your report{previews.length > 1 ? ` (and ${previews.length - 1} more)` : ""}</strong></p>
+      <p class="quote">{summaryOf(r)}</p>
+      {#if fix}<p>Fix {fix.n}: {fix.summary} {#if safeLink(fix.url)}<a href={safeLink(fix.url)} target="_blank" rel="noopener noreferrer">The change</a>{/if}</p>{/if}
+      <div class="actions">
+        <button type="button" class="ghost" onclick={() => noteOn(r)}>Add a note…</button>
+        <button type="button" onclick={() => stillBroken(r)}>Still broken</button>
+        <button type="button" class="primary" onclick={() => verifyPreview(r.id)}>It's fixed</button>
       </div>
     </section>
   {/if}

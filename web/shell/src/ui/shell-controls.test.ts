@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { artifact, artifactViewHooks, mountView, waitFor } from "../test/artifact-view";
-import { flush, mount } from "../test/svelte";
+import { mount } from "../test/svelte";
 import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
 import PhoneTabs from "./PhoneTabs.svelte";
 import Publish from "./Publish.svelte";
@@ -8,6 +8,7 @@ import SendButton from "./SendButton.svelte";
 import Sidebar from "./Sidebar.svelte";
 import VersionMenu from "./VersionMenu.svelte";
 import { SHELL_CONTROLS, findControl, inView, isShellControl, isShown, revealIfOutside } from "./shell-controls";
+import { settled } from "../test/settled";
 
 const marked = (name: string, host: HTMLElement = document.body, tag = "button") => {
   const el = document.createElement(tag);
@@ -113,8 +114,9 @@ describe("the shell's marked controls", () => {
       expect(threads.map(t => t.matches("button.threads") ? "bar" : t.closest(".phone-tabs") ? "tab" : "other")).toEqual(["bar", "tab"]);
       expect(threads[0].textContent).toContain("Threads");
       expect(only(bar, "versions").matches("button.vbtn")).toBe(true);
-      expect(only(bar, "fork").matches("button.fork")).toBe(true);
-      expect(only(bar, "fork").textContent).toBe("Fork");
+      expect(only(bar, "fork").matches("button.icon.fork")).toBe(true);
+      expect(only(bar, "fork").getAttribute("aria-label")).toBe("Fork");
+      expect(only(bar, "fork").title).toMatch(/^Fork v\d+ into an artifact of your own$/);
     });
 
     it("finds the mounted Comment button, and not while it is disabled", async () => {
@@ -142,7 +144,7 @@ describe("the shell's marked controls", () => {
     });
 
     describe("Publish", () => {
-      const settle = async () => { for (let i = 0; i < 5; i++) { await new Promise(r => setTimeout(r)); flush(); } };
+      const settle = settled;
       const daemon = (links: unknown[]) => vi.stubGlobal("fetch", vi.fn(async (url: string) => {
         if (url === "/api/token") return new Response(JSON.stringify({ token: "t-local" }));
         if (url.endsWith("/remotes")) return new Response(JSON.stringify({ links, remotes: [{ id: "r_1", origin: "https://clax.example", name: "clax.example", status: "connected", person_name: "Ada" }] }));

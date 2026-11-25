@@ -20,6 +20,7 @@
 //!   SHA-256 is kept.
 
 use super::Store;
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::secret::{self, sha256_hex};
 use clax_core::{ArtifactId, Result};
 use rusqlite::{OptionalExtension, params};
@@ -37,6 +38,47 @@ pub const SITE_SESSION_RENEW_SECS: i64 = 300;
 /// open one waits on the person's answer to its question, which is spent
 /// once used, as a push's is ([`Store::create_push_approval`]).
 pub const OPEN_TO_WORLD: &str = "site:world";
+
+/// The `remote_id` of a `push_approvals` row that approves serving its
+/// artifact's site with [`ContentSecurityPolicy::Unrestricted`], as
+/// [`OPEN_TO_WORLD`] does opening it.
+pub const UNRESTRICT_CSP: &str = "site:csp-unrestricted";
+
+/// The `Content-Security-Policy` Clax sends on an artifact's own content
+/// (`artifacts.content_security_policy`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentSecurityPolicy {
+    /// `self` (every artifact's at first): a policy that holds its pages
+    /// to their own site (`'self'`), and a service worker script request
+    /// answered with Clax's own, which unregisters itself.
+    SelfOnly,
+    /// `unrestricted`: no source restrictions, only `frame-ancestors`, so
+    /// a `<meta>` Content Security Policy of the page's own, if any, is the
+    /// only one; the artifact may register its own service worker.
+    Unrestricted,
+}
+
+impl ContentSecurityPolicy {
+    /// Its value in `artifacts.content_security_policy` and the API:
+    /// `self` or `unrestricted`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ContentSecurityPolicy::SelfOnly => "self",
+            ContentSecurityPolicy::Unrestricted => "unrestricted",
+        }
+    }
+
+    /// The policy named `v` ([`ContentSecurityPolicy::as_str`]), or `None`.
+    #[must_use]
+    pub fn parse(v: &str) -> Option<Self> {
+        match v {
+            "self" => Some(ContentSecurityPolicy::SelfOnly),
+            "unrestricted" => Some(ContentSecurityPolicy::Unrestricted),
+            _ => None,
+        }
+    }
+}
 
 /// Who a site code or session reads as.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -353,9 +395,80 @@ impl Store {
             Ok(())
         })
     }
+
+    /// Artifact `aid`'s `Content-Security-Policy` setting
+    /// (`artifacts.content_security_policy`); `self` for one that does not
+    /// exist or is deleted. A draft of an app follows its live app's
+    /// setting, as its network grants do (`net_grants::live_app_in`): a new
+    /// app's draft, a draft made offline (a bundle update's check draft)
+    /// and a draft whose app is gone keep their own, `self`.
+    ///
+    /// # Errors
+    /// The database's.
+    pub fn content_security_policy(&self, aid: &ArtifactId) -> Result<ContentSecurityPolicy> {
+        self.with_read(|c| {
+            let v: Option<String> = c
+                .query_row(
+                    "SELECT coalesce(app.content_security_policy, a.content_security_policy)
+                       FROM artifacts a
+                       LEFT JOIN artifacts app
+                         ON a.hidden = 1 AND a.draft_inherit_net = 1
+                        AND app.id = a.draft_of AND app.deleted_at IS NULL
+                      WHERE a.id = ?1 AND a.deleted_at IS NULL",
+                    params![aid.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(v.as_deref()
+                .and_then(ContentSecurityPolicy::parse)
+                .unwrap_or(ContentSecurityPolicy::SelfOnly))
+        })
+    }
+
+    /// Sets artifact `aid`'s `Content-Security-Policy` setting to `policy`,
+    /// recorded under `ctx` as `artifact.update` with
+    /// `fields.content_security_policy` when it changes.
+    ///
+    /// # Errors
+    /// `NotFound` when the artifact does not exist; the database's.
+    pub fn set_content_security_policy(
+        &self,
+        ctx: &AuditCtx,
+        aid: &ArtifactId,
+        policy: ContentSecurityPolicy,
+    ) -> Result<()> {
+        let policy = policy.as_str();
+        self.with_tx(|tx| {
+            let before: Option<String> = tx
+                .query_row(
+                    "SELECT content_security_policy FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
+                    params![aid.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(before) = before else {
+                return Err(clax_core::CoreError::NotFound);
+            };
+            if before == policy {
+                return Ok(());
+            }
+            tx.execute(
+                "UPDATE artifacts SET content_security_policy = ?2 WHERE id = ?1",
+                params![aid.as_str(), policy],
+            )?;
+            let mut fields = serde_json::Map::new();
+            fields.insert("content_security_policy".into(), policy.into());
+            let mut rec =
+                AuditRecord::new(AuditKind::ArtifactUpdate, self.now()).with("fields", fields);
+            rec.ids.artifact = Some(aid.as_str().to_string());
+            self.record_audit(tx, ctx, rec)?;
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::test_util::{DAEMON, store_with_clock};

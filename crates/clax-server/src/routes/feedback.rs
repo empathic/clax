@@ -575,13 +575,18 @@ pub struct NoticesQuery {
     /// `channel`: the Claude Code shim polls for its channel.
     #[serde(default)]
     via: Option<String>,
+    /// A queue's ID: announce only the rows on that queue's reports
+    /// (`clax queue follow`), leaving the rest to another follower.
+    #[serde(default)]
+    queue: Option<String>,
 }
 
 /// `GET /api/sessions/<sid>/notices?wait=<s>`: announces the session's
 /// armed, undelivered comments that no follower has announced
 /// (`Store::take_notices`), as soon as there are any or after `wait`
 /// seconds (capped at 600): `{notices, lines, waited_s}`, one line per
-/// notice. Announcing delivers nothing. Only comments whose bodies the
+/// notice; with `queue=<qid>`, only those on that queue's reports, the
+/// session's others left for another follower. Announcing delivers nothing. Only comments whose bodies the
 /// session's person's agents may see are announced, with the title
 /// filtered as the feedback text's is (spec 2026-10-08 §8.4), on artifacts
 /// a person's agent, or on a hosted daemon any agent, may read; the view
@@ -611,6 +616,7 @@ pub async fn notices(
     s.store_call(move |st| live_session(st, &check)).await?;
     let mut rights = a.read_rights();
     let grant = a.grant().map(str::to_string);
+    let queue = q.queue.clone().filter(|q| !q.is_empty());
     let kind = match q.via.as_deref() {
         Some("channel") => FollowKind::Channel,
         _ => FollowKind::Follower,
@@ -650,7 +656,7 @@ pub async fn notices(
         let base = agent_base(&s, grant.is_some(), &headers);
         let who = sid.clone();
         let prior = vis.take();
-        let (prior_rights, grant) = (rights.clone(), grant.clone());
+        let (prior_rights, grant, queue) = (rights.clone(), grant.clone(), queue.clone());
         // The channel leaves the notices to a follower of the session.
         let yields = kind == FollowKind::Channel && s.followers.is_following(&sid);
         let (view, rights_now, announced) = s
@@ -663,10 +669,10 @@ pub async fn notices(
                     artifacts: rights.filters().then_some(&readable),
                     reports: rights.reads_reports(),
                 };
-                let announced = if yields {
-                    None
-                } else {
-                    Some(st.take_notices(&who, &base, &view, readable)?)
+                let announced = match &queue {
+                    _ if yields => None,
+                    Some(q) => Some(st.take_queue_notices(&who, &base, &view, readable, q)?),
+                    None => Some(st.take_notices(&who, &base, &view, readable)?),
                 };
                 Ok((view, rights, announced))
             })
@@ -901,6 +907,7 @@ pub async fn waiters(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{Woke, wait_for_change};
     use clax_core::Home;
@@ -915,6 +922,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
         (dir, st)
+    }
+
+    /// The time on tokio's paused clock: every test here runs under
+    /// `start_paused`, so this is the test's own time, never the wall's.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "reads tokio's paused clock (start_paused), not real time"
+    )]
+    fn now() -> Instant {
+        Instant::now()
     }
 
     /// The approval of `*unconnected` the store opens with, revoked: a
@@ -933,19 +950,19 @@ mod tests {
         let rows = Notify::new();
         let stopping = std::future::pending::<()>();
         tokio::pin!(stopping);
-        let deadline = Instant::now() + Duration::from_secs(600);
+        let deadline = now() + Duration::from_secs(600);
         // A bump after the generation was read, before the wait.
         let notified = rows.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
         let seen = g.current();
         bump(&st);
-        let start = Instant::now();
+        let start = now();
         assert_eq!(
             wait_for_change(notified.as_mut(), &g, seen, deadline, stopping.as_mut()).await,
             Woke::Visibility
         );
-        assert_eq!(Instant::now(), start, "no time passed");
+        assert_eq!(now(), start, "no time passed");
         // A row after the waiter registered, before the wait.
         let notified = rows.notified();
         tokio::pin!(notified);
@@ -956,7 +973,7 @@ mod tests {
             wait_for_change(notified.as_mut(), &g, seen, deadline, stopping.as_mut()).await,
             Woke::Row
         );
-        assert_eq!(Instant::now(), start);
+        assert_eq!(now(), start);
         // Neither: the deadline, exactly.
         let notified = rows.notified();
         tokio::pin!(notified);
@@ -966,7 +983,7 @@ mod tests {
             wait_for_change(notified.as_mut(), &g, seen, deadline, stopping.as_mut()).await,
             Woke::Deadline
         );
-        assert_eq!(Instant::now(), deadline);
+        assert_eq!(now(), deadline);
     }
 
     /// Paused time: a bump during the wait ends it when it lands, not at
@@ -979,7 +996,7 @@ mod tests {
         let rows = Notify::new();
         let stopping = std::future::pending::<()>();
         tokio::pin!(stopping);
-        let start = Instant::now();
+        let start = now();
         let deadline = start + Duration::from_secs(600);
         let notified = rows.notified();
         tokio::pin!(notified);
@@ -987,7 +1004,7 @@ mod tests {
         let seen = g.current();
         let st2 = st.clone();
         let later = async move {
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            tokio::time::advance(Duration::from_secs(30)).await;
             tokio::task::spawn_blocking(move || bump(&st2))
                 .await
                 .unwrap();
@@ -998,6 +1015,6 @@ mod tests {
             () = later => unreachable!(),
         };
         assert_eq!(woke, Woke::Visibility);
-        assert!(Instant::now() < deadline, "{:?}", Instant::now() - start);
+        assert!(now() < deadline, "{:?}", now() - start);
     }
 }

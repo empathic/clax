@@ -8,7 +8,7 @@ use clax_core::queue::ReportersSee;
 use clax_core::sig::{self, KeyPair, SignInput};
 use clax_core::working::ManualClock;
 use clax_store::queues::NewQueue;
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, within};
 use serde_json::{Value, json};
 use sha2::Digest;
 use std::sync::Arc;
@@ -1041,6 +1041,34 @@ async fn a_reporter_sees_only_its_own_reports_under_own() {
         .as_reporter(&a, Some(ORIGIN), "GET", &clip, None, vec![])
         .await;
     assert_eq!(res.status(), 200);
+    // One report by its ID: its reporter's, and 404 to another, as for
+    // one that does not exist.
+    let one = format!("{}/{tid}", s.reports());
+    let res = s
+        .as_reporter(&b, Some(ORIGIN), "GET", &one, None, vec![])
+        .await;
+    assert_eq!(status_code(res).await, (404, "not_found".into()));
+    let res = s
+        .as_reporter(&a, Some(ORIGIN), "GET", &one, None, vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        (&v["report"]["id"], &v["report"]["mine"]),
+        (&json!(tid), &json!(true)),
+        "{v}"
+    );
+    let res = s
+        .as_reporter(
+            &a,
+            Some(ORIGIN),
+            "GET",
+            &format!("{}/01J0000000000000000000000Z", s.reports()),
+            None,
+            vec![],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (404, "not_found".into()));
 }
 
 #[tokio::test]
@@ -1142,6 +1170,7 @@ async fn every_queue_route_needs_its_own_credential() {
         ("POST", mint.clone()),
         ("GET", s.reports()),
         ("POST", s.reports()),
+        ("GET", format!("{}/t1", s.reports())),
         ("POST", format!("{}/t1/comments", s.reports())),
         ("GET", format!("{}/t1/clip", s.reports())),
         ("POST", format!("{}/t1/verify", s.reports())),
@@ -1283,10 +1312,20 @@ async fn a_request_signed_by_the_sdk_vector_verifies() {
     let ts = TestServer::spawn_with_clock(clock).await;
     assert_eq!(ts.store.now_utc().timestamp(), 1_760_000_000);
     let made = queue(&ts, ReportersSee::Own);
-    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let mut db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
     db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
-    db.execute("UPDATE queues SET id = 'q1' WHERE id = ?1", [&made])
+    // The maker's member row names the queue too: both are renamed in one
+    // transaction, the foreign key checked at its commit.
+    let tx = db.transaction().unwrap();
+    tx.execute_batch("PRAGMA defer_foreign_keys = ON").unwrap();
+    tx.execute("UPDATE queues SET id = 'q1' WHERE id = ?1", [&made])
         .unwrap();
+    tx.execute(
+        "UPDATE queue_members SET queue_id = 'q1' WHERE queue_id = ?1",
+        [&made],
+    )
+    .unwrap();
+    tx.commit().unwrap();
     let (grant, _, _) = ts
         .store
         .create_service_grant(&AuditCtx::DAEMON, "q1", "app")
@@ -1375,6 +1414,7 @@ async fn under_all_a_reporter_reads_and_comments_on_anothers_report() {
     assert_eq!(cs[1]["author_name"], "emp-b");
     assert_eq!(cs[1]["author_kind"], "reporter");
     assert_eq!(v["report"]["reporter_id"], "emp-a");
+    assert_eq!(v["report"]["mine"], false, "{v}");
 }
 
 /// The artifact a report filed by a new reporter of `s`'s queue is on.
@@ -2249,9 +2289,8 @@ async fn watch_then_file_wakes_a_waiting_watcher() {
     assert_eq!(res.status(), 201);
     let v: Value = res.json().await.unwrap();
     let tid = v["report"]["id"].as_str().unwrap().to_string();
-    let got = tokio::time::timeout(clax_testkit::HANG, waiter)
+    let got = within("the filing's wake of the watcher's wait", waiter)
         .await
-        .expect("the filing wakes the watcher's wait")
         .unwrap();
     let items = got["feedback"].as_array().unwrap();
     assert_eq!(items.len(), 1, "{got}");
@@ -2278,11 +2317,7 @@ async fn a_filing_and_a_reporters_comment_reach_the_queues_topic() {
         )
     };
     assert_eq!(
-        next(
-            tokio::time::timeout(clax_testkit::HANG, owner.next_named("report"))
-                .await
-                .expect("a report event")
-        ),
+        next(within("a report event", owner.next_named("report")).await),
         (tid.clone(), "open".into())
     );
     let res = s
@@ -2293,9 +2328,7 @@ async fn a_filing_and_a_reporters_comment_reach_the_queues_topic() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    let got = tokio::time::timeout(clax_testkit::HANG, owner.next_named("report"))
-        .await
-        .expect("a report event");
+    let got = within("a report event", owner.next_named("report")).await;
     assert_eq!(next(got.clone()), (tid.clone(), "open".into()));
     assert!(
         got.get("body").is_none() && got.get("comment").is_none(),

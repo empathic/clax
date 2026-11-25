@@ -1,0 +1,180 @@
+[
+  {
+    "calls": [
+      {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "cost_milli": 0,
+            "ms": "<measured>",
+            "ok": false,
+            "op": "web.search",
+            "target": null,
+            "web": {
+              "query": "blue headings"
+            }
+          },
+          {
+            "code": "web_disabled",
+            "cost_milli": 0,
+            "ms": "<measured>",
+            "ok": false,
+            "op": "web.fetch",
+            "target": null,
+            "web": {
+              "url": "https://example.com/a"
+            }
+          }
+        ],
+        "journal": [
+          {
+            "attempt": 1,
+            "ok": false,
+            "op": "web.search",
+            "result": {
+              "code": "web_disabled",
+              "message": "clax.web.search is not available to this run"
+            },
+            "seq": 0,
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "ok": false,
+            "op": "web.fetch",
+            "result": {
+              "code": "web_disabled",
+              "message": "clax.web.fetch is not available to this run"
+            },
+            "seq": 1,
+            "step": 2
+          }
+        ],
+        "step": 2
+      }
+    ],
+    "case": "a run that declared no web operation",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.search"
+          },
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "code": "web_disabled",
+            "message": "clax.web.fetch is not available to this run",
+            "retryable": false,
+            "threw": "HostError: clax.web.fetch is not available to this run"
+          },
+          "web.search": {
+            "code": "web_disabled",
+            "message": "clax.web.search is not available to this run",
+            "retryable": false,
+            "threw": "HostError: clax.web.search is not available to this run"
+          }
+        }
+      },
+      "content_bytes": 489,
+      "is_error": null
+    }
+  },
+  {
+    "calls": [
+      {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "cost_milli": 0,
+            "ms": "<measured>",
+            "ok": false,
+            "op": "web.search",
+            "target": null,
+            "web": {
+              "query": "blue headings"
+            }
+          },
+          {
+            "code": "web_disabled",
+            "cost_milli": 0,
+            "ms": "<measured>",
+            "ok": false,
+            "op": "web.fetch",
+            "target": null,
+            "web": {
+              "url": "https://example.com/a"
+            }
+          }
+        ],
+        "journal": [
+          {
+            "attempt": 1,
+            "ok": false,
+            "op": "web.search",
+            "result": {
+              "code": "web_disabled",
+              "message": "clax.web.search is not available to this run"
+            },
+            "seq": 0,
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "ok": false,
+            "op": "web.fetch",
+            "result": {
+              "code": "web_disabled",
+              "message": "clax.web.fetch is not available to this run"
+            },
+            "seq": 1,
+            "step": 2
+          }
+        ],
+        "step": 2
+      }
+    ],
+    "case": "a run that declared both, on a host with no web source",
+    "result": {
+      "content": {
+        "calls": [
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.search"
+          },
+          {
+            "code": "web_disabled",
+            "ok": false,
+            "op": "web.fetch"
+          }
+        ],
+        "logs": [],
+        "value": {
+          "web.fetch": {
+            "code": "web_disabled",
+            "message": "clax.web.fetch is not available to this run",
+            "retryable": false,
+            "threw": "HostError: clax.web.fetch is not available to this run"
+          },
+          "web.search": {
+            "code": "web_disabled",
+            "message": "clax.web.search is not available to this run",
+            "retryable": false,
+            "threw": "HostError: clax.web.search is not available to this run"
+          }
+        }
+      },
+      "content_bytes": 489,
+      "is_error": null
+    }
+  }
+]

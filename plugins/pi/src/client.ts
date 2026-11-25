@@ -961,6 +961,28 @@ export class DaemonClient {
     return this.json(() => `/api/remotes/requests/${id}?${q}`, { method: "GET", timeoutMs: (waitS + 10) * 1000 });
   }
 
+  /** `POST /api/queue-requests {name, origins, reporters_see?, note?}` as
+   * this session: `{request}`, waiting for the session's person. */
+  queueRequest(body: unknown): Promise<any> {
+    return this.json(() => "/api/queue-requests", this.jsonBody("POST", body));
+  }
+
+  /** `GET /api/queue-requests/<id>?wait=<waitS>`: `{request}` (and
+   * `grant_taken` once its grant was taken), changing nothing. The
+   * deadline is `waitS` plus 10 s. `id` must be a ULID. */
+  queueRequestWait(id: string, waitS: number): Promise<any> {
+    const q = new URLSearchParams({ wait: String(waitS) });
+    return this.json(() => `/api/queue-requests/${id}?${q}`, { method: "GET", timeoutMs: (waitS + 10) * 1000 });
+  }
+
+  /** `POST /api/queue-requests/<id>/take`: the answer to a request no
+   * longer pending, with the queue's service grant (`grant`, `token`,
+   * `private_key`) on the first take of an approved one, or `grant_taken`
+   * on a later one. `id` must be a ULID. */
+  queueRequestTake(id: string): Promise<any> {
+    return this.json(() => `/api/queue-requests/${id}/take`, this.jsonBody("POST", {}));
+  }
+
   /** `POST /api/sessions/<sid>/terminal`: the person typed a prompt (spec
    * 2026-10-16-ask-where-attention-is-design §1). Only discovers a running
    * daemon, never starts one. */

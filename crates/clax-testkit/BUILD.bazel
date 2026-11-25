@@ -3,6 +3,9 @@ load("//bazel:cargo.bzl", "cargo_package")
 cargo_package(
     # The router's source, which people::every_route reads.
     compile_data = ["//crates/clax-server:router_source"],
+    # The contract fixture of the ClaxBot surfaces protocol, which
+    # fake_host's tests replay (src/fake_host/tests.rs).
+    test_compile_data = ["//docs:claxbot_surfaces_contract"],
 )
 
 # The fixtures TestServer::from_fixture_with_clock loads at run time: the

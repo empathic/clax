@@ -3,7 +3,6 @@
 <script lang="ts" module>
   import { mount, unmount } from "svelte";
   import type { Me } from "../view/new-artifact";
-  import { mayCreate as viewer } from "./may-create";
 
   /** The dialog open, mounted apart from the tile: the gallery moves the
    * tile (from the empty gallery into the grid, as the artifact made lands)
@@ -24,28 +23,23 @@
 <script lang="ts">
   // The gallery's New artifact tile (docs/contract.md "Starting an artifact
   // from a brief"; spec 2026-10-21-claxbot D8, §6.4), first in the grid,
-  // shown once `GET /api/viewers/me` says this browser may start an
-  // artifact (`may_create`: the owner's, or a connected person's whose
-  // rights create). It loads with the gallery's lazy module, so the
-  // gallery's first paint carries none of it, and its dialog loads on the
-  // first press, apart from the tile, which the gallery may move while it
-  // is open. Its line says ClaxBot can build it when ClaxBot is on for
-  // this person.
-  let { empty = false }: { empty?: boolean } = $props();
-  let me = $state<Me>(null);
-  let may = $state(false);
-  let bot = $state(false);
+  // shown when `GET /api/viewers/me` says this browser may start an
+  // artifact (`may`, its `may_create`: the owner's, or a connected
+  // person's whose rights create), and the gallery's first render knows it,
+  // so the tile is there from that render. Its dialog loads on the first
+  // press, apart from the tile, which the gallery may move while it is
+  // open. Its line says ClaxBot can build it when ClaxBot is on for this
+  // person (`bot`, `GET /api/me/bot`'s `enabled`). Props are read off `p`.
+  const p: { empty?: boolean; me: Me; may: boolean; bot: boolean } = $props();
   let failed = $state(false);
-  void viewer().then(b => { me = b?.viewer ?? null; may = b?.may_create === true; }, () => {});
-  void import("../bot/me").then(m => m.myBot()).then(b => { bot = !!b?.enabled; }, () => {});
-  const show = () => { openDialog(me).then(() => { failed = false; }, () => { failed = true; }); };
+  const show = () => { openDialog(p.me).then(() => { failed = false; }, () => { failed = true; }); };
 </script>
 
-{#if may}
-  <div class="card-wrap new-tile" class:empty>
+{#if p.may}
+  <div class={p.empty ? "card-wrap new-tile empty" : "card-wrap new-tile"}>
     <button type="button" class="card" aria-haspopup="dialog" aria-label="New artifact" aria-describedby="new-tile-l" onclick={show}>
       <span class="plus" aria-hidden="true">+</span>
-      <span class="nt"><b>New artifact</b><small id="new-tile-l">{failed ? "The dialog did not load: try again" : bot ? "Name it; ClaxBot can build it" : "Name it and say what you want built"}</small></span>
+      <span class="nt"><b>New artifact</b><small id="new-tile-l">{failed ? "The dialog did not load: try again" : p.bot ? "Name it; ClaxBot can build it" : "Name it and say what you want built"}</small></span>
     </button>
   </div>
 {/if}

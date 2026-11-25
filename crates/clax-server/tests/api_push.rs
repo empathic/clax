@@ -1,5 +1,5 @@
 use clax_realtime::push::{CodexPush, CodexSource};
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, until, within};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,10 +9,21 @@ use std::time::Duration;
 /// then its arguments (`args.txt`, which appears complete, last), both
 /// beside itself, sleeps, and exits with `exit`.
 fn fake_codex(dir: &Path, exit: i32, sleep_s: u32) -> PathBuf {
+    fake_codex_then(dir, &format!("sleep {sleep_s}\nexit {exit}\n"))
+}
+
+/// [`fake_codex`] that never exits by itself once it has recorded its
+/// arguments: the daemon kills it on its timeout, or when the test's
+/// runtime drops it (`kill_on_drop`).
+fn hanging_codex(dir: &Path) -> PathBuf {
+    fake_codex_then(dir, "exec sleep 3600\n")
+}
+
+fn fake_codex_then(dir: &Path, tail: &str) -> PathBuf {
     clax_fake_exe::install(
         &dir.join("codex"),
         &format!(
-            "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nprintf '%s' \"${{CODEX_HOME:-}}\" > \"$d/codex_home.txt\"\nprintf '%s\\n' \"$@\" > \"$d/args.txt.tmp\"\nmv \"$d/args.txt.tmp\" \"$d/args.txt\"\nsleep {sleep_s}\nexit {exit}\n"
+            "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nprintf '%s' \"${{CODEX_HOME:-}}\" > \"$d/codex_home.txt\"\nprintf '%s\\n' \"$@\" > \"$d/args.txt.tmp\"\nmv \"$d/args.txt.tmp\" \"$d/args.txt\"\n{tail}"
         ),
     )
 }
@@ -63,15 +74,12 @@ async fn codex_owner(ts: &TestServer, hsid: Option<&str>) -> (String, String) {
     (sid, a["artifact"]["id"].as_str().unwrap().to_string())
 }
 
-/// The arguments the fake `codex` recorded, once it has run (within 5 s).
+/// The arguments the fake `codex` recorded, once it has run.
 async fn ran(dir: &Path) -> String {
-    for _ in 0..100 {
-        if let Ok(a) = std::fs::read_to_string(dir.join("args.txt")) {
-            return a;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("the fake codex never ran");
+    until("the fake codex's arguments", || async {
+        std::fs::read_to_string(dir.join("args.txt")).ok()
+    })
+    .await
 }
 
 /// Thread `tid`'s delivery state as the owner reads it (visitors read
@@ -87,17 +95,11 @@ async fn state_of(ts: &TestServer, aid: &str, tid: &str) -> Value {
 }
 
 async fn eventually(ts: &TestServer, aid: &str, tid: &str, want: &str) -> Value {
-    for _ in 0..100 {
+    until(&format!("thread {tid} {want}"), || async {
         let s = state_of(ts, aid, tid).await;
-        if s["state"] == want {
-            return s;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!(
-        "state never became {want}: {}",
-        state_of(ts, aid, tid).await
-    );
+        (s["state"] == want).then_some(s)
+    })
+    .await
 }
 
 #[tokio::test]
@@ -269,16 +271,18 @@ fn deliveries(ts: &TestServer) -> Vec<(String, Value, Option<String>, Value)> {
 #[tokio::test]
 async fn missing_binary_and_timeouts_release_rows_for_the_other_tiers() {
     let slow = tempfile::tempdir().unwrap();
-    for (bin, timeout, ran) in [
+    // The slow fake never exits: only the timeout ends it, however loaded
+    // the machine (it may be killed before it records anything).
+    for (bin, timeout, failed) in [
         (
             PathBuf::from("/nonexistent/codex"),
             Duration::from_secs(10),
-            None,
+            "codex queue could not run",
         ),
         (
-            fake_codex(slow.path(), 0, 5),
+            hanging_codex(slow.path()),
             Duration::from_secs(2),
-            Some(slow.path().join("args.txt")),
+            "codex queue timed out",
         ),
     ] {
         let ts = server(Some(bin), timeout).await;
@@ -299,9 +303,6 @@ async fn missing_binary_and_timeouts_release_rows_for_the_other_tiers() {
             (Some("sent"), Some("stop_hook")),
             "released, waiting on the in-band tiers"
         );
-        if let Some(args) = ran {
-            assert!(args.exists(), "the slow fake ran before it timed out");
-        }
         let sess: Value = ts
             .get_authed(&format!("/api/sessions/{sid}"))
             .await
@@ -313,11 +314,7 @@ async fn missing_binary_and_timeouts_release_rows_for_the_other_tiers() {
             "the session stays live"
         );
         let err = sess["push"]["last_error"].as_str().unwrap_or_default();
-        assert!(
-            err.starts_with("codex queue timed out")
-                || err.starts_with("codex queue could not run"),
-            "{err}"
-        );
+        assert!(err.starts_with(failed), "{err}");
         let fb: Value = ts
             .authed(ts.client.get(format!(
                 "{}/api/sessions/{sid}/feedback?tier=piggyback",
@@ -338,8 +335,10 @@ async fn no_push_without_a_session_id_or_armed_replies_or_codex() {
     let d = tempfile::tempdir().unwrap();
     let ts = server(Some(fake_codex(d.path(), 0, 0)), Duration::from_secs(10)).await;
     let (sid, aid) = codex_owner(&ts, None).await;
+    // The thread's request claims for `codex queue` before it answers
+    // (push::dispatch runs in it), and the fake runs only after a claim: no
+    // claim by now is none at all.
     let t = ts.thread(&aid, 1, "@agent hello").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         !d.path().join("args.txt").exists(),
         "no Codex session ID, no queue"
@@ -368,8 +367,11 @@ async fn no_push_without_a_session_id_or_armed_replies_or_codex() {
     .send()
     .await
     .unwrap();
-    ts.thread(&aid2, 1, "@agent hello").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let t2 = ts.thread(&aid2, 1, "@agent hello").await;
+    assert_ne!(
+        state_of(&ts, &aid2, t2["id"].as_str().unwrap()).await["tier"],
+        "queue"
+    );
     assert!(
         !d.path().join("args.txt").exists(),
         "replies not armed, no queue"
@@ -421,16 +423,23 @@ async fn a_session_in_wait_for_feedback_gets_the_rows_in_band_not_by_queue() {
     let poll = ts
         .authed(
             ts.client
-                .get(format!("{}/api/sessions/{sid}/feedback?wait=10", ts.base)),
+                .get(format!("{}/api/sessions/{sid}/feedback?wait=600", ts.base)),
         )
         .send();
     let poll = tokio::spawn(poll);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    ts.wait_feedback_waiters(&sid, 1).await;
+    // The thread's request decides the push before it answers: the wait
+    // poll in progress holds it off.
     let t = ts.thread(&aid, 1, "@agent while you wait").await;
     let tid = t["id"].as_str().unwrap();
-    let fb: Value = poll.await.unwrap().unwrap().json().await.unwrap();
+    let fb: Value = within("the wait poll's answer", poll)
+        .await
+        .unwrap()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(fb["feedback"][0]["thread_id"], tid, "{fb}");
-    tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         !d.path().join("args.txt").exists(),
         "a waiting session is not queued to"
@@ -525,14 +534,15 @@ async fn a_poll_the_client_abandoned_no_longer_holds_off_queue() {
     let poll = tokio::spawn(
         ts.authed(
             ts.client
-                .get(format!("{}/api/sessions/{sid}/feedback?wait=10", ts.base)),
+                .get(format!("{}/api/sessions/{sid}/feedback?wait=600", ts.base)),
         )
         .send(),
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    ts.wait_feedback_waiters(&sid, 1).await;
     poll.abort();
     let _ = poll.await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The daemon has seen the client go: the poll no longer counts.
+    ts.wait_feedback_waiters(&sid, 0).await;
     let mut ev = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     ts.thread(&aid, 1, "@agent after the poll").await;
     loop {
@@ -547,11 +557,12 @@ async fn a_poll_the_client_abandoned_no_longer_holds_off_queue() {
 
 /// A claim made by a dispatch that no `thread` event follows (here a watch
 /// retargeting an untargeted row) is announced at claim time, not only when
-/// `codex queue` settles.
+/// `codex queue` settles: the fake never exits, and the daemon's timeout
+/// outlasts the HANG guard.
 #[tokio::test]
 async fn a_queue_claim_is_announced_before_codex_queue_finishes() {
     let d = tempfile::tempdir().unwrap();
-    let ts = server(Some(fake_codex(d.path(), 0, 30)), Duration::from_secs(60)).await;
+    let ts = server(Some(hanging_codex(d.path())), Duration::from_secs(3600)).await;
     let a = ts
         .publish("Unowned", &[("index.html", "<h2>Goals</h2>")])
         .await;
@@ -569,7 +580,6 @@ async fn a_queue_claim_is_announced_before_codex_queue_finishes() {
         .unwrap()
         .to_string();
     let mut ev = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
-    let started = std::time::Instant::now();
     let put = ts
         .authed(
             ts.client
@@ -589,11 +599,6 @@ async fn a_queue_claim_is_announced_before_codex_queue_finishes() {
             break;
         }
     }
-    assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "announced at the claim, before the 30 s fake exits ({:?})",
-        started.elapsed()
-    );
 }
 
 async fn working_on(ts: &TestServer, aid: &str) -> Vec<Value> {
@@ -614,17 +619,14 @@ async fn a_queue_that_exits_0_marks_the_session_working() {
     let t = ts.thread(&aid, 1, "@agent two columns").await;
     let tid = t["id"].as_str().unwrap();
     ran(d.path()).await;
-    for _ in 0..100 {
+    let w = until("the queued session marked working", || async {
         let w = working_on(&ts, &aid).await;
-        if !w.is_empty() {
-            assert_eq!(w.len(), 1, "{w:?}");
-            assert_eq!(w[0]["harness"], "codex");
-            assert_eq!(w[0]["thread_ids"], json!([tid]));
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("the queued session was never marked working");
+        (!w.is_empty()).then_some(w)
+    })
+    .await;
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert_eq!(w[0]["harness"], "codex");
+    assert_eq!(w[0]["thread_ids"], json!([tid]));
 }
 
 #[tokio::test]
@@ -710,13 +712,10 @@ async fn clocked_server(bin: PathBuf) -> (Arc<clax_core::working::ManualClock>, 
 
 /// Waits until the queued delivery to `sid` is recorded on it.
 async fn queued(ts: &TestServer, sid: &str) {
-    for _ in 0..100 {
-        if !signals_of(ts, sid).await["signals"]["delivered_at"].is_null() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("the queued delivery was never recorded");
+    until("the queued delivery recorded", || async {
+        (!signals_of(ts, sid).await["signals"]["delivered_at"].is_null()).then_some(())
+    })
+    .await;
 }
 
 #[tokio::test]

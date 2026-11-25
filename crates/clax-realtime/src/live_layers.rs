@@ -376,6 +376,7 @@ impl LiveLayers {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
@@ -503,13 +504,13 @@ mod tests {
         assert!(!armed(&h, "x"), "nor after a flush finds it still full");
         // b reads one batch: its queue has room, and the flush is armed.
         b.rx.try_recv().unwrap();
-        for _ in 0..1000 {
-            if armed(&h, "x") {
-                break;
+        // The task that waits for room runs once this one yields.
+        crate::test_util::within("room in the queue arms the flush", async {
+            while !armed(&h, "x") {
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-        assert!(armed(&h, "x"), "room in the queue arms the flush");
+        })
+        .await;
         h.flush("x");
         let mut last = None;
         while let Ok(m) = b.rx.try_recv() {

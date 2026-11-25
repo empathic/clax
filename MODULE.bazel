@@ -273,6 +273,17 @@ use_repo(
 
 register_toolchains("@flutter_toolchains//:all")
 
+# package:analyzer for the timing rules over the app's tests
+# (apps/clax_app/timing_lint), pinned by its own pubspec.lock. A higher
+# version another module's lock pins wins over this one.
+pub = use_extension("@rules_dart//dart/pub:extensions.bzl", "pub")
+pub.from_lock(
+    name = "clax_timing_lint_pub",
+    lock = "//apps/clax_app/timing_lint:pubspec.lock",
+    on_version_conflict = "upgrade",
+)
+use_repo(pub, "clax_timing_lint_pub")
+
 # The Swift package speech_to_text's Apple code needs
 # (bazel/flutter/plugin_overlays/speech_to_text).
 bazel_dep(name = "rules_apple", version = "5.2.0")

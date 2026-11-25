@@ -334,6 +334,7 @@ pub fn elsewhere(s: &clax_core::model::Session, hosted: bool) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

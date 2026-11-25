@@ -6,16 +6,21 @@
 //! (`host`, `http_cache`, `live_access`, the audit context and journal),
 //! the body limits and shared headers, the listener's socket options
 //! (`conn`), the addresses that name this machine (`loopback`), the
-//! suggestion of where a session asks its person (`surface`), and the JSON views of threads, questions, inbox items,
+//! suggestion of where a session asks its person (`surface`), the page
+//! views a hosted Clax counts (`analytics`), and the JSON views of threads, questions, inbox items,
 //! approvals, grants and artifacts (`views`). The routes themselves, the
 //! router and `serve` are `clax-server`'s.
 
 pub mod agent;
+pub mod analytics;
 pub mod app_data_host;
 pub mod audit;
 pub mod auth;
 pub mod blocking;
 pub mod bot;
+pub mod bot_joins;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bot_surfaces;
 pub mod confirm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod conn;
@@ -53,6 +58,9 @@ pub mod site_access;
 pub mod socket_caps;
 pub mod state;
 pub mod surface;
+#[cfg(test)]
+#[warn(clippy::disallowed_methods)]
+mod test_util;
 pub mod viewer;
 pub mod views;
 pub mod wrap_cache;

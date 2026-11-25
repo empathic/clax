@@ -6,7 +6,7 @@ use clax_core::audit::AuditCtx;
 use clax_core::queue::{LEASE_SECS, ReportersSee, Role};
 use clax_core::working::ManualClock;
 use clax_store::queues::{ExternalScope, NewQueue, NewReport, ReporterToken};
-use clax_testkit::{FAKE_PNG, TestServer, element_anchor};
+use clax_testkit::{FAKE_PNG, TestServer, element_anchor, within};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -1320,9 +1320,8 @@ async fn watch_then_file_delivers_through_wait_for_feedback() {
         )
         .await;
     assert_eq!(s, 200, "{v}");
-    let got = tokio::time::timeout(clax_testkit::HANG, waiter)
+    let got = within("the reopen's wake of the proposer's wait", waiter)
         .await
-        .expect("the reopen wakes the proposer's wait")
         .unwrap();
     let items = got["feedback"].as_array().unwrap();
     assert_eq!(items.len(), 1, "{got}");
@@ -1646,9 +1645,7 @@ async fn stream_with(
 /// The next `report` event `r` carries: its report ID and state; panics
 /// past the hang guard (keep-alives never end `EventReader::next`'s wait).
 async fn next_report(r: &mut clax_testkit::EventReader) -> (String, String) {
-    tokio::time::timeout(clax_testkit::HANG, next_report_unbounded(r))
-        .await
-        .expect("a report event within the hang guard")
+    within("a report event", next_report_unbounded(r)).await
 }
 
 async fn next_report_unbounded(r: &mut clax_testkit::EventReader) -> (String, String) {
@@ -1982,4 +1979,44 @@ async fn a_failed_live_update_read_does_not_fail_a_committed_write() {
     assert_eq!(v["comment"]["body"], "on it", "{v}");
     let t = q.ts.store.get_thread(&q.tid).unwrap().unwrap();
     assert_eq!(t.comments.last().unwrap().body, "on it");
+}
+
+/// A lease that runs out with no write is announced on the queue's topic
+/// by the sweep: an open triage view learns the report is open again.
+#[tokio::test]
+async fn a_lapsed_lease_publishes_the_reports_state() {
+    let q = setup().await;
+    let a = q.session("a").await;
+    let (s, _) = q
+        .agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    assert_eq!(s, 200);
+    let mut rx = q.ts.events.subscribe();
+    q.clock.advance(LEASE_SECS + 1);
+    q.ts.state.sweep().await;
+    let state = within("the lapse's report event", async {
+        loop {
+            if let clax_core::Event::Report {
+                queue_id,
+                report_id,
+                state,
+                ..
+            } = rx.recv().await.unwrap().event
+                && (queue_id.as_str(), report_id.as_str()) == (q.qid.as_str(), q.tid.as_str())
+            {
+                return state;
+            }
+        }
+    })
+    .await;
+    assert_eq!(state, clax_core::queue::State::Open);
+    // Announced once: a later sweep publishes nothing for it.
+    q.ts.state.sweep().await;
+    while let Ok(e) = rx.try_recv() {
+        assert!(
+            !matches!(e.event, clax_core::Event::Report { .. }),
+            "{:?}",
+            e.event
+        );
+    }
 }
