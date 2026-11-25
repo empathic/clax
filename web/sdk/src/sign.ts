@@ -127,9 +127,54 @@ export async function generateSigner(): Promise<KeyedSigner> {
   return keyedSigner(k.privateKey, k.publicKey);
 }
 
+/** The DER of an Ed25519 PKCS#8 v1 `PrivateKeyInfo` up to its 32-byte
+ * seed: SEQUENCE (46), version 0, AlgorithmIdentifier id-Ed25519
+ * (1.3.101.112), OCTET STRING (34) holding OCTET STRING (32). */
+const V1_HEAD = [0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20];
+/** The v2 forms' (`OneAsymmetricKey`, RFC 5958) tails after the seed,
+ * each followed by the 32-byte public key: ring's `[1]` constructed BIT
+ * STRING, which a Clax grant's `private_key` is (85 bytes in all), and
+ * RFC 8410's `[1]` implicit one (83 bytes). */
+const V2_FORMS: { outer: number; tail: number[] }[] = [
+  { outer: 0x53, tail: [0xa1, 0x23, 0x03, 0x21, 0x00] },
+  { outer: 0x51, tail: [0x81, 0x21, 0x00] },
+];
+
+/** The Ed25519 private key in PKCS#8 `doc` as the 48-byte v1 form, which
+ * every WebCrypto imports (Bun's reads no other): `doc` itself when it is
+ * v1, its seed re-wrapped when it is v2 with the public key attached (the
+ * form a Clax service grant's `private_key` has). Anything else is
+ * refused: only these exact layouts are read.
+ *
+ * @throws Error `not an Ed25519 PKCS#8 private key` for any other bytes. */
+export function ed25519Pkcs8V1(doc: Uint8Array): Uint8Array {
+  const bad = () => new Error(`not an Ed25519 PKCS#8 private key (${doc.length} bytes)`);
+  const at = (bytes: number[], off: number) => bytes.every((b, i) => doc[off + i] === b);
+  const seedEnd = V1_HEAD.length + 32;
+  if (doc.length === seedEnd) {
+    if (!at(V1_HEAD, 0)) throw bad();
+    return doc.slice();
+  }
+  const form = V2_FORMS.find(f => doc.length === 2 + f.outer && doc[1] === f.outer);
+  // The v2 head is v1's with its outer length and version 1.
+  if (!form || doc[0] !== 0x30 || !at([0x02, 0x01, 0x01], 2) || !at(V1_HEAD.slice(5), 5) || !at(form.tail, seedEnd) || doc.length !== seedEnd + form.tail.length + 32) {
+    throw bad();
+  }
+  const out = new Uint8Array(seedEnd);
+  out.set(V1_HEAD, 0);
+  out.set(doc.subarray(V1_HEAD.length, seedEnd), V1_HEAD.length);
+  return out;
+}
+
 /** A signer over the Ed25519 private key in PKCS#8 `doc` (a queue service
- * grant's `private_key`, decoded), imported as non-extractable. */
+ * grant's `private_key`, decoded), imported as non-extractable; `doc` may
+ * be v1 or v2 ([`ed25519Pkcs8V1`]). */
 export async function importPkcs8Signer(doc: Uint8Array): Promise<Signer> {
-  const key = await crypto.subtle.importKey("pkcs8", doc as BufferSource, { name: "Ed25519" }, false, ["sign"]);
-  return cryptoKeySigner(key);
+  const v1 = ed25519Pkcs8V1(doc);
+  try {
+    const key = await crypto.subtle.importKey("pkcs8", v1 as BufferSource, { name: "Ed25519" }, false, ["sign"]);
+    return cryptoKeySigner(key);
+  } finally {
+    v1.fill(0);
+  }
 }
