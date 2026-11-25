@@ -5,8 +5,7 @@
   // administrators, whether members who administer nothing may make report
   // queues (`GET/PUT /api/admin/queues`). A queue's service grant lets an
   // outside site file reports into this Clax, so an administrator decides
-  // who may set one up; the default is on for a local Clax and off for a
-  // hosted one. Off, only the owner and administrators make queues, and
+  // who may set one up; the default is on. Off, only the owner and administrators make queues, and
   // every existing queue and its admins keep working. A refused change
   // says why and the switch shows what the daemon holds.
   import { onMount } from "svelte";

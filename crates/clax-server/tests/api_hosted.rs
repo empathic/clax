@@ -10259,7 +10259,15 @@ async fn a_scoped_token_asks_for_one_queue_and_reaches_nothing_else() {
     assert_eq!(s, 404, "another person's request");
 
     // Approving makes a queue, so a member approves only where members
-    // make queues: off on a hosted Clax until an administrator says so.
+    // make queues: not once an administrator has turned that off.
+    let (s, v) = site
+        .put(
+            &owner,
+            "/api/admin/queues",
+            json!({"members_create": false}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
     let (s, v) = site
         .post(
             &sam,
@@ -10327,10 +10335,6 @@ async fn revoking_a_scoped_token_cancels_its_request_and_an_hour_ends_it() {
     let (token, gid, _) = site.scoped_token(&sam).await;
     let (_, v) = site.ask_queue(&token, "Invoices").await;
     let id = v["request"]["id"].as_str().unwrap().to_string();
-    let (s, v) = site
-        .put(&owner, "/api/admin/queues", json!({"members_create": true}))
-        .await;
-    assert_eq!(s, 200, "{v}");
     let (s, _) = site
         .send(
             &sam,

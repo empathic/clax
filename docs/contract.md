@@ -4455,9 +4455,8 @@ member's change is 403 `not_queue_admin`.
 administrators; 403 `forbidden` for anyone else): whether a connected
 person who administers nothing may make a report queue, the
 `queues.members_create` instance setting. With no value set (`null` puts
-it back, `source` `default`) it is on for a local Clax, whose members are
-people its owner connected, and off for a hosted one; `source` is `db`
-once an administrator sets it. A change is recorded as `admin.settings
+it back, `source` `default`) it is on, for a local Clax and a hosted one
+alike; `source` is `db` once an administrator sets it. A change is recorded as `admin.settings
 {fields: ["queues.members_create"], values}`. It governs making a queue
 alone: existing queues, their admins and their members keep working.
 

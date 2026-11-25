@@ -331,9 +331,8 @@ pub async fn approve(
     let id = path(p)?;
     // An approval makes a queue whose admin is the approver, so it is
     // refused wherever making one by hand is.
-    let hosted = s.hosted.is_some();
     let maker = caller.clone();
-    s.store_call(move |st| super::queues::may_make(st, &maker, hosted))
+    s.store_call(move |st| super::queues::may_make(st, &maker))
         .await??;
     require_confirmation(
         &s,

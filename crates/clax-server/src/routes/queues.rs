@@ -141,16 +141,16 @@ async fn admin_of(s: &AppState, qid: &str, a: Admin) -> Result<(), ApiError> {
 }
 
 /// Whether a member who administers nothing may make a queue: the
-/// `queues.members_create` setting, which with no value set is on for a
-/// local Clax and off for a hosted one.
+/// `queues.members_create` setting, which is on until an administrator
+/// turns it off, on a local Clax and a hosted one alike.
 ///
 /// # Errors
 /// The store's.
-pub(crate) fn members_create(st: &Store, hosted: bool) -> clax_core::Result<bool> {
+pub(crate) fn members_create(st: &Store) -> clax_core::Result<bool> {
     Ok(st
         .bot_setting(Setting::QueuesMembersCreate)?
         .as_bool()
-        .unwrap_or(!hosted))
+        .unwrap_or(true))
 }
 
 /// `Ok` when `c` may make a queue: the owner, an administrator of the
@@ -160,12 +160,8 @@ pub(crate) fn members_create(st: &Store, hosted: bool) -> clax_core::Result<bool
 ///
 /// # Errors
 /// The store's; within, 403 `queues_admin_only`.
-pub(crate) fn may_make(
-    st: &Store,
-    c: &Caller,
-    hosted: bool,
-) -> clax_core::Result<Result<(), ApiError>> {
-    if matches!(c, Caller::Person { .. }) && !oversees(st, c) && !members_create(st, hosted)? {
+pub(crate) fn may_make(st: &Store, c: &Caller) -> clax_core::Result<Result<(), ApiError>> {
+    if matches!(c, Caller::Person { .. }) && !oversees(st, c) && !members_create(st)? {
         return Ok(Err(ApiError::forbidden(
             "queues_admin_only",
             "an administrator of this Clax makes its report queues",
@@ -182,12 +178,12 @@ pub(crate) fn may_make(
 ///
 /// # Errors
 /// The store's.
-pub(crate) fn access(st: &Store, c: &Caller, hosted: bool) -> clax_core::Result<Value> {
+pub(crate) fn access(st: &Store, c: &Caller) -> clax_core::Result<Value> {
     let (person, may_make) = match c {
         Caller::Owner { .. } => (None, true),
         Caller::Person { viewer } => (
             Some(viewer.public_id.clone()),
-            oversees(st, c) || members_create(st, hosted)?,
+            oversees(st, c) || members_create(st)?,
         ),
         _ => return Ok(json!({"member": 0, "may_make": false})),
     };
@@ -286,11 +282,10 @@ pub async fn create(
     d.refuse_agents()?;
     let a = admin_person(&s, &d).await?;
     let b = body(req)?;
-    let hosted = s.hosted.is_some();
     let person = a.person.clone();
     let queue = s
         .store_call(move |st| {
-            if a.person.is_some() && !a.oversees && !members_create(st, hosted)? {
+            if a.person.is_some() && !a.oversees && !members_create(st)? {
                 return Ok(Err(ApiError::forbidden(
                     "queues_admin_only",
                     "an administrator of this Clax makes its report queues",
@@ -628,15 +623,14 @@ pub async fn revoke_grant(
 
 /// `GET /api/admin/queues` and `PUT /api/admin/queues`'s answer: whether a
 /// member who administers nothing makes queues, and where that comes from
-/// (`default`: on for a local Clax, off for a hosted one; `db`: an
-/// administrator set it).
-fn policy_view(st: &Store, hosted: bool) -> clax_core::Result<Value> {
+/// (`default`: on; `db`: an administrator set it).
+fn policy_view(st: &Store) -> clax_core::Result<Value> {
     let source = st
         .effective_bot_settings()?
         .get(&Setting::QueuesMembersCreate)
         .map_or_else(|| "default".to_string(), |e| e.source.label());
     Ok(json!({
-        "members_create": members_create(st, hosted)?,
+        "members_create": members_create(st)?,
         "source": source,
     }))
 }
@@ -660,8 +654,7 @@ pub async fn policy(
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     instance_admin(&s, &d).await?;
-    let hosted = s.hosted.is_some();
-    let v = s.store_call(move |st| policy_view(st, hosted)).await?;
+    let v = s.store_call(policy_view).await?;
     Ok(Json(v))
 }
 
@@ -689,13 +682,12 @@ pub async fn set_policy(
     d.refuse_agents()?;
     instance_admin(&s, &d).await?;
     let b = body(req)?;
-    let hosted = s.hosted.is_some();
     let value = (!b.members_create.is_null()).then_some(b.members_create);
     let v = s
         .store_call(move |st| {
             let ctx = audit.resolve(st)?;
             st.set_bot_settings(&ctx, &[(Setting::QueuesMembersCreate, value)])?;
-            policy_view(st, hosted)
+            policy_view(st)
         })
         .await?;
     Ok(Json(v))

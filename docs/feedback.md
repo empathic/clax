@@ -43,8 +43,8 @@ tools". This guide says how the parts fit together.
   pages are served from, and chooses whether a reporter sees only their
   own reports or every report in the queue. The owner and the instance's
   administrators always may; other members may while Settings › Report
-  queues ("Members may make report queues") is on, which it is by default
-  on a Clax on your own machine and is not on a hosted one. The owner and
+  queues ("Members may make report queues") is on, which it is until an
+  administrator turns it off. The owner and
   administrators see every queue on the instance.
 - **The service grant** is your backend's credential for the queue: a
   `cxq_` token and an Ed25519 private key, shown once when the admin makes

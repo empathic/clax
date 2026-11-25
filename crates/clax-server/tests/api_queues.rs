@@ -935,11 +935,11 @@ impl Hosted {
     }
 }
 
-/// On a hosted Clax members make no queue until an administrator turns it
-/// on; the owner always does; an administrator the owner names oversees
+/// On a hosted Clax members make queues until an administrator turns it
+/// off; the owner always does; an administrator the owner names oversees
 /// every queue, and makes one whatever the setting.
 #[tokio::test]
-async fn on_a_hosted_clax_members_make_queues_once_an_administrator_says_so() {
+async fn on_a_hosted_clax_members_make_queues_until_an_administrator_says_otherwise() {
     let h = Hosted::new().await;
     let owner = h.owner().await;
     let (mia, _) = h.member(&owner, "Mia").await;
@@ -947,14 +947,27 @@ async fn on_a_hosted_clax_members_make_queues_once_an_administrator_says_so() {
     let (_, me) = h
         .call(&mia, Method::GET, "/api/viewers/me", Value::Null)
         .await;
-    assert_eq!(me["queues"], json!({"member": 0, "may_make": false}));
+    assert_eq!(me["queues"], json!({"member": 0, "may_make": true}));
     let (s, v) = h
         .call(&owner, Method::GET, "/api/admin/queues", Value::Null)
         .await;
     assert_eq!(
         (s, &v),
-        (200, &json!({"members_create": false, "source": "default"}))
+        (200, &json!({"members_create": true, "source": "default"}))
     );
+    let (s, v) = h
+        .call(
+            &owner,
+            Method::PUT,
+            "/api/admin/queues",
+            json!({"members_create": false}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, me) = h
+        .call(&mia, Method::GET, "/api/viewers/me", Value::Null)
+        .await;
+    assert_eq!(me["queues"], json!({"member": 0, "may_make": false}));
     let (s, v) = h
         .call(&mia, Method::POST, "/api/queues", json!({"name": "Mia's"}))
         .await;
