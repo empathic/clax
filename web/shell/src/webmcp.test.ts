@@ -78,4 +78,12 @@ describe("registerWebMcp", () => {
     expect((await read.execute({ thread_id: "nope" })).isError).toBe(true);
     vi.unstubAllGlobals();
   });
+
+  it("resolves with an error envelope instead of rejecting when a tool throws", async () => {
+    const { registered } = stub("document");
+    const throwingView: WebMcpView = { id: "a1", state: { get: () => { throw new Error("boom"); } } };
+    registerWebMcp(window, throwingView);
+    const [info] = registered;
+    await expect(info.execute({})).resolves.toMatchObject({ isError: true });
+  });
 });
