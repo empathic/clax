@@ -157,7 +157,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/queues/{qid}",
             patch(queues::patch).delete(queues::delete),
         )
-        .route("/api/queues/{qid}/members", get(queues::members))
+        .route(
+            "/api/queues/{qid}/members",
+            get(queues::members).put(queues::add_member),
+        )
         .route("/api/queues/{qid}/people", get(queues::people))
         .route(
             "/api/admin/queues",
@@ -166,6 +169,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/queues/{qid}/members/{public_id}",
             put(queues::put_member).delete(queues::delete_member),
+        )
+        .route(
+            "/api/queues/{qid}/members/pending/{id}",
+            delete(queues::delete_invite),
         )
         .route(
             "/api/queues/{qid}/service-grants",

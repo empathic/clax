@@ -517,6 +517,27 @@ fn render(
             v["queue_request"] = json!(r);
             r.is_none()
         }
+        // Its reader was added to a report queue
+        // (`clax_store::inbox::note_queue_access`): the queue's name as it
+        // is now, the role and who added them, by name (`null`: no name);
+        // `gone` once the queue is.
+        Kind::Access => {
+            let d = i.detail.clone().unwrap_or(Value::Null);
+            let qid = d["queue_id"].as_str().unwrap_or_default();
+            let q = st.queue(qid)?;
+            let by = match d["by"].as_str() {
+                None => st.owner()?.and_then(|o| o.display_name),
+                Some(pid) => st.viewer_by_public_id(pid)?.and_then(|v| v.display_name),
+            };
+            v["url"] = json!("/queues");
+            v["access"] = json!({
+                "queue_id": qid,
+                "queue_name": q.as_ref().map(|q| q.name.clone()),
+                "role": d["role"],
+                "by": by,
+            });
+            q.is_none()
+        }
     };
     v["gone"] = json!(gone);
     Ok(v)

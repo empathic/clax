@@ -334,6 +334,172 @@ async fn members_hold_the_role_an_admin_gives_them() {
     }
 }
 
+/// An admin adds a teammate by GitHub login: one signed in here is a
+/// member at once, anyone else is listed `pending` until removed or bound;
+/// a new member, either way or by public ID, finds an `access` item in
+/// their inbox.
+#[tokio::test]
+async fn members_are_added_by_github_login_at_once_or_pending_and_told_in_their_inbox() {
+    let w = world().await;
+    let qid = make_queue(&w, &w.owner, "Bugs").await;
+    let members = format!("/api/queues/{qid}/members");
+    let add = |login: &str, role: &str| json!({"github_login": login, "role": role});
+
+    // Nobody here signed in as octo-cat: an invite, listed as pending.
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PUT,
+        &members,
+        Some(add("@Octo-Cat", "triage")),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let invite = v["invite"].clone();
+    assert_eq!(
+        (&invite["github_login"], &invite["role"], &v["member"]),
+        (&json!("octo-cat"), &json!("triage"), &Value::Null)
+    );
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PUT,
+        &members,
+        Some(add("octo-cat", "admin")),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(
+        (&v["invite"]["id"], &v["invite"]["role"]),
+        (&invite["id"], &json!("admin"))
+    );
+    let (_, v) = browser(&w.ts, &w.owner, Method::GET, &members, None).await;
+    assert_eq!(v["pending"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["pending"][0]["github_login"], "octo-cat");
+    assert_eq!(v["members"].as_array().unwrap().len(), 1, "only the maker");
+    let id = invite["id"].as_str().unwrap();
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::DELETE,
+        &format!("{members}/pending/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, 204, "{v}");
+    let (_, v) = browser(&w.ts, &w.owner, Method::GET, &members, None).await;
+    assert_eq!(v["pending"], json!([]));
+    assert_eq!(
+        v["github_logins"], false,
+        "a local Clax has no GitHub sign-in"
+    );
+
+    for (login, want) in [("-nope", "invalid_login"), ("a b", "invalid_login")] {
+        let (s, v) = browser(
+            &w.ts,
+            &w.owner,
+            Method::PUT,
+            &members,
+            Some(add(login, "triage")),
+        )
+        .await;
+        assert_eq!((s, code(&v)), (400, want), "{login}: {v}");
+    }
+
+    // Someone who signed in here with GitHub: a member at once.
+    let (gh, _) =
+        w.ts.store
+            .github_sign_in(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &clax_store::github::GitHubUser {
+                    id: 42,
+                    login: "Mia-Gh".into(),
+                    name: Some("Mia".into()),
+                    avatar_url: None,
+                },
+                false,
+            )
+            .unwrap();
+    let mia = gh.who.viewer.public_id;
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PUT,
+        &members,
+        Some(add("mia-gh", "triage")),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(
+        v["member"],
+        json!({"public_id": mia, "name": "Mia", "role": "triage", "maker": false, "owner": false})
+    );
+
+    // Sam, added by public ID, is told in their inbox; a role change is no
+    // second item.
+    let sams = format!("{members}/{}", w.sam_public);
+    for role in ["triage", "admin"] {
+        let (s, v) = browser(
+            &w.ts,
+            &w.owner,
+            Method::PUT,
+            &sams,
+            Some(json!({"role": role})),
+        )
+        .await;
+        assert_eq!(s, 204, "{v}");
+    }
+    let (s, v) = browser(
+        &w.ts,
+        &w.sam,
+        Method::GET,
+        "/api/inbox?kind=access&read=all",
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{v}");
+    let owner = w.ts.store.owner().unwrap().unwrap();
+    assert_eq!(
+        items[0]["access"],
+        json!({"queue_id": qid, "queue_name": "Bugs", "role": "triage", "by": owner.display_name})
+    );
+    assert_eq!(
+        (&items[0]["url"], &items[0]["gone"]),
+        (&json!("/queues"), &json!(false))
+    );
+
+    // A triage member adds no one; an agent is refused.
+    browser(
+        &w.ts,
+        &w.owner,
+        Method::PUT,
+        &sams,
+        Some(json!({"role": "triage"})),
+    )
+    .await;
+    let (s, v) = browser(
+        &w.ts,
+        &w.sam,
+        Method::PUT,
+        &members,
+        Some(add("zed", "triage")),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
+    let (s, v) = json_of(
+        w.ts.authed(w.ts.client.put(format!("{}{members}", w.ts.base)))
+            .header("x-clax-channel", "agent")
+            .json(&add("zed", "triage"))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
+}
+
 #[tokio::test]
 async fn another_persons_queue_is_not_found() {
     let w = world().await;

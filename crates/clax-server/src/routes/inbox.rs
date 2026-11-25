@@ -111,7 +111,7 @@ impl Filter {
             kinds.push(Kind::parse(k).ok_or_else(|| {
                 invalid(format!(
                     "'{k}' is not a kind: reply, version, published, question, finished, \
-                     approval, connection or ended"
+                     approval, connection, ended, push, remote_request, queue_request or access"
                 ))
             })?);
         }
@@ -549,6 +549,7 @@ pub async fn summary(
                     Kind::Push,
                     Kind::RemoteRequest,
                     Kind::QueueRequest,
+                    Kind::Access,
                 ],
                 read: ReadFilter::Unread,
                 limit: SUMMARY_LATEST,

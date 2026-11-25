@@ -305,6 +305,8 @@ mod l10 {
         ("queues::set_policy", NoArtifact),
         ("queues::put_member", NoArtifact),
         ("queues::delete_member", NoArtifact),
+        ("queues::add_member", NoArtifact),
+        ("queues::delete_invite", NoArtifact),
         ("queues::grants", NoArtifact),
         ("queues::create_grant", NoArtifact),
         ("queues::revoke_grant", NoArtifact),
