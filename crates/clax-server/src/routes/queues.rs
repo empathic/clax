@@ -1,11 +1,13 @@
 //! Report queues' administration (spec 2026-10-27-clax-sdk-design §7.1):
 //! a queue's maker and its admins, in a browser session, make and change
-//! queues, their members and their service grants.
+//! queues, their members and their service grants. A queue is its maker's,
+//! its owner: only they delete it.
 //!
-//! - `GET /api/queues` → `{queues}`: the caller's queues with their role
-//!   (also an agent's, for `queue_list`).
+//! - `GET /api/queues` → `{queues}`: the caller's queues with their role,
+//!   their owner and whether it is the caller (also an agent's, for
+//!   `queue_list`).
 //! - `POST /api/queues {name, origins, reporters_see}` → `{queue}`;
-//!   `PATCH /api/queues/<qid>`, `DELETE /api/queues/<qid>`.
+//!   `PATCH /api/queues/<qid>`, `DELETE /api/queues/<qid>` (the owner's).
 //! - `GET /api/queues/<qid>/members` → `{members}`; `PUT
 //!   /api/queues/<qid>/members/<public_id> {role}`, `DELETE` the same.
 //! - `GET /api/queues/<qid>/responders` → `{responders}`; `PUT` the same
@@ -20,7 +22,8 @@
 //! refused. The owner acts as the person `None`, a connected person as
 //! their public ID. A queue the caller is not a member of answers 404
 //! `not_a_member`, as an unknown one does; a triage member's change 403
-//! `not_queue_admin`.
+//! `not_queue_admin`; a delete by anyone but the queue's owner 403
+//! `not_queue_owner`.
 
 use super::artifacts::{body, path};
 use axum::Json;
@@ -201,7 +204,7 @@ pub async fn patch(
             if let Err(e) = require_admin(st, &qid, person.as_deref()) {
                 return Ok(Err(e));
             }
-            let row = st.update_queue(
+            st.update_queue(
                 &ctx,
                 &qid,
                 QueuePatch {
@@ -210,15 +213,25 @@ pub async fn patch(
                     reporters_see: b.reporters_see,
                 },
             )?;
-            Ok(Ok(row.view(Role::Admin)))
+            let queue = st.queue_view(&qid, person.as_deref())?;
+            Ok(queue.ok_or_else(|| ApiError::from(CoreError::NotAMember)))
         })
         .await??;
     Ok(Json(json!({ "queue": queue })))
 }
 
-/// `DELETE /api/queues/<qid>` → 204: an admin deletes the queue; its
-/// service grants are revoked and its reporter tokens end, and its reports
-/// stay on their artifacts.
+/// 403 `not_queue_owner` for a member who did not make the queue.
+fn not_queue_owner() -> ApiError {
+    ApiError::forbidden(
+        "not_queue_owner",
+        "only the person who made a queue deletes it",
+    )
+}
+
+/// `DELETE /api/queues/<qid>` → 204: the queue's owner (its maker) deletes
+/// it; its service grants are revoked and its reporter tokens end, and its
+/// reports stay on their artifacts. 403 `not_queue_owner` for any other
+/// member, admin or triage.
 pub async fn delete(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -229,15 +242,24 @@ pub async fn delete(
     d.refuse_agents()?;
     let person = admin_person(&s, &d).await?;
     let qid = path(qid)?;
-    admin_of(&s, &qid, person).await?;
-    s.store_call(move |st| st.delete_queue(&ctx, &qid)).await?;
+    s.store_call(move |st| {
+        match st.queue_view(&qid, person.as_deref())? {
+            None => return Ok(Err(ApiError::from(CoreError::NotAMember))),
+            Some(q) if !q.is_owner => return Ok(Err(not_queue_owner())),
+            Some(_) => {}
+        }
+        st.delete_queue(&ctx, &qid).map(Ok)
+    })
+    .await??;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `GET /api/queues/<qid>/members` → `{members: [{public_id, name,
-/// role}]}`: an admin reads the people added to the queue, in the order
-/// they were added (`name` the person's display name, or `null`). The
-/// queue's maker is its admin and is not listed.
+/// role}]}`: an admin reads the queue's people (`name` the person's display
+/// name, or `null`). A queue a person made lists them first, at `role`
+/// `"owner"` (an admin who alone deletes the queue), then the people added
+/// to it in the order they were added; a queue the instance's owner made
+/// lists only the people added.
 pub async fn members(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -250,10 +272,17 @@ pub async fn members(
     admin_of(&s, &qid, person).await?;
     let members = s
         .store_call(move |st| {
+            let maker = st.queue(&qid)?.and_then(|q| q.person);
             let rows = st.queue_members(&qid)?;
-            let ids: Vec<String> = rows.iter().map(|(p, _)| p.clone()).collect();
+            let rows = rows.into_iter().filter(|(p, _)| Some(p) != maker.as_ref());
+            let people: Vec<(String, Value)> = maker
+                .iter()
+                .map(|p| (p.clone(), json!("owner")))
+                .chain(rows.map(|(p, role)| (p, json!(role))))
+                .collect();
+            let ids: Vec<String> = people.iter().map(|(p, _)| p.clone()).collect();
             let viewers = st.viewers_by_public_ids(&ids)?;
-            Ok(rows
+            Ok(people
                 .into_iter()
                 .map(|(p, role)| {
                     let name = viewers

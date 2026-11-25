@@ -4478,6 +4478,24 @@ A deployer's app files reports into a queue and its reporters give their
 verdict on fixes through the reporter routes; the queue's triage members
 and their agents work them through the triage routes.
 
+**The queue.** `GET /api/queues` lists, and `POST` and `PATCH
+/api/queues/<qid>` answer, each queue as `{id, name, origins,
+reporters_see, created_at, role, owner, is_owner}`: `role` is the
+caller's (`admin` or `triage`); `owner` is the person who made the queue,
+whose it is, as `{public_id, name}` (`name` their display name, or
+`null`), or `null` when the instance's owner made it; `is_owner` says
+whether the caller made it. Its owner is its admin. `GET
+/api/queues/<qid>/members` (an admin's) answers `{members: [{public_id,
+name, role}]}`: a queue a person made lists them first with `role`
+`owner`, then the people added to it, in the order they were added, at
+`admin` or `triage`; a queue the instance's owner made lists only the
+people added. `owner` is a role of that listing alone: `PUT
+…/members/<public_id>` takes `admin` or `triage`. `DELETE
+/api/queues/<qid>` (204) is the owner's alone: any other member is 403
+`not_queue_owner`, and a non-member 404 `not_a_member`. Its service grants
+are revoked, its reporter tokens end, and its reports stay on their
+artifacts. Every other change to a queue is any of its admins'.
+
 **States.** A report is `open` (waiting for someone: filed, released, its
 lease lapsed, or reopened), `claimed` (an agent's session holds its
 lease), `fix_proposed` (a fix waits for the reporter's verdict; the thread

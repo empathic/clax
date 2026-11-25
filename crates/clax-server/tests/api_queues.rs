@@ -320,6 +320,155 @@ async fn members_hold_the_role_an_admin_gives_them() {
     assert_eq!(v["members"], json!([]));
 }
 
+/// Ana, connected beside Sam: her browser cookie and public ID.
+async fn ana(w: &World) -> (String, String) {
+    let client = w.ts.connect_person("Ana", "clax:collaborator").await;
+    let v = w.ts.store.viewer_of_grant(&client.grant_id()).unwrap();
+    (
+        format!("clax_viewer={}", w.ts.browser_cookie(&v.id)),
+        v.public_id,
+    )
+}
+
+/// Sam's queue with Ana its admin: the queue's ID, Ana's cookie and ID.
+async fn sams_queue_with_ana_admin(w: &World) -> (String, String, String) {
+    let qid = make_queue(w, &w.sam, "Sam's bugs").await;
+    let (ana, ana_public) = ana(w).await;
+    let (s, v) = browser(
+        &w.ts,
+        &w.sam,
+        Method::PUT,
+        &format!("/api/queues/{qid}/members/{ana_public}"),
+        Some(json!({"role": "admin"})),
+    )
+    .await;
+    assert_eq!(s, 204, "{v}");
+    (qid, ana, ana_public)
+}
+
+#[tokio::test]
+async fn a_queue_names_its_owner_to_every_member() {
+    let w = world().await;
+    let (qid, ana, ana_public) = sams_queue_with_ana_admin(&w).await;
+    let sam = json!({"public_id": w.sam_public, "name": "Sam"});
+
+    let (_, v) = browser(&w.ts, &w.sam, Method::GET, "/api/queues", None).await;
+    assert_eq!(
+        (&v["queues"][0]["owner"], &v["queues"][0]["is_owner"]),
+        (&sam, &json!(true)),
+        "{v}"
+    );
+    let (_, v) = browser(&w.ts, &ana, Method::GET, "/api/queues", None).await;
+    let q = &v["queues"][0];
+    assert_eq!(
+        (&q["role"], &q["owner"], &q["is_owner"]),
+        (&json!("admin"), &sam, &json!(false)),
+        "{v}"
+    );
+    let (s, v) = browser(
+        &w.ts,
+        &ana,
+        Method::PATCH,
+        &format!("/api/queues/{qid}"),
+        Some(json!({"name": "Our bugs"})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        (&v["queue"]["owner"], &v["queue"]["is_owner"]),
+        (&sam, &json!(false)),
+        "{v}"
+    );
+
+    // The members listing names the owner first, to every admin.
+    let members = format!("/api/queues/{qid}/members");
+    for cookie in [&w.sam, &ana] {
+        let (s, v) = browser(&w.ts, cookie, Method::GET, &members, None).await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(
+            v["members"],
+            json!([
+                {"public_id": w.sam_public, "name": "Sam", "role": "owner"},
+                {"public_id": ana_public, "name": "Ana", "role": "admin"},
+            ])
+        );
+    }
+
+    // A queue the instance's owner made names no owner person.
+    let own = make_queue(&w, &w.owner, "Bugs").await;
+    let (_, v) = browser(&w.ts, &w.owner, Method::GET, "/api/queues", None).await;
+    let q = v["queues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["id"] == own.as_str())
+        .unwrap();
+    assert_eq!((&q["owner"], &q["is_owner"]), (&json!(null), &json!(true)));
+}
+
+#[tokio::test]
+async fn an_admin_member_cannot_delete_the_queue() {
+    let w = world().await;
+    let (qid, ana, _) = sams_queue_with_ana_admin(&w).await;
+    let (s, v) = browser(
+        &w.ts,
+        &ana,
+        Method::DELETE,
+        &format!("/api/queues/{qid}"),
+        None,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_queue_owner"), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("made a queue"),
+        "{v}"
+    );
+    let (_, v) = browser(&w.ts, &w.sam, Method::GET, "/api/queues", None).await;
+    assert_eq!(v["queues"][0]["id"], qid.as_str(), "the queue stays");
+    // Everything else an admin does stays hers.
+    let (s, v) = browser(
+        &w.ts,
+        &ana,
+        Method::GET,
+        &format!("/api/queues/{qid}/service-grants"),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    // A non-member is still told there is no such queue.
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::DELETE,
+        &format!("/api/queues/{qid}"),
+        None,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (404, "not_a_member"), "{v}");
+}
+
+#[tokio::test]
+async fn the_owner_deletes_their_queue() {
+    let w = world().await;
+    let (qid, ana, _) = sams_queue_with_ana_admin(&w).await;
+    let (s, v) = browser(
+        &w.ts,
+        &w.sam,
+        Method::DELETE,
+        &format!("/api/queues/{qid}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, 204, "{v}");
+    for cookie in [&w.sam, &ana] {
+        let (_, v) = browser(&w.ts, cookie, Method::GET, "/api/queues", None).await;
+        assert_eq!(v["queues"], json!([]), "{v}");
+    }
+}
+
 #[tokio::test]
 async fn another_persons_queue_is_not_found() {
     let w = world().await;

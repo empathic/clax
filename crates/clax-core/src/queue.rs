@@ -360,6 +360,21 @@ pub struct Queue {
     pub reporters_see: ReportersSee,
     pub created_at: String,
     pub role: Role,
+    /// The person who made the queue, whose it is; `None` (`null`) when the
+    /// instance's owner made it.
+    #[serde(default)]
+    pub owner: Option<QueueOwner>,
+    /// Whether the reader made the queue: only its owner deletes it.
+    #[serde(default)]
+    pub is_owner: bool,
+}
+
+/// The person who made a queue ([`Queue::owner`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueOwner {
+    pub public_id: String,
+    /// Their display name, or `None`.
+    pub name: Option<String>,
 }
 
 /// The external artifact a report is on, as a report carries it (§6.1).

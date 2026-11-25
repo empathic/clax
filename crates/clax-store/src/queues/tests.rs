@@ -809,6 +809,50 @@ fn members_and_roles() {
 }
 
 #[test]
+fn view_carries_the_owner() {
+    let (_d, st) = store();
+    let maker = st
+        .upsert_viewer("01ARZ3NDEKTSV4RRFFQ69G5FAV", Some("Sam"))
+        .unwrap()
+        .public_id;
+    let new = || NewQueue {
+        name: "Reports".into(),
+        origins: vec![ORIGIN.into()],
+        reporters_see: ReportersSee::Own,
+    };
+    let made = st.create_queue(DAEMON, Some(&maker), new()).unwrap();
+    let owner = clax_core::queue::QueueOwner {
+        public_id: maker.clone(),
+        name: Some("Sam".into()),
+    };
+    assert_eq!(made.owner.as_ref(), Some(&owner));
+    assert!(made.is_owner, "the maker reads it as theirs");
+    st.set_member(DAEMON, &made.id, "u_admin", Some(Role::Admin))
+        .unwrap();
+    let theirs = &st.queues_of(Some("u_admin")).unwrap()[0];
+    assert_eq!(
+        (theirs.role, theirs.owner.as_ref(), theirs.is_owner),
+        (Role::Admin, Some(&owner), false),
+        "an admin member reads whose it is, and that it is not theirs"
+    );
+    let read = st.queue_view(&made.id, Some(&maker)).unwrap().unwrap();
+    assert_eq!((read.owner.as_ref(), read.is_owner), (Some(&owner), true));
+    assert_eq!(st.queue_view(&made.id, Some("u_none")).unwrap(), None);
+    let json = serde_json::to_value(theirs).unwrap();
+    assert_eq!(json["owner"], json!({"public_id": maker, "name": "Sam"}));
+    assert_eq!(json["is_owner"], json!(false));
+
+    // The instance's owner's queue has no owner person, and is theirs.
+    let own = st.create_queue(DAEMON, None, new()).unwrap();
+    assert_eq!((own.owner.as_ref(), own.is_owner), (None, true));
+    assert_eq!(serde_json::to_value(&own).unwrap()["owner"], json!(null));
+    st.set_member(DAEMON, &own.id, "u_admin", Some(Role::Admin))
+        .unwrap();
+    let theirs = st.queue_view(&own.id, Some("u_admin")).unwrap().unwrap();
+    assert_eq!((theirs.owner, theirs.is_owner), (None, false));
+}
+
+#[test]
 fn an_agent_writes_only_under_its_own_lease_and_a_person_needs_none() {
     use super::ReportWriter;
     let (_d, st, clock) = clocked();

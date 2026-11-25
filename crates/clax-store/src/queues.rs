@@ -40,10 +40,10 @@ use clax_core::model::{Comment, Session, Thread};
 use clax_core::origin::{OriginPattern, normalize_origin};
 use clax_core::queue::{
     AUTHOR_REPORTER, Claim, LEASE_SECS, Lease, MAX_ARTIFACT_METADATA_BYTES,
-    MAX_THREAD_METADATA_BYTES, Queue, REPORT_PAGE, REPORTER_TOKEN_PREFIX, REPORTER_TOKEN_SECS,
-    Report, ReportComment, ReportOrder, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State,
-    StateFilter, check_queue_name, check_reporter_id, metadata_json, metadata_sha256,
-    queue_allows_origin,
+    MAX_THREAD_METADATA_BYTES, Queue, QueueOwner, REPORT_PAGE, REPORTER_TOKEN_PREFIX,
+    REPORTER_TOKEN_SECS, Report, ReportComment, ReportOrder, ReportersSee, Role,
+    SERVICE_TOKEN_PREFIX, State, StateFilter, check_queue_name, check_reporter_id, metadata_json,
+    metadata_sha256, queue_allows_origin,
 };
 use clax_core::report::{
     DiagLine, FixAttempt, FixOutcome, NewFix, ProposerKind, ReportContext, ReporterProfile,
@@ -85,8 +85,9 @@ pub struct QueueRow {
 }
 
 impl QueueRow {
-    /// As a member of `role` reads it.
-    pub fn view(&self, role: Role) -> Queue {
+    /// As `reader` (`None`: the owner), a member of `role`, reads it; the
+    /// maker's public ID goes out with `owner_name`, their display name.
+    pub fn view(&self, role: Role, reader: Option<&str>, owner_name: Option<String>) -> Queue {
         Queue {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -94,8 +95,31 @@ impl QueueRow {
             reporters_see: self.reporters_see,
             created_at: self.created_at.clone(),
             role,
+            owner: self.person.as_ref().map(|p| QueueOwner {
+                public_id: p.clone(),
+                name: owner_name,
+            }),
+            is_owner: self.person.as_deref() == reader,
         }
     }
+}
+
+/// Queue `q` as `reader` (`None`: the owner), a member of `role`, reads it
+/// on `c`, its maker named as the members listing names people (their
+/// viewer's display name).
+fn view_in(c: &Connection, q: &QueueRow, role: Role, reader: Option<&str>) -> Result<Queue> {
+    let name = match &q.person {
+        Some(p) => c
+            .query_row(
+                "SELECT display_name FROM viewers WHERE public_id = ?1",
+                params![p],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten(),
+        None => None,
+    };
+    Ok(q.view(role, reader, name))
 }
 
 /// A service grant of a queue: what the deployer's backend signs with to
@@ -1001,7 +1025,7 @@ impl Store {
         let origins = normalize_origins(&q.origins)?;
         self.with_tx(|tx| {
             let row = self.create_queue_in(tx, ctx, person, &name, &origins, q.reporters_see)?;
-            Ok(row.view(Role::Admin))
+            view_in(tx, &row, Role::Admin, person)
         })
     }
 
@@ -1056,7 +1080,7 @@ impl Store {
             let mut out = Vec::with_capacity(rows.len());
             for q in rows {
                 if let Some(role) = role_in(c, &q, person)? {
-                    out.push(q.view(role));
+                    out.push(view_in(c, &q, role, person)?);
                 }
             }
             Ok(out)
@@ -1080,6 +1104,23 @@ impl Store {
         self.with_read(|c| match queue_in(c, qid)? {
             Some(q) => role_in(c, &q, person),
             None => Ok(None),
+        })
+    }
+
+    /// Live queue `qid` as `person` (`None`: the owner) reads it, with
+    /// their role and its owner; `None` for a non-member or no such queue.
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn queue_view(&self, qid: &str, person: Option<&str>) -> Result<Option<Queue>> {
+        self.with_read(|c| {
+            let Some(q) = queue_in(c, qid)? else {
+                return Ok(None);
+            };
+            match role_in(c, &q, person)? {
+                Some(role) => Ok(Some(view_in(c, &q, role, person)?)),
+                None => Ok(None),
+            }
         })
     }
 
