@@ -1,7 +1,10 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // A queue's members and service grants, for its admins. A member is a
+  // A queue's members and service grants, for its admins. The queue is
+  // its maker's, its owner, named first ("Owned by you", by their name, or
+  // by this Clax's owner); the members listing's owner row is that line,
+  // not a member to change. A member is a
   // person by public ID, at admin (changes the queue, makes service
   // grants) or triage (reads and works its reports); adding a member
   // already there changes their role. A new service grant's token and
@@ -12,10 +15,12 @@
   import { onMount } from "svelte";
   import * as api from "./api";
   import Installs from "./Installs.svelte";
-  import { containerPath, deployments, installTag, type OverlayPin, refusal } from "./model";
+  import { containerPath, deployments, installTag, type OverlayPin, ownerText, refusal } from "./model";
 
   const p: { queue: api.Queue } = $props();
   let members = $state<api.QueueMember[] | null>(null);
+  // The people added to the queue: its owner, listed first, is named above them.
+  const added = $derived(members?.filter(m => m.role !== "owner") ?? null);
   let grants = $state<api.ServiceGrant[] | null>(null);
   let memberErr = $state<string | null>(null);
   let grantErr = $state<string | null>(null);
@@ -128,9 +133,10 @@
 
   <section class="part" aria-label={`Members of ${p.queue.name}`}>
     <h4>Members</h4>
-    {#if members?.length}
+    <p class="owner">{ownerText(p.queue)}{#if p.queue.owner && !p.queue.is_owner && p.queue.owner.name}<span class="key">{p.queue.owner.public_id}</span>{/if}</p>
+    {#if added?.length}
       <ul class="lines">
-        {#each members as m (m.public_id)}
+        {#each added as m (m.public_id)}
           <li class="line" data-member={m.public_id}>
             <span class="who">{m.name ?? m.public_id}{#if m.name}<span class="key">{m.public_id}</span>{/if}</span>
             <select aria-label={`Role of ${m.name ?? m.public_id}`} value={m.role} onchange={e => void changeRole(m, e.currentTarget.value as api.QueueRole)}>
@@ -140,8 +146,8 @@
           </li>
         {/each}
       </ul>
-    {:else if members}
-      <p class="none">No members besides you.</p>
+    {:else if added}
+      <p class="none">No one else is a member yet.</p>
     {/if}
     <form class="add" onsubmit={addMember}>
       <label class="field">Public ID <input name="public_id" autocomplete="off" spellcheck="false" value={pid} oninput={e => { pid = e.currentTarget.value; }} /></label>
@@ -231,6 +237,7 @@
   .field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); min-width: 0; }
   .field input { width: 220px; max-width: 100%; }
   .hint, .none { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
+  .owner { margin: 0 0 6px; font-size: 13.5px; overflow-wrap: anywhere; }
   .err { margin: 6px 0 0; color: var(--danger); font-size: 13px; }
   button.danger { color: var(--danger); }
   select { min-width: 0; max-width: 100%; }

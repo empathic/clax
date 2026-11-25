@@ -1,7 +1,7 @@
 // The Queues page's rules, apart from its views: a queue's origins as typed
 // one per line, its reports counted by state, the page's addresses, how a
 // report's reporter, context and anchor read, and a refusal as a sentence.
-import type { DiagLine, FixOutcome, Report, ReportContext, ReportPage, ReportState, ResolveReason } from "../../../sdk/src/types";
+import type { DiagLine, FixOutcome, Queue, Report, ReportContext, ReportPage, ReportState, ResolveReason } from "../../../sdk/src/types";
 import { anchorText, browserOf, stateTone, timeIn } from "../../../bridge/src/report-text";
 import type { StateFilter } from "./api";
 
@@ -123,6 +123,14 @@ export function queuesRoute(pathname: string): QueuesRoute {
 /** The queue view's address (on the tab of `state` when given), and a report's. */
 export const queueHref = (qid: string, state?: string) => `/queues/${encodeURIComponent(qid)}${state && state !== "active" ? `?state=${encodeURIComponent(state)}` : ""}`;
 export const reportHref = (qid: string, tid: string) => `${queueHref(qid)}/${encodeURIComponent(tid)}`;
+
+/** Whose queue `q` is, for its admins: "you" when the reader made it, else
+ * its maker by name (or public ID), else the instance's owner. */
+export function ownerText(q: Pick<Queue, "owner" | "is_owner">): string {
+  if (q.is_owner) return "Owned by you";
+  if (q.owner) return `Owned by ${q.owner.name ?? q.owner.public_id}`;
+  return "Owned by this Clax's owner";
+}
 
 /** Who filed `r`, as triage knows them: the profile's name or GitHub
  * login, else the reporter ID, else "Anonymous". */

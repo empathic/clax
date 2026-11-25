@@ -25,6 +25,12 @@ export type ProposerKind = "agent" | "person";
 /** Who wrote a comment on a report. */
 export type AuthorKind = "viewer" | "agent" | "reporter";
 
+/** The person who made a queue, whose it is. */
+export interface QueueOwner {
+  public_id: string;
+  name: string | null;
+}
+
 /** `Queue`: what `GET /api/queues` lists, with the caller's role. */
 export interface Queue {
   id: string;
@@ -33,6 +39,10 @@ export interface Queue {
   reporters_see: ReportersSee;
   created_at: string;
   role: QueueRole;
+  /** Who made it; `null` when the instance's owner did. */
+  owner?: QueueOwner | null;
+  /** Whether the caller made it: only its owner deletes it. */
+  is_owner?: boolean;
 }
 
 /** What an install's overlay is configured with. Wording left out (null)

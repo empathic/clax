@@ -10,7 +10,7 @@ vi.mock("../clock", async orig => {
 });
 const lapseTimers = () => vi.mocked(after).mock.calls.filter(c => c[2] === "queues.lapse").length;
 
-const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], reporters_see: "own", created_at: "2026-10-27T10:00:00Z", role: "admin" };
+const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], reporters_see: "own", created_at: "2026-10-27T10:00:00Z", role: "admin", owner: null, is_owner: true };
 const routes = (o: Record<string, unknown> = {}) => ({
   "GET /api/queues": { queues: [QUEUE] },
   "GET /api/queues/q1/reports": { reports: [{ state: "open" }, { state: "open" }, { state: "claimed" }], next: null },
@@ -110,6 +110,38 @@ describe("Queues", () => {
     expect(`${location.pathname}${location.search}`).toBe("/queues/q1?state=open");
     expect(m.root.querySelector('[role="tab"][aria-selected="true"]')!.getAttribute("data-tab")).toBe("open");
     history.replaceState(null, "", "/queues");
+  });
+
+  it("names the queue's owner to an admin who is not, lists the owner as no member to change, and offers Delete to the owner alone", async () => {
+    const sams = { ...QUEUE, owner: { public_id: "p1", name: "Sam" }, is_owner: false };
+    stubFetch(routes({
+      "GET /api/queues": { queues: [sams, { ...QUEUE, id: "q2", name: "Ideas" }] },
+      "GET /api/queues/q2/reports": { reports: [], next: null },
+      "GET /api/queues/q1/members": { members: [{ public_id: "p1", name: "Sam", role: "owner" }, { public_id: "p2", name: "Mia", role: "triage" }] },
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    const acts = (id: string) => [...m.root.querySelectorAll(`[data-id="${id}"] .acts > *`)].map(a => a.textContent);
+    expect(acts("q1")).toEqual(["Reports", "Manage", "Edit"]);
+    expect(acts("q2")).toEqual(["Reports", "Manage", "Edit", "Delete"]);
+    click([...m.root.querySelectorAll('[data-id="q1"] button')].find(b => b.textContent === "Manage"));
+    await settle();
+    const card = m.root.querySelector('[data-id="q1"]')!;
+    expect(card.querySelector(".owner")!.textContent).toBe("Owned by Samp1");
+    expect(card.querySelector('[data-member="p1"]')).toBeNull();
+    expect(card.querySelector('[data-member="p2"]')!.textContent).toContain("Mia");
+    expect(card.textContent).not.toContain("besides you");
+  });
+
+  it("tells the owner the queue is theirs and that no one else is a member yet", async () => {
+    stubFetch(routes({ "GET /api/queues/q1/members": { members: [] } }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    expect(m.root.querySelector(".owner")!.textContent).toBe("Owned by you");
+    expect(m.root.querySelector('[aria-label="Members of Bugs"] .none')!.textContent).toBe("No one else is a member yet.");
+    expect(m.root.textContent).not.toContain("besides you");
   });
 
   it("makes a queue from the form, its origins one per line, and refuses a line that is not an origin", async () => {

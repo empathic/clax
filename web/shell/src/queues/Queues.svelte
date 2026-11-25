@@ -4,9 +4,9 @@
   // The Queues page (`/queues`, spec 2026-10-27-clax-sdk-design §5.3, §6.2):
   // every report queue the viewer is a member of, with its origins, what
   // its reporters see, the viewer's role and its reports counted by state.
-  // New queue makes one (the maker is its admin). A queue's admin edits it
-  // in place, deletes it after confirming, and opens Manage for its members
-  // and service grants (`QueueAdmin`). A refused change says why until the
+  // New queue makes one (the maker is its owner, an admin). A queue's admin
+  // edits it in place and opens Manage for its members and service grants
+  // (`QueueAdmin`); its owner alone deletes it, after confirming. A refused change says why until the
   // next one. The list is fetched again after each change, when the stream
   // comes back, and at each `queues` ping (a report filed, claimed,
   // released, replied to or resolved, by anyone's agent); the counts change
@@ -212,7 +212,7 @@
                 {#if q.role === "admin"}
                   <button type="button" class="ghost" aria-expanded={!!managing[q.id]} onclick={() => { managing[q.id] = !managing[q.id]; }}>Manage</button>
                   <button type="button" class="ghost" aria-label={`Edit queue ${q.name}`} onclick={() => open(q.id)}>Edit</button>
-                  <button type="button" class="ghost danger" aria-label={`Delete queue ${q.name}`} onclick={() => void remove(q)}>Delete</button>
+                  {#if q.is_owner}<button type="button" class="ghost danger" aria-label={`Delete queue ${q.name}`} onclick={() => void remove(q)}>Delete</button>{/if}
                 {/if}
               </span>
             </header>

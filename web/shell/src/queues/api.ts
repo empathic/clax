@@ -19,8 +19,8 @@ export class Refused extends Error {
 export type { DiagLine, Install, InstallConfig, Queue, QueueRole, Report, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated };
 /** What a queue's form sets. */
 export type QueueFields = { name: string; origins: string[]; reporters_see: ReportersSee };
-/** A queue's member, by public ID, with the name the daemon knows them by. */
-export type QueueMember = { public_id: string; name?: string | null; role: QueueRole };
+/** A queue's member, by public ID, with the name the daemon knows them by; the person who made the queue is listed first as its `owner`. */
+export type QueueMember = { public_id: string; name?: string | null; role: QueueRole | "owner" };
 /** A service grant as listed: never its token or key. */
 export type ServiceGrant = ServiceGrantCreated["grant"];
 
