@@ -626,7 +626,7 @@ async fn link_without_push_then_app_push_bases_on_it() {
 
 #[tokio::test]
 async fn proxies_forward_head_bundle_files_sharing_apps() {
-    let public = Public::new().await;
+    let public = Public::with_github(&["octocat"]).await;
     let local = TestServer::spawn().await;
     let rid = connect_app(&local, &public).await["id"]
         .as_str()

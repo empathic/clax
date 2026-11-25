@@ -112,6 +112,30 @@ impl Site {
         Site { ts, clock, origin }
     }
 
+    /// [`Site::new`] with GitHub sign-in through the testkit's fake GitHub,
+    /// which holds `logins` (accounts 101, 102, …): what a share by login
+    /// is asked of.
+    async fn with_github(logins: &[&str]) -> Site {
+        let fake = clax_testkit::github::FakeGitHub::start("the-client", "the-secret").await;
+        for (n, l) in logins.iter().enumerate() {
+            fake.account(101 + n as i64, l, None);
+        }
+        let app = fake.hosted_app(None);
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), |s| {
+            s.hosted = s.hosted.take().map(|h| {
+                Arc::new(
+                    Arc::try_unwrap(h)
+                        .expect("hosted is not shared yet")
+                        .with_github(Some(app), clax_core::config::DEFAULT_MAX_ARTIFACTS),
+                )
+            });
+        })
+        .await;
+        let origin = format!("http://localhost:{}", ts.addr.port());
+        Site { ts, clock, origin }
+    }
+
     /// [`Site::new`] showing `legal`'s Terms of Service and Privacy Policy.
     async fn with_legal(legal: clax_core::config::Legal) -> Site {
         let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
@@ -5969,7 +5993,7 @@ async fn device_kind_token_manages_sharing_of_own_artifact() {
 
 #[tokio::test]
 async fn device_kind_token_refused_on_others_artifact() {
-    let site = Site::new().await;
+    let site = Site::with_github(&["keep"]).await;
     let owner = site.owner().await;
     let plan = site.titled("Plan").await;
     // Sam reads every artifact in his reach; Mia only her own.
@@ -6670,7 +6694,7 @@ impl Site {
 
 #[tokio::test]
 async fn an_artifact_shared_with_a_person_opens_to_them_at_its_access_alone() {
-    let site = Site::new().await;
+    let site = Site::with_github(&["octo"]).await;
     let owner = site.owner().await;
     let plan = site.titled("Plan").await;
     let budget = site.titled("Budget").await;

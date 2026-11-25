@@ -48,6 +48,29 @@ impl Public {
         Public::set_up(ts, clock).await
     }
 
+    /// [`Public::new`] with GitHub sign-in through a fake GitHub
+    /// ([`crate::github::FakeGitHub`]) holding `logins` (accounts 101,
+    /// 102, …), which a share by login is asked of.
+    pub async fn with_github(logins: &[&str]) -> Public {
+        let fake = crate::github::FakeGitHub::start("the-client", "the-secret").await;
+        for (n, l) in logins.iter().enumerate() {
+            fake.account(101 + n as i64, l, None);
+        }
+        let app = fake.hosted_app(None);
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), |s| {
+            s.hosted = s.hosted.take().map(|h| {
+                Arc::new(
+                    Arc::try_unwrap(h)
+                        .expect("hosted is not shared yet")
+                        .with_github(Some(app), clax_core::config::DEFAULT_MAX_ARTIFACTS),
+                )
+            });
+        })
+        .await;
+        Public::set_up(ts, clock).await
+    }
+
     /// [`Public::new`] serving each artifact's site under `domain`
     /// (`<id>.<domain>:<its port>`), which its discovery names.
     pub async fn with_site_domain(domain: &str) -> Public {

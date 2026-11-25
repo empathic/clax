@@ -11,6 +11,14 @@
 //!   the PKCE verifier it was sent ([`FakeGitHub::verifiers`]); any other
 //!   answers GitHub's `{"error": …}`.
 //! - `GET /user` answers the account `Bearer tok-<id>` names, else 401.
+//! - `GET /users/<login>` answers `{id, login, type}` of the account (or
+//!   organization, [`FakeGitHub::organization`]) holding `login` now (any
+//!   case; the login as it was added), else 404; 503 while
+//!   [`FakeGitHub::set_unavailable`]. It needs the app's client ID and
+//!   secret as basic auth (a wrong pair is 401), and keeps each login it
+//!   was asked ([`FakeGitHub::lookups`]). Renaming an account is adding it
+//!   again under its new login ([`FakeGitHub::account`]); another account
+//!   may then take the old one.
 
 use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -28,6 +36,8 @@ struct Inner {
     verifiers: Arc<Mutex<Vec<String>>>,
     authorized: Arc<Mutex<Vec<HashMap<String, String>>>>,
     next: Arc<Mutex<Option<i64>>>,
+    lookups: Arc<Mutex<Vec<String>>>,
+    unavailable: Arc<Mutex<bool>>,
 }
 
 /// A running fake GitHub (see the module docs).
@@ -52,6 +62,7 @@ impl FakeGitHub {
             .route("/login/oauth/authorize", get(authorize))
             .route("/login/oauth/access_token", post(access_token))
             .route("/user", get(user))
+            .route("/users/{login}", get(users))
             .with_state(inner.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -59,12 +70,47 @@ impl FakeGitHub {
         FakeGitHub { base, inner }
     }
 
-    /// Adds (or replaces) account `id` with `login` and profile `name`.
+    /// Adds (or replaces: a rename) account `id` with `login` and profile
+    /// `name`.
     pub fn account(&self, id: i64, login: &str, name: Option<&str>) {
         self.inner.users.lock().unwrap().insert(
             id,
-            json!({"id": id, "login": login, "name": name, "avatar_url": format!("https://avatars.example/{id}")}),
+            json!({"id": id, "login": login, "name": name, "type": "User",
+                   "avatar_url": format!("https://avatars.example/{id}")}),
         );
+    }
+
+    /// Adds organization `id` holding `login`: `GET /users/<login>` finds
+    /// it, and no one signs in as it.
+    pub fn organization(&self, id: i64, login: &str) {
+        self.inner.users.lock().unwrap().insert(
+            id,
+            json!({"id": id, "login": login, "name": null, "type": "Organization"}),
+        );
+    }
+
+    /// Makes `GET /users/<login>` answer 503 (`true`) or answer again.
+    pub fn set_unavailable(&self, unavailable: bool) {
+        *self.inner.unavailable.lock().unwrap() = unavailable;
+    }
+
+    /// The logins `GET /users/<login>` was asked, in order.
+    pub fn lookups(&self) -> Vec<String> {
+        self.inner.lookups.lock().unwrap().clone()
+    }
+
+    /// The OAuth App of a hosted daemon through this fake
+    /// ([`clax_http::hosted::Hosted::with_github`]), whose owner's login
+    /// is `owner_login`.
+    pub fn hosted_app(&self, owner_login: Option<&str>) -> clax_http::github::GitHub {
+        clax_http::github::GitHub::new(
+            &self.inner.client_id,
+            &self.inner.client_secret,
+            owner_login,
+            Some(&self.base),
+            Some(&self.base),
+        )
+        .expect("a client ID and secret")
     }
 
     /// The account the authorize page signs in as from now on.
@@ -159,5 +205,62 @@ async fn user(State(f): State<Inner>, headers: HeaderMap) -> Response {
     match id.and_then(|i| f.users.lock().unwrap().get(&i).cloned()) {
         Some(u) => axum::Json(u).into_response(),
         None => StatusCode::UNAUTHORIZED.into_response(),
+    }
+}
+
+/// `bytes` in standard, padded base64 (RFC 4648), as basic auth sends a
+/// user and password.
+fn base64(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in bytes.chunks(3) {
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            if i <= c.len() {
+                out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+async fn users(
+    State(f): State<Inner>,
+    axum::extract::Path(login): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    f.lookups.lock().unwrap().push(login.clone());
+    if !headers.contains_key("user-agent") {
+        return (StatusCode::FORBIDDEN, "GitHub's API needs a User-Agent").into_response();
+    }
+    let want = format!(
+        "Basic {}",
+        base64(format!("{}:{}", f.client_id, f.client_secret).as_bytes())
+    );
+    if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some(want.as_str()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if *f.unavailable.lock().unwrap() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let found = f
+        .users
+        .lock()
+        .unwrap()
+        .values()
+        .find(|u| {
+            u["login"]
+                .as_str()
+                .is_some_and(|l| l.eq_ignore_ascii_case(&login))
+        })
+        .cloned();
+    match found {
+        Some(u) => axum::Json(json!({"id": u["id"], "login": u["login"], "type": u["type"]}))
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }

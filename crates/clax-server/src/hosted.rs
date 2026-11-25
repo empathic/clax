@@ -934,6 +934,7 @@ fn share_view(sh: &clax_store::shares::Share) -> Value {
         "person": sh.person,
         "name": sh.name,
         "pending": sh.person.is_none(),
+        "legacy": sh.legacy,
     })
 }
 
@@ -941,7 +942,7 @@ fn share_view(sh: &clax_store::shares::Share) -> Value {
 /// their own device, [`browser_or_device`]) → for
 /// whoever may share it ([`may_share`]) `{artifact_id, can_share: true,
 /// comments, general, link_access, url, people: [{id, access, github_login,
-/// person, name, pending}], suggestions, site_access,
+/// person, name, pending, legacy}], suggestions, site_access,
 /// content_security_policy, site_url}`, `comments` its Comments switch,
 /// the suggestions (people here, with their GitHub logins) for the owner
 /// alone, whether its site (at `site_url`) is open to the world (`world`
@@ -1029,11 +1030,19 @@ struct ShareBody {
 /// access}` (whoever may share it, [`may_share`], in a browser or from
 /// their own device, [`browser_or_device`]): shares the artifact
 /// with that person, or changes the access of their share. → 200
-/// `{share}`. A login no one has signed in with yet waits for its first
-/// GitHub sign-in (`pending`). 400 `invalid_args` for no subject, both, or
-/// another access; 400 `invalid_login` or `unknown_person` (the owner is
-/// someone to share with); 404 for no such artifact or one the caller may not
-/// read; 403 `forbidden` for anyone else who may not share it.
+/// `{share}`. A login is first asked of GitHub
+/// ([`crate::github::resolve_login`]): the share is the GitHub account's
+/// it names now, by its numeric ID. An account that has signed in here
+/// names its person at once; any other's share waits (`pending`) for that
+/// account's first GitHub sign-in, under whatever login it has then, and
+/// a later holder of the login gets nothing. 400 `invalid_args` for no
+/// subject, both, or another access; 400 `invalid_login` (nothing asked
+/// of GitHub), `unknown_github_login` or `unknown_person` (the owner is
+/// someone to share with); 409 `github_sign_in_off` for a login where no
+/// one signs in with GitHub; 429 `rate_limited` past the caller's
+/// lookups; 503 `github_unavailable` when GitHub does not answer (nothing
+/// is kept); 404 for no such artifact or one the caller may not read; 403
+/// `forbidden` for anyone else who may not share it.
 async fn put_share(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1051,7 +1060,15 @@ async fn put_share(
         ApiError::bad_request("invalid_args", "access is viewer, commenter or editor")
     })?;
     let to = match (b.github_login, b.person) {
-        (Some(l), None) => ShareTo::GitHub(l),
+        (Some(l), None) => {
+            // Only whoever may share it makes the daemon ask GitHub.
+            let (w, a) = (who.clone(), aid.clone());
+            s.store_call(move |st| sharer(st, &w, &a))
+                .await
+                .map_err(forbidden_code)?;
+            let by = who.viewer.public_id.clone();
+            ShareTo::GitHub(crate::github::resolve_login(&s, &l, &by).await?)
+        }
         (None, Some(p)) => ShareTo::Person(p),
         _ => {
             return Err(ApiError::bad_request(

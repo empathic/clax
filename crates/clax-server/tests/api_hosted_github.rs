@@ -247,6 +247,23 @@ fn cookie_of(res: &reqwest::Response, name: &str) -> Option<String> {
 }
 
 impl Site {
+    /// `PUT path` with `body` from the browser holding `session`, on the
+    /// public origin: its status and JSON.
+    async fn put(&self, session: &str, path: &str, body: Value) -> (u16, Value) {
+        let res = self
+            .http
+            .put(format!("{}{path}", self.ts.base))
+            .header(HOST, &self.host)
+            .header(ORIGIN, format!("http://{}", self.host))
+            .header(COOKIE, session)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let s = res.status().as_u16();
+        (s, res.json().await.unwrap_or(json!(null)))
+    }
+
     /// The artifacts `session` lists (`/api/artifacts`' `artifacts`
     /// array), as the server returns them.
     async fn listing(&self, session: &str) -> Vec<Value> {
@@ -360,6 +377,93 @@ async fn pid_of(site: &Site, session: &str) -> String {
         .as_str()
         .unwrap()
         .to_string()
+}
+
+/// A page shared with @alice is the account that held "alice" then:
+/// alice renames to alice2, another account registers "alice" and signs
+/// in, and reads nothing; the original account signs in as alice2 and
+/// reads it. Sharing with a signed-in account matches its ID, so a share
+/// with alice2 names that person at once; a share with "alice" now waits
+/// for the new holder, never the person whose row last said "alice".
+#[tokio::test]
+async fn a_share_by_login_binds_to_the_account_that_held_it_not_its_next_holder() {
+    let site = Site::new(5).await;
+    site.account(1, "theowner", None);
+    let owner = site.sign_in(1).await.unwrap();
+    let page = site.ts.publish("Plan", &[("index.html", "<h1>p</h1>")]).await;
+    let page = page["artifact"]["id"].as_str().unwrap().to_string();
+    let shares = format!("/api/hosted/artifacts/{page}/shares");
+    let reads = |list: Vec<Value>| list.iter().any(|a| a["id"] == json!(page));
+
+    site.account(10, "Alice", None);
+    let (s, v) = site
+        .put(&owner, &shares, json!({"github_login": "@alice", "access": "viewer"}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        (&v["share"]["github_login"], &v["share"]["pending"], &v["share"]["legacy"]),
+        (&json!("Alice"), &json!(true), &json!(false))
+    );
+
+    site.account(10, "alice2", None);
+    site.account(11, "alice", None);
+    let other = site.sign_in(11).await.unwrap();
+    assert!(!reads(site.listing(&other).await), "the next holder reads nothing");
+    let alice = site.sign_in(10).await.unwrap();
+    assert!(reads(site.listing(&alice).await), "the account it was given to");
+
+    // Account 10 under its new login: its person at once.
+    let alice_pid = pid_of(&site, &alice).await;
+    let second = site.ts.publish("Notes", &[("index.html", "<h1>n</h1>")]).await;
+    let second = second["artifact"]["id"].as_str().unwrap().to_string();
+    let shares2 = format!("/api/hosted/artifacts/{second}/shares");
+    let (s, v) = site
+        .put(&owner, &shares2, json!({"github_login": "alice2", "access": "viewer"}))
+        .await;
+    assert_eq!((s, &v["share"]["person"]), (200, &json!(alice_pid)), "{v}");
+    // "alice" is account 11's now: account 10's person, whose row once
+    // said "alice", is not matched, and account 11 is.
+    let other_pid = pid_of(&site, &other).await;
+    let (s, v) = site
+        .put(&owner, &shares2, json!({"github_login": "alice", "access": "commenter"}))
+        .await;
+    assert_eq!((s, &v["share"]["person"]), (200, &json!(other_pid)), "{v}");
+}
+
+/// A share by login is refused, keeping nothing, for a login GitHub does
+/// not know or when it does not answer; each person's lookups are capped.
+#[tokio::test]
+async fn a_share_to_a_login_github_does_not_answer_for_keeps_nothing_and_lookups_are_capped() {
+    let site = Site::new(5).await;
+    site.account(1, "theowner", None);
+    let owner = site.sign_in(1).await.unwrap();
+    let page = site.ts.publish("Plan", &[("index.html", "<h1>p</h1>")]).await;
+    let page = page["artifact"]["id"].as_str().unwrap().to_string();
+    let shares = format!("/api/hosted/artifacts/{page}/shares");
+    let body = |l: &str| json!({"github_login": l, "access": "viewer"});
+    let (s, v) = site.put(&owner, &shares, body("nobody-here")).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (400, Some("unknown_github_login")), "{v}");
+    site.account(5, "mona", None);
+    site.fake.set_unavailable(true);
+    let (s, v) = site.put(&owner, &shares, body("mona")).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (503, Some("github_unavailable")), "{v}");
+    site.fake.set_unavailable(false);
+    assert!(
+        site.ts.store.artifact_shares(&page).unwrap().is_empty(),
+        "nothing kept"
+    );
+    // 20 lookups at once, then one every 30 s.
+    for _ in 2..20 {
+        let (s, v) = site.put(&owner, &shares, body("nobody-here")).await;
+        assert_eq!(s, 400, "{v}");
+    }
+    let (s, v) = site.put(&owner, &shares, body("mona")).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (429, Some("rate_limited")), "{v}");
+    let asked = site.fake.lookups().len();
+    site.clock.advance(30);
+    let (s, v) = site.put(&owner, &shares, body("mona")).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(site.fake.lookups().len(), asked + 1, "the refused one asked nothing");
 }
 
 #[tokio::test]

@@ -407,7 +407,18 @@ impl AppState {
     /// What a GitHub login is given (a queue invite, a share) binds only at
     /// such a sign-in.
     pub fn github_sign_in_on(&self) -> bool {
-        self.hosted.as_ref().is_some_and(|h| h.github.is_some()) || self.local_github.is_some()
+        self.github().is_some()
+    }
+
+    /// The GitHub OAuth App people sign in here with (the hosted daemon's,
+    /// else a local one's `[github]`), whose credentials and API base also
+    /// look a login up when access is given by it; `None` when GitHub
+    /// sign-in is off ([`AppState::github_sign_in_on`]).
+    pub fn github(&self) -> Option<&crate::github::GitHub> {
+        self.hosted
+            .as_ref()
+            .and_then(|h| h.github.as_ref())
+            .or_else(|| self.local_github.as_deref().map(|l| &l.github))
     }
 
     /// The host-to-artifact lookup ([`crate::host::site_layer`]): hosted

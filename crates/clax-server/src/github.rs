@@ -22,7 +22,7 @@ use base64::Engine as _;
 use clax_http::github::*;
 use clax_http::hosted::{Attempt, Hosted};
 use clax_http::state::AppState;
-use clax_store::github::{GitHubOutcome, GitHubUser};
+use clax_store::github::{GitHubAccount, GitHubOutcome, GitHubUser};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -485,6 +485,122 @@ async fn fetch_user(f: &Flow, code: &str, verifier: &str) -> Result<GitHubUser, 
         name: u.name,
         avatar_url: u.avatar_url,
     })
+}
+
+/// What GitHub answered for a login ([`lookup_login`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Lookup {
+    /// The account it names now.
+    Found(GitHubAccount),
+    /// No such login, or one an organization holds (no one signs in as
+    /// it).
+    Unknown,
+    /// GitHub did not answer: unreachable, rate limited, or an answer that
+    /// is not one; why.
+    Unavailable(String),
+}
+
+#[derive(Deserialize)]
+struct UsersAnswer {
+    id: i64,
+    login: String,
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+}
+
+/// Asks GitHub's API (`GET {api_base}/users/<login>`, with the OAuth App's
+/// client ID and secret as basic auth) which account `login` names now.
+/// `login` must already be one ([`clax_store::shares::github_login`]): it
+/// is a path segment of the request, escaped as one.
+pub async fn lookup_login(g: &GitHub, login: &str) -> Lookup {
+    let Ok(mut url) = url::Url::parse(&g.api_base) else {
+        return Lookup::Unavailable(format!("the API base {} is not a URL", g.api_base));
+    };
+    match url.path_segments_mut() {
+        Ok(mut p) => {
+            p.pop_if_empty().push("users").push(login);
+        }
+        Err(()) => return Lookup::Unavailable("the API base cannot take a path".into()),
+    }
+    let res = timeout(
+        reqwest::Client::new()
+            .get(url)
+            .header("accept", "application/vnd.github+json")
+            .header("user-agent", "clax")
+            .basic_auth(&g.client_id, Some(&g.client_secret)),
+    )
+    .send()
+    .await;
+    let res = match res {
+        Ok(r) => r,
+        Err(e) => return Lookup::Unavailable(format!("GET /users: {e}")),
+    };
+    if res.status() == reqwest::StatusCode::NOT_FOUND {
+        return Lookup::Unknown;
+    }
+    if !res.status().is_success() {
+        return Lookup::Unavailable(format!("GET /users answered {}", res.status()));
+    }
+    let u: UsersAnswer = match res.json().await {
+        Ok(u) => u,
+        Err(e) => return Lookup::Unavailable(format!("GET /users answer: {e}")),
+    };
+    if u.kind.as_deref().is_some_and(|k| k != "User") {
+        return Lookup::Unknown;
+    }
+    if !u.login.eq_ignore_ascii_case(login) {
+        return Lookup::Unavailable(format!("GET /users/{login} answered {}", u.login));
+    }
+    Lookup::Found(GitHubAccount {
+        id: u.id,
+        login: u.login,
+    })
+}
+
+/// The GitHub account login `raw` names now, before access is given by it
+/// (a share, a queue invite), on behalf of `person` (a public ID or member
+/// key, whose lookups are rate limited on a hosted daemon). Nothing is
+/// kept on any error.
+///
+/// # Errors
+/// 400 `invalid_login` (checked before any request); 409
+/// `github_sign_in_off` where no one signs in with GitHub (no client to
+/// ask with, and no sign-in a grant could bind at); 429 `rate_limited`;
+/// 400 `unknown_github_login` for a login no GitHub account holds (or an
+/// organization's); 503 `github_unavailable` when GitHub does not answer,
+/// so no grant is made by the login alone.
+pub async fn resolve_login(
+    s: &AppState,
+    raw: &str,
+    person: &str,
+) -> Result<GitHubAccount, clax_http::error::ApiError> {
+    use clax_http::error::ApiError;
+    let login = clax_store::shares::github_login(raw)?;
+    let Some(g) = s.github().cloned() else {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "github_sign_in_off",
+            "no one signs in to this Clax with GitHub, so a GitHub login added here would never take effect: turn on GitHub sign-in ([github] in config.toml), or choose a person here",
+        ));
+    };
+    if let Some(h) = &s.hosted {
+        h.github_lookup(person)?;
+    }
+    match clax_rt::sendable(lookup_login(&g, &login)).await {
+        Lookup::Found(a) => Ok(a),
+        Lookup::Unknown => Err(ApiError::bad_request(
+            "unknown_github_login",
+            format!("no GitHub account has the login {login}: check its spelling"),
+        )),
+        Lookup::Unavailable(why) => {
+            tracing::warn!(error = %why, "GitHub login lookup failed");
+            Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "github_unavailable",
+                "GitHub did not say which account that login is, so nothing was added: try again in a minute",
+            ))
+        }
+    }
 }
 
 fn escape(s: &str) -> String {

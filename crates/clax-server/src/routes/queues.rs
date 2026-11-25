@@ -444,14 +444,17 @@ fn maker_of(st: &Store, qid: &str) -> clax_core::Result<String> {
 
 /// `GET /api/queues/<qid>/members` → `{members: [{public_id, name, role,
 /// maker, owner, reads_reports}], pending: [{id, github_login, role,
-/// created_at}]}`: an admin reads the queue's members, its maker first
+/// created_at, legacy}]}`: an admin reads the queue's members, its maker first
 /// (`maker` true, always `admin`), then in the order they were added.
 /// `name` is the person's display name, or `null`; `owner` marks the owner,
 /// whose `public_id` is their viewer's (`*owner` before they have one).
 /// `reads_reports` is false for a member whose rights here do not read
 /// comments, who is refused the queue's reports (403 `not_permitted`)
 /// until the owner gives them that right ([`reads_reports`]). `pending` are the
-/// GitHub logins added who have not signed in here yet, oldest first;
+/// GitHub logins added who have not signed in here yet, oldest first, each
+/// as GitHub spells it, `legacy` for one added before invites named the
+/// GitHub account (it binds to whoever first signs in with the login;
+/// adding it again ties it to the account);
 /// `github_logins` says whether people sign in here with GitHub (a hosted
 /// Clax with GitHub sign-in, or a local one with `[github]`:
 /// [`AppState::github_sign_in_on`]), so whether adding by login is offered.
@@ -506,19 +509,26 @@ pub struct AddMemberBody {
 
 /// `PUT /api/queues/<qid>/members {github_login, role}` → 201 `{member}`
 /// or `{invite}`: an admin adds a teammate by GitHub login (a leading `@`
-/// dropped, any case). A login a GitHub account has signed in here with
+/// dropped, any case). The daemon first asks GitHub which account the
+/// login names now ([`crate::github::resolve_login`]), and the grant is
+/// that account's, by its numeric ID. An account that has signed in here
 /// names its person, the owner included, who is a member at once at
 /// `role` (or takes it): `{member}`, as `GET …/members` lists one. Any
-/// other waits for that account's first GitHub sign-in here, which makes
-/// it a membership: `{invite: {id, github_login, role, created_at}}`, as
-/// `pending` lists one (adding it again changes its role). A person newly
-/// a member gets an `access` inbox item, at once or at that sign-in. 400
-/// `invalid_login` (not 1 to 39 letters, digits or hyphens, or starting
-/// with a hyphen); 400 `queue_maker` for the maker's login; 404
-/// `not_found` for a blocked account's or a revoked person's; 400
-/// `limit_reached` past 100 waiting; 409 `github_sign_in_off` where no
-/// one signs in with GitHub ([`AppState::github_sign_in_on`]), whose
-/// invite could never bind, so none is kept.
+/// other waits for that account's first GitHub sign-in here, under
+/// whatever login it has then, which makes it a membership: `{invite:
+/// {id, github_login, role, created_at, legacy}}`, as `pending` lists one
+/// (adding it again changes its role); a later holder of the login gets
+/// nothing. A person newly a member gets an `access` inbox item, at once
+/// or at that sign-in. 400 `invalid_login` (not 1 to 39 letters, digits
+/// or hyphens, or starting with a hyphen; nothing is asked of GitHub); 400
+/// `unknown_github_login` for a login no GitHub user holds; 503
+/// `github_unavailable` when GitHub does not answer; 429 `rate_limited`
+/// past a person's lookups on a hosted Clax; 400 `queue_maker` for the
+/// maker's login; 404 `not_found` for a blocked account's or a revoked
+/// person's; 400 `limit_reached` past 100 waiting; 409
+/// `github_sign_in_off` where no one signs in with GitHub
+/// ([`AppState::github_sign_in_on`]), whose invite could never bind. On
+/// any error nothing is kept.
 pub async fn add_member(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -540,11 +550,12 @@ pub async fn add_member(
             "no one signs in to this Clax with GitHub, so a GitHub login added here would never become a member: turn on GitHub sign-in ([github] in config.toml), or add a connected person by name",
         ));
     }
+    let account = crate::github::resolve_login(&s, &b.github_login, &by).await?;
     let hosted = s.hosted.is_some();
     let v = s
         .store_call(move |st| {
             Ok(
-                match st.add_member_by_login(&ctx, &qid, &b.github_login, b.role, &by)? {
+                match st.add_member_by_login(&ctx, &qid, &account, b.role, &by)? {
                     AddedByLogin::Member(key, role) => {
                         let maker = maker_of(st, &qid)?;
                         let owner = st.owner()?;

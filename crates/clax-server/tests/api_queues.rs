@@ -346,7 +346,10 @@ async fn members_hold_the_role_an_admin_gives_them() {
 #[tokio::test]
 async fn members_are_added_by_github_login_at_once_or_pending_and_told_in_their_inbox() {
     let gh = clax_testkit::github::FakeGitHub::start("id", "secret").await;
-    let w = world_with(move |s| gh.turn_on(s)).await;
+    gh.account(9, "octo-cat", None);
+    gh.account(42, "Mia-Gh", None);
+    let fake = gh.clone();
+    let w = world_with(move |s| fake.turn_on(s)).await;
     let qid = make_queue(&w, &w.owner, "Bugs").await;
     let members = format!("/api/queues/{qid}/members");
     let add = |login: &str, role: &str| json!({"github_login": login, "role": role});

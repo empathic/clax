@@ -228,6 +228,11 @@ pub enum Attempt {
     /// counted per client address; one over the rate is answered as any
     /// other and not counted ([`Hosted::page_view`]).
     PageView,
+    /// Asking GitHub which account a login names, to give access by it (a
+    /// share, a queue invite), counted per person ([`Counted::Person`]):
+    /// each is a request of the daemon's to GitHub's API, under the OAuth
+    /// App's own rate limit ([`Hosted::github_lookup`]).
+    GitHubLookup,
 }
 
 impl Attempt {
@@ -244,16 +249,18 @@ impl Attempt {
             Attempt::SiteWriteArtifact => (600.0, 0.1),
             Attempt::Install => (10.0, 60.0),
             Attempt::PageView => (30.0, 2.0),
+            Attempt::GitHubLookup => (20.0, 30.0),
         }
     }
 }
 
 /// What [`Limits`] counts attempts for: a client address ([`client_key`]),
-/// or an artifact.
+/// an artifact, or a person (a public ID, or the owner's member key).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Counted {
     Address(std::net::IpAddr),
     Artifact(String),
+    Person(String),
 }
 
 /// The most clients [`Limits`] keeps; past it, those whose attempts are all
@@ -620,6 +627,23 @@ impl Hosted {
     ) -> Result<(), ApiError> {
         let client = client_key(self.client(headers, extensions));
         self.limits.take(what, client).map_err(rate_limited)
+    }
+
+    /// Takes one of person `person`'s [`Attempt::GitHubLookup`]s (a public
+    /// ID, or the owner's member key): 429 `rate_limited` when none is left.
+    ///
+    /// # Errors
+    /// 429 as above.
+    pub fn github_lookup(&self, person: &str) -> Result<(), ApiError> {
+        self.limits
+            .take_for(Attempt::GitHubLookup, Counted::Person(person.to_string()))
+            .map_err(|after| {
+                let mut e = rate_limited(after);
+                e.message = format!(
+                    "too many GitHub logins looked up: try again in {after} s"
+                );
+                e
+            })
     }
 
     /// Takes a world visitor's write on artifact `aid`'s site: one of the

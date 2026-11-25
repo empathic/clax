@@ -145,6 +145,7 @@ async fn an_added_login_signs_in_with_github_and_becomes_that_member_and_no_more
     let (ts, fake) = with_github().await;
     let qid = make_queue(&ts).await;
     let members = format!("/api/queues/{qid}/members");
+    fake.account(7, "octo-cat", Some("Octo Cat"));
     let (s, v) = owner(
         &ts,
         Method::PUT,
@@ -153,11 +154,12 @@ async fn an_added_login_signs_in_with_github_and_becomes_that_member_and_no_more
     )
     .await;
     assert_eq!(s, 201, "{v}");
+    assert_eq!(fake.lookups(), ["octo-cat"], "asked once, lowercased");
     let (_, v) = owner(&ts, Method::GET, &members, None).await;
     assert_eq!(v["github_logins"], true, "{v}");
-    assert_eq!(v["pending"][0]["github_login"], "octo-cat", "{v}");
+    assert_eq!(v["pending"][0]["github_login"], "octo-cat", "as GitHub spells it: {v}");
+    assert_eq!(v["pending"][0]["legacy"], false, "{v}");
 
-    fake.account(7, "octo-cat", Some("Octo Cat"));
     let cat = sign_in(&ts, &fake, 7).await.unwrap();
     let q = &fake.authorized()[0];
     assert_eq!(q["client_id"], "the-client");
@@ -232,19 +234,20 @@ async fn a_sign_in_is_refused_for_a_forged_state_another_host_and_a_login_no_one
     let (ts, fake) = with_github().await;
     let qid = make_queue(&ts).await;
     let members = format!("/api/queues/{qid}/members");
-    owner(
+    fake.account(7, "octo-cat", None);
+    let (s, v) = owner(
         &ts,
         Method::PUT,
         &members,
         Some(json!({"github_login": "octo-cat", "role": "admin"})),
     )
     .await;
+    assert_eq!(s, 201, "{v}");
 
     // A state that is not the flow cookie's, or no flow cookie at all.
     let host = local_host(&ts);
     let res = start_on(&ts, &host).await;
     let flow = format!("clax_github={}", cookie_of(&res, "clax_github").unwrap());
-    fake.account(7, "octo-cat", None);
     for cookie in [Some(flow.as_str()), None] {
         let mut r = stranger()
             .get(format!(
@@ -279,6 +282,79 @@ async fn a_sign_in_is_refused_for_a_forged_state_another_host_and_a_login_no_one
     let (_, v) = owner(&ts, Method::GET, &members, None).await;
     assert_eq!(v["pending"][0]["github_login"], "octo-cat", "{v}");
     assert_eq!(v["members"].as_array().unwrap().len(), 1, "only the maker");
+}
+
+/// The invite to @alice is the account that held "alice" when it was
+/// added: alice renames to alice2, another account registers "alice" and
+/// signs in first, and gets nothing (no person is even made); the original
+/// account signs in as alice2 and is the member.
+#[tokio::test]
+async fn an_invite_binds_to_the_account_that_held_the_login_not_its_next_holder() {
+    let (ts, fake) = with_github().await;
+    let qid = make_queue(&ts).await;
+    let members = format!("/api/queues/{qid}/members");
+    fake.account(1, "Alice", Some("Alice A"));
+    let (s, v) = owner(
+        &ts,
+        Method::PUT,
+        &members,
+        Some(json!({"github_login": "@alice", "role": "triage"})),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["invite"]["github_login"], "Alice", "as GitHub spells it: {v}");
+
+    fake.account(1, "alice2", Some("Alice A"));
+    fake.account(2, "alice", Some("Not Alice"));
+    let (s, page) = sign_in(&ts, &fake, 2).await.unwrap_err();
+    assert_eq!(s, 403, "{page}");
+    assert!(page.contains("Nobody here has added"), "{page}");
+    assert!(ts.store.github_links().unwrap().is_empty(), "no one made");
+    let (_, v) = owner(&ts, Method::GET, &members, None).await;
+    assert_eq!(v["pending"].as_array().unwrap().len(), 1, "still waiting: {v}");
+
+    let alice = sign_in(&ts, &fake, 1).await.unwrap();
+    let (s, v) = as_cookie(&ts, &alice, Method::GET, "/api/queues").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["queues"][0]["id"], json!(qid), "{v}");
+    let (_, v) = owner(&ts, Method::GET, &members, None).await;
+    assert_eq!(v["pending"], json!([]), "{v}");
+    assert!(
+        v["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "Alice A"),
+        "{v}"
+    );
+}
+
+/// A login GitHub does not know (or an organization's), a login that is
+/// not one, and GitHub not answering: each is refused and nothing waits;
+/// only a well-formed login is asked of GitHub.
+#[tokio::test]
+async fn a_login_github_does_not_answer_for_adds_nothing() {
+    let (ts, fake) = with_github().await;
+    let qid = make_queue(&ts).await;
+    let members = format!("/api/queues/{qid}/members");
+    let add = |login: &str| json!({"github_login": login, "role": "triage"});
+    fake.organization(40, "acme");
+    for login in ["no-such-person", "acme"] {
+        let (s, v) = owner(&ts, Method::PUT, &members, Some(add(login))).await;
+        assert_eq!((s, code(&v)), (400, "unknown_github_login"), "{login}: {v}");
+    }
+    let (s, v) = owner(&ts, Method::PUT, &members, Some(add("../user"))).await;
+    assert_eq!((s, code(&v)), (400, "invalid_login"), "{v}");
+    assert_eq!(fake.lookups(), ["no-such-person", "acme"], "nothing else asked");
+    fake.account(7, "octo-cat", None);
+    fake.set_unavailable(true);
+    let (s, v) = owner(&ts, Method::PUT, &members, Some(add("octo-cat"))).await;
+    assert_eq!((s, code(&v)), (503, "github_unavailable"), "{v}");
+    let (_, v) = owner(&ts, Method::GET, &members, None).await;
+    assert_eq!(v["pending"], json!([]), "nothing kept: {v}");
+    fake.set_unavailable(false);
+    let (s, v) = owner(&ts, Method::PUT, &members, Some(add("octo-cat"))).await;
+    assert_eq!(s, 201, "{v}");
 }
 
 #[tokio::test]
