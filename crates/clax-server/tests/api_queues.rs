@@ -334,18 +334,18 @@ async fn members_hold_the_role_an_admin_gives_them() {
     }
 }
 
-/// An admin adds a teammate by GitHub login: one signed in here is a
-/// member at once, anyone else is listed `pending` until removed or bound;
-/// a new member, either way or by public ID, finds an `access` item in
-/// their inbox.
+/// On a local Clax no one signs in with GitHub, so adding by login is 409
+/// `github_sign_in_off` and keeps no invite; a member added by public ID
+/// finds an `access` item in their inbox. (On a hosted Clax:
+/// [`on_a_hosted_clax_members_are_added_by_github_login_at_once_or_pending`].)
 #[tokio::test]
-async fn members_are_added_by_github_login_at_once_or_pending_and_told_in_their_inbox() {
+async fn a_local_clax_adds_no_github_login_and_a_new_member_is_told_in_their_inbox() {
     let w = world().await;
     let qid = make_queue(&w, &w.owner, "Bugs").await;
     let members = format!("/api/queues/{qid}/members");
     let add = |login: &str, role: &str| json!({"github_login": login, "role": role});
 
-    // Nobody here signed in as octo-cat: an invite, listed as pending.
+    // No GitHub sign-in here: refused, nothing kept.
     let (s, v) = browser(
         &w.ts,
         &w.owner,
@@ -354,86 +354,14 @@ async fn members_are_added_by_github_login_at_once_or_pending_and_told_in_their_
         Some(add("@Octo-Cat", "triage")),
     )
     .await;
-    assert_eq!(s, 201, "{v}");
-    let invite = v["invite"].clone();
-    assert_eq!(
-        (&invite["github_login"], &invite["role"], &v["member"]),
-        (&json!("octo-cat"), &json!("triage"), &Value::Null)
-    );
-    let (s, v) = browser(
-        &w.ts,
-        &w.owner,
-        Method::PUT,
-        &members,
-        Some(add("octo-cat", "admin")),
-    )
-    .await;
-    assert_eq!(s, 201, "{v}");
-    assert_eq!(
-        (&v["invite"]["id"], &v["invite"]["role"]),
-        (&invite["id"], &json!("admin"))
-    );
+    assert_eq!((s, code(&v)), (409, "github_sign_in_off"), "{v}");
     let (_, v) = browser(&w.ts, &w.owner, Method::GET, &members, None).await;
-    assert_eq!(v["pending"].as_array().unwrap().len(), 1, "{v}");
-    assert_eq!(v["pending"][0]["github_login"], "octo-cat");
-    assert_eq!(v["members"].as_array().unwrap().len(), 1, "only the maker");
-    let id = invite["id"].as_str().unwrap();
-    let (s, v) = browser(
-        &w.ts,
-        &w.owner,
-        Method::DELETE,
-        &format!("{members}/pending/{id}"),
-        None,
-    )
-    .await;
-    assert_eq!(s, 204, "{v}");
-    let (_, v) = browser(&w.ts, &w.owner, Method::GET, &members, None).await;
-    assert_eq!(v["pending"], json!([]));
     assert_eq!(
-        v["github_logins"], false,
-        "a local Clax has no GitHub sign-in"
+        (&v["pending"], &v["github_logins"]),
+        (&json!([]), &json!(false)),
+        "{v}"
     );
-
-    for (login, want) in [("-nope", "invalid_login"), ("a b", "invalid_login")] {
-        let (s, v) = browser(
-            &w.ts,
-            &w.owner,
-            Method::PUT,
-            &members,
-            Some(add(login, "triage")),
-        )
-        .await;
-        assert_eq!((s, code(&v)), (400, want), "{login}: {v}");
-    }
-
-    // Someone who signed in here with GitHub: a member at once.
-    let (gh, _) =
-        w.ts.store
-            .github_sign_in(
-                &clax_core::audit::AuditCtx::DAEMON,
-                &clax_store::github::GitHubUser {
-                    id: 42,
-                    login: "Mia-Gh".into(),
-                    name: Some("Mia".into()),
-                    avatar_url: None,
-                },
-                false,
-            )
-            .unwrap();
-    let mia = gh.who.viewer.public_id;
-    let (s, v) = browser(
-        &w.ts,
-        &w.owner,
-        Method::PUT,
-        &members,
-        Some(add("mia-gh", "triage")),
-    )
-    .await;
-    assert_eq!(s, 201, "{v}");
-    assert_eq!(
-        v["member"],
-        json!({"public_id": mia, "name": "Mia", "role": "triage", "maker": false, "owner": false})
-    );
+    assert!(w.ts.store.queue_invites(&qid).unwrap().is_empty());
 
     // Sam, added by public ID, is told in their inbox; a role change is no
     // second item.
@@ -1192,5 +1120,91 @@ async fn on_a_hosted_clax_members_make_queues_once_an_administrator_says_so() {
     assert_eq!(
         s, 201,
         "an administrator makes one whatever the setting: {v}"
+    );
+}
+
+/// On a hosted Clax an admin adds a teammate by GitHub login: one signed
+/// in here is a member at once, anyone else is listed `pending` until
+/// removed or bound.
+#[tokio::test]
+async fn on_a_hosted_clax_members_are_added_by_github_login_at_once_or_pending() {
+    let h = Hosted::new().await;
+    let owner = h.owner().await;
+    let (s, v) = h
+        .call(&owner, Method::POST, "/api/queues", json!({"name": "Bugs"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let qid = v["queue"]["id"].as_str().unwrap().to_string();
+    let members = format!("/api/queues/{qid}/members");
+    let add = |login: &str, role: &str| json!({"github_login": login, "role": role});
+
+    // Nobody here signed in as octo-cat: an invite, listed as pending.
+    let (s, v) = h
+        .call(&owner, Method::PUT, &members, add("@Octo-Cat", "triage"))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let invite = v["invite"].clone();
+    assert_eq!(
+        (&invite["github_login"], &invite["role"], &v["member"]),
+        (&json!("octo-cat"), &json!("triage"), &Value::Null)
+    );
+    let (s, v) = h
+        .call(&owner, Method::PUT, &members, add("octo-cat", "admin"))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(
+        (&v["invite"]["id"], &v["invite"]["role"]),
+        (&invite["id"], &json!("admin"))
+    );
+    let (_, v) = h.call(&owner, Method::GET, &members, Value::Null).await;
+    assert_eq!(v["pending"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["pending"][0]["github_login"], "octo-cat");
+    assert_eq!(v["members"].as_array().unwrap().len(), 1, "only the maker");
+    assert_eq!(
+        v["github_logins"], true,
+        "a hosted Clax signs in with GitHub"
+    );
+    let id = invite["id"].as_str().unwrap();
+    let (s, v) = h
+        .call(
+            &owner,
+            Method::DELETE,
+            &format!("{members}/pending/{id}"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 204, "{v}");
+    let (_, v) = h.call(&owner, Method::GET, &members, Value::Null).await;
+    assert_eq!(v["pending"], json!([]));
+
+    for (login, want) in [("-nope", "invalid_login"), ("a b", "invalid_login")] {
+        let (s, v) = h
+            .call(&owner, Method::PUT, &members, add(login, "triage"))
+            .await;
+        assert_eq!((s, code(&v)), (400, want), "{login}: {v}");
+    }
+
+    // Someone who signed in here with GitHub: a member at once.
+    let (gh, _) =
+        h.ts.store
+            .github_sign_in(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &clax_store::github::GitHubUser {
+                    id: 42,
+                    login: "Mia-Gh".into(),
+                    name: Some("Mia".into()),
+                    avatar_url: None,
+                },
+                false,
+            )
+            .unwrap();
+    let mia = gh.who.viewer.public_id;
+    let (s, v) = h
+        .call(&owner, Method::PUT, &members, add("mia-gh", "triage"))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(
+        v["member"],
+        json!({"public_id": mia, "name": "Mia", "role": "triage", "maker": false, "owner": false})
     );
 }

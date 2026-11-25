@@ -215,7 +215,7 @@ describe("Queues", () => {
     expect([...m.root.querySelectorAll("button")].some(b => b.textContent === "Add @zz")).toBe(true);
   });
 
-  it("adds a teammate by @github-login, lists one waiting for their GitHub sign-in, and removes it after confirming", async () => {
+  it("adds a teammate by @github-login, lists one waiting for their GitHub sign-in, and removes it after confirming, the focus back in the field and the outcome announced", async () => {
     let pending: unknown[] = [];
     const members = [{ public_id: "p1", name: "Alex", role: "admin", maker: true, owner: false }];
     const calls = stubFetch(routes({
@@ -246,11 +246,21 @@ describe("Queues", () => {
     expect(row.querySelector(".who")!.textContent).toBe("@octo-cat · waiting for their GitHub sign-in");
     expect(row.querySelector(".fixed")!.textContent).toBe("Admin");
     expect(m.root.querySelector(".part [role=status].hint")!.textContent).toBe("@octo-cat becomes a member when they first sign in here with GitHub.");
-    expect((m.root.querySelector('input[name="person"]') as HTMLInputElement).value).toBe("");
-    click(row.querySelector('[aria-label="Remove @octo-cat"]'));
+    const field = m.root.querySelector('input[name="person"]') as HTMLInputElement;
+    expect(field.value).toBe("");
+    // The add disabled the focused button: the keyboard is back in the field.
+    expect(document.activeElement).toBe(field);
+    const remove = row.querySelector<HTMLButtonElement>('[aria-label="Remove @octo-cat"]')!;
+    remove.focus();
+    click(remove);
     await settle();
     expect(calls.some(c => c.method === "DELETE" && c.url === "/api/queues/q1/members/pending/i1")).toBe(true);
     expect(m.root.querySelector("[data-pending]")).toBeNull();
+    // The removed row took its button away: the field has the focus, and the
+    // panel's one status line says what happened, replacing the add's.
+    expect(document.activeElement).toBe(field);
+    expect(m.root.querySelectorAll(".part [role=status].hint")).toHaveLength(1);
+    expect(m.root.querySelector(".part [role=status].hint")!.textContent).toBe("Removed @octo-cat.");
   });
 
   it("offers no add for text that is no GitHub login, and adds one signed in here as a member at once", async () => {
@@ -271,6 +281,7 @@ describe("Queues", () => {
     await settle();
     expect(calls.find(c => c.method === "PUT")?.body).toEqual({ github_login: "sam-lee", role: "triage" });
     expect(m.root.querySelector(".part [role=status].hint")!.textContent).toBe("Added Sam (@sam-lee).");
+    expect(document.activeElement).toBe(m.root.querySelector('input[name="person"]'));
   });
 
   it("offers New queue only where this browser may make one, and marks a queue it oversees without being a member", async () => {

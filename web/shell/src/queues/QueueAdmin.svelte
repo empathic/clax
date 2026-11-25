@@ -24,7 +24,7 @@
   // mints for its previews alone; the list names a limited grant's
   // origins. Each list is fetched
   // when the panel opens and after each change.
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import * as api from "./api";
   import { refusal } from "./model";
 
@@ -51,8 +51,11 @@
   // Whether people sign in here with GitHub (a hosted Clax): adding by
   // login is offered only then.
   let byLogin = $state(false);
-  // What the last add did, said to a screen reader too.
+  // What the last add or removal of a waiting login did, said to a screen
+  // reader too; the keyboard's focus goes back to the add field, whose
+  // button an add disables and whose row a removal takes away.
   let memberNote = $state<string | null>(null);
+  const focusFind = async () => { await tick(); document.getElementById(`qa-find-${qid}`)?.focus(); };
   const loadMembers = () => api.listMembers(qid).then(b => { members = b.members; pending = b.pending ?? []; byLogin = b.github_logins === true; }, x => { memberErr = `Could not load the members: ${refusal(x)}`; });
   /** The GitHub login the text offers to add: any login after `@`, or a
    * login the search found no one by; none where no one signs in with
@@ -89,12 +92,14 @@
       chosen = null; find = ""; found = null;
     } catch (x) { memberErr = refusal(x); }
     await loadMembers();
+    await focusFind();
   }
   async function removeWaiting(w: api.PendingMember) {
     if (!confirm(`Remove @${w.github_login} from ${p.queue.name}?`)) return;
     memberErr = null; memberNote = null;
-    try { await api.removePending(qid, w.id); } catch (x) { memberErr = refusal(x); }
+    try { await api.removePending(qid, w.id); memberNote = `Removed @${w.github_login}.`; } catch (x) { memberErr = refusal(x); }
     await loadMembers();
+    await focusFind();
   }
   async function changeRole(m: api.QueueMember, r: api.QueueRole) {
     memberErr = null;

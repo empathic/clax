@@ -6,11 +6,12 @@
 //!   (also an agent's, for `queue_list`).
 //! - `POST /api/queues {name, origins, reporters_see}` → `{queue}`;
 //!   `PATCH /api/queues/<qid>`, `DELETE /api/queues/<qid>`.
-//! - `GET /api/queues/<qid>/members` → `{members, pending}`, its maker
-//!   first; `PUT /api/queues/<qid>/members/<public_id> {role}`, `DELETE`
-//!   the same; `PUT /api/queues/<qid>/members {github_login, role}` → 201
-//!   `{member}` or `{invite}`, `DELETE
-//!   /api/queues/<qid>/members/pending/<id>`.
+//! - `GET /api/queues/<qid>/members` → `{members, pending,
+//!   github_logins}`, its maker first; `PUT
+//!   /api/queues/<qid>/members/<public_id> {role}`, `DELETE` the same;
+//!   `PUT /api/queues/<qid>/members {github_login, role}` → 201 `{member}`
+//!   or `{invite}` (409 `github_sign_in_off` where no one signs in with
+//!   GitHub), `DELETE /api/queues/<qid>/members/pending/<id>`.
 //! - `GET /api/queues/<qid>/people?q=` → `{people}`: the people an admin
 //!   may add, found by name or public ID.
 //! - `GET /api/queues/<qid>/service-grants` → `{grants}`; `POST
@@ -415,15 +416,24 @@ fn maker_of(st: &Store, qid: &str) -> clax_core::Result<String> {
         .unwrap_or_else(|| OWNER_MEMBER.to_string()))
 }
 
+/// Whether people sign in here with GitHub: a hosted Clax. Only there
+/// can a GitHub login added to a queue ever become a member, so it is
+/// both the members listing's `github_logins` and what
+/// [`add_member`] asks before keeping an invite.
+fn github_sign_in(s: &AppState) -> bool {
+    s.hosted.is_some()
+}
+
 /// `GET /api/queues/<qid>/members` → `{members: [{public_id, name, role,
-/// maker, owner}], pending: [{id, github_login, role, created_at}]}`: an
+/// maker, owner}], pending: [{id, github_login, role, created_at}],
+/// github_logins}`: an
 /// admin reads the queue's members, its maker first (`maker` true, always
 /// `admin`), then in the order they were added. `name` is the person's
 /// display name, or `null`; `owner` marks the owner, whose `public_id` is
 /// their viewer's (`*owner` before they have one). `pending` are the
 /// GitHub logins added who have not signed in here yet, oldest first;
 /// `github_logins` says whether people sign in here with GitHub (a hosted
-/// Clax), so whether adding by login is worth offering.
+/// Clax: [`github_sign_in`]), so whether adding by login is offered.
 pub async fn members(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -448,7 +458,7 @@ pub async fn members(
             Ok((members, st.queue_invites(&qid)?))
         })
         .await?;
-    let github_logins = s.hosted.is_some();
+    let github_logins = github_sign_in(&s);
     Ok(Json(
         json!({ "members": members, "pending": pending, "github_logins": github_logins }),
     ))
@@ -474,7 +484,9 @@ pub struct AddMemberBody {
 /// `invalid_login` (not 1 to 39 letters, digits or hyphens, or starting
 /// with a hyphen); 400 `queue_maker` for the maker's login; 404
 /// `not_found` for a blocked account's or a revoked person's; 400
-/// `limit_reached` past 100 waiting.
+/// `limit_reached` past 100 waiting; 409 `github_sign_in_off` where no
+/// one signs in with GitHub ([`github_sign_in`]: a local Clax), whose
+/// invite could never bind, so nothing is kept.
 pub async fn add_member(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -489,6 +501,13 @@ pub async fn add_member(
     let qid = path(qid)?;
     let b = body(req)?;
     admin_of(&s, &qid, a).await?;
+    if !github_sign_in(&s) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "github_sign_in_off",
+            "no one signs in to this Clax with GitHub, so a GitHub login added here would never become a member: add a connected person by name or public ID",
+        ));
+    }
     let v = s
         .store_call(move |st| {
             Ok(
