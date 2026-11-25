@@ -1632,6 +1632,30 @@ app's versions with the bundle each carries.
   /api/hosted/apps`. Who may change an artifact's sharing is as in a
   browser: its owner, or the person who made it; editors publish but do
   not share.
+- **Grants by GitHub login.** A share (`PUT …/shares {github_login,
+  access}`) and a queue invite (`PUT /api/queues/<qid>/members
+  {github_login, role}`) go to the GitHub account the login names when
+  they are made, never to the login: the daemon asks GitHub (`GET
+  /users/<login>` at the GitHub OAuth App's API base, with its client ID
+  and secret) before it keeps anything, and keeps the account's numeric
+  ID. An account that has signed in here (matched by that ID) is given
+  the access at once; any other's waits, and binds at that account's
+  first GitHub sign-in under whatever login it has by then. A login
+  renamed and taken by someone else carries nothing to them. The login is
+  shown as GitHub spells it (`github_login`). Only whoever may make the
+  grant causes a lookup, and only for a well-formed login (400
+  `invalid_login` asks nothing); a hosted daemon allows each person 20
+  lookups at once and one more every 30 seconds (429 `rate_limited`).
+  400 `unknown_github_login` for a login no GitHub user holds (or an
+  organization's); 503 `github_unavailable` when GitHub does not answer;
+  409 `github_sign_in_off` where no one signs in with GitHub; 400
+  `github_login_moved` when a grant already waits under the login for the
+  account that held it before (remove it first). Every error keeps
+  nothing. A share or invite waiting from before this (schema 77) names
+  no account: it still binds to whoever first signs in with its login,
+  and is listed with `legacy: true` (sharing or adding the login again
+  ties it to the account GitHub names then). `GET …/sharing`'s `people`
+  carry `legacy` too.
 - **Reads from a device.** On `GET /api/artifacts/<id>/head`, `GET
   …/versions/<n>`, `GET …/versions/<n>/bundle`, `GET
   …/versions/<n>/files/<path>`, `GET …/threads` (`since` included), `GET
@@ -4497,9 +4521,9 @@ its members and its service grants:
 | `GET /api/queues` | | `{queues: [{id, name, origins, reporters_see, created_at, role, member}]}`, oldest first: the queues the caller made or is a member of; for the owner and the instance's administrators, every live queue, `role` `admin` and `member` false where they are no member (an agent's `queue_list` reads its person's queues alone, without `member`) |
 | `POST /api/queues` | `{name, origins?, reporters_see?}` | 201 `{queue}`: the caller is its maker, listed first among its members as `admin`; a connected person who administers nothing makes one only while `queues.members_create` is on (below), else 403 `queues_admin_only` |
 | `PATCH /api/queues/<qid>`, `DELETE /api/queues/<qid>` | `{name?, origins?, reporters_see?}` | `{queue}`; 204 |
-| `GET /api/queues/<qid>/members` | | `{members: [{public_id, name, role, maker, owner, reads_reports}], pending: [{id, github_login, role, created_at}]}`: the maker first (`maker` true, always `admin`), then in the order they were added; `owner` marks the owner, whose `public_id` is their viewer's (`*owner` before they have one). `reads_reports` is `false` for a member whose rights here hold no Comments `read` on a hosted Clax: the triage routes refuse them (403 `not_permitted`) until the owner gives them that right, since a person's rights, not their queue role, bound what they read; `true` for the owner and on a local Clax. `pending`: the GitHub logins added who have not signed in here yet, oldest first; `github_logins` (`true` where people sign in with GitHub: a hosted Clax with GitHub sign-in, or a local one with `[github]`) says whether adding by login is offered |
+| `GET /api/queues/<qid>/members` | | `{members: [{public_id, name, role, maker, owner, reads_reports}], pending: [{id, github_login, role, created_at, legacy}]}`: the maker first (`maker` true, always `admin`), then in the order they were added; `owner` marks the owner, whose `public_id` is their viewer's (`*owner` before they have one). `reads_reports` is `false` for a member whose rights here hold no Comments `read` on a hosted Clax: the triage routes refuse them (403 `not_permitted`) until the owner gives them that right, since a person's rights, not their queue role, bound what they read; `true` for the owner and on a local Clax. `pending`: the GitHub logins added who have not signed in here yet, oldest first, each as GitHub spells it; `legacy` marks one added before invites named the GitHub account (it binds to whoever first signs in with the login; adding the login again ties it to the account); `github_logins` (`true` where people sign in with GitHub: a hosted Clax with GitHub sign-in, or a local one with `[github]`) says whether adding by login is offered |
 | `PUT /api/queues/<qid>/members/<public_id>`, `DELETE` the same | `{role}` (`admin` or `triage`) | 204: adds a connected, unrevoked person, or the owner (`*owner` or the owner's public ID), or changes their role; removes one. 404 `not_found` for anyone else; 400 `queue_maker` for the maker, who stays its admin |
-| `PUT /api/queues/<qid>/members` | `{github_login, role}` | 201 `{member}` (as `members` lists one) when a GitHub account with that login (a leading `@` dropped, any case) has signed in here: its person, or the owner, is a member at once at `role`, or takes it; else 201 `{invite: {id, github_login, role, created_at}}` (as `pending` lists one), which that account's first GitHub sign-in here makes a membership (adding it again changes its role). 400 `invalid_login`, `queue_maker` (the maker's login), `limit_reached` (100 waiting); 404 `not_found` for a blocked account's or a revoked person's; 409 `github_sign_in_off` where no one signs in with GitHub (as `github_logins` says), keeping nothing |
+| `PUT /api/queues/<qid>/members` | `{github_login, role}` | The login (a leading `@` dropped, any case) is first asked of GitHub ("Grants by GitHub login"), and the grant is the account it names now. 201 `{member}` (as `members` lists one) when that account (by its numeric ID) has signed in here: its person, or the owner, is a member at once at `role`, or takes it; else 201 `{invite: {id, github_login, role, created_at, legacy}}` (as `pending` lists one), which that account's first GitHub sign-in here makes a membership, under whatever login it has then (adding it again changes its role). 400 `invalid_login`, `unknown_github_login`, `github_login_moved`, `queue_maker` (the maker's login), `limit_reached` (100 waiting); 404 `not_found` for a blocked account's or a revoked person's; 409 `github_sign_in_off` where no one signs in with GitHub (as `github_logins` says); 429 `rate_limited`; 503 `github_unavailable`. Every error keeps nothing |
 | `DELETE /api/queues/<qid>/members/pending/<id>` | | 204: removes a login still waiting (`pending`'s `id`); one that is none changes nothing |
 
 Someone newly a member of a queue, by either `PUT` (at once, or at the
