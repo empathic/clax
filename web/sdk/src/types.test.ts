@@ -8,8 +8,8 @@ import type { ClaxErrorCode, QueueErrorCode } from "./types";
 const EVERY: Record<QueueErrorCode, true> = {
   invalid_token: true, token_expired: true, invalid_signature: true, stale_request: true, replayed_request: true,
   forbidden_origin: true, wrong_origin: true, limit_reached: true, body_too_large: true, busy: true, timeout: true,
-  invalid_origin: true, invalid_reporter_id: true, invalid_key: true, invalid_profile: true,
-  invalid_args: true, invalid_multipart: true, invalid_anchor: true, invalid_metadata: true, metadata_too_large: true,
+  invalid_origin: true, invalid_reporter_id: true, invalid_reporter_name: true, invalid_key: true, invalid_profile: true,
+  unsupported_media_type: true, invalid_args: true, invalid_multipart: true, invalid_anchor: true, invalid_metadata: true, metadata_too_large: true,
   invalid_clip: true, invalid_comment: true, invalid_context: true, invalid_diagnostics: true, invalid_query: true,
   external_artifact: true, not_found: true, not_fix_proposed: true,
   not_a_member: true, not_for_agents: true, not_claimable: true, claim_required: true, lease_lost: true,

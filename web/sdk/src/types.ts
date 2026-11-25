@@ -375,9 +375,11 @@ export type QueueErrorCode =
   // Minting a reporter token.
   | "invalid_origin"
   | "invalid_reporter_id"
+  | "invalid_reporter_name"
   | "invalid_key"
   | "invalid_profile"
   // Filing, reopening, commenting and reading.
+  | "unsupported_media_type"
   | "invalid_args"
   | "invalid_multipart"
   | "invalid_anchor"
