@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { lanBindSkip } from "./lan-bind";
 import { advance, fence, quietEval, until } from "./time";
 
 export { fence, until } from "./time";
@@ -340,8 +341,14 @@ const HELD = 'exec 3<&0; (cat <&3; kill -TERM $$) >/dev/null 2>&1 & exec "$@" </
  * `localhost` resolves to `::1` first, and another process (a Bazel server)
  * may listen on `[::1]` at the port the system gave the daemon on
  * `127.0.0.1`, where every request to `http://localhost:<port>` would reach
- * it: a daemon on such a port is stopped and another started. */
+ * it: a daemon on such a port is stopped and another started.
+ * On macOS a daemon on any address but loopback is skipped before it
+ * starts unless `CLAX_E2E_LAN=1` ([`lanBindSkip`]). */
 export async function startDaemon(opts: StartOpts = {}) {
+  // Only a test's own daemons name a bind (no worker fixture's does), so
+  // the skip is the test's.
+  const skip = lanBindSkip(opts.bind, process.platform, process.env);
+  if (opts.bind !== undefined) test.skip(skip !== null, skip ?? "");
   for (let tries = 1; ; tries++) {
     const d = await startOnce(opts);
     if (d) return d;

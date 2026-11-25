@@ -296,6 +296,17 @@ bazelisk test //web:e2e_rest --test_env=CLAX_E2E_BROWSERS=<dir> --test_arg=--ret
 (An option between `--project rest` and the file filter ends the
 project's list.)
 
+The tests of a person on the LAN start their daemon on `0.0.0.0`
+(`startDaemon({ bind })`, `web/e2e/fixtures.ts`). On macOS a test binary
+listening there makes the Application Firewall ask whether `clax` may
+accept incoming connections, and each build is a new binary, so there
+those tests skip before the daemon starts (`web/e2e/lan-bind.ts`), and
+the run says so once at its start, naming `CLAX_E2E_LAN`; on Linux, CI's,
+they run. To run them on a Mac and answer
+the prompt, set `CLAX_E2E_LAN=1` (natively) or pass
+`--test_env=CLAX_E2E_LAN=1` to `bazelisk test`. A Bazel target whose
+only skips are these still reads PASSED; its `test.log` lists them.
+
 ## The Clax app
 
 `apps/clax_app` (Flutter, for Android, macOS, iPhone and iPad) builds and tests under
