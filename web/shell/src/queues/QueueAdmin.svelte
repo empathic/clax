@@ -24,7 +24,15 @@
   // mints for its previews alone; the list names a limited grant's
   // origins. Each list is fetched
   // when the panel opens and after each change.
-  import { onMount } from "svelte";
+  // Each add, role change and removal is said in the Members status line,
+  // which says only the latest and is emptied when the next search is
+  // typed; a removal that took the focused row's button with it puts focus
+  // on "Add a person". A member whose rights here do not read comments
+  // (`reads_reports: false`, a hosted Clax's person) is refused the queue's
+  // reports whatever their role, so their row and the add's note say so.
+  // A row's parts are spoken apart (" · "), and each row's buttons name
+  // whom or what they act on.
+  import { onMount, tick } from "svelte";
   import * as api from "./api";
   import Installs from "./Installs.svelte";
   import { containerPath, deployments, installTag, type OverlayPin, refusal } from "./model";
@@ -52,9 +60,20 @@
   // Whether people sign in here with GitHub (a hosted Clax): adding by
   // login is offered only then.
   let byLogin = $state(false);
-  // What the last add did, said to a screen reader too.
+  // What the last add, role change or removal did, said to a screen reader too.
   let memberNote = $state<string | null>(null);
-  const loadMembers = () => api.listMembers(qid).then(b => { members = b.members; pending = b.pending ?? []; byLogin = b.github_logins === true; }, x => { memberErr = `Could not load the members: ${refusal(x)}`; });
+  let findBox: HTMLInputElement | undefined = $state();
+  /** Says `text` in the status line in place of what it said, emptied
+   * first so the same words are said again. */
+  const say = (text: string) => { memberNote = null; queueMicrotask(() => { memberNote = text; }); };
+  /** Why member `m` reads none of the queue's reports, or "". */
+  const cannotRead = (m: api.QueueMember) => (m.reads_reports === false ? `${nameOf(m)} cannot read this queue's reports until the owner lets them read comments, in Settings › People.` : "");
+  /** After a removal: focus, gone with its row, goes to "Add a person". */
+  async function refocus() {
+    await tick();
+    if (!document.activeElement || document.activeElement === document.body) findBox?.focus();
+  }
+  const loadMembers = () =>api.listMembers(qid).then(b => { members = b.members; pending = b.pending ?? []; byLogin = b.github_logins === true; }, x => { memberErr = `Could not load the members: ${refusal(x)}`; });
   /** The GitHub login the text offers to add: any login after `@`, or a
    * login the search found no one by; none where no one signs in with
    * GitHub. */
@@ -63,7 +82,7 @@
 
   const nameOf = (m: { name?: string | null; owner?: boolean; public_id: string }) => m.name ?? (m.owner ? "The owner" : m.public_id);
   async function search(text: string) {
-    find = text; chosen = null;
+    find = text; chosen = null; memberNote = null;
     const n = ++asked;
     // `@login` names a GitHub account, not someone to find by name.
     if (!text.trim() || (byLogin && text.trim().startsWith("@"))) { found = null; return; }
@@ -79,34 +98,46 @@
     e.preventDefault();
     if (!chosen && !login) return;
     memberErr = null; memberNote = null;
+    let said: string | null = null;
     try {
       if (chosen) {
-        await api.setMember(qid, chosen.public_id, role);
-        memberNote = `Added ${nameOf(chosen)}.`;
+        const pid = chosen.public_id, name = nameOf(chosen);
+        await api.setMember(qid, pid, role);
+        chosen = null; find = ""; found = null;
+        await loadMembers();
+        const m = members?.find(x => x.public_id === pid);
+        said = [`Added ${name}.`, m ? cannotRead(m) : ""].filter(Boolean).join(" ");
       } else if (login) {
         const b = await api.addMemberByLogin(qid, login, role);
-        memberNote = b.member ? `Added ${nameOf(b.member)} (@${login}).` : `@${login} becomes a member when they first sign in here with GitHub.`;
+        said = b.member ? [`Added ${nameOf(b.member)} (@${login}).`, cannotRead(b.member)].filter(Boolean).join(" ") : `@${login} becomes a member when they first sign in here with GitHub.`;
+        chosen = null; find = ""; found = null;
+        await loadMembers();
       }
-      chosen = null; find = ""; found = null;
-    } catch (x) { memberErr = refusal(x); }
-    await loadMembers();
+    } catch (x) { memberErr = refusal(x); await loadMembers(); }
+    if (said) say(said);
   }
   async function removeWaiting(w: api.PendingMember) {
     if (!confirm(`Remove @${w.github_login} from ${p.queue.name}?`)) return;
     memberErr = null; memberNote = null;
-    try { await api.removePending(qid, w.id); } catch (x) { memberErr = refusal(x); }
+    let ok = false;
+    try { await api.removePending(qid, w.id); ok = true; } catch (x) { memberErr = refusal(x); }
     await loadMembers();
+    if (ok) { say(`Removed @${w.github_login}'s invitation.`); await refocus(); }
   }
   async function changeRole(m: api.QueueMember, r: api.QueueRole) {
-    memberErr = null;
-    try { await api.setMember(qid, m.public_id, r); } catch (x) { memberErr = refusal(x); }
+    memberErr = null; memberNote = null;
+    let ok = false;
+    try { await api.setMember(qid, m.public_id, r); ok = true; } catch (x) { memberErr = refusal(x); }
     await loadMembers();
+    if (ok) say(`${nameOf(m)} is now ${r === "admin" ? "Admin" : "Triage"}.`);
   }
   async function removeMember(m: api.QueueMember) {
     if (!confirm(`Remove ${nameOf(m)} from ${p.queue.name}?`)) return;
-    memberErr = null;
-    try { await api.removeMember(qid, m.public_id); } catch (x) { memberErr = refusal(x); }
+    memberErr = null; memberNote = null;
+    let ok = false;
+    try { await api.removeMember(qid, m.public_id); ok = true; } catch (x) { memberErr = refusal(x); }
     await loadMembers();
+    if (ok) { say(`Removed ${nameOf(m)}.`); await refocus(); }
   }
   async function makeGrant(e: Event) {
     e.preventDefault();
@@ -191,15 +222,16 @@
       <ul class="lines">
         {#each members as m (m.public_id)}
           <li class="line" data-member={m.public_id}>
-            <span class="who">{nameOf(m)}{#if m.maker}<span class="key">made this queue</span>{:else if m.name}<span class="key">{m.public_id}</span>{/if}</span>
+            <span class="who">{nameOf(m)}{#if m.maker}<span class="key">{" · made this queue"}</span>{:else if m.name}<span class="key">{` · ${m.public_id}`}</span>{/if}</span>
             {#if m.maker}
               <span class="fixed">Admin</span>
             {:else}
               <select aria-label={`Role of ${nameOf(m)}`} value={m.role} onchange={e => void changeRole(m, e.currentTarget.value as api.QueueRole)}>
                 <option value="triage">Triage</option><option value="admin">Admin</option>
               </select>
-              <button type="button" class="ghost danger" onclick={() => void removeMember(m)}>Remove</button>
+              <button type="button" class="ghost danger" aria-label={`Remove ${nameOf(m)}`} onclick={() => void removeMember(m)}>Remove</button>
             {/if}
+            {#if cannotRead(m)}<span class="cant">{cannotRead(m)}</span>{/if}
           </li>
         {/each}
       </ul>
@@ -220,7 +252,7 @@
     <form class="add" onsubmit={addMember}>
       <div class="field pick">
         <label for={`qa-find-${qid}`}>Add a person</label>
-        <input id={`qa-find-${qid}`} name="person" autocomplete="off" spellcheck="false" placeholder={byLogin ? "Name, public ID or @github-login" : "Name or public ID"} value={find} oninput={e => void search(e.currentTarget.value)} />
+        <input id={`qa-find-${qid}`} bind:this={findBox} name="person" autocomplete="off" spellcheck="false" placeholder={byLogin ? "Name, public ID or @github-login" : "Name or public ID"} value={find} oninput={e => void search(e.currentTarget.value)} />
         {#if found?.length}
           <ul class="found" aria-label="People found">
             {#each found as f (f.public_id)}
@@ -258,7 +290,7 @@
       <ol class="lines" aria-label={`Who answers ${p.queue.name}`}>
         {#each responders as r, i (responderName(r))}
           <li class="line" data-responder={i}>
-            <span class="who">{i === 0 ? "First: " : ""}{responderName(r)}{#if responderNote(r)}<span class="key">{responderNote(r)}</span>{/if}</span>
+            <span class="who">{i === 0 ? "First: " : ""}{responderName(r)}{#if responderNote(r)}<span class="key">{` · ${responderNote(r)}`}</span>{/if}</span>
             {#if i > 0}<button type="button" class="ghost" aria-label={`Move ${responderName(r)} up`} onclick={() => moveUp(i)}>Move up</button>{/if}
             <button type="button" class="ghost danger" aria-label={`Remove ${responderName(r)}`} onclick={() => dropResponder(i)}>Remove</button>
           </li>
@@ -299,8 +331,8 @@
       <ul class="lines">
         {#each grants as g (g.id)}
           <li class="line" data-grant={g.id}>
-            <span class="who">{g.name}<span class="key">made {day(g.created_at)}</span>{#if g.origins}<span class="key limit">{g.origins.every(o => o.includes("*")) ? "previews" : "only"}: {g.origins.join(", ")}</span>{/if}</span>
-            <button type="button" class="ghost danger" onclick={() => void revoke(g)}>Revoke</button>
+            <span class="who">{g.name}<span class="key">{` · made ${day(g.created_at)}`}</span>{#if g.origins}<span class="key limit">{` · ${g.origins.every(o => o.includes("*")) ? "previews" : "only"}: ${g.origins.join(", ")}`}</span>{/if}</span>
+            <button type="button" class="ghost danger" aria-label={`Revoke ${g.name}`} onclick={() => void revoke(g)}>Revoke</button>
           </li>
         {/each}
       </ul>
@@ -337,6 +369,7 @@
   .found button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; justify-content: flex-start; text-align: left; color: var(--fg); }
   .found .av { border-radius: 50%; flex: none; }
   .fixed { color: var(--muted); font-size: 13px; }
+  .cant { flex-basis: 100%; color: var(--danger); font-size: 12.5px; }
   @media (pointer: coarse) { .found button { min-height: 44px; } }
   .hint, .none { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
   .err { margin: 6px 0 0; color: var(--danger); font-size: 13px; }
