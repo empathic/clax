@@ -130,8 +130,14 @@ export function reporterName(r: Pick<Report, "reporter_profile" | "reporter_id">
   const p = r.reporter_profile;
   return p?.name?.trim() || (p?.github ? `@${p.github}` : "") || r.reporter_id || "Anonymous";
 }
+/** Who holds a claim, as members read it: "Mia's agent (claude)" when the
+ * claiming session is a person's agent, else the session's name. */
+export function claimHolder(c: Pick<NonNullable<Report["claim"]>, "holder_name" | "person_name">): string {
+  const who = c.person_name?.trim();
+  return who ? `${who}'s agent (${c.holder_name})` : c.holder_name;
+}
 /** The note `r` was filed with: its first comment. */
-export const noteOf = (r: Pick<Report, "comments">): string => r.comments[0]?.body ?? "";
+export const noteOf =(r: Pick<Report, "comments">): string => r.comments[0]?.body ?? "";
 
 /** The first line of `r`'s note with any text, trimmed. */
 export const firstLine = (r: Pick<Report, "comments">): string => noteOf(r).split(/\r?\n/).find(l => l.trim())?.trim() ?? "";
