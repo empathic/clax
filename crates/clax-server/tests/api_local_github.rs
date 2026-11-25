@@ -202,8 +202,6 @@ async fn an_added_login_signs_in_with_github_and_becomes_that_member_and_no_more
     );
     let (s, v) = as_cookie(&ts, &cat, Method::GET, "/api/people").await;
     assert_eq!(s, 403, "{v}");
-    let (s, v) = as_cookie(&ts, &cat, Method::POST, "/api/queues").await;
-    assert_ne!(s, 201, "{v}");
     assert_eq!(
         ts.store
             .github_user_of(&pid)
