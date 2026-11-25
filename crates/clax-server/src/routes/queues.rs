@@ -47,6 +47,7 @@ use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
 use clax_core::model::Viewer;
 use clax_core::queue::{ReportersSee, Role};
+use clax_core::rights::RightType;
 use clax_http::agent::{Agent, DeniedToGrants, QueuesList};
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
@@ -382,30 +383,54 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Whether member key `p` reads the queue's reports by their rights here:
+/// on a hosted Clax a person's browser is held to their rights (Settings ›
+/// People) before their queue role is asked, as their agents are, and the
+/// triage routes ask Comments `read` somewhere (`QueueReportsList`,
+/// `QueueReportGet`); the owner, and anyone on a local Clax, whose
+/// browser is not held to them, reads. Membership does not stand in for
+/// that right: the owner's narrowing of a person's rights holds on every
+/// queue, whoever administers it.
+///
+/// # Errors
+/// The store's.
+fn reads_reports(st: &Store, p: &str, hosted: bool) -> clax_core::Result<bool> {
+    if !hosted || p == OWNER_MEMBER {
+        return Ok(true);
+    }
+    match st.person_rights(p) {
+        Ok(r) => Ok(r.allows_somewhere(RightType::Comments, "read")),
+        Err(CoreError::NotFound) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// One member of a queue as its listing shows them: `{public_id, name,
-/// role, maker, owner}` for member key `p` ([`clax_store::queues::member_key`]),
-/// `maker` the queue maker's key, `owner` the owner's viewer and `viewers`
-/// the people's, to name them by.
+/// role, maker, owner, reads_reports}` for member key `p`
+/// ([`clax_store::queues::member_key`]), `maker` the queue maker's key,
+/// `owner` the owner's viewer and `viewers` the people's, to name them by;
+/// `reads` whether their rights read its reports ([`reads_reports`]).
 fn member_view(
     p: &str,
     role: Role,
     maker: &str,
     owner: Option<&Viewer>,
     viewers: &[Viewer],
+    reads: bool,
 ) -> Value {
     let is_maker = p == maker;
     if p == OWNER_MEMBER {
         let id = owner.map_or(OWNER_MEMBER, |o| o.public_id.as_str());
         let name = owner.and_then(|o| o.display_name.clone());
         return json!({"public_id": id, "name": name, "role": role,
-                      "maker": is_maker, "owner": true});
+                      "maker": is_maker, "owner": true, "reads_reports": reads});
     }
     let name = viewers
         .iter()
         .find(|v| v.public_id == p)
         .and_then(|v| v.display_name.clone());
     json!({"public_id": p, "name": name, "role": role,
-           "maker": is_maker, "owner": false})
+           "maker": is_maker, "owner": false, "reads_reports": reads})
 }
 
 /// The member key of queue `qid`'s maker.
@@ -418,11 +443,14 @@ fn maker_of(st: &Store, qid: &str) -> clax_core::Result<String> {
 }
 
 /// `GET /api/queues/<qid>/members` → `{members: [{public_id, name, role,
-/// maker, owner}], pending: [{id, github_login, role, created_at}]}`: an
-/// admin reads the queue's members, its maker first (`maker` true, always
-/// `admin`), then in the order they were added. `name` is the person's
-/// display name, or `null`; `owner` marks the owner, whose `public_id` is
-/// their viewer's (`*owner` before they have one). `pending` are the
+/// maker, owner, reads_reports}], pending: [{id, github_login, role,
+/// created_at}]}`: an admin reads the queue's members, its maker first
+/// (`maker` true, always `admin`), then in the order they were added.
+/// `name` is the person's display name, or `null`; `owner` marks the owner,
+/// whose `public_id` is their viewer's (`*owner` before they have one).
+/// `reads_reports` is false for a member whose rights here do not read
+/// comments, who is refused the queue's reports (403 `not_permitted`)
+/// until the owner gives them that right ([`reads_reports`]). `pending` are the
 /// GitHub logins added who have not signed in here yet, oldest first;
 /// `github_logins` says whether people sign in here with GitHub (a hosted
 /// Clax with GitHub sign-in, or a local one with `[github]`:
@@ -437,6 +465,7 @@ pub async fn members(
     let a = admin_person(&s, &d).await?;
     let qid = path(qid)?;
     admin_of(&s, &qid, a).await?;
+    let hosted = s.hosted.is_some();
     let (members, pending) = s
         .store_call(move |st| {
             let maker = maker_of(st, &qid)?;
@@ -446,8 +475,11 @@ pub async fn members(
             let viewers = st.viewers_by_public_ids(&ids)?;
             let members = rows
                 .into_iter()
-                .map(|(p, role)| member_view(&p, role, &maker, owner.as_ref(), &viewers))
-                .collect::<Vec<_>>();
+                .map(|(p, role)| {
+                    let reads = reads_reports(st, &p, hosted)?;
+                    Ok(member_view(&p, role, &maker, owner.as_ref(), &viewers, reads))
+                })
+                .collect::<clax_core::Result<Vec<_>>>()?;
             Ok((members, st.queue_invites(&qid)?))
         })
         .await?;
@@ -501,6 +533,7 @@ pub async fn add_member(
             "no one signs in to this Clax with GitHub, so a GitHub login added here would never become a member: turn on GitHub sign-in ([github] in config.toml), or add a connected person by name",
         ));
     }
+    let hosted = s.hosted.is_some();
     let v = s
         .store_call(move |st| {
             Ok(
@@ -509,7 +542,8 @@ pub async fn add_member(
                         let maker = maker_of(st, &qid)?;
                         let owner = st.owner()?;
                         let viewers = st.viewers_by_public_ids(std::slice::from_ref(&key))?;
-                        json!({"member": member_view(&key, role, &maker, owner.as_ref(), &viewers)})
+                        let reads = reads_reports(st, &key, hosted)?;
+                        json!({"member": member_view(&key, role, &maker, owner.as_ref(), &viewers, reads)})
                     }
                     AddedByLogin::Invite(i) => json!({ "invite": i }),
                 },

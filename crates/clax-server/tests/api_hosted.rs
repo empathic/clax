@@ -10144,6 +10144,78 @@ async fn a_queue_wake_reaches_a_members_agent_whole_only_when_it_reads_reports()
     );
 }
 
+/// A triage member whose rights here do not read comments is refused the
+/// queue's reports in their browser (403 `not_permitted`), and the members
+/// listing says so (`reads_reports: false`) so the admin can tell; once the
+/// owner gives them comment reading, the listing says `true` and they list
+/// the reports. Membership is not the right: a person who reads comments
+/// but is no member is still 404 `not_a_member`.
+#[tokio::test]
+async fn a_member_whose_rights_do_not_read_comments_is_listed_as_not_reading_reports() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (lee, lee_pid) = site.person_with(&owner, "Lee", json!([])).await;
+    let reads = json!([{"type": "clax-comments", "actions": ["read", "reply"], "locations": ["*"]}]);
+    let (sam, _) = site.person_with(&owner, "Sam", reads.clone()).await;
+    let (s, v) = site
+        .post(
+            &owner,
+            "/api/queues",
+            json!({"name": "App reports", "origins": ["https://app.example.com"], "reporters_see": "own"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let qid = v["queue"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/queues/{qid}/members/{lee_pid}"),
+            json!({"role": "triage"}),
+        )
+        .await;
+    assert!(s < 300, "{s} {v}");
+    let listed = |v: &Value, pid: &str| {
+        v["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["public_id"] == pid)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let members = format!("/api/queues/{qid}/members");
+    let reports = format!("/api/queues/{qid}/reports");
+
+    let (s, v) = site.get(&owner, &members).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(listed(&v, &lee_pid)["reads_reports"], false, "{v}");
+    assert_eq!(v["members"][0]["owner"], true, "{v}");
+    assert_eq!(v["members"][0]["reads_reports"], true, "{v}");
+    let (s, v) = site.get(&lee, &reports).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (403, Some("not_permitted")), "{v}");
+
+    // A person who reads comments but is no member reads none of it.
+    let (s, v) = site.get(&sam, &reports).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (404, Some("not_a_member")), "{v}");
+
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/people/{lee_pid}/rights"),
+            json!({"rights": reads}),
+        )
+        .await;
+    assert!(s < 300, "{s} {v}");
+    let (s, v) = site.get(&owner, &members).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(listed(&v, &lee_pid)["reads_reports"], true, "{v}");
+    let (s, v) = site.get(&lee, &reports).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["reports"], json!([]), "{v}");
+}
+
 // Queue requests on a hosted Clax (`routes::queue_requests`): a scoped
 // device sign-in's token asks a member for a report queue and does nothing
 // else; an ordinary agent token asks too; the member answers in their

@@ -254,11 +254,11 @@ async fn members_hold_the_role_an_admin_gives_them() {
     assert_eq!(s, 200, "{v}");
     let owner = w.ts.store.owner().unwrap().unwrap();
     let maker = json!({"public_id": owner.public_id, "name": owner.display_name,
-                       "role": "admin", "maker": true, "owner": true});
+                       "role": "admin", "maker": true, "owner": true, "reads_reports": true});
     assert_eq!(
         v["members"],
         json!([maker, {"public_id": w.sam_public, "name": "Sam", "role": "triage",
-                        "maker": false, "owner": false}]),
+                        "maker": false, "owner": false, "reads_reports": true}]),
         "the maker first, as its admin"
     );
     let (_, v) = browser(&w.ts, &w.sam, Method::GET, "/api/queues", None).await;
@@ -438,7 +438,8 @@ async fn members_are_added_by_github_login_at_once_or_pending_and_told_in_their_
     assert_eq!(s, 201, "{v}");
     assert_eq!(
         v["member"],
-        json!({"public_id": mia, "name": "Mia", "role": "triage", "maker": false, "owner": false})
+        json!({"public_id": mia, "name": "Mia", "role": "triage", "maker": false, "owner": false,
+               "reads_reports": true})
     );
 
     // Sam, added by public ID, is told in their inbox; a role change is no
@@ -617,7 +618,7 @@ async fn the_owner_oversees_every_queue_and_joins_one_like_anyone() {
     assert_eq!(
         v["members"][1],
         json!({"public_id": owner.public_id, "name": owner.display_name,
-               "role": "triage", "maker": false, "owner": true})
+               "role": "triage", "maker": false, "owner": true, "reads_reports": true})
     );
     let (_, v) = browser(&w.ts, &w.owner, Method::GET, "/api/queues", None).await;
     assert_eq!(
