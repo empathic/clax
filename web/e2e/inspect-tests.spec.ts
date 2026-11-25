@@ -7,7 +7,7 @@
 // page's own markup never runs and the harness imports an app bundle's
 // `migrate.js` and calls it with the page's `db`. The app's side is
 // ./app-host.ts.
-import type { Page } from "@playwright/test";
+import type { Frame, Page } from "@playwright/test";
 import { host, hostChannel, initHost, ofType, type HostMessage } from "./app-host";
 import { test, expect, type Daemon, api, contentFrame } from "./fixtures";
 
@@ -69,12 +69,16 @@ const WRITES_ON_LOAD = `<!doctype html><html><head><title>Boot</title>
 <script type="module">const db = await window.claude.use("db"); await db.doc("boot/seen").set({ at: 1 });</script>
 <script>document.title = "ran";</script></head><body><button id="add">Add one</button></body></html>`;
 
-// A migration that keeps writing until its document goes away.
+// A migration that never ends: it writes, then waits for the test to let
+// it write again (window.claxTick()), until its document goes away.
 const TICKS = `export default async function migrate(db) {
-  for (let i = 1; ; i++) { await db.doc("ticks/t").set({ i }); await new Promise(r => setTimeout(r, 20)); }
+  for (let i = 1; ; i++) { await db.doc("ticks/t").set({ i }); await new Promise(r => { window.claxTick = r; }); }
 }`;
 
 const MIGRATE_VIEW = "?app=1&inspect=1&migrate=1";
+/** The longest time a test run and a migration run may have (bridge/src/harness.ts). */
+const TOTAL_MAX_MS = 120_000;
+const MIGRATE_MAX_MS = 120_000;
 
 // A viewer's own document and a shared one, before the update.
 const SEED = `export default async function seed(db) {
@@ -109,15 +113,21 @@ const ticks = async (id: string) => ((await api(d.base, d.token, `/api/artifacts
 /** `ticks`, or null before the migration's first write. */
 const ticksOrNull = (id: string) => ticks(id).catch((e: Error) => { if (e.message.includes(": 404 ")) return null; throw e; });
 
-async function runTests(page: Page, id: string, mode: "subdomain" | "sandbox", call: string, answer = "tests", query = "?app=1&inspect=1"): Promise<Tests> {
+/** Opens `id`'s view at `query` in `mode`, the app's host ready; its frame. */
+async function openView(page: Page, id: string, mode: "subdomain" | "sandbox", query: string): Promise<Frame> {
   if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
   await hostChannel(page);
   await page.goto(`${d.base}/a/${id}${query}`);
-  await contentFrame(page, id, 1);
+  const frame = await contentFrame(page, id, 1);
   await initHost(page);
   await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+  return frame;
+}
+
+async function runTests(page: Page, id: string, mode: "subdomain" | "sandbox", call: string, answer = "tests", query = "?app=1&inspect=1"): Promise<Tests> {
+  await openView(page, id, mode, query);
   await host(page, call);
-  await expect.poll(async () => (await ofType(page, answer)).length, { timeout: 30_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => (await ofType(page, answer)).length).toBeGreaterThan(0);
   return (await ofType(page, answer))[0] as Tests;
 }
 
@@ -147,25 +157,30 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 
   test(`${mode}: a migration over its time is reported, and stops writing once its view is loaded again`, async ({ page }) => {
     const id = await draft({ "index.html": PAGE, "migrate.js": TICKS });
-    // The time covers loading migrate.js and the page's db too, so it is long
-    // enough for both on a loaded machine; the migration never ends, so it
-    // always runs over.
-    const r = await runTests(page, id, mode, `runMigration({ file: "migrate.js", from: 1, to: 2, totalMs: 3000 })`, "migration", MIGRATE_VIEW);
-    expect(r).toEqual({ type: "migration", ok: false, error: "it took longer than 3000 ms" });
-    // Past its time it still writes: the bridge cannot stop it. Its first
-    // write can land after the answer.
+    // The page's clocks are Playwright's (they still run in real time), so
+    // the test moves the run past its time once it is running. The time is
+    // the longest a run may have, as long as the test's own hang guard: on
+    // no machine does loading migrate.js and the page's db use it up.
+    await page.clock.install();
+    const frame = await openView(page, id, mode, MIGRATE_VIEW);
+    await host(page, `runMigration({ file: "migrate.js", from: 1, to: 2, totalMs: ${MIGRATE_MAX_MS} })`);
+    // The migration is running: its first write has landed, and it waits.
     await expect.poll(async () => (await ticksOrNull(id))?.version ?? 0).toBeGreaterThan(0);
+    await page.clock.fastForward(MIGRATE_MAX_MS);
+    await expect.poll(async () => (await ofType(page, "migration")).length).toBeGreaterThan(0);
+    expect((await ofType(page, "migration"))[0]).toEqual({ type: "migration", ok: false, error: `it took longer than ${MIGRATE_MAX_MS} ms` });
+    // Past its time it still writes: the bridge cannot stop it.
     const late = (await ticks(id)).version;
+    await expect.poll(() => frame.evaluate(() => typeof (window as unknown as { claxTick?: unknown }).claxTick)).toBe("function");
+    await frame.evaluate(() => (window as unknown as { claxTick(): void }).claxTick());
     await expect.poll(async () => (await ticks(id)).version).toBeGreaterThan(late);
-    // The app loads the view again, as WebViewInspector.runMigration does.
-    await page.goto(`${d.base}/a/${id}${MIGRATE_VIEW}`);
-    await contentFrame(page, id, 1);
-    await initHost(page);
-    await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
-    const after = (await ticks(id)).version;
-    // A run still going would write every 20 ms; none comes in ten times that.
-    await page.waitForTimeout(200);
-    expect((await ticks(id)).version).toBe(after);
+    // Its write has landed and it waits for the next, so none is under way.
+    const last = (await ticks(id)).version;
+    // The app loads the view again, as WebViewInspector.runMigration does:
+    // the run's document is gone, and nothing it began is left to write.
+    await reopen(page, id);
+    expect(frame.isDetached()).toBe(true);
+    expect((await ticks(id)).version).toBe(last);
   });
 
   test(`${mode}: a journaled migration that fails part way is put back from its journal, the viewer's data/users documents included`, async ({ page }) => {
@@ -192,7 +207,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         await host(page, `journalAck({ seq: ${j.seq}, ok: true })`);
       }
       return (await ofType(page, "migration")).length;
-    }, { timeout: 30_000 }).toBeGreaterThan(0);
+    }).toBeGreaterThan(0);
     expect((await ofType(page, "migration"))[0]).toEqual({ type: "migration", ok: false, error: "the migration failed: half way" });
     expect(entries).toEqual([
       { path: `data/users/${me}/profile`, before: { v: 1 } },
@@ -202,10 +217,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // The app loads the view again and replays the journal.
     await reopen(page, id);
     await host(page, `restoreJournal(${JSON.stringify({ entries })})`);
-    await expect.poll(async () => ofType(page, "journalRestored"), { timeout: 30_000 }).toEqual([{ type: "journalRestored", ok: true }]);
+    await expect.poll(async () => ofType(page, "journalRestored")).toEqual([{ type: "journalRestored", ok: true }]);
     await reopen(page, id);
     await host(page, `runMigration({ file: "check.js", from: 1, to: 2 })`);
-    await expect.poll(async () => ofType(page, "migration"), { timeout: 30_000 }).toEqual([{ type: "migration", ok: true }]);
+    await expect.poll(async () => ofType(page, "migration")).toEqual([{ type: "migration", ok: true }]);
     const { doc } = await api(d.base, d.token, `/api/artifacts/${id}/docs/check/out`) as { doc: { data: unknown } };
     expect(doc.data).toEqual({ profile: { v: 1 }, extra: false, n: 1 });
   });
@@ -218,7 +233,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 
   test(`${mode}: failures, a test over its limit and a file that does not load are reported`, async ({ page }) => {
     const id = await draft({ "index.html": PAGE, "tests/bad.test.js": FAILING });
-    const r = await runTests(page, id, mode, `runTests({ files: ["tests/bad.test.js", "tests/missing.test.js"], testMs: 500 })`);
+    // The run may take as long as the test's own hang guard, so loading its
+    // files never runs it out: only "hangs" runs over, its 500 ms however
+    // long a loaded machine takes.
+    const r = await runTests(page, id, mode, `runTests({ files: ["tests/bad.test.js", "tests/missing.test.js"], testMs: 500, totalMs: ${TOTAL_MAX_MS} })`);
     expect(r.passed).toBe(0);
     expect(r.skipped).toBe(0);
     expect(r.failed).toEqual([

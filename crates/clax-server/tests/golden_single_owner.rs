@@ -48,13 +48,12 @@ use clax_core::Tier;
 use clax_core::model::Session;
 use clax_core::working::ManualClock;
 use clax_mcp::{ClaxTools, DaemonClient};
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, within};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// The fixture's file name in `tests/fixtures/`.
 pub const FIXTURE: &str = "single-owner-21.sql";
@@ -72,8 +71,6 @@ pub const TIERS: [Tier; 6] = [
     Tier::Queue,
     Tier::Inject,
 ];
-/// Longest a client process may run before the collection fails.
-const CLIENT_LIMIT: Duration = Duration::from_secs(30);
 
 fn fixtures_dir() -> PathBuf {
     clax_testkit::fixtures_dir()
@@ -141,7 +138,14 @@ impl Minted {
         let mut c = tokio::process::Command::new(clax_fake_exe::clax_bin(None));
         c.args(args)
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .env(
+                "PATH",
+                clax_fake_exe::path_without(
+                    "/usr/bin:/bin",
+                    &self.scratch.path().join("system-path"),
+                    &["clax"],
+                ),
+            )
             .env("HOME", self.scratch.path())
             .env("TMPDIR", self.scratch.path())
             .env("CLAX_HOME", home)
@@ -158,7 +162,7 @@ impl Minted {
     }
 
     /// Runs `cmd` with `stdin`, recording its PID; its stdout, after
-    /// asserting it exited 0 within [`CLIENT_LIMIT`].
+    /// asserting it exited 0 within the [`clax_testkit::HANG`] guard.
     async fn run(&mut self, mut cmd: tokio::process::Command, stdin: &str) -> String {
         use tokio::io::AsyncWriteExt;
         let mut child = cmd.spawn().expect("spawn clax");
@@ -168,9 +172,8 @@ impl Minted {
         let mut input = child.stdin.take().unwrap();
         input.write_all(stdin.as_bytes()).await.unwrap();
         drop(input);
-        let out = tokio::time::timeout(CLIENT_LIMIT, child.wait_with_output())
+        let out = within("the client's exit", child.wait_with_output())
             .await
-            .expect("the client finished in time")
             .unwrap();
         assert!(
             out.status.success(),
@@ -910,8 +913,10 @@ async fn golden_now() -> Value {
 /// frames an artifact on, on every install. An artifact's
 /// `capabilities_in_force`, and for the owner `may_approve` and
 /// `pending_capabilities`, say what of its declaration its owner approved,
-/// on every install.
-pub const ADDITIVE_KEYS: [&str; 26] = [
+/// on every install. An artifact's `content_security_policy` says what
+/// `Content-Security-Policy` Clax sends on its own content, on every
+/// install.
+pub const ADDITIVE_KEYS: [&str; 27] = [
     "owner",
     "taken_by",
     "name",
@@ -938,6 +943,7 @@ pub const ADDITIVE_KEYS: [&str; 26] = [
     "capabilities_in_force",
     "may_approve",
     "pending_capabilities",
+    "content_security_policy",
 ];
 
 /// Whether `v`, the value of item 6's key `key` that the golden lacks, is
@@ -954,7 +960,8 @@ pub const ADDITIVE_KEYS: [&str; 26] = [
 /// artifact made before apps has its Comments switch on and no bundle); an
 /// artifact's `capabilities_in_force` a declaration, `may_approve` true and
 /// `pending_capabilities` null (the golden's artifacts declare nothing
-/// that needs approval).
+/// that needs approval); an artifact's `content_security_policy` `self`
+/// (every artifact made before the setting is).
 pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
     let owners_agent = |a: &Value| {
         a.is_null()
@@ -986,6 +993,7 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "capabilities_in_force" => v.is_object(),
         "may_approve" => *v == json!(true),
         "pending_capabilities" => v.is_null(),
+        "content_security_policy" => *v == json!("self"),
         _ => false,
     }
 }

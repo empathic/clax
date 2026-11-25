@@ -17,7 +17,7 @@ def _warm_binary_impl(ctx):
     ctx.actions.run_shell(
         inputs = [bin],
         outputs = [stamp],
-        command = '"$1" --version >/dev/null && shasum -a 256 "$1" | cut -d" " -f1 > "$2"',
+        command = '"$1" --version >/dev/null && { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi; } | cut -d" " -f1 > "$2"',
         arguments = [bin.path, stamp.path],
         mnemonic = "WarmBinary",
         progress_message = "Running %{input} once",

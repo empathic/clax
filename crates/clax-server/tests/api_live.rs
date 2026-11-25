@@ -210,34 +210,29 @@ async fn a_page_title_is_stored_without_control_characters_collapsed_and_cut() {
 }
 
 #[tokio::test]
-async fn the_daemons_own_origin_and_other_schemes_are_refused() {
+async fn the_daemons_own_pages_are_live_pages_and_other_schemes_are_refused() {
     let ts = TestServer::spawn().await;
     let v = ts.viewer(Some("Alex")).await;
     let port = ts.addr.port();
     for own in [
+        format!("http://localhost:{port}/"),
+        format!("http://localhost:{port}/settings"),
         format!("http://localhost:{port}/a/7q3k9mzx2b4t"),
-        format!("http://127.0.0.1:{port}/"),
-        format!("http://[::1]:{port}/"),
+        format!("http://127.0.0.1:{port}/x"),
+        format!("http://[::1]:{port}/y"),
         format!("http://7q3k9mzx2b4t.localhost:{port}/_clax/v/1/"),
     ] {
         let res = post_thread(&ts, &v.cookie, &own, "<p>").await;
-        assert_eq!(res.status(), 400, "{own}");
-        assert_eq!(
-            res.json::<Value>().await.unwrap()["error"]["code"],
-            "own_origin",
-            "{own}"
-        );
+        assert_eq!(res.status(), 201, "{own}");
         let res = ts
             .get(&format!("/api/live/pages?url={}", urlencode(&own)))
             .await;
-        assert_eq!(res.status(), 400, "{own}");
+        assert_eq!(res.status(), 200, "{own}");
+        assert!(
+            !res.json::<Value>().await.unwrap()["page"].is_null(),
+            "{own}"
+        );
     }
-    // Another port on this machine is a page like any other.
-    let other = format!("http://localhost:{}/", port.wrapping_add(1));
-    assert_eq!(
-        post_thread(&ts, &v.cookie, &other, "<p>").await.status(),
-        201
-    );
     let res = post_thread(&ts, &v.cookie, "file:///etc/passwd", "<p>").await;
     assert_eq!(res.status(), 400);
     assert_eq!(
@@ -471,7 +466,7 @@ async fn a_deleted_live_page_is_made_afresh_by_the_next_comment() {
 }
 
 /// The next SSE event of `stream` other than keep-alive comments, as
-/// (name, data), within 20 s; `ready` too when `with_ready`.
+/// (name, data); `ready` too when `with_ready`.
 async fn next_block(
     stream: &mut (impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin),
     buf: &mut String,
@@ -496,9 +491,8 @@ async fn next_block(
                 .unwrap_or("null");
             return (name, serde_json::from_str(data).unwrap());
         }
-        let chunk = tokio::time::timeout(std::time::Duration::from_secs(20), stream.next())
+        let chunk = clax_testkit::within("an SSE event", stream.next())
             .await
-            .expect("an event within 20 s")
             .expect("stream open")
             .unwrap();
         buf.push_str(std::str::from_utf8(&chunk).unwrap());
@@ -714,33 +708,6 @@ async fn a_lan_viewer_learns_nothing_of_live_pages_through_the_viewer_routes() {
             .unwrap();
         assert_eq!(res.status(), 404, "{path}");
     }
-}
-
-#[tokio::test]
-async fn loopback_and_unspecified_addresses_on_the_daemons_port_are_its_own() {
-    let ts = TestServer::spawn().await;
-    let v = ts.viewer(Some("Alex")).await;
-    let port = ts.addr.port();
-    for own in [
-        format!("http://127.0.0.2:{port}/"),
-        format!("http://127.1.2.3:{port}/x"),
-        format!("http://0.0.0.0:{port}/"),
-        format!("http://[0:0:0:0:0:0:0:1]:{port}/"),
-        format!("http://[::]:{port}/"),
-    ] {
-        let res = post_thread(&ts, &v.cookie, &own, "<p>").await;
-        assert_eq!(res.status(), 400, "{own}");
-        assert_eq!(
-            res.json::<Value>().await.unwrap()["error"]["code"],
-            "own_origin",
-            "{own}"
-        );
-    }
-    let other = format!("http://127.0.0.2:{}/", port.wrapping_add(1));
-    assert_eq!(
-        post_thread(&ts, &v.cookie, &other, "<p>").await.status(),
-        201
-    );
 }
 
 /// A live page with one thread, sent to a `claude` session watching it.

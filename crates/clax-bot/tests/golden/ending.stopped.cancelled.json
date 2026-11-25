@@ -1,0 +1,33 @@
+{
+  "last_step": {
+    "kind": "stopped",
+    "payload": {
+      "notice": null,
+      "reason": "cancelled"
+    }
+  },
+  "notices_in_the_journal": [],
+  "reason": "cancelled",
+  "replies": [],
+  "roster": {
+    "shown_working_at_no_step": 0,
+    "shown_working_before": [
+      {
+        "kind": "stopped",
+        "shown": false,
+        "step": 1
+      }
+    ],
+    "stopped_showing": [
+      {
+        "calls_after_it": 0,
+        "run_status": "stopped"
+      }
+    ]
+  },
+  "status": "stopped",
+  "steps": [
+    "stopped"
+  ],
+  "writes_in_order": []
+}

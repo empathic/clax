@@ -149,7 +149,7 @@ async function main() {
     // Their gallery may hold their own seeded quickstart, never the owner's page.
     check(!(list.artifacts ?? []).some((a) => a.id === aid), "the new person's gallery holds nothing of the owner's", list);
 
-    await op.goto(`${origin}/people`);
+    await op.goto(`${origin}/settings/people`);
     await op.getByTestId("github-login").first().waitFor();
     const logins = await op.getByTestId("github-login").allTextContents();
     check(logins.includes("@grace"), "the owner's People shows the person's GitHub login", logins);

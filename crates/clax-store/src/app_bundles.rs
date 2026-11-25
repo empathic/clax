@@ -547,6 +547,7 @@ pub struct AppListing {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use crate::test_util::{DAEMON, artifact, store};
     use clax_core::CoreError;

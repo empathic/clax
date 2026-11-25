@@ -600,6 +600,7 @@ impl Subscriber {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{percent_decode, reader_route};
 

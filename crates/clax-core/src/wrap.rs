@@ -229,7 +229,28 @@ pub fn wrap_page_framed_by(
     )
 }
 
+/// `page`, a page as [`wrap_page_framed_by`] serves it, its bridge tag
+/// marked for counting: ` data-count="1"` after the tag's other attributes,
+/// before its `></script>`, as `data-origin` and `data-api` are added. The
+/// bridge reports a page view only from a tag so marked. A page with no
+/// bridge tag is returned unchanged.
+pub fn with_count(page: &str) -> String {
+    let tag = page
+        .match_indices(BRIDGE_START)
+        .map(|(i, _)| i)
+        .find(|&i| is_bridge_tag(&page[i..]));
+    // A tag's attribute values are escaped, so its first `>` ends it.
+    let end = tag.and_then(|i| page[i..].find('>').map(|j| i + j));
+    match end {
+        Some(at) if page[at..].starts_with("></script>") => {
+            format!("{} data-count=\"1\"{}", &page[..at], &page[at..])
+        }
+        _ => page.to_string(),
+    }
+}
+
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -273,6 +294,35 @@ mod tests {
         let again = wrap_page(&out, "7q3k9mzx2b4t", 2, "0.2.61", "index.html", V);
         assert_eq!(again.matches(BRIDGE_START).count(), 1);
         assert!(!again.contains("data-origin"));
+    }
+
+    #[test]
+    fn a_counted_page_marks_its_one_bridge_tag_last() {
+        let framed = wrap_page_framed_by(
+            "<!doctype html><p>a \"<script src=\"/_clax/bridge.js\">\"</p>",
+            "7q3k9mzx2b4t",
+            2,
+            "0.2.61",
+            "a\">b.html",
+            V,
+            Some("https://clax.example"),
+            false,
+        );
+        let out = with_count(&framed);
+        assert!(
+            out.contains(
+                "data-file=\"a&quot;&gt;b.html\" data-origin=\"https://clax.example\" data-count=\"1\"></script>"
+            ),
+            "{out}"
+        );
+        assert_eq!(out.matches("data-count").count(), 1);
+        assert_eq!(out.len(), framed.len() + " data-count=\"1\"".len());
+        let fragment = with_count(&wrap_document("<p>hi</p>", "7q3k9mzx2b4t", 2, "0.2.61", V));
+        assert!(fragment.contains("data-file=\"index.html\" data-count=\"1\"></script><meta"));
+        // Served again, the mark goes with the tag it was on.
+        let again = wrap_page(&out, "7q3k9mzx2b4t", 2, "0.2.61", "index.html", V);
+        assert!(!again.contains("data-count"), "{again}");
+        assert_eq!(with_count("<p>no tag</p>"), "<p>no tag</p>");
     }
 
     #[test]

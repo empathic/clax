@@ -145,6 +145,7 @@ pub fn unresolved_mentions(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{agent_mentions, mentioned, unresolved_mentions};
 

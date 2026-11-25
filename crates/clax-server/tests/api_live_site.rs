@@ -207,11 +207,11 @@ async fn the_site_lists_its_pages_with_threads_newest_activity_first() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200, "the owner's browser lists it");
-    // The daemon's own origin is not a site.
+    // The daemon's own origin is a site like any other.
     let res = ts
         .get_authed(&format!("/api/live/site?origin={}", enc(&ts.base)))
         .await;
-    assert_eq!(code(res).await, "own_origin");
+    assert_eq!(res.status(), 200);
 }
 
 #[tokio::test]
@@ -423,7 +423,7 @@ async fn a_move_is_refused_across_origins_and_to_anyone_but_the_owner() {
     let p: Value = res.json().await.unwrap();
     assert!(p["page"].is_null(), "a refused move makes no page");
     let res = move_to(&ts, &tid, &format!("{}/x", ts.base)).await;
-    assert_eq!(code(res).await, "own_origin");
+    assert_eq!(code(res).await, "cross_origin");
     for cookie in [format!("clax_viewer={}", v.cookie), ts.owner_cookie()] {
         let res = ts
             .client
@@ -681,8 +681,7 @@ async fn rules_are_checked_and_only_the_owner_changes_them() {
             json!({"origin": ts.base, "pattern": "/a/:id"}),
         )
         .await;
-    assert_eq!(res.status(), 400);
-    assert_eq!(code(res).await, "own_origin");
+    assert_eq!(res.status(), 201, "the daemon's own origin takes rules too");
     let res = ts
         .post_json(
             "/api/live/rules",

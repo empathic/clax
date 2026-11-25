@@ -62,10 +62,13 @@ pub enum Kind {
     /// (`detail_json`: the request's ID, origin, name, URL and reason;
     /// [`crate::remote_requests`]).
     RemoteRequest,
+    /// An agent asks its person for a report queue (`detail_json`: the
+    /// request's ID; [`crate::queue_requests`]).
+    QueueRequest,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Reply,
         Kind::Version,
         Kind::Published,
@@ -76,6 +79,7 @@ impl Kind {
         Kind::Ended,
         Kind::Push,
         Kind::RemoteRequest,
+        Kind::QueueRequest,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -90,6 +94,7 @@ impl Kind {
             Kind::Ended => "ended",
             Kind::Push => "push",
             Kind::RemoteRequest => "remote_request",
+            Kind::QueueRequest => "queue_request",
         }
     }
 
@@ -335,6 +340,7 @@ impl Driver {
 
     /// The index name (or plan words) a plan driven by it names.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(super) fn plan_word(self) -> &'static str {
         self.index().unwrap_or("VIRTUAL TABLE INDEX")
     }
@@ -792,6 +798,7 @@ pub(super) const SAM: &str = "u_0000000000000000000000s";
 /// [`Store::inbox_mark_all`] build them, for the query-plan checks: the
 /// owner's, and a connected person's.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(super) fn shapes() -> Vec<(String, Built)> {
     let now = "2026-01-01T00:00:00.000Z";
     let base = InboxQuery::default();
@@ -1297,6 +1304,51 @@ pub(crate) fn note_remote_request(
 /// The inbox key of connection request `rid`'s item.
 pub(crate) fn remote_request_key(rid: &str) -> String {
     format!("remote_request:{rid}")
+}
+
+/// Queue request `rid` for its approver `recipient` (`None`: the owner):
+/// one `queue_request` item, in the asking agent's session `sid` when it
+/// named one, with `detail` (`{request_id}`) and `text` to search by.
+/// Keyed by the request, so it is made once.
+pub(crate) fn note_queue_request(
+    c: &Connection,
+    rid: &str,
+    recipient: Option<&str>,
+    sid: Option<&str>,
+    text: &str,
+    now: &str,
+) -> Result<Option<i64>> {
+    insert_at(
+        c,
+        New {
+            recipient,
+            session_id: sid,
+            detail: Some(serde_json::json!({ "request_id": rid })),
+            text: text.to_string(),
+            ..New::of(Kind::QueueRequest, queue_request_key(rid))
+        },
+        now,
+    )
+}
+
+/// The inbox key of queue request `rid`'s item for the owner.
+fn queue_request_key(rid: &str) -> String {
+    format!("queue_request:{rid}")
+}
+
+/// Queue request `rid` for `recipient` stopped waiting (decided,
+/// cancelled or expired): its item is read.
+pub(crate) fn queue_request_closed(
+    c: &Connection,
+    rid: &str,
+    recipient: Option<&str>,
+    now: &str,
+) -> Result<()> {
+    c.execute(
+        READ_BY_KEY,
+        params![keyed(&queue_request_key(rid), recipient), now],
+    )?;
+    Ok(())
 }
 
 /// An agent comment `cid` on thread `tid` of artifact `aid`: a `reply`
@@ -2412,7 +2464,7 @@ impl Store {
                     }
                     // An approval request's thread, for its card; a
                     // connection request's, where its agent worked.
-                    Kind::Approval | Kind::RemoteRequest => {
+                    Kind::Approval | Kind::RemoteRequest | Kind::QueueRequest => {
                         if let (Some(tid), true) = (&i.thread_id, live) {
                             s.thread = thread_ref(c, tid)?;
                         }
@@ -2431,6 +2483,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::NewThread;

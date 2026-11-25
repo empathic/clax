@@ -446,6 +446,13 @@ fn doctor_runs_all_checks() {
     ] {
         assert!(names.contains(&n), "{n}");
     }
+    let ui = v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "ui")
+        .unwrap();
+    assert_eq!(ui["ok"], true, "{ui}");
     e.stop();
 }
 
@@ -594,8 +601,11 @@ fn doctor_check(e: &Env, args: &[&str], name: &str) -> serde_json::Value {
         .arg("doctor")
         .args(args)
         .arg("--json")
-        // `--agent` runs every clax on PATH; keep it to the system's.
-        .env("PATH", "/usr/bin:/bin")
+        // `--agent` runs every clax on PATH.
+        .env(
+            "PATH",
+            crate::common::system_path_without(e.dir.path(), &["clax"]),
+        )
         .output()
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -1250,7 +1260,7 @@ fn the_shim_serves_only_claude_and_codex() {
     e.cmd()
         .args(["mcp", "--agent", "pi"])
         .write_stdin("")
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(clax_testkit::HANG)
         .assert()
         .failure()
         .code(1)
@@ -1388,7 +1398,10 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
         .cmd()
         .args(["doctor", "--agent", "codex", "--json"])
         .env("CLAX_BIN", crate::common::clax())
-        .env("PATH", "/usr/bin:/bin")
+        .env(
+            "PATH",
+            crate::common::system_path_without(e.dir.path(), &["clax"]),
+        )
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -1470,7 +1483,10 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
             .cmd()
             .args(["doctor", "--agent", agent])
             .env_remove("CLAX_BIN")
-            .env("PATH", "/usr/bin:/bin")
+            .env(
+                "PATH",
+                crate::common::system_path_without(e.dir.path(), &["clax"]),
+            )
             .output()
             .unwrap();
         let text = String::from_utf8(out.stdout).unwrap();
@@ -1729,7 +1745,10 @@ fn codex_session_start(e: &Env, codex_args: &[&str]) -> String {
         .env("CLAX_HOME", e.dir.path().join("ax"))
         .env("CLAX_CODEX_BIN", "")
         .env("HOME", e.dir.path())
-        .env("PATH", "/usr/bin:/bin");
+        .env(
+            "PATH",
+            crate::common::system_path_without(e.dir.path(), &["clax"]),
+        );
     for var in [
         "CODEX_HOME",
         "CLAUDE_CONFIG_DIR",
@@ -1948,16 +1967,12 @@ fn an_interrupted_toolpath_export_removes_its_partial_file() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // Wait (bounded) until the export has started writing the file.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while std::fs::metadata(&dest).map_or(true, |m| m.len() == 0) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the export never started writing"
-        );
+    crate::common::wait_until("the export to start writing", || {
         assert!(child.try_wait().unwrap().is_none(), "the export exited");
-        std::thread::yield_now();
-    }
+        std::fs::metadata(&dest)
+            .is_ok_and(|m| m.len() > 0)
+            .then_some(())
+    });
     kill(
         nix::unistd::Pid::from_raw(child.id() as i32),
         Signal::SIGINT,

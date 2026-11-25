@@ -24,6 +24,7 @@
   import { onMount } from "svelte";
   import { getToken } from "../api";
   import { nav } from "../nav";
+  import { reasonText } from "../trouble";
   import { setUrl } from "../view/url";
   import { DEFAULT_ORIGIN, dropUnsent, hostOf, listRemotes, pollSignIn, push, remotesOf, retryLink, setDownloadOnly, startSignIn, unlink, type Link, type Mode, type Remote, type Remotes } from "./publish-api";
   import { notSentLabel, sinceLabel } from "./link-model";
@@ -80,7 +81,7 @@
   async function change(f: () => Promise<unknown>) {
     if (linkBusy) return;
     linkBusy = true; err = null;
-    try { await f(); confirm = null; await refresh(); } catch (e) { err = (e as { message?: string }).message ?? String(e); } finally { linkBusy = false; }
+    try { await f(); confirm = null; await refresh(); } catch (e) { err = reasonText(e); } finally { linkBusy = false; }
   }
   function close() { open = false; run++; signing = null; }
 
@@ -122,7 +123,7 @@
       signing = { code: s.user_code, url: s.verification_url };
       await wait(s.remote.id, s.interval, mine);
     } catch (e) {
-      if (mine === run) { signing = null; err = (e as { message?: string }).message ?? String(e); }
+      if (mine === run) { signing = null; err = reasonText(e); }
     } finally { busy = false; }
   }
 
@@ -155,7 +156,7 @@
       signing = { code: waiting.user_code ?? "", url: waiting.verification_url ?? "" };
       await wait(waiting.id, waiting.poll_interval_s ?? 5, mine);
     } catch (e) {
-      if (mine === run) { signing = null; err = (e as { message?: string }).message ?? String(e); }
+      if (mine === run) { signing = null; err = reasonText(e); }
     } finally { busy = false; }
   }
 
@@ -175,7 +176,7 @@
     } catch (e) {
       const x = e as { code?: string | null; message?: string };
       moved = x.code === "remote_moved";
-      err = x.message ?? String(e);
+      err = reasonText(x);
     } finally { busy = false; }
   }
 

@@ -4,6 +4,7 @@ use clax_core::daemon::{
     write_daemon_info,
 };
 use clax_server::serve::{EmbeddedControl, ServeConfig, StopOn, serve};
+use clax_testkit::{recv_within, until, within};
 use std::net::{IpAddr, Ipv4Addr};
 
 #[test]
@@ -59,8 +60,8 @@ fn pid_alive_rejects_out_of_range_pids() {
     assert!(!pid_alive(i32::MAX as u32 + 1));
 }
 
-#[test]
-fn lock_is_exclusive_and_released_on_drop() {
+#[tokio::test]
+async fn lock_is_exclusive_and_released_on_drop() {
     let dir = tempfile::tempdir().unwrap();
     let home = Home::at(dir.path().join("ax"));
     home.ensure_dirs().unwrap();
@@ -71,18 +72,11 @@ fn lock_is_exclusive_and_released_on_drop() {
     // concurrently running test (pid_alive_* spawns `true`) holds a duplicate of
     // every descriptor until it execs and O_CLOEXEC closes them. The lock is
     // therefore released once this process's descriptor and any such transient
-    // copies are closed, so poll with a deadline rather than asserting instantly.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    loop {
-        if DaemonLock::try_acquire(&home).unwrap().is_some() {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "lock still held 20 s after drop"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    // copies are closed, so wait for that rather than asserting instantly.
+    until("the lock free after its drop", || async {
+        DaemonLock::try_acquire(&home).unwrap().map(drop)
+    })
+    .await;
 }
 
 #[test]
@@ -152,11 +146,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         .await
         .unwrap();
     assert_eq!(res.status(), 202);
-    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    within("serve's return", handle).await.unwrap().unwrap();
     assert!(
         read_daemon_info(&home).is_none(),
         "daemon.json removed on clean exit"
@@ -198,11 +188,7 @@ async fn port_taken_for(port: u16) -> u16 {
         .await
         .unwrap();
     assert_eq!(res.status(), 202);
-    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    within("serve's return", handle).await.unwrap().unwrap();
     info.port
 }
 
@@ -300,9 +286,8 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         .await
         .unwrap();
     assert_eq!(res.status(), 202);
-    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
+    within("serve exits while SSE client is still connected", handle)
         .await
-        .expect("serve exits while SSE client is still connected")
         .unwrap()
         .unwrap();
     drop(sse);
@@ -334,9 +319,8 @@ async fn serve_exits_when_daemon_json_is_deleted() {
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
     std::fs::remove_file(home.daemon_json()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
+    within("serve exits once daemon.json stays missing", handle)
         .await
-        .expect("serve exits once daemon.json stays missing")
         .unwrap()
         .unwrap();
 }
@@ -416,11 +400,11 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
                 .is_string()
         }
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while !ended(dead.clone()).await {
-        assert!(std::time::Instant::now() < deadline, "reaper never ran");
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    // The reaper runs every 100 ms: waited on, however long a run takes.
+    until("the reaper ends the dead process's session", || async {
+        ended(dead.clone()).await.then_some(())
+    })
+    .await;
     assert!(!ended(alive).await, "a live process keeps its session");
     assert!(!ended(recent).await, "a recently seen session is kept");
     client
@@ -496,9 +480,8 @@ async fn healthz(port: u16) -> reqwest::StatusCode {
 /// Asks `d` to stop through its control and waits for `serve` to return.
 async fn stop_embedded(d: Embedded) {
     d.stop.send(true).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(20), d.handle)
+    within("serve returns once its control asks it to stop", d.handle)
         .await
-        .expect("serve returns once its control asks it to stop")
         .unwrap()
         .unwrap();
 }
@@ -526,9 +509,7 @@ async fn an_embedded_daemon_installs_no_signal_handler() {
     let home = Home::at(dir.path().join("ax"));
     let d = embedded(&home).await;
     sigterm_this_process();
-    tokio::time::timeout(std::time::Duration::from_secs(5), term.recv())
-        .await
-        .expect("the test's own handler hears the SIGTERM");
+    within("the test's own handler hears the SIGTERM", term.recv()).await;
     assert_eq!(
         healthz(d.info.port).await,
         200,
@@ -550,15 +531,12 @@ async fn a_signals_daemon_stops_on_sigterm() {
     let info = rx.await.unwrap();
     assert_eq!(healthz(info.port).await, 200);
     sigterm_this_process();
-    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
+    within("serve returns on SIGTERM", handle)
         .await
-        .expect("serve returns on SIGTERM")
         .unwrap()
         .unwrap();
     assert!(read_daemon_info(&home).is_none());
-    tokio::time::timeout(std::time::Duration::from_secs(5), term.recv())
-        .await
-        .expect("the test's own handler hears the SIGTERM too");
+    within("the test's own handler hears the SIGTERM too", term.recv()).await;
 }
 
 #[tokio::test]
@@ -568,11 +546,9 @@ async fn an_embedded_daemon_trims_on_request() {
     let d = embedded(&home).await;
     let (tx, rx) = std::sync::mpsc::channel();
     d.trim.send(tx).await.unwrap();
-    let report =
-        tokio::task::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(5)))
-            .await
-            .unwrap()
-            .expect("the daemon answers a trim");
+    let report = tokio::task::spawn_blocking(move || recv_within("the daemon's trim report", &rx))
+        .await
+        .unwrap();
     assert_eq!(report.checkpointed, report.wal_frames, "{report:?}");
     stop_embedded(d).await;
 }

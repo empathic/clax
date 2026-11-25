@@ -289,7 +289,6 @@ test("the inbox's Tags filter keeps the items about artifacts carrying every tag
 
 test("screenshots of the tags in the gallery, the Tags page, the artifact page and the inbox", async ({ page, freshDaemon: d }) => {
   test.skip(!SHOTS, "set CLAX_E2E_SHOTS to a directory to take them");
-  test.setTimeout(120_000);
   mkdirSync(SHOTS!, { recursive: true });
   const s = await registerSession(d.base, d.token);
   const pub = async (title: string) => (await publishAs(d.base, d.token, s.id, title, PAGE)).artifact.id;

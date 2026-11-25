@@ -1,6 +1,7 @@
 //! The VFS against an in-memory page store, natively: what the store holds
 //! after each commit, rollback and truncation, and that a connection
 //! reopened on the store sees exactly the committed transactions.
+#![warn(clippy::disallowed_methods)]
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};

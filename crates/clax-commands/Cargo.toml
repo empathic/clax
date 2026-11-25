@@ -12,6 +12,7 @@ clax-core = { path = "../clax-core" }
 clax-store = { path = "../clax-store" }
 clax-mcp = { path = "../clax-mcp" }
 clax-hooks = { path = "../clax-hooks" }
+clax-surface = { path = "../clax-surface" }
 anyhow.workspace = true
 http = "1"
 chrono.workspace = true

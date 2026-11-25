@@ -35,5 +35,6 @@
   "thread_taken",
   "invalid_state",
   "invalid_fix",
+  "no_preview_origins",
   "no_session"
 ]

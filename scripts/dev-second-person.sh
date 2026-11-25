@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # `scripts/dev-second-person.sh <invite> [person-name]`: plays a second
-# person on this machine against a dev daemon, to try People (`/people`)
+# person on this machine against a dev daemon, to try People (`/settings/people`)
 # and the other multi-person surfaces by hand.
 #
 # Make the invite first: run the dev daemon on the LAN (`just watch --bind
 # 0.0.0.0`, or `clax serve --bind 0.0.0.0` on a scratch CLAX_HOME), open
-# People as the owner (http://localhost:<port>/people), choose Invite a
+# People as the owner (http://localhost:<port>/settings/people), choose Invite a
 # person, and pass the command's URL (http://<LAN IP>:<port>/i/<code>) here.
 #
 # It makes a scratch Clax home (CLAX_SECOND_HOME, else a new directory under

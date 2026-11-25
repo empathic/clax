@@ -1052,6 +1052,17 @@ impl Site {
         .await
     }
 
+    /// `b`'s `PATCH /api/artifacts/<aid> {content_security_policy: v}`.
+    async fn content_security_policy(&self, b: &Browser, aid: &str, v: &str) -> (u16, Value) {
+        self.send(
+            b,
+            reqwest::Method::PATCH,
+            &format!("/api/artifacts/{aid}"),
+            json!({"content_security_policy": v}),
+        )
+        .await
+    }
+
     /// A Clax DB artifact whose `data/guestbook` anyone reads and writes,
     /// with an uploaded asset: its ID and the asset's.
     async fn guestbook(&self) -> (String, String) {
@@ -2202,6 +2213,52 @@ async fn only_its_maker_opens_a_persons_site_to_the_world_and_revoking_them_take
         .await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(site.on_site(&mias, "/", None).await.status(), 200);
+}
+
+#[tokio::test]
+async fn only_its_maker_serves_a_persons_site_unrestricted() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let (mia, _) = site.member(&owner, "Mia").await;
+    let mias = site.made_by(&mia, "Mia's plan").await;
+    // Shared with the owner to edit, it is still Mia's to manage.
+    let (s, v) = site
+        .send(
+            &mia,
+            reqwest::Method::PUT,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    for v in ["unrestricted", "self"] {
+        let (s, body) = site.content_security_policy(&owner, &mias, v).await;
+        assert_eq!((s, code_of(&body)), (403, "admin_only"), "{v}: {body}");
+    }
+    let aid = clax_core::ArtifactId::parse(&mias).unwrap();
+    assert_eq!(
+        site.ts.store.content_security_policy(&aid).unwrap(),
+        clax_store::site_sessions::ContentSecurityPolicy::SelfOnly
+    );
+    // Mia, its maker, serves it unrestricted, from her browser, and returns
+    // it to `self`.
+    let (s, v) = site
+        .content_security_policy(&mia, &mias, "unrestricted")
+        .await;
+    assert_eq!(
+        (s, &v["artifact"]["content_security_policy"]),
+        (200, &json!("unrestricted")),
+        "{v}"
+    );
+    let (s, v) = site.content_security_policy(&owner, &mias, "self").await;
+    assert_eq!((s, code_of(&v)), (403, "admin_only"), "{v}");
+    let (s, v) = site.content_security_policy(&mia, &mias, "self").await;
+    assert_eq!(
+        (s, &v["artifact"]["content_security_policy"]),
+        (200, &json!("self")),
+        "{v}"
+    );
 }
 
 #[tokio::test]

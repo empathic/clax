@@ -1,0 +1,56 @@
+{
+  "a later script": {
+    "content": {
+      "calls": [
+        {
+          "code": "forbidden",
+          "ok": false,
+          "op": "artifacts.create"
+        }
+      ],
+      "logs": [],
+      "value": {
+        "artifacts.create: a second in a later script": {
+          "code": "forbidden",
+          "message": "this run already created an artifact",
+          "retryable": false,
+          "threw": "HostError: this run already created an artifact"
+        }
+      }
+    },
+    "content_bytes": 280,
+    "is_error": null
+  },
+  "the script that created one": {
+    "content": {
+      "calls": [
+        {
+          "code": null,
+          "ok": true,
+          "op": "artifacts.create"
+        },
+        {
+          "code": "forbidden",
+          "ok": false,
+          "op": "artifacts.create"
+        }
+      ],
+      "logs": [],
+      "value": {
+        "artifacts.create (its keys)": {
+          "returned": [
+            "id"
+          ]
+        },
+        "artifacts.create: a second in the same script": {
+          "code": "forbidden",
+          "message": "this run already created an artifact",
+          "retryable": false,
+          "threw": "HostError: this run already created an artifact"
+        }
+      }
+    },
+    "content_bytes": 379,
+    "is_error": null
+  }
+}

@@ -1,4 +1,4 @@
-// People (`/people`, spec 2026-10-08-multi-agent-multi-person §3.1, §3.4,
+// People (`/settings/people`, and a person's own Agents & machines; spec 2026-10-08-multi-agent-multi-person §3.1, §3.4,
 // §9.6, §17) in a browser: the owner invites a person, who connects with
 // `clax connect` from a scratch home and registers an agent; the owner
 // sees them appear; the person's browser (made theirs by the browser link)
@@ -11,17 +11,16 @@
 // listens on every interface, so its invites name this machine's LAN
 // address; on a machine with none the daemon refuses invites
 // (`not_on_lan`) and the test says so and skips.
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { api, expect, publish, startDaemon, test } from "./fixtures";
+import { api, expect, publish, run, startDaemon, test } from "./fixtures";
 
 /** Runs the CLI as the person, on their scratch home, outside any agent channel. */
 function asPerson(home: string, args: string[], input?: string, cwd?: string) {
   const env: NodeJS.ProcessEnv = { ...process.env, CLAX_HOME: home };
   for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "CLAX_PORT"]) delete env[k];
-  return spawnSync(process.env.CLAX_E2E_BIN!, args, { env, input, cwd, encoding: "utf8", timeout: 20_000 });
+  return run(process.env.CLAX_E2E_BIN!, args, { env, input, cwd });
 }
 
 test("the owner invites a person who connects, narrows their machine from their own People, and is revoked", async ({ browser }) => {
@@ -32,9 +31,11 @@ test("the owner invites a person who connects, narrows their machine from their 
   const personCtx = await browser.newContext();
   try {
     const owner = await ownerCtx.newPage();
+    // The page that was `/people` goes to its screen in Settings.
     await owner.goto(`${d.base}/people`);
+    await owner.waitForURL(`${d.base}/settings/people`);
     await expect(owner.getByRole("heading", { name: "People", level: 2 })).toBeVisible();
-    await expect(owner.locator(".gbar a.people-link")).toHaveAttribute("aria-current", "page");
+    await expect(owner.locator(".gbar a.settings-link")).toHaveAttribute("aria-current", "page");
     await owner.getByRole("button", { name: "Invite a person" }).click();
     await expect(owner.getByRole("textbox", { name: "Name", exact: true })).toBeFocused();
     await expect(owner.getByRole("textbox", { name: "Name", exact: true })).toHaveAttribute("maxlength", "60");
@@ -54,7 +55,7 @@ test("the owner invites a person who connects, narrows their machine from their 
     await expect(owner.getByRole("switch")).toHaveCount(1);
 
     // Sam connects from a scratch home, as `clax connect` on Sam's machine.
-    const out = asPerson(sam, ["connect", command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--yes", "--no-browser"]);
+    const out = await asPerson(sam, ["connect", command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--yes", "--no-browser"]);
     expect(out.status, out.stderr).toBe(0);
     const link = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)?.[0];
     expect(link, out.stdout + out.stderr).toBeTruthy();
@@ -69,7 +70,7 @@ test("the owner invites a person who connects, narrows their machine from their 
     const project = join(sam, "work", "sam-notes");
     mkdirSync(join(project, ".git"), { recursive: true });
     writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
-    const hook = asPerson(sam, ["hook", "--agent", "claude", "session-start"], JSON.stringify({ session_id: "e2e-sam-1", cwd: project, hook_event_name: "SessionStart", source: "startup" }), project);
+    const hook = await asPerson(sam, ["hook", "--agent", "claude", "session-start"], JSON.stringify({ session_id: "e2e-sam-1", cwd: project, hook_event_name: "SessionStart", source: "startup" }), project);
     expect(hook.status, hook.stderr).toBe(0);
     await expect(card.locator(".agent .aname")).toHaveText("sam-notes");
     await expect(card.locator(".agent")).toContainText("sam-laptop");
@@ -77,12 +78,12 @@ test("the owner invites a person who connects, narrows their machine from their 
     // Sam's browser: the link makes it Sam's, and People shows Sam alone.
     const person = await personCtx.newPage();
     await person.goto(link!);
-    await person.waitForURL(/\/people$/);
+    await person.waitForURL(/\/settings\/agents$/);
     await expect(person.locator("article.person")).toHaveCount(1);
     await expect(person.locator("article.person h3")).toContainText("Sam");
     await expect(person.getByRole("button", { name: "Invite a person" })).toHaveCount(0);
     await expect(person.getByRole("switch")).toHaveCount(0);
-    await expect(person.locator(".gbar a.people-link")).toBeVisible();
+    await expect(person.locator(".gbar a.settings-link")).toBeVisible();
     // Sam turns Delete artifacts off for every agent of the machine.
     await person.locator(".machine summary").click();
     await person.locator(".machine .caps label", { hasText: "Delete artifacts" }).locator("input").uncheck();
@@ -135,7 +136,7 @@ test("the owner invites a person who connects, narrows their machine from their 
     await owner.getByRole("textbox", { name: "Name", exact: true }).fill(long);
     await owner.getByRole("button", { name: "Create invite" }).click();
     const longCommand = (await owner.locator(".invite code").textContent())!;
-    const joined = asPerson(wes, ["connect", longCommand.replace(/^clax connect /, ""), "--name", "wes-laptop", "--yes", "--no-browser"]);
+    const joined = await asPerson(wes, ["connect", longCommand.replace(/^clax connect /, ""), "--name", "wes-laptop", "--yes", "--no-browser"]);
     expect(joined.status, joined.stderr).toBe(0);
     await owner.getByRole("button", { name: "Done" }).click();
     const longCard = owner.locator("article.person[data-person]").filter({ has: owner.locator("h3", { hasText: long }) });
@@ -160,10 +161,10 @@ test("the owner invites a person who connects, narrows their machine from their 
     await expect(owner.getByRole("heading", { name: "People", level: 2 })).toBeFocused();
     await expect(person.locator(".ppl")).toContainText("You are no longer connected: the owner disconnected you.");
     await expect(person.locator("article.person")).toHaveCount(0);
-    await expect(person.locator(".gbar a.people-link")).toHaveCount(0);
+    await expect(person.locator(".gbar a.settings-link")).toHaveCount(0);
     await person.reload();
-    await expect(person.locator(".ppl")).toContainText("People is for the owner of this Clax and the people they connect.");
-    await expect(person.locator(".gbar a.people-link")).toHaveCount(0);
+    await expect(person.locator(".stg")).toContainText("Settings are for the owner of this Clax and the people they connect.");
+    await expect(person.locator(".gbar a.settings-link")).toHaveCount(0);
   } finally {
     await ownerCtx.close();
     await personCtx.close();

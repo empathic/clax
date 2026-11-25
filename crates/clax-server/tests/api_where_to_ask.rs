@@ -833,7 +833,10 @@ async fn claude_hook(ts: &TestServer, event: &str, name: &str, hsid: &str) -> St
     let mut child = tokio::process::Command::new(clax_fake_exe::clax_bin(None))
         .args(["hook", "--agent", "claude", event])
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env(
+            "PATH",
+            clax_fake_exe::path_without("/usr/bin:/bin", &scratch.join("system-path"), &["clax"]),
+        )
         .env("HOME", &scratch)
         .env("TMPDIR", &scratch)
         .env("CLAX_HOME", ts.home.root())

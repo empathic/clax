@@ -1,4 +1,7 @@
 import type { Working } from "./view/working-model";
+import { readJson as json } from "./trouble";
+
+export { ApiError } from "./trouble";
 
 export type Artifact = {
   id: string; title: string; description: string | null; icon: string | null;
@@ -54,7 +57,17 @@ export type Artifact = {
   may_approve?: boolean;
   /** From the same: what the current version declares that waits for approval, null for nothing. */
   pending_capabilities?: PendingCapabilities | null;
+  /** From `GET /api/artifacts/<id>` and the bootstrap: the Content-Security-Policy Clax sends on its own
+   * content, `self` or `unrestricted`. */
+  content_security_policy?: ContentSecurityPolicy;
+  /** From `GET /api/artifacts/<id>` on a hosted Clax, for whoever administers it (never a draft's): whether Clax
+   * counts visits to its site, `on` or `off`. Absent elsewhere. */
+  analytics?: "on" | "off";
 };
+/** The Content-Security-Policy Clax sends on an artifact's own content: one that holds its pages to their own
+ * site (`self`, every artifact's at first), or no source restrictions (`unrestricted`): its pages then load code
+ * from, and send what they read to, any site. */
+export type ContentSecurityPolicy = "self" | "unrestricted";
 /** What a version declares that waits for approval: gated capability names,
  * hosts `net` has not approved, and the digest of the declaration shown,
  * which an approval must name. */
@@ -97,24 +110,6 @@ export type Version = {
   note?: string | null; addresses?: string[];
 };
 
-/** A non-OK API response; `status` is the HTTP status code, `code` the
- * daemon's error code when the response named one. */
-export class ApiError extends Error {
-  constructor(public status: number, message: string, public code: string | null = null) {
-    super(`${status} ${message}`);
-    this.name = "ApiError";
-  }
-}
-
-async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).error?.message ?? msg; } catch { /* not json */ }
-    throw new ApiError(res.status, msg);
-  }
-  return res.json() as Promise<T>;
-}
-
 /** Every live artifact; with `only`, that artifact alone, or none when it is not live. */
 export async function listArtifacts(only?: string, init?: RequestInit): Promise<Artifact[]> {
   return (await json<{ artifacts: Artifact[] }>(await (init ? fetch(only ? `/api/artifacts?artifact=${only}` : "/api/artifacts", init) : fetch(only ? `/api/artifacts?artifact=${only}` : "/api/artifacts")))).artifacts;
@@ -132,6 +127,9 @@ export async function getAttention(only?: string): Promise<Record<string, Attent
 let tokenPromise: Promise<string | null> | null = null;
 const tokenHeard = new Set<() => void>();
 let tokenFailed = false;
+/** Whether the last token request failed rather than answered (a null
+ * from `getToken` then says nothing of whether the browser is the owner's). */
+export const tokenUnsure = () => tokenFailed;
 /** Calls `fn` each time a token request answers with the token after an
  * earlier one failed: only then did this page gain the events cookie. */
 export const onToken = (fn: () => void) => { tokenHeard.add(fn); };
@@ -223,7 +221,7 @@ export type QuestionLink = {
   answered_there: boolean; unlinked: boolean;
 };
 
-export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push" | "remote_request";
+export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push" | "remote_request" | "queue_request";
 /** A `connection` item's grant: a request waiting for the owner, or a
  * machine that connected with an invite (`person` once it has one). */
 export type InboxConnection = {
@@ -269,6 +267,21 @@ export type InboxRemoteRequest = {
   status: "open" | "connected" | "dismissed" | "muted" | "expired" | null;
   remote_id: string | null; expires_at: string | null; askers: number;
 };
+/** An agent's request for a report queue, addressed to its approver
+ * (`GET /api/queue-requests`): the queue it would make (`name`, the
+ * `origins` it would accept reports from, what its reporters see) and the
+ * agent's `note`; who asked (`agent`, as text: its harness or its
+ * machine's name) and the approver (`person`, their public ID; null for
+ * the owner); how it stands (`pending` until approved, denied, cancelled
+ * when the agent's access ended, or expired), and once approved the
+ * queue it made (`queue_id`). */
+export type QueueRequest = {
+  id: string; status: "pending" | "approved" | "denied" | "cancelled" | "expired";
+  name: string; origins: string[]; reporters_see: "own" | "all"; note: string | null;
+  agent: string; person: string | null;
+  created_at: string; expires_at: string; decided_at: string | null;
+  queue_id: string | null;
+};
 
 /** The inbox item view. Each kind fills its own field (`reply` also fills
  * `thread`); a source's text fields are null when `gone`. `seq` orders items
@@ -297,6 +310,8 @@ export type InboxItem = {
   push?: { n: number | null; origin: string | null; code: string | null; message: string | null; url: string | null };
   /** `remote_request`: an agent asks the owner to connect another Clax. */
   remote_request?: InboxRemoteRequest;
+  /** `queue_request`: an agent asks the reader for a report queue; null once the request is gone. */
+  queue_request?: QueueRequest | null;
   gone: boolean;
   /** Where opening the item leads (a path on the daemon). */
   url: string;

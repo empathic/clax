@@ -9,7 +9,9 @@
 # The comment is made with the same REST calls the shell makes: a multipart
 # `POST /api/artifacts/<aid>/threads`, then `POST .../threads/<tid>/send`.
 # The check passes when the thread's `feedback_state.state` turns
-# `acknowledged`, which only a turn in the Claude session can cause.
+# `acknowledged`, which only a turn in the Claude session can cause. The wait
+# for it is bounded by a hang guard of about six minutes, far past a woken
+# session's turn: an idle session that is never woken fails there.
 #
 # Modes:
 #   --channel  launch with --dangerously-load-development-channels plugin:clax@clax;
@@ -32,6 +34,8 @@ BIN="$REPO/target/debug/clax"
 export CLAX_BIN="$BIN"
 CWD="$SCRATCH/cwd"
 die() { echo "smoke: FAIL: $1" >&2; exit 1; }
+# shellcheck source=scripts/lib/wait.sh
+. scripts/lib/wait.sh
 # shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() { "$BIN" stop >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -98,14 +102,14 @@ TID="$(api -X POST "$BASE/api/artifacts/$AID/threads" \
 api -X POST "$BASE/api/artifacts/$AID/threads/$TID/send" >/dev/null || die "could not send thread $TID to the agent"
 echo "smoke: comment sent at $(date +%T) on thread $TID. Watch the Claude session: it must start a turn on its own."
 
+# Whether the thread's feedback_state is acknowledged; prints each new state.
 LAST=""
-for _ in $(seq 1 90); do
-    STATE="$(api "$BASE/api/artifacts/$AID/threads/$TID" | python3 -c 'import json,sys; f=json.load(sys.stdin)["thread"].get("feedback_state") or {}; print("%s %s" % (f.get("state",""), f.get("tier") or ""))')"
-    if [ "$STATE" != "$LAST" ]; then echo "smoke: feedback_state: ${STATE:-none}"; LAST="$STATE"; fi
-    if [ "${STATE%% *}" = acknowledged ]; then
-        echo "smoke: PASS ($MODE): the idle session woke and read the comment"
-        exit 0
-    fi
-    sleep 2
-done
-die "the comment was not acknowledged within 180 s; the idle session was not woken ($MODE)"
+acknowledged() {
+    local state
+    state="$(api "$BASE/api/artifacts/$AID/threads/$TID" | python3 -c 'import json,sys; f=json.load(sys.stdin)["thread"].get("feedback_state") or {}; print("%s %s" % (f.get("state",""), f.get("tier") or ""))')"
+    if [ "$state" != "$LAST" ]; then echo "smoke: feedback_state: ${state:-none}"; LAST="$state"; fi
+    [ "${state%% *}" = acknowledged ]
+}
+WAIT_FOR_POLLS=7200 wait_for "the comment to be acknowledged" acknowledged \
+    || die "the comment was not acknowledged; the idle session was not woken ($MODE)"
+echo "smoke: PASS ($MODE): the idle session woke and read the comment"

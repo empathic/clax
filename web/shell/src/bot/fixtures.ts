@@ -1,6 +1,6 @@
 // ClaxBot fixtures for the unit tests: the shapes of spec 2026-10-21-claxbot
 // §10 with plausible values, each overridable.
-import type { AdminPerson, AdminUsage, BotRun, CatalogListing, CostLine, MeBot, ModelPricing, Pricing, Provider, Settings, UnitPricing, WebSettings, Week } from "./api";
+import type { AdminPerson, AdminUsage, BotRun, BotStep, CatalogListing, CostLine, ErrorDetail, MeBot, ModelPricing, Pricing, Provider, ProviderFailure, Settings, UnitPricing, WebSettings, Week } from "./api";
 
 export const WEEK_START = "2026-10-19T00:00:00Z";
 export const WEEK_END = "2026-10-26T00:00:00Z";
@@ -107,3 +107,23 @@ export const WEB_LINES: CostLine[] = [
   { id: "web.search.linkup", label: "Web search (Linkup)", unit: "kreq", cost_micro_usd: 5_000_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
   { id: "web.fetch", label: "Web fetch", unit: "kreq", cost_micro_usd: 500_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
 ];
+/** A failed model call as the server details it: Anthropic's 400 for an account out of credit. */
+export const errorDetail = (o: Partial<ErrorDetail> = {}): ErrorDetail => ({
+  class: "invalid_request", status: 400, type: "invalid_request_error",
+  message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.", request_id: "req_011CXyz", ...o,
+});
+/** A run that stopped on a failed model call: its last step `stopped` with the code, and the detail admins and its own person on their own key get (`detail: null` as a reader gets it). */
+export const stoppedRun = (detail: ErrorDetail | null = errorDetail(), reason = "model_error", o: Partial<BotRun> = {}): BotRun => {
+  const step: BotStep = { n: 1, kind: "stopped", status: "done", started_at: "2026-10-21T14:02:00Z", credits_milli: 0, reason, ...(detail ? { error_detail: detail } : {}) };
+  return run({ status: "stopped", reason, steps: [step], ...o });
+};
+/** A run on the instance's key that stopped on a failed model call, as anyone but an admin gets it: no detail, `instance_problem` in its place. */
+export const instanceProblemRun = (busy = false): BotRun => {
+  const step: BotStep = { n: 1, kind: "stopped", status: "done", started_at: "2026-10-21T14:02:00Z", credits_milli: 0, reason: "model_error", instance_problem: { busy } };
+  return run({ id: "r1", status: "stopped", reason: "model_error", key_source: "instance", steps: [step] });
+};
+/** One entry of the instance key's failure log: Sam's thread run refused as invalid (the credit balance). */
+export const providerFailure = (o: Partial<ProviderFailure> = {}): ProviderFailure => ({
+  ...errorDetail(), id: "f1", at: "2026-10-21T11:55:00Z", person: { id: "p_sam", name: "Sam" }, run_id: "r1", request: "thread",
+  model: "claude-sonnet-5-5", api: "anthropic", host: "api.anthropic.com", key_source: "instance", since_key_change: true, ...o,
+});

@@ -191,6 +191,7 @@ pub async fn hide_mirrors(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::auth::Conn;

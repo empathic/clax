@@ -798,6 +798,7 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;

@@ -93,6 +93,30 @@
       p.reject = reject;
       pending[id] = p;
     });
+  // The segments no operation name may have (RESERVED_SEGMENTS in
+  // lib.rs): names JavaScript calls on an object by itself.
+  const reservedSegment = (part) => {
+    switch (part) {
+      case "__proto__":
+      case "constructor":
+      case "prototype":
+      case "then":
+      case "toJSON":
+      case "toString":
+      case "toLocaleString":
+      case "valueOf":
+      case "hasOwnProperty":
+      case "isPrototypeOf":
+      case "propertyIsEnumerable":
+      case "__defineGetter__":
+      case "__defineSetter__":
+      case "__lookupGetter__":
+      case "__lookupSetter__":
+        return true;
+      default:
+        return false;
+    }
+  };
   const clax = create(null);
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
@@ -100,7 +124,7 @@
     let at = clax;
     for (let j = 0; j < parts.length; j++) {
       const part = parts[j];
-      if (!apply(regexpTest, segment, [part]) || part === "__proto__" || part === "constructor" || part === "prototype") {
+      if (!apply(regexpTest, segment, [part]) || reservedSegment(part)) {
         throw new TypeErrorCtor("not a usable operation name: " + op);
       }
       if (j === parts.length - 1) {

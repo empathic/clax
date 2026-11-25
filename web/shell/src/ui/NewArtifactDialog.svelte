@@ -20,6 +20,7 @@
   // Close closes it and focus goes back.
   import { onMount } from "svelte";
   import { nav } from "../nav";
+  import { reasonText } from "../trouble";
   import type { MeBot } from "../bot/api";
   import { isAdmin, myBot, myRole } from "../bot/me";
   import { credits, meter, unavailableFix, unavailableText } from "../bot/model";
@@ -117,7 +118,7 @@
     } catch (x) {
       // The daemon refused: nothing was made, so the next Create is new.
       if (x instanceof Refused) key = newKey();
-      if (!destroyed) error = x instanceof Error ? x.message : "The artifact was not made";
+      if (!destroyed) error = x instanceof Error ? reasonText(x) : "The artifact was not made";
     } finally { busy = false; }
   }
 
@@ -132,7 +133,7 @@
       await sendBrief(started.artifact.id, started.thread.id, to);
       open();
     } catch (x) {
-      error = x instanceof Error ? x.message : "The brief was not sent";
+      error = x instanceof Error ? reasonText(x) : "The brief was not sent";
       sending = null;
       // The agent has gone, or may no longer reach the artifact: the list
       // shows who can be picked now.

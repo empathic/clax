@@ -1,0 +1,13 @@
+{
+  "content": {
+    "calls": [],
+    "error": {
+      "kind": "result_too_large",
+      "message": "the returned value is 71682 bytes of JSON; the limit is 65536 bytes"
+    },
+    "logs": [],
+    "value": null
+  },
+  "content_bytes": 151,
+  "is_error": true
+}

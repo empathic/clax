@@ -9,7 +9,9 @@ import 'package:clax_app/agent/edit_schema.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:flutter_test/flutter_test.dart';
+import '../support/held_timers.dart';
 import '../support/paths.dart';
+import '../support/settle.dart' show stuckAfter, waitUntil;
 
 /// The fixture standing in for `claude`, run through `/bin/sh`.
 final fixture = File(appPath('test/fixtures/fake-claude.sh')).absolute.path;
@@ -115,10 +117,12 @@ void main() {
   tearDown(() => tmp.deleteSync(recursive: true));
 
   /// A backend running the fixture with [env] (plus `FAKE_CLAUDE_LOG`).
+  /// Its kill grace is the hang guard unless a test is about the grace: a
+  /// fixture sent SIGTERM ends by it however long that takes.
   (ClaudeCliBackend, RecordingStarter) backend(
     Map<String, String> env, {
     Duration timeout = const Duration(seconds: 300),
-    Duration killGrace = const Duration(seconds: 5),
+    Duration killGrace = stuckAfter,
     Map<String, String>? parentEnvironment,
   }) {
     final starter = RecordingStarter({'FAKE_CLAUDE_LOG': log, ...env});
@@ -271,11 +275,20 @@ void main() {
   );
 
   test('a timeout kills the process and is a retryable AgentError', () async {
+    final ready = await fifo('ready');
+    // The run's timeout is held, and fires once the fixture runs (and
+    // blocks, never finishing by itself).
+    final timeout = HeldTimers(const Duration(days: 1));
     final (b, starter) = backend({
+      'FAKE_CLAUDE_READY': ready,
       'FAKE_CLAUDE_BLOCK': await fifo('block'),
       'FAKE_CLAUDE_OUT': out(cliOutput(structured: resultJson())),
-    }, timeout: const Duration(milliseconds: 200));
-    final e = await fails(b.run(request));
+    }, timeout: timeout.duration);
+    final run = timeout.run(() => fails(b.run(request)));
+    await readyLine(ready);
+    await waitUntil(() => timeout.pending == 1, what: "the run's timeout");
+    timeout.fire();
+    final e = await run;
     expect(e.message, contains('did not finish'));
     expect(e.retryable, isTrue);
     expect(e.kind, AgentErrorKind.failed);

@@ -5,8 +5,9 @@
 // public origin and `localhost` as the site domain (each artifact's site at
 // `http://<ID>.localhost:<port>`), and one people seat. It checks that
 //
-// - a request body over 96 MiB, over 16 MiB, or over 256 KiB with no
-//   credential, declared or chunked, is refused 413;
+// - a request body declared over 96 MiB, over 16 MiB declared or chunked,
+//   or over 256 KiB with no credential, declared or chunked, is refused
+//   413;
 // - the first person sets up with the secret, invites Sam, who joins in a
 //   second browser in a space of their own, and Sam signs a third browser
 //   in with a sign-in link;
@@ -28,7 +29,13 @@
 // - `/site-signin` is served; a private site is refused signed out (302
 //   to `/site-signin` for a page, 401 for a subresource) and served to the
 //   owner's browser through the handshake; a site opened to the world with
-//   `PATCH site_access` is served signed out until it is closed again; an
+//   `PATCH site_access` is served signed out until it is closed again; a
+//   world-open clax served without Clax's Content Security Policy (`PATCH
+//   content_security_policy: unrestricted`) serves its page and files with
+//   their framing alone, revalidated under a tag naming the policy, and its
+//   own service worker script, where at `self` it has the lockdown and
+//   Clax's kill switch, and at `self` again a copy kept from while
+//   `unrestricted` is answered whole with the lockdown; an
 //   old keyed asset URL serves no bytes, at most a redirect to its
 //   artifact's site;
 // - a guest with the link of a page shared for comments names themselves
@@ -42,7 +49,14 @@
 // - room sockets a page opens on its site host through its site session
 //   (Sam's, on a board shared with him, and the owner's) reopen across the
 //   wake as their holders, and removing Sam's share closes his (4403
-//   `revoked`) and leaves the owner's open.
+//   `revoked`) and leaves the owner's open;
+// - a world visitor's load of a counted page (its bridge tag marked
+//   `data-count`) is reported through the Worker to the instance and
+//   counted once, its country the one workerd's `request.cf` names, never
+//   the `CF-IPCountry` it sent; the alarm writes the batch (aged 1 ms here,
+//   `CLAX_TEST_ANALYTICS_BATCH_MS`), which the read route still answers
+//   after a simulated wake, and the alarm is then set no later than the
+//   UTC day's rollover.
 //
 // Prints one line per check and a JSON summary; exits non-zero on the first
 // failure. `node e2e-hosted.mjs --no-build` skips the build;
@@ -52,7 +66,7 @@ import { mkdirSync } from "node:fs";
 import { request } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HANG_MS, HERE, STATE, build, frameAt, freePort, pruneRuns, start, until, writeConfig } from "./harness.mjs";
 
 const require = createRequire(join(HERE, "../../web/package.json"));
 const { chromium } = require("@playwright/test");
@@ -60,27 +74,11 @@ const { chromium } = require("@playwright/test");
 const ROOT = join(STATE, "e2e-hosted");
 const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const SECRET = "e2e setup secret " + Math.random().toString(36).slice(2);
-const LIMIT = 20_000;
 const SHOTS = process.env.CLAX_E2E_SHOTS ?? "";
 
 function check(ok, what, detail) {
   if (!ok) throw new Error(`FAIL ${what}: ${JSON.stringify(detail)}`);
   console.log(`ok   ${what}`);
-}
-
-async function until(what, f, ms = LIMIT) {
-  const end = Date.now() + ms;
-  let last;
-  for (;;) {
-    try {
-      last = await f();
-      if (last) return last;
-    } catch (e) {
-      last = e instanceof Error ? e.message : e;
-    }
-    if (Date.now() > end) throw new Error(`FAIL ${what}: ${JSON.stringify(last)}`);
-    await new Promise((r) => setTimeout(r, 150));
-  }
 }
 
 /** The owner token's API call (the CLI's credential on a hosted instance). */
@@ -156,8 +154,42 @@ function oversized(base, path, chunked, mib = 97, extra = {}) {
   });
 }
 
+/** The status of a POST to `path` whose body declares no length and has not
+ * ended: `bytes` of it written at once, then the request held open until
+ * the answer comes. A refusal that takes its last byte to decide is
+ * answered with none of the body still on its way. `wrangler dev`'s proxy
+ * relays that answer; one sent while bytes are still arriving it sometimes
+ * loses (a 500, "Network connection lost", on Linux). */
+function unended(base, path, bytes) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(path, base);
+    const headers = { "content-type": "application/json", origin: base };
+    let answered = false;
+    const req = request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (res) => {
+      answered = true;
+      clearTimeout(hung);
+      res.resume();
+      req.destroy();
+      resolve(res.statusCode);
+    });
+    const hung = setTimeout(() => {
+      req.destroy(new Error(`FAIL no answer to ${bytes} bytes of an unended body within the ${HANG_MS / 1000} s hang guard`));
+    }, HANG_MS);
+    req.on("error", (e) => {
+      clearTimeout(hung);
+      if (!answered) reject(e);
+    });
+    req.write(Buffer.alloc(bytes, 0x20));
+  });
+}
+
+/** A browser of `name`'s. Its artifact sidebar opens on the thread list,
+ * whose cards these checks find, rather than on the timeline. */
 async function newPage(browser, name) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await ctx.addInitScript(() => {
+    try { if (localStorage.getItem("clax.sidebar") === null) localStorage.setItem("clax.sidebar", '{"view":"threads"}'); } catch { /* storage refused */ }
+  });
   const p = await ctx.newPage();
   p.on("pageerror", (e) => console.log(`     [${name} error] ${e.message}`));
   return p;
@@ -179,14 +211,23 @@ function watchLive(page) {
 async function threads(page) {
   const toggle = page.locator("button.threads");
   if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
-  await page.locator(".new-comment-open").waitFor({ timeout: LIMIT });
+  await page.locator(".new-comment-open").waitFor({ timeout: HANG_MS });
 }
 
+/** Names `page`'s viewer in the People panel and waits for the name's
+ * `PUT /api/viewers/me` to answer 200: a visitor's first name makes them a
+ * guest, whose session every comment after it goes with. */
 async function setName(page, name) {
   await page.getByRole("button", { name: "People and agents" }).click();
   const field = page.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name");
   await field.fill(name);
+  const saved = page.waitForResponse(
+    (r) => r.request().method() === "PUT" && new URL(r.url()).pathname === "/api/viewers/me",
+    { timeout: HANG_MS },
+  );
   await field.press("Enter");
+  const res = await saved;
+  if (res.status() !== 200) throw new Error(`saving the name ${name}: ${res.status()} ${await res.text()}`);
   await page.keyboard.press("Escape");
 }
 
@@ -196,7 +237,7 @@ async function comment(page, text) {
   const composer = page.locator(".new-comment .composer");
   await composer.locator("textarea").fill(text);
   await composer.getByRole("button", { name: "Post comment" }).click();
-  await composer.waitFor({ state: "detached", timeout: LIMIT });
+  await composer.waitFor({ state: "detached", timeout: HANG_MS });
 }
 
 /** A thread `p`'s browser posts on `aid` as the shell does: its status and error code. */
@@ -222,9 +263,8 @@ async function call(p, method, path, body) {
 
 /** The frame of `id`'s version `n` in the artifact page, on the artifact's
  * site host. */
-async function contentFrame(page, id, n) {
-  const url = new RegExp(`^http://${id}\\.localhost:\\d+/(_clax/v/${n}/)?([?#].*)?$`);
-  return until(`the frame of v${n}`, () => page.frame({ url }));
+function contentFrame(page, id, n) {
+  return frameAt(page, new RegExp(`^http://${id}\\.localhost:\\d+/(_clax/v/${n}/)?([?#].*)?$`));
 }
 
 /** `GET <url>` without following a redirect: its status, `Location`, the
@@ -278,6 +318,9 @@ async function main() {
     REPO_DEV_ROUTES: "1",
     CLAX_LIVE_PEOPLE_SEATS: "1",
     CLAX_LIVE_GUEST_SEATS: "1",
+    // A batch of page views is written once 1 ms old, by the alarm that
+    // follows (MIN_ALARM_MS ahead), rather than a minute on.
+    CLAX_TEST_ANALYTICS_BATCH_MS: "1",
   });
   const browser = await chromium.launch();
   let w;
@@ -306,6 +349,9 @@ async function main() {
     // object, a chunked body once it is past the limit. Under `wrangler
     // dev` the request after an answer to a body still being sent can fail
     // (its proxy loses the connection), so one that may fail follows each.
+    // The same proxy can lose the answer itself while bytes are arriving,
+    // so the body with no credential stops one byte past its limit and
+    // stays open: the 413 answers that byte, before the body's end.
     const settle = () => fetch(`${origin}/healthz`).catch(() => undefined);
     const bearer = { authorization: `Bearer ${TOKEN}` };
     const anonymous = await oversized(origin, "/api/hosted/setup", false, 1);
@@ -315,8 +361,8 @@ async function main() {
     const chunked16 = await oversized(origin, "/api/artifacts", true, 17, bearer);
     check(chunked16 === 413, "a chunked body past 16 MiB is refused 413", chunked16);
     await settle();
-    const chunked96 = await oversized(origin, "/api/hosted/setup", true);
-    check(chunked96 === 413, "a chunked body past 96 MiB is refused 413", chunked96);
+    const chunkedAnonymous = await unended(origin, "/api/hosted/setup", 256 * 1024 + 1);
+    check(chunkedAnonymous === 413, "a chunked body with no credential is refused 413 one byte past 256 KiB, before its end", chunkedAnonymous);
     await settle();
     check((await fetch(`${origin}/healthz`)).ok, "the instance answers after the oversized bodies");
 
@@ -333,13 +379,15 @@ async function main() {
     await ada.getByLabel("Your name").fill("Ada");
     await ada.getByRole("button", { name: "Create the first person" }).click();
     await ada.waitForURL(`${origin}/`);
-    await ada.locator("a.card", { hasText: "Tide tables" }).waitFor({ timeout: LIMIT });
+    await ada.locator("a.card", { hasText: "Tide tables" }).waitFor({ timeout: HANG_MS });
     check(true, "the first person sets up with the secret and sees the gallery");
     check((await fetch(`${origin}/setup`)).status === 404, "setup is closed once done");
 
     // An invite, joined in a second browser.
-    await ada.locator("a.people-link").click();
-    await ada.waitForURL(`${origin}/people`);
+    await ada.locator("a.settings-link").click();
+    await ada.waitForURL(`${origin}/settings`);
+    await ada.getByRole("link", { name: /^People/ }).click();
+    await ada.waitForURL(`${origin}/settings/people`);
     await ada.getByRole("button", { name: "Invite a person" }).click();
     await ada.getByRole("textbox", { name: "Name", exact: true }).fill("Sam");
     await ada.getByRole("button", { name: "Create invite" }).click();
@@ -350,12 +398,12 @@ async function main() {
     await sam.goto(join);
     await sam.getByRole("button", { name: "Join as Sam" }).click();
     await sam.waitForURL(`${origin}/`);
-    await sam.locator("main").waitFor({ timeout: LIMIT });
+    await sam.locator("main").waitFor({ timeout: HANG_MS });
     check((await sam.locator("a.card", { hasText: "Tide tables" }).count()) === 0, "Sam joins with the invite in a second browser, in a space of their own");
 
 
     // A sign-in link for a third browser.
-    await sam.goto(`${origin}/people`);
+    await sam.goto(`${origin}/settings/account`);
     await sam.getByRole("button", { name: "Sign in another device" }).click();
     const link = (await sam.locator(".hosted-me code").textContent()) ?? "";
     check(link.startsWith(`${origin}/signin/`), "a sign-in link is made", link);
@@ -364,11 +412,12 @@ async function main() {
     await laptop.goto(link);
     await laptop.getByRole("button", { name: "Sign in as Sam" }).click();
     await laptop.waitForURL(`${origin}/`);
-    await laptop.goto(`${origin}/people`);
-    await laptop.locator(".hosted-me", { hasText: "Signed in as Sam" }).waitFor({ timeout: LIMIT });
+    await laptop.goto(`${origin}/settings/account`);
+    await laptop.locator(".hosted-me", { hasText: "Signed in as Sam" }).waitFor({ timeout: HANG_MS });
     check(true, "the sign-in link signs a third browser in as Sam");
 
     // An agent token, minted in the browser, used by an agent on /mcp.
+    await laptop.goto(`${origin}/settings/agents`);
     await laptop.getByLabel("Machine").fill("sam-laptop");
     await laptop.getByRole("button", { name: "Create token" }).click();
     const cmd = (await laptop.locator(".minted code").first().textContent()) ?? "";
@@ -382,7 +431,7 @@ async function main() {
     const agentAid = pub.json?.id ?? pub.json?.artifact?.id ?? /\b([0-9a-z]{12})\b/.exec(pub.text)?.[1];
     check(!pub.error && agentAid, "the agent publishes with Sam's token", pub.text.slice(0, 300));
     await laptop.goto(`${origin}/`);
-    await laptop.locator("a.card", { hasText: "Sam's notes" }).waitFor({ timeout: LIMIT });
+    await laptop.locator("a.card", { hasText: "Sam's notes" }).waitFor({ timeout: HANG_MS });
     check(true, "Sam sees the agent's page in the gallery");
     const local = await tool(origin, token, "publish", { file_path: "/etc/hosts", title: "Hosts" });
     check(local.error && local.text.includes("invalid_args"), "the agent's tools read no file of the Worker's machine", local.text.slice(0, 300));
@@ -411,11 +460,11 @@ async function main() {
     await sd.locator(".hints button", { hasText: "Sam" }).click();
     await sd.getByRole("combobox", { name: "Access for the person added" }).selectOption("editor");
     await sd.getByRole("button", { name: "Add", exact: true }).click();
-    await sd.getByRole("combobox", { name: "Access for Sam" }).waitFor({ timeout: LIMIT });
+    await sd.getByRole("combobox", { name: "Access for Sam" }).waitFor({ timeout: HANG_MS });
     await shot(ada, "share-dialog");
     await sd.getByRole("button", { name: "Done" }).click();
     await laptop.goto(`${origin}/`);
-    await laptop.locator("a.card", { hasText: "Harbour log" }).waitFor({ timeout: LIMIT });
+    await laptop.locator("a.card", { hasText: "Harbour log" }).waitFor({ timeout: HANG_MS });
     check(true, "Ada shares the Harbour log with Sam from Share, and it reaches Sam's gallery");
     const watched = await tool(origin, token, "watch", { url_or_id: harbour.id });
     check(!watched.error, "Sam's agent watches the owner's page", watched.text.slice(0, 300));
@@ -423,7 +472,7 @@ async function main() {
     const samAgent = agents.find((a) => a.name === "e2e");
     check(samAgent?.handle && samAgent.person?.name === "Sam", "the page's participants name the token's agent, as Sam's", agents);
     await laptop.goto(`${origin}/inbox`);
-    await laptop.locator("main").waitFor({ timeout: LIMIT });
+    await laptop.locator("main").waitFor({ timeout: HANG_MS });
     await ada.goto(`${origin}/a/${harbour.id}`);
     const posted = await ada.evaluate(async (hid) => {
       const form = new FormData();
@@ -442,11 +491,11 @@ async function main() {
     const withheld = await tool(origin, token, "comments_read", { url_or_id: harbour.id, thread_id: tid });
     check(!withheld.text.includes("Log the spring tide."), "the agent reads the owner's comment withheld before Sam decides", withheld.text.slice(0, 300));
     const card = laptop.locator("article.acard", { hasText: "Log the spring tide." });
-    await card.waitFor({ timeout: LIMIT });
+    await card.waitFor({ timeout: HANG_MS });
     check((await card.locator(".agent").textContent()) === "e2e", "the approval card reaches Sam's open inbox live, naming the agent");
     await shot(laptop, "member-inbox-approval");
     await card.getByRole("button", { name: "Allow this thread, including later replies" }).click();
-    await card.locator(".outcome").filter({ hasText: /./ }).waitFor({ timeout: LIMIT });
+    await card.locator(".outcome").filter({ hasText: /./ }).waitFor({ timeout: HANG_MS });
     const got = await until("the agent reads the comment once Sam allows the thread", async () => {
       const r = await tool(origin, token, "comments_read", { url_or_id: harbour.id, thread_id: tid });
       return r.text.includes("Log the spring tide.") && r;
@@ -464,7 +513,7 @@ async function main() {
     // The page in its artifact page's frame.
     await ada.goto(`${origin}/a/${id}`);
     const af = await contentFrame(ada, id, 1);
-    check((await af.locator("#h").textContent({ timeout: LIMIT })) === "Tide tables", "the page renders in the frame");
+    check((await af.locator("#h").textContent({ timeout: HANG_MS })) === "Tide tables", "the page renders in the frame");
 
     // Each artifact's site, on its own host. A private site needs a site
     // session, which `/site-signin` on the public host hands out.
@@ -487,7 +536,7 @@ async function main() {
     const tab = await ada.context().newPage();
     pages.push(tab);
     await tab.goto(`${site}/`);
-    await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: LIMIT });
+    await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: HANG_MS });
     check(new URL(tab.url()).origin === site, "the owner's browser opens the private site through the handshake", tab.url());
 
     // No path-first route of the Worker is reached on a site host: each is
@@ -515,11 +564,11 @@ async function main() {
     // Two artifacts' sites keep their storage apart in one browser.
     await tab.evaluate(() => localStorage.setItem("x", "harbour"));
     await tab.goto(`${siteOf(id)}/`);
-    await tab.locator("#h").waitFor({ timeout: LIMIT });
+    await tab.locator("#h").waitFor({ timeout: HANG_MS });
     check((await tab.evaluate(() => localStorage.getItem("x"))) === null, "one site does not see another's localStorage");
     await tab.evaluate(() => localStorage.setItem("x", "tide"));
     await tab.goto(`${site}/`);
-    await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: LIMIT });
+    await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: HANG_MS });
     check((await tab.evaluate(() => localStorage.getItem("x"))) === "harbour", "each site keeps its own localStorage");
 
     // A db document lives in its artifact's own object, not the instance.
@@ -565,17 +614,73 @@ async function main() {
     await api(origin, `/api/artifacts/${harbour.id}`, { method: "PATCH", body: JSON.stringify({ site_access: "private" }) });
     check(!(await raw(`${site}/`, { accept: "text/html" })).text.includes("Harbour log"), "closed again, it refuses the next anonymous request");
 
+    // A clax served unrestricted, on a site open to the world: its page and files keep only their framing
+    // and revalidate, tagged by the policy; its service worker's script is its own; at `self` again, a copy
+    // kept from then is answered whole with the lockdown and the worker gets Clax's script.
+    const PAGE_SW = "self.addEventListener('fetch', () => {});";
+    const openSite = (await api(origin, "/api/artifacts", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Unrestricted site",
+        files: {
+          "index.html": { content: "<title>Unrestricted site</title><h1>Unrestricted site</h1>", encoding: "utf8" },
+          "app.js": { content: "export const unrestricted = 1;", encoding: "utf8" },
+          "sw.js": { content: PAGE_SW, encoding: "utf8" },
+        },
+      }),
+    })).artifact;
+    const openHost = siteOf(openSite.id);
+    const policyOf = (r) => r.headers.get("content-security-policy") ?? "";
+    const lockdown = (p) => p.startsWith("frame-ancestors 'self' ") && p.includes("connect-src 'self';") && p.includes("form-action 'none'");
+    const framingAlone = (p) => p.startsWith("frame-ancestors 'self' ") && !p.includes(";");
+    const KILL = "self.addEventListener(\"install\",()=>self.skipWaiting());self.addEventListener(\"activate\",e=>e.waitUntil(self.registration.unregister()));";
+    await api(origin, `/api/artifacts/${openSite.id}`, { method: "PATCH", body: JSON.stringify({ site_access: "world" }) });
+    const ownPaths = ["/", "/app.js", "/_clax/v/1/", "/_clax/v/1/app.js"];
+    const atSelf = {};
+    for (const path of ownPaths) {
+      const r = await raw(`${openHost}${path}`);
+      check(r.status === 200 && lockdown(policyOf(r)), `self, ${path} of a world-open site carries the lockdown`, { status: r.status, csp: policyOf(r) });
+      atSelf[path] = { cc: r.headers.get("cache-control"), etag: r.headers.get("etag") };
+    }
+    const selfSw = await raw(`${openHost}/sw.js`, { "service-worker": "script" });
+    check(selfSw.status === 200 && selfSw.text === KILL, "self, a service worker's script request is answered Clax's kill switch", { status: selfSw.status, text: selfSw.text.slice(0, 120) });
+    const toUnrestricted = await api(origin, `/api/artifacts/${openSite.id}`, { method: "PATCH", body: JSON.stringify({ content_security_policy: "unrestricted" }) });
+    check(toUnrestricted.artifact?.content_security_policy === "unrestricted", "PATCH content_security_policy serves the clax unrestricted", toUnrestricted.artifact);
+    const unrestrictedTags = {};
+    for (const path of ownPaths) {
+      const r = await raw(`${openHost}${path}`);
+      const cc = r.headers.get("cache-control") ?? "";
+      const etag = r.headers.get("etag");
+      check(r.status === 200 && framingAlone(policyOf(r)), `unrestricted, ${path} carries its framing alone`, { status: r.status, csp: policyOf(r) });
+      check(cc.includes("no-cache") && !cc.includes("immutable") && !cc.includes("max-age") && etag && etag !== atSelf[path].etag, `unrestricted, ${path} revalidates under a tag of its own`, { cc, etag, was: atSelf[path] });
+      const again = await raw(`${openHost}${path}`, { "if-none-match": etag });
+      check(again.status === 304, `unrestricted, ${path} with its tag is not modified`, again.status);
+      unrestrictedTags[path] = etag;
+    }
+    const unrestrictedSw = await raw(`${openHost}/sw.js`, { "service-worker": "script" });
+    check(unrestrictedSw.status === 200 && unrestrictedSw.text === PAGE_SW && framingAlone(policyOf(unrestrictedSw)), "unrestricted, a service worker's script request is answered the clax's own script", { status: unrestrictedSw.status, text: unrestrictedSw.text.slice(0, 120), csp: policyOf(unrestrictedSw) });
+    const unrestrictedMissing = await raw(`${openHost}/nope.js`, { "service-worker": "script" });
+    check(unrestrictedMissing.status === 404 && lockdown(policyOf(unrestrictedMissing)), "unrestricted, a worker script it has none of is Clax's 404 with the lockdown", { status: unrestrictedMissing.status, csp: policyOf(unrestrictedMissing) });
+    await api(origin, `/api/artifacts/${openSite.id}`, { method: "PATCH", body: JSON.stringify({ content_security_policy: "self" }) });
+    for (const path of ownPaths) {
+      const r = await raw(`${openHost}${path}`, { "if-none-match": unrestrictedTags[path] });
+      check(r.status === 200 && lockdown(policyOf(r)), `self again, ${path} kept from while unrestricted is answered whole with the lockdown`, { status: r.status, csp: policyOf(r) });
+      check(r.headers.get("cache-control") === atSelf[path].cc && r.headers.get("etag") === atSelf[path].etag, `self again, ${path} caches as before`, { cc: r.headers.get("cache-control"), etag: r.headers.get("etag"), was: atSelf[path] });
+    }
+    const reselfSw = await raw(`${openHost}/sw.js`, { "service-worker": "script" });
+    check(reselfSw.status === 200 && reselfSw.text === KILL, "self again, the worker's update check is answered the kill switch", { status: reselfSw.status, text: reselfSw.text.slice(0, 120) });
+
     // Deleting the artifact erases its object.
     await api(origin, `/api/artifacts/${notes.id}`, { method: "DELETE" });
     await until("the deleted artifact's object is erased", async () => (await probe(notes.id)).object_store === false);
     check(true, "deleting an artifact erases its object's store");
 
     // The owner shares the page by link, for comments; a guest names themselves and comments.
-    await ada.goto(`${origin}/people`);
+    await ada.goto(`${origin}/settings/sharing`);
     await ada.getByRole("combobox", { name: "Page to share" }).selectOption({ label: "Tide tables" });
     await ada.getByRole("combobox", { name: "What its link allows" }).selectOption("commenter");
     await ada.getByRole("button", { name: "Share by link" }).click();
-    await ada.locator(".hosted-links .line", { hasText: "Tide tables" }).waitFor({ timeout: LIMIT });
+    await ada.locator(".hosted-links .line", { hasText: "Tide tables" }).waitFor({ timeout: HANG_MS });
     const mia = await newPage(browser, "mia");
     pages.push(mia);
     const miaLive = watchLive(mia);
@@ -593,7 +698,7 @@ async function main() {
     await ada.goto(`${origin}/a/${id}`);
     const af2 = await contentFrame(ada, id, 1);
     await threads(ada);
-    await ada.locator(".thread-card", { hasText: "Add the moon phase." }).waitFor({ timeout: LIMIT });
+    await ada.locator(".thread-card", { hasText: "Add the moon phase." }).waitFor({ timeout: HANG_MS });
     check(true, "the owner sees the guest's comment");
     await shot(ada, "owner-view");
 
@@ -644,7 +749,7 @@ async function main() {
     // Sam, beyond the one seat (the guest holds it, the owner's is reserved).
     const samLive = watchLive(sam);
     await sam.goto(`${origin}/a/${id}`);
-    await sam.locator(".banner.spectate").waitFor({ timeout: LIMIT });
+    await sam.locator(".banner.spectate").waitFor({ timeout: HANG_MS });
     check(true, "Sam is a spectator: the one seat is the guest's");
     await shot(sam, "spectator");
     await until("a spectator's live socket closes", () => samLive.open === 0);
@@ -668,7 +773,7 @@ async function main() {
       const p = await ctx.newPage();
       pages.push(p);
       await p.goto(`${siteOf(board.id)}/`);
-      await p.locator("h2", { hasText: "Tide board" }).waitFor({ timeout: LIMIT });
+      await p.locator("h2", { hasText: "Tide board" }).waitFor({ timeout: HANG_MS });
       await p.evaluate((label) => {
         const room = { frames: [], closed: null, acks: 0 };
         const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/_clax/api/room?peer=${label}`);
@@ -715,16 +820,17 @@ async function main() {
     check(snap2.seats_free === 0, "after the wake the snapshot still counts no free seat", snap2.seats_free);
     const miaAfter = await postThread(mia, id, "Still here after the wake.");
     check(miaAfter.status === 201, "after the wake the seated guest still comments", miaAfter);
-    await ada.locator(".thread-card", { hasText: "Still here after the wake." }).waitFor({ timeout: LIMIT });
+    await ada.locator(".thread-card", { hasText: "Still here after the wake." }).waitFor({ timeout: HANG_MS });
     check(true, "after the wake the guest's comment reaches the owner live");
     const presence = await api(origin, `/api/artifacts/${id}/presence`);
     const people = (presence.people ?? presence.presence ?? []).map((p) => p.public_id);
     check(people.includes(miaId) && people.includes(adaId), "after the wake presence still lists the owner and the guest", presence);
+    // Any pointer of the guest's the owner hears from here on came through
+    // the woken sockets.
+    const woken = adaLive.frames.length;
     await until("the woken live sockets carry pointers again", async () => {
       await wave(mia, mf);
-      const n = adaLive.frames.length;
-      await new Promise((r) => setTimeout(r, 300));
-      return adaLive.frames.slice(n).some((f) => f.includes(miaId) && f.includes("cursor"));
+      return adaLive.frames.slice(woken).some((f) => f.includes(miaId) && f.includes("cursor"));
     });
     check(true, "after the wake the guest's pointer still reaches the owner");
 
@@ -747,6 +853,47 @@ async function main() {
       await joined(adaRoom, "the owner's site room socket answers after the share is removed");
       check(true, "the owner's site room socket stays open");
     }
+
+    // Site analytics, on the world-open site (no browser has loaded its
+    // page yet): a visit counted with Cloudflare's country, never the
+    // visitor's own header, written by the alarm and read after a wake.
+    const marked = await raw(`${openHost}/`);
+    check(marked.status === 200 && /<script[^>]*data-count="1"[^>]*><\/script>/.test(marked.text), "a world-open site's page is served marked for counting", marked.text.slice(0, 400));
+    const visitor = await browser.newContext({
+      // Headless Chromium names itself, and a headless browser is not counted.
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      extraHTTPHeaders: { "cf-ipcountry": "ZZ" },
+    });
+    const seen = await visitor.newPage();
+    pages.push(seen);
+    const reported = seen.waitForResponse((r) => new URL(r.url()).pathname === "/_clax/api/analytics" && r.request().method() === "POST", { timeout: HANG_MS });
+    await seen.goto(`${openHost}/`);
+    check((await reported).status() === 204, "the page's bridge reports the view to its own site through the Worker", (await reported).status());
+    const stats = () => api(origin, `/api/artifacts/${openSite.id}/analytics`);
+    const counted = await until("the view is counted", async () => {
+      const r = await stats();
+      return r.totals?.views === 1 && r;
+    });
+    const country = counted.countries?.[0]?.value;
+    check(
+      counted.totals.visitors === 1 && counted.countries.length === 1 && /^[A-Z][A-Z0-9]$/.test(country) && country !== "ZZ",
+      `the view counts once, its country workerd's request.cf names (${country}), not the one the visitor sent`,
+      counted,
+    );
+    check(counted.devices?.[0]?.value === "desktop" && counted.pages?.[0]?.value === "index.html", "the view's device and page are counted", counted);
+    // No request writes a batch here but a view's (none follows) and a
+    // server's first event (long past): the alarm does.
+    const alarmNow = () => api(origin, `/_worker/alarm?artifact=${openSite.id}`);
+    const after = await until("the alarm writes the batch", async () => {
+      const a = await alarmNow();
+      return a.views_pending === 0 && a;
+    });
+    const midnight = Math.floor(after.now / 86_400_000 + 1) * 86_400_000;
+    check(after.alarm !== null && after.alarm <= Math.max(midnight, after.now + 5_000) + 1_000, "the alarm is then set no later than the UTC day's rollover", { after, midnight });
+    const rebuilt = await fetch(`${origin}/_worker/hibernate`, { method: "POST", headers: bearer });
+    check(rebuilt.status === 200, "the server is rebuilt again, the views in memory dropped", rebuilt.status);
+    const kept = await stats();
+    check(kept.totals?.views === 1 && kept.totals?.visitors === 1 && kept.countries?.[0]?.value === country, "the read route answers the view from the store after the wake: the batch was written", kept);
 
     const health = await fetch(`${origin}/healthz`).then((r) => r.json());
     summary.ok = true;

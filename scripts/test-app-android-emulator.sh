@@ -23,6 +23,8 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# shellcheck source=scripts/lib/wait.sh
+. scripts/lib/wait.sh
 
 tmp="$(cd "$(mktemp -d)" && pwd -P)"
 cleanup() {
@@ -207,7 +209,7 @@ rm -f "$tmp/emulator.pid"
 "$script" --start --i-know-what-i-am-doing > "$tmp/out" 2>&1 || true
 dead="$(cat "$tmp/emulator.pid" 2>/dev/null || echo none)"
 kill "$dead" 2>/dev/null || true
-for _ in $(seq 300); do kill -0 "$dead" 2>/dev/null || break; sleep 0.1; done
+wait_for "the started emulator to exit" gone "$dead" || _fail "the started emulator ($dead) did not exit"
 sed -E "s/(^| |=)$dead\$/\\1$stranger/" "$running_file" > "$tmp/stale"
 [ "$dead" != none ] && ! grep -q "$dead" "$tmp/stale" && grep -q "$stranger" "$tmp/stale" ||
     _fail "the stale record ($dead to $stranger)"
@@ -253,12 +255,9 @@ echo never > "$tmp/adb.mode"
 rm -f "$tmp/emulator.pid"
 "$script" --start --i-know-what-i-am-doing > "$tmp/out" 2>&1 &
 starter=$!
-# Until the stub emulator runs and the script waits on its boot, at most
-# 30 s.
-for _ in $(seq 300); do
-    [ -s "$tmp/emulator.pid" ] && grep -q 'get-state' "$tmp/adb.calls" 2>/dev/null && break
-    sleep 0.1
-done
+# Until the stub emulator runs and the script waits on its boot.
+waiting_on_boot() { [ -s "$tmp/emulator.pid" ] && grep -q 'get-state' "$tmp/adb.calls" 2>/dev/null; }
+wait_for "the script to wait on the stub emulator's boot" waiting_on_boot || true
 booting="$(cat "$tmp/emulator.pid" 2>/dev/null || true)"
 kill -TERM "$starter"
 starter_status=0

@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/settle.dart' show settleUntil;
 import '../../support/split_fixture.dart';
 
 final _mac = TargetPlatformVariant.only(TargetPlatform.macOS);
@@ -72,9 +73,7 @@ void main() {
       model.dispose();
       f.dispose();
     });
-    for (var i = 0; i < 5; i++) {
-      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-    }
+    await tester.runAsync(() => f.arranged(model));
     await tester.pumpWidget(
       MaterialApp(
         theme: claxTheme(Brightness.light, platform),
@@ -459,10 +458,11 @@ void main() {
     await g.moveTo(to);
     await tester.pump();
     await g.up();
-    for (var i = 0; i < 5; i++) {
-      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-      await tester.pump();
-    }
+    await settleUntil(
+      tester,
+      () => model.starred.contains(f.ids['Budget']),
+      what: 'Budget starred in the arrangement read back',
+    );
     final doc = await tester.runAsync(
       () => f.api.getDoc(f.home, 'layout/main'),
     );

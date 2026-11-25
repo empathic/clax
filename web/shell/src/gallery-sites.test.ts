@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync } from "svelte";
 import GallerySites from "./ui/GallerySites.svelte";
 import { mount } from "./test/svelte";
+import { settled } from "./test/settled";
 
 /** The gallery topic, as the Sites section subscribes to it. */
 const topic: { on: ((e: { type: string }) => void) | null } = { on: null };
@@ -27,7 +28,7 @@ function stub(joins: { remaining: number; moved: string[] }[]) {
   }));
   return calls;
 }
-const settle = async () => { for (let i = 0; i < 20; i++) { await new Promise(r => setTimeout(r, 0)); flushSync(); } };
+const settle = settled;
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = ""; });
 
 describe("GallerySites", () => {

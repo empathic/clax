@@ -547,6 +547,11 @@ pub struct FixAttempt {
     pub verdict_context: Option<ReportContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict_at: Option<String>,
+    /// The exact origin a reporter verified it from: its reporter token's
+    /// (a preview deployment's, or the production site's). Absent for a
+    /// verdict a person gave, and for one not yet given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_origin: Option<String>,
 }
 
 /// Why a report was closed (§6.1): `fixed` when a fix was verified or
@@ -590,6 +595,7 @@ impl ResolveReason {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::scrub::REDACTED;
@@ -891,6 +897,7 @@ mod tests {
             verdict_note: None,
             verdict_context: None,
             verdict_at: None,
+            verified_origin: None,
         };
         let v = serde_json::to_value(&a).unwrap();
         assert_eq!(v["summary"], "s");

@@ -1,6 +1,7 @@
 import { type Page } from "@playwright/test";
 import { test, expect, lookedMarks, publishAs, publishNext, registerSession } from "./fixtures";
 import { hostedDaemon, memberOf, openAt, ownerOf, rightsOn } from "./hosted-helpers";
+
 const PAGE = "<main><h2>Quarterly goals</h2></main>";
 
 async function comment(page: Page, aid: string, body: string, tid?: string): Promise<string> {

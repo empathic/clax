@@ -38,24 +38,18 @@ impl ManualSleeper {
     /// Returns once `n` sleeps of `d` are waiting; panics past the
     /// [`HANG`](crate::HANG) guard.
     pub async fn wait_for(&self, d: Duration, n: usize) {
-        let deadline = tokio::time::Instant::now() + crate::HANG;
-        loop {
-            let changed = self.changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if self.waiting(d) == n {
-                return;
+        within(&format!("{n} sleeps of {d:?}"), async {
+            loop {
+                let changed = self.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if self.waiting(d) == n {
+                    return;
+                }
+                changed.await;
             }
-            tokio::time::timeout_at(deadline, changed)
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "{n} sleeps of {d:?}: have {} after {:?} (hang guard)",
-                        self.waiting(d),
-                        crate::HANG
-                    )
-                });
-        }
+        })
+        .await;
     }
 
     /// Ends every waiting sleep of `d`; how many.

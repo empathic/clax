@@ -135,6 +135,7 @@ async fn mcp_lists_the_tools(path: &str) {
             "queue_release",
             "queue_renew",
             "queue_reply",
+            "queue_request",
             "queue_resolve",
             "queue_watch",
             "read",

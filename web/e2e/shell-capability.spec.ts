@@ -1,7 +1,7 @@
 import { type Frame, type Locator, type Page } from "@playwright/test";
 import { test, expect, type Daemon, approve, contentFrame, openArtifact, postThread, publishWith, reach, registerSession } from "./fixtures";
 import { hostedDaemon, memberOf, ownerOf, rightsOn } from "./hosted-helpers";
-import { advance, quietEval } from "./time";
+import { advance, pauseTime, quietEval } from "./time";
 
 // The shell capability against the real shell in Chromium: the ring is
 // judged on the control's own box, on desktop and on a phone.
@@ -92,14 +92,18 @@ test(`a_highlight_rings_the_real_comment_button`, async ({ page }) => {
 });
 
 test(`a_ring_goes_after_six_seconds`, async ({ page }) => {
+  await page.clock.install();
   const { f } = await tour(page);
+  // From the press on, the page's time stands still but for the shell's
+  // clock, which the test advances: the ring's six seconds end only when the
+  // test moves past them, however long a loaded machine takes to check it.
+  await pauseTime(page);
   expect(await press(page, f, "hl-threads")).toBe("true");
   await expectRingAround(page, page.locator("button.threads"));
-  // One evaluate reads the ring's due time off the clock and steps to 1 ms
-  // short of it, so real time between the two cannot carry it past.
   await quietEval(page, `globalThis.claxTestClock.advance(globalThis.claxTestClock.dueIn("coach-mark") - 1)`);
   await expect(ring(page)).toHaveCount(1);
   await advance(page, 1);
+  await page.clock.resume();
   await expect(ring(page)).toHaveCount(0);
 });
 

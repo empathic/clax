@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // Admin › Usage (spec 2026-10-21-claxbot §7, §10): one week's credits, the
+  // Settings, Usage (spec 2026-10-21-claxbot §7, §10): one week's credits, the
   // revenue the paid ones stand for (credits × price), what they cost, what
   // the free tier cost, and the gross margin before and after the free
   // tier; then the totals by person and by cost line. The week is
@@ -10,6 +10,7 @@
   import { refusal } from "../people/refusal";
   import { type AdminUsage, adminUsage } from "./api";
   import { BASE_UNITS, credits, margins, money, percent, rangeFrom, tokens } from "./model";
+  import { holdReveal } from "../settings/first-data";
 
   let { now }: { now?: () => Date } = $props();
   let u = $state<AdminUsage | null>(null);
@@ -17,17 +18,19 @@
   let week = $state(new URLSearchParams(location.search).get("week") ?? undefined);
   const m = $derived(u ? margins(u) : null);
   const day = 86_400_000;
-  const load = () => { err = null; void adminUsage(week).then(x => { u = x; }, e => { err = refusal(e); }); };
+  const load = () => { err = null; return adminUsage(week).then(x => { u = x; }, e => { err = refusal(e); }); };
   function walk(by: number) {
     const start = u?.week.start ?? rangeFrom("week", now?.() ?? new Date())!;
     week = new Date(new Date(start).getTime() + by * 7 * day).toISOString();
     const q = new URLSearchParams(location.search);
     q.set("week", week);
     history.replaceState(history.state, "", `${location.pathname}?${q}`);
-    load();
+    void load();
   }
   const fmtDay = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-  onMount(load);
+  // Shown in Settings, the screen waits for the week's usage.
+  const release = holdReveal();
+  onMount(() => { void load().finally(release); });
 </script>
 
 {#if err}<p class="err" role="alert">{err}</p>{/if}

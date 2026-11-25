@@ -1,0 +1,54 @@
+[
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "files.read",
+    "result": null,
+    "seq": 0,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "files.replace",
+    "result": null,
+    "seq": 1,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "draft.check",
+    "result": null,
+    "seq": 2,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "draft.publish",
+    "result": {
+      "version": 2
+    },
+    "seq": 3,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "threads.reply",
+    "result": {
+      "comment_id": "<comment>"
+    },
+    "seq": 4,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "files.read",
+    "result": null,
+    "seq": 0,
+    "step": 4
+  }
+]

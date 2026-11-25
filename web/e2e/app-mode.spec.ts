@@ -8,7 +8,7 @@
 import { writeFile } from "node:fs/promises";
 import { type CDPSession, type Frame, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { hostChannel, host, initHost, NONCE, noFrames, ofType, toHost } from "./app-host";
-import { test, expect, type Daemon, api, approve, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
+import { test, expect, type Daemon, api, approve, commentModeIn, contentFrame, frameAt, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
 import { ask } from "./questions-helpers";
 import { advance, quietEval } from "./time";
 
@@ -235,13 +235,13 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(y).toBeGreaterThanOrEqual(1199);
 
     await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": NOTES.replace(">Notes</h2>", ">Notes, in blue</h2>") } });
-    await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(async () => (await ofType(page, "newer")).length).toBe(1);
     expect((await ofType(page, "newer"))[0]).toEqual({ type: "newer", version: 2 });
     // Never swapped without the app's word: version 1 still shows.
     expect((await ofType(page, "landed"))).toEqual([]);
     await expect(frame.locator("#t")).toHaveText("Notes");
     await host(page, "reloadLatest()");
-    await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(async () => (await ofType(page, "landed")).length).toBe(1);
     expect((await ofType(page, "landed"))[0]).toEqual({ type: "landed", version: 2 });
     const v2 = await contentFrame(page, id, 2);
     await expect(v2.locator("#t")).toHaveText("Notes, in blue");
@@ -251,9 +251,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // Undo: version 1's files come back as version 3, over the same
     // documents, and the view follows it as it followed version 2.
     await api(d.base, d.token, `/api/artifacts/${id}/versions:restore`, { method: "POST", session: sid, body: JSON.stringify({ version: 1, if_version: 2 }) });
-    await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(2);
+    await expect.poll(async () => (await ofType(page, "newer")).length).toBe(2);
     await host(page, "reloadLatest()");
-    await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(2);
+    await expect.poll(async () => (await ofType(page, "landed")).length).toBe(2);
     expect((await ofType(page, "landed"))[1]).toEqual({ type: "landed", version: 3 });
     const v3 = await contentFrame(page, id, 3);
     await expect(v3.locator("#t")).toHaveText("Notes");
@@ -276,9 +276,9 @@ test("a version published after the hidden-page threshold is still offered and l
   // Past the stream's 30 s hidden-page threshold (web/shell/src/stream.ts HIDDEN_MS), on the shell's test clock.
   await advance(page, 60_000);
   await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": PAGE.replace("Quarterly goals", "Quarterly goals, later") } });
-  await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(1);
+  await expect.poll(async () => (await ofType(page, "newer")).length).toBe(1);
   await host(page, "reloadLatest()");
-  await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
+  await expect.poll(async () => (await ofType(page, "landed")).length).toBe(1);
   const next = await contentFrame(page, id, 2);
   await expect(next.locator("#t")).toHaveText("Quarterly goals, later");
 });
@@ -314,6 +314,9 @@ test.describe("a short view", () => {
     expect(await framed()).toBe(false);
     await host(page, "enterCommentMode()");
     await expect.poll(framed).toBe(true);
+    // The shell frames the page as it turns the mode on, before the frame
+    // has heard of it: a tap before then goes to the page.
+    await commentModeIn(frame);
     // The app's host attests the finger's press and release.
     const b = (await frame.locator("#t").boundingBox())!;
     const at = { x: b.x + Math.min(40, b.width / 2), y: b.y + b.height / 2 };
@@ -364,24 +367,23 @@ test("back() moves through the app's own fragments and pages in place, and acros
   // A page of the app: another.
   await f1.evaluate(() => { location.hash = ""; });
   await f1.evaluate(() => (document.getElementById("other") as HTMLAnchorElement).click());
-  await expect.poll(() => page.frames().some(f => f.url().endsWith("/other.html"))).toBe(true);
+  await frameAt(page, /\/other\.html$/);
   // A version swap keeps the trail.
   await publishNext(d.base, d.token, s.id, id, 1, { files: { "other.html": "<!doctype html><title>O</title><h1 id=o>Other, later</h1>" } });
-  await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(1);
+  await expect.poll(async () => (await ofType(page, "newer")).length).toBe(1);
   await host(page, "reloadLatest()");
-  await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
-  const other = page.frames().find(f => /\/v\/2\/other\.html$/.test(f.url()))!;
+  await expect.poll(async () => (await ofType(page, "landed")).length).toBe(1);
+  const other = await frameAt(page, /\/v\/2\/other\.html$/);
   await expect(other.locator("#o")).toHaveText("Other, later");
   // Back: the index page of version 2, then its route, then its start. The
   // next back() waits for the index page to greet: its greeting starts the
   // trail of a new document, and drops a move a back() made before it.
   const readies = (await ofType(page, "ready")).length;
   await host(page, "back()");
-  await expect.poll(() => page.frames().some(f => /\/v\/2\/(#.*)?$/.test(f.url()))).toBe(true);
+  const index = await frameAt(page, /\/v\/2\/(#.*)?$/);
   await expect.poll(async () => (await ofType(page, "ready")).slice(readies).some(r => r.file === "index.html")).toBe(true);
   expect(new URL(page.url()).pathname).toBe(`/a/${id}`);
   await host(page, "back()");
-  const index = page.frames().find(f => /\/v\/2\/(#.*)?$/.test(f.url()))!;
   await expect.poll(() => index.evaluate(() => location.hash)).toBe("#/item/3");
   await host(page, "back()");
   await expect.poll(() => index.evaluate(() => location.hash)).toBe("");
@@ -408,6 +410,14 @@ show();
   await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
   const back = async () => (await ofType(page, "history")).at(-1)?.back;
   const view = f.locator("#view");
+  // What the page reported to the shell and what the shell told the app,
+  // attached when the test fails, with where the frame ended up.
+  onFailure = async (shown, info) => {
+    const heard = await shown.evaluate(() => (window as unknown as { claxMsgs: { type: string; depth?: number; hash?: string; file?: string }[] }).claxMsgs.filter(m => /^clax:(hello|hash|route|navigate)$/.test(m.type)).map(m => ({ type: m.type, depth: m.depth, hash: m.hash, file: m.file })));
+    const path = info.outputPath("trail.json");
+    await writeFile(path, JSON.stringify({ heard, toHost: await toHost(shown), frames: shown.frames().map(x => x.url()), view: await view.textContent().catch(() => null) }, null, 1));
+    await info.attach("trail", { path, contentType: "application/json" });
+  };
   const start = await view.textContent();
   expect(start).toMatch(/:null$/);
   expect(await back()).toBe(false);
@@ -434,10 +444,16 @@ show();
   await expect.poll(back).toBe(false);
   await f.locator("#go").click();
   await expect.poll(back).toBe(true);
-  // Back to where the page loaded, then out of the app.
-  for (let i = 0; i < 10 && await back(); i++) await host(page, "back()");
-  await expect(view).toHaveText(start!);
-  await expect.poll(back).toBe(false);
+  // Back to where the page loaded, then out of the app: back() is pressed
+  // while the app's history says there is an entry to go back to, until the
+  // page shows where it loaded and the history says there is none. Each
+  // press moves the shell's trail at once (it tells the app as it does), so
+  // a press made on a history the page has not caught up with yet still
+  // goes back one entry, never past the start.
+  await expect.poll(async () => {
+    if (await back()) await host(page, "back()");
+    return !(await back()) && (await view.textContent()) === start;
+  }).toBe(true);
 });
 
 
@@ -532,9 +548,9 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
     await expect.poll(async () => (await asks(page)).length).toBe(1);
     const [asked] = await asks(page);
     await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": NET.replace("<p>forecast</p>", "<p>forecast, later</p>") } });
-    await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(async () => (await ofType(page, "newer")).length).toBe(1);
     await host(page, "reloadLatest()");
-    await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(async () => (await ofType(page, "landed")).length).toBe(1);
     await expect.poll(() => ofType(page, "askCancel")).toEqual([{ type: "askCancel", id: asked.id }]);
     await host(page, `askAnswer(${JSON.stringify(asked.id)}, "allow")`);
     expect(await granted(id)).toBe(false);
@@ -553,7 +569,7 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
   test("a failed follow is a notice to the host, nothing drawn, and its Try again loads the latest", async ({ page }) => {
     const { id, sid } = await openNative(page, "Native notice");
     await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": PAGE.replace("Quarterly goals", "Quarterly goals, later") } });
-    await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(async () => (await ofType(page, "newer")).length).toBe(1);
     const artifactUrl = new RegExp(`/api/artifacts/${id}(\\?.*)?$`);
     await page.route(artifactUrl, route => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "internal", message: "down" } }) }));
     await host(page, "reloadLatest()");
@@ -567,7 +583,7 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
     // An action the notice did not carry does nothing; its own loads the latest.
     await host(page, `noticeAction("other")`);
     await host(page, `noticeAction("retry")`);
-    await expect.poll(() => ofType(page, "landed"), { timeout: 10_000 }).toEqual([{ type: "landed", version: 2 }]);
+    await expect.poll(() => ofType(page, "landed")).toEqual([{ type: "landed", version: 2 }]);
     await expect((await contentFrame(page, id, 2)).locator("#t")).toHaveText("Quarterly goals, later");
   });
 
@@ -578,18 +594,18 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
     await api(d.base, d.token, `/api/sessions/${sid}/drafts/${id}`, { method: "PUT", body: JSON.stringify({ files: { "index.html": { content: PAGE.replace("Quarterly goals", "Quarterly goals in May"), encoding: "utf8" } }, note: "rewording the goals" }) });
     // The app's own agent is named Clax.
     const latest = async () => ((await ofType(page, "draft")).at(-1) as { state: unknown } | undefined)?.state;
-    await expect.poll(latest, { timeout: 10_000 }).toEqual({ kind: "drafting", by: "Clax", note: "rewording the goals" });
+    await expect.poll(latest).toEqual({ kind: "drafting", by: "Clax", note: "rewording the goals" });
     await expect(page.locator(".banner.draft")).toHaveCount(0);
     await host(page, `showDraft("Clax")`);
-    await expect.poll(latest, { timeout: 10_000 }).toMatchObject({ kind: "showing", by: "Clax", base: 1 });
-    await expect.poll(() => page.frames().some(f => /\/draft\/a_[^/]+\/[A-Za-z0-9_-]{22}\//.test(f.url())), { timeout: 10_000 }).toBe(true);
+    await expect.poll(latest).toMatchObject({ kind: "showing", by: "Clax", base: 1 });
+    await frameAt(page, /\/draft\/a_[^/]+\/[A-Za-z0-9_-]{22}\//);
     await expect(page.locator(".banner.draft")).toHaveCount(0);
     await host(page, "hideDraft()");
     await expect.poll(latest).toEqual({ kind: "drafting", by: "Clax", note: "rewording the goals" });
 
     expect(await ofType(page, "gone")).toEqual([]);
     await api(d.base, d.token, `/api/artifacts/${id}`, { method: "DELETE" });
-    await expect.poll(() => ofType(page, "gone"), { timeout: 10_000 }).toEqual([{ type: "gone" }]);
+    await expect.poll(() => ofType(page, "gone")).toEqual([{ type: "gone" }]);
     await expect.poll(latest).toBeNull();
     await expect(page.locator("iframe.frame")).toHaveCount(0);
     // Still once, after whatever else the view hears of the deletion.
@@ -608,18 +624,18 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
     await initHost(page, { native: ALL, platform: "android" });
     const latest = async () => (await ofType(page, "questions")).at(-1) ?? null;
     // Open before the view: told, not raised.
-    await expect.poll(latest, { timeout: 15_000 }).toEqual({ type: "questions", open: 1, showing: false, ids: [first.id], raise: false });
+    await expect.poll(latest).toEqual({ type: "questions", open: 1, showing: false, ids: [first.id], raise: false });
     await expect(page.locator(".app-questions")).toHaveCount(0);
     // The app opens its own sheet: the shell's calls build none.
     await host(page, "openQuestions()");
     await expect(page.locator(".app-questions")).toHaveCount(0);
     // A question asked while the view shows raises.
     const second = (await ask(d.base, d.token, s.id, { source: "ask", artifact_id: artifact.id, questions: [{ question: "Ship it?", header: "Ship", options: [{ label: "Yes" }, { label: "No" }] }] })).question;
-    await expect.poll(latest, { timeout: 15_000 }).toMatchObject({ open: 2, showing: false, raise: true });
+    await expect.poll(latest).toMatchObject({ open: 2, showing: false, raise: true });
     expect(((await latest())!.ids as string[]).slice().sort()).toEqual([first.id, second.id].sort());
     // One closing raises nothing.
     await api(d.base, d.token, `/api/sessions/${s.id}/questions/${second.id}/withdraw`, { method: "POST" });
-    await expect.poll(latest, { timeout: 15_000 }).toMatchObject({ open: 1, ids: [first.id], raise: false });
+    await expect.poll(latest).toMatchObject({ open: 1, ids: [first.id], raise: false });
   });
 
   test("an overlay left out keeps its web version: a prompt the page raised before init arms once the app inits, and no ask is posted", async ({ page }) => {
@@ -661,9 +677,9 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
     await page.goto(`${d.base}/a/${artifact.id}?app=1`);
     await initHost(page, { native: ALL, platform: "android" });
     const waits = async () => (await ofType(page, "pageWait")).map(m => m.waiting);
-    await expect.poll(waits, { timeout: 10_000 }).toEqual([true]);
+    await expect.poll(waits).toEqual([true]);
     release();
-    await expect.poll(waits, { timeout: 10_000 }).toEqual([true, false]);
+    await expect.poll(waits).toEqual([true, false]);
     const frame = await contentFrame(page, artifact.id, 1);
     await expect(frame.locator("#after")).toHaveText("parsed");
     await expect.poll(() => frame.evaluate(() => (window as unknown as { ready?: boolean }).ready === true)).toBe(true);

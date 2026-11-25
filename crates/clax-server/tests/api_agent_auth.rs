@@ -81,9 +81,7 @@ impl Raw {
     /// The response's status and error code.
     async fn response(mut self) -> (u16, String) {
         let mut buf = Vec::new();
-        let _ = tokio::time::timeout(Duration::from_secs(10), self.stream.read_to_end(&mut buf))
-            .await
-            .expect("a response within 10 s");
+        let _ = clax_testkit::within("a response", self.stream.read_to_end(&mut buf)).await;
         let text = String::from_utf8_lossy(&buf);
         let status = text
             .split(' ')
@@ -1024,6 +1022,7 @@ fn every_route() -> Vec<(String, String, bool)> {
             "questions" => include_str!("../src/routes/questions.rs"),
             "queues" => include_str!("../src/routes/queues.rs"),
             "queue_agent" => include_str!("../src/routes/queue_agent.rs"),
+            "queue_requests" => include_str!("../src/routes/queue_requests.rs"),
             "room" => include_str!("../src/routes/room.rs"),
             "sample" => include_str!("../src/routes/sample.rs"),
             "sessions" => include_str!("../src/routes/sessions.rs"),

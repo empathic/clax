@@ -463,9 +463,7 @@ void main() {
     final f = SplitFixture();
     await tester.runAsync(f.start);
     final model = SidebarModel(host: f.host, unreadOf: (id) => id == f.ids['Notes'] ? 2 : 0);
-    for (var i = 0; i < 5; i++) {
-      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-    }
+    await tester.runAsync(() => f.arranged(model));
     return (f, model);
   }
 

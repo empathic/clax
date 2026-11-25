@@ -22,7 +22,7 @@ test("a viewer beyond the live seats is a read-only spectator until a seat frees
   await expect(ann.getByRole("button", { name: /^Comment/ })).toBeEnabled();
   // Ann's renamed stream holds the one seat before Bob arrives (a snapshot
   // is shared for 5 s, so a newer one says so).
-  await expect.poll(async () => (await (await fetch(`${d.base}/api/artifacts/${artifact.id}/snapshot`, { headers: { authorization: `Bearer ${d.token}` } })).json()).guest_seats_free, { timeout: 20_000 }).toBe(0);
+  await expect.poll(async () => (await (await fetch(`${d.base}/api/artifacts/${artifact.id}/snapshot`, { headers: { authorization: `Bearer ${d.token}` } })).json()).guest_seats_free).toBe(0);
   // Bob's live layers sockets: a spectator holds none open (spec §16.1).
   const bob = await (await browser.newContext()).newPage();
   const sockets: { closed: boolean }[] = [];
@@ -40,7 +40,7 @@ test("a viewer beyond the live seats is a read-only spectator until a seat frees
   await expect.poll(liveOpen).toBe(0);
   await expect(banner.getByRole("button", { name: "Join live" })).toHaveCount(0);
   // Spectators have no chip: the top bar counts everyone viewing instead.
-  await expect(bob.locator(".who .viewing")).toHaveText("2 viewing", { timeout: 20_000 });
+  await expect(bob.locator(".who .viewing")).toHaveText("2 viewing");
   await expect(bob.locator(".who .tok.p", { hasText: "AN" })).toHaveCount(1);
   await expect(bob.locator(".who .tok.p", { hasText: "BO" })).toHaveCount(0);
   await expect(bob.getByRole("button", { name: /^Comment/ })).toBeDisabled();
@@ -51,16 +51,16 @@ test("a viewer beyond the live seats is a read-only spectator until a seat frees
   await expect(bob.getByRole("textbox", { name: "Reply" })).toHaveCount(0);
   // The snapshot keeps the spectator current: a thread posted now arrives.
   const t2 = { id: await threadIn(owner, artifact.id, "A later thread") };
-  await expect(bob.locator(`.thread-card[data-thread="${t2.id}"]`)).toBeVisible({ timeout: 20_000 });
+  await expect(bob.locator(`.thread-card[data-thread="${t2.id}"]`)).toBeVisible();
   // Ann leaves; her seat frees, and Bob is offered it.
   await ann.context().close();
   const join = banner.getByRole("button", { name: "Join live" });
   // Within a poll of a snapshot built after she left.
-  await expect(join).toBeVisible({ timeout: 20_000 });
+  await expect(join).toBeVisible();
   await join.click();
   await expect(banner).toHaveCount(0);
   // Seated again, the view opens its live socket.
-  await expect.poll(liveOpen, { timeout: 20_000 }).toBe(1);
+  await expect.poll(liveOpen).toBe(1);
   await expect(bob.getByRole("button", { name: /^Comment/ })).toBeEnabled();
   await expect(card.getByRole("button", { name: "Resolve" })).toBeVisible();
   await bob.context().close();

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PanelToWorker, WorkerToPanel } from "../messages";
 import { ApiFailure } from "./api";
 import { type PanelDeps, panelAction } from "./panel";
+import { settled } from "../../../shell/src/test/settled";
 
 const AID = "7q3k9mzx2b4t";
 const T1 = "01J9AAAAAAAAAAAAAAAAAAAAAA";
@@ -355,7 +356,7 @@ describe("panelAction", () => {
     let restored!: () => void;
     const s = setup({ admits: true, restoring: new Promise<void>(r => { restored = r; }) });
     const acting = s.run({ t: "comment-mode", on: true });
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    await settled();
     expect(s.waited()).toBe(1);
     expect(s.calls).toEqual([]);
     restored();

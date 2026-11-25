@@ -1,0 +1,375 @@
+[
+  {
+    "data": {
+      "attempt": 1,
+      "kind": "turn",
+      "step": 1
+    },
+    "event": "step_started",
+    "id": "1.1:0"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "index": 0,
+      "step": 1,
+      "text": "Let me look.",
+      "type": "text"
+    },
+    "event": "turn_delta",
+    "id": "1.1:1"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "index": 1,
+      "step": 1,
+      "text": "{\"code\":\"const html = await clax.files.read(\\\"index.html\\\");\\nawait clax.files.replace(\\\"index.html\\\", \\\"--accent: #c00;\\\", \\\"--accent: #00c;\\\");\\nconst report = await clax.draft.check();\\nif (!report.ok) return report;\\nconst v = await clax.draft.publish({note: \\\"Blue heading\\\", addresses: [\\\"<thread-1>\\\"]});\\nawait clax.threads.reply(\\\"<thread-1>\\\", \\\"The heading is blue now.\\\");\\nconsole.log(\\\"published\\\", v.version);\\nreturn {version: v.version, bytes: html.length};\",\"title\":\"Make the heading blue\"}",
+      "type": "tool_input"
+    },
+    "event": "turn_delta",
+    "id": "1.1:2"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "credits_milli": 1931,
+      "kind": "turn",
+      "run_credits_milli": 1931,
+      "step": 1,
+      "summary": {
+        "stop_reason": "tool_use",
+        "text": "Let me look.",
+        "tool": {
+          "input": {
+            "code": "const html = await clax.files.read(\"index.html\");\nawait clax.files.replace(\"index.html\", \"--accent: #c00;\", \"--accent: #00c;\");\nconst report = await clax.draft.check();\nif (!report.ok) return report;\nconst v = await clax.draft.publish({note: \"Blue heading\", addresses: [\"<thread-1>\"]});\nawait clax.threads.reply(\"<thread-1>\", \"The heading is blue now.\");\nconsole.log(\"published\", v.version);\nreturn {version: v.version, bytes: html.length};",
+            "title": "Make the heading blue"
+          },
+          "name": "run_script"
+        }
+      }
+    },
+    "event": "step_done",
+    "id": "1.1:1000000"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "kind": "script",
+      "step": 2
+    },
+    "event": "step_started",
+    "id": "2.1:0"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "code": "const html = await clax.files.read(\"index.html\");\nawait clax.files.replace(\"index.html\", \"--accent: #c00;\", \"--accent: #00c;\");\nconst report = await clax.draft.check();\nif (!report.ok) return report;\nconst v = await clax.draft.publish({note: \"Blue heading\", addresses: [\"<thread-1>\"]});\nawait clax.threads.reply(\"<thread-1>\", \"The heading is blue now.\");\nconsole.log(\"published\", v.version);\nreturn {version: v.version, bytes: html.length};",
+      "step": 2,
+      "title": "Make the heading blue"
+    },
+    "event": "script",
+    "id": "2.1:1"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "code": null,
+      "ms": "<measured>",
+      "ok": true,
+      "op": "files.read",
+      "step": 2,
+      "target": "index.html"
+    },
+    "event": "call",
+    "id": "2.1:2"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "code": null,
+      "ms": "<measured>",
+      "ok": true,
+      "op": "files.replace",
+      "step": 2,
+      "target": "index.html"
+    },
+    "event": "call",
+    "id": "2.1:3"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "code": null,
+      "ms": "<measured>",
+      "ok": true,
+      "op": "draft.check",
+      "step": 2,
+      "target": "<artifact>"
+    },
+    "event": "call",
+    "id": "2.1:4"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "code": null,
+      "ms": "<measured>",
+      "ok": true,
+      "op": "draft.publish",
+      "step": 2,
+      "target": "<artifact>"
+    },
+    "event": "call",
+    "id": "2.1:5"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "code": null,
+      "ms": "<measured>",
+      "ok": true,
+      "op": "threads.reply",
+      "step": 2,
+      "target": "<thread-1>"
+    },
+    "event": "call",
+    "id": "2.1:6"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "credits_milli": "<charged from what the scripts measured>",
+      "kind": "script",
+      "run_credits_milli": "<charged from what the scripts measured>",
+      "step": 2,
+      "summary": {
+        "changed": [
+          "index.html"
+        ],
+        "is_error": false,
+        "published": {
+          "version": 2
+        },
+        "result": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.read\"},{\"code\":null,\"ok\":true,\"op\":\"files.replace\"},{\"code\":null,\"ok\":true,\"op\":\"draft.check\"},{\"code\":null,\"ok\":true,\"op\":\"draft.publish\"},{\"code\":null,\"ok\":true,\"op\":\"threads.reply\"}],\"logs\":[\"published 2\"],\"published\":{\"version\":2},\"value\":{\"bytes\":561,\"version\":2}}",
+        "title": "Make the heading blue"
+      }
+    },
+    "event": "step_done",
+    "id": "2.1:1000000"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "kind": "turn",
+      "step": 3
+    },
+    "event": "step_started",
+    "id": "3.1:0"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "index": 0,
+      "step": 3,
+      "text": "Let me look.",
+      "type": "text"
+    },
+    "event": "turn_delta",
+    "id": "3.1:1"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "index": 1,
+      "step": 3,
+      "text": "{\"code\":\"console.log(\\\"checking the colour\\\");\\nawait clax.files.read(\\\"index.html\\\");\\nthrow new Error(\\\"no such colour\\\");\",\"title\":\"Check the colour\"}",
+      "type": "tool_input"
+    },
+    "event": "turn_delta",
+    "id": "3.1:2"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "credits_milli": 931,
+      "kind": "turn",
+      "run_credits_milli": "<charged from what the scripts measured>",
+      "step": 3,
+      "summary": {
+        "stop_reason": "tool_use",
+        "text": "Let me look.",
+        "tool": {
+          "input": {
+            "code": "console.log(\"checking the colour\");\nawait clax.files.read(\"index.html\");\nthrow new Error(\"no such colour\");",
+            "title": "Check the colour"
+          },
+          "name": "run_script"
+        }
+      }
+    },
+    "event": "step_done",
+    "id": "3.1:1000000"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "kind": "script",
+      "step": 4
+    },
+    "event": "step_started",
+    "id": "4.1:0"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "code": "console.log(\"checking the colour\");\nawait clax.files.read(\"index.html\");\nthrow new Error(\"no such colour\");",
+      "step": 4,
+      "title": "Check the colour"
+    },
+    "event": "script",
+    "id": "4.1:1"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "code": null,
+      "ms": "<measured>",
+      "ok": true,
+      "op": "files.read",
+      "step": 4,
+      "target": "index.html"
+    },
+    "event": "call",
+    "id": "4.1:2"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "credits_milli": "<charged from what the scripts measured>",
+      "kind": "script",
+      "run_credits_milli": "<charged from what the scripts measured>",
+      "step": 4,
+      "summary": {
+        "changed": [],
+        "is_error": true,
+        "published": null,
+        "result": "{\"calls\":[{\"code\":null,\"ok\":true,\"op\":\"files.read\"}],\"error\":{\"kind\":\"thrown\",\"message\":\"Error: no such colour (line 3)\"},\"logs\":[\"checking the colour\"],\"value\":null}",
+        "title": "Check the colour"
+      }
+    },
+    "event": "step_done",
+    "id": "4.1:1000000"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "kind": "turn",
+      "step": 5
+    },
+    "event": "step_started",
+    "id": "5.1:0"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "index": 0,
+      "step": 5,
+      "text": "The heading is blue.",
+      "type": "text"
+    },
+    "event": "turn_delta",
+    "id": "5.1:1"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "credits_milli": 931,
+      "kind": "turn",
+      "run_credits_milli": "<charged from what the scripts measured>",
+      "step": 5,
+      "summary": {
+        "stop_reason": "end_turn",
+        "text": "The heading is blue.",
+        "tool": null
+      }
+    },
+    "event": "step_done",
+    "id": "5.1:1000000"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "kind": "turn",
+      "step": 6
+    },
+    "event": "step_started",
+    "id": "6.1:0"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "index": 0,
+      "step": 6,
+      "text": "{\"summary\":\"Made the heading blue and published version 2.\"}",
+      "type": "tool_input"
+    },
+    "event": "turn_delta",
+    "id": "6.1:1"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "credits_milli": 931,
+      "kind": "turn",
+      "run_credits_milli": "<charged from what the scripts measured>",
+      "step": 6,
+      "summary": {
+        "stop_reason": "tool_use",
+        "text": "",
+        "tool": {
+          "input": {
+            "summary": "Made the heading blue and published version 2."
+          },
+          "name": "finish"
+        }
+      }
+    },
+    "event": "step_done",
+    "id": "6.1:1000000"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "kind": "finish",
+      "step": 7
+    },
+    "event": "step_started",
+    "id": "7.1:0"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "credits_milli": 0,
+      "kind": "finish",
+      "run_credits_milli": "<charged from what the scripts measured>",
+      "step": 7,
+      "summary": {
+        "summary": "Made the heading blue and published version 2."
+      }
+    },
+    "event": "step_done",
+    "id": "7.1:1000000"
+  },
+  {
+    "data": {
+      "attempt": 1,
+      "credits_milli": "<charged from what the scripts measured>",
+      "outcome": "finished",
+      "reason": null,
+      "step": 7
+    },
+    "event": "run_end",
+    "id": "7.1:1000001"
+  }
+]

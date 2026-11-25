@@ -26,7 +26,10 @@ impl Env {
             .env("CODEX_HOME", self.p("codex"))
             .env("PI_CODING_AGENT_DIR", self.p("pi"))
             .env("GROK_HOME", self.p("grok"))
-            .env("PATH", "/usr/bin:/bin")
+            .env(
+                "PATH",
+                crate::common::system_path_without(self.dir.path(), &crate::common::HARNESSES),
+            )
             .env_remove("XDG_CONFIG_HOME")
             .env(
                 "CLAX_NATIVE_HOST_DIRS",

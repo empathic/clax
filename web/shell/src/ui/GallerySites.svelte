@@ -10,6 +10,7 @@
   // the menu needs the token.
   import { onMount } from "svelte";
   import { getToken } from "../api";
+  import { ApiError, reasonText } from "../trouble";
   import { subscribeGallery } from "../working-events";
 
   type Origin = { origin: string; last_used_at: string | null };
@@ -31,7 +32,7 @@
   async function post(path: string, body: unknown): Promise<{ remaining?: number; moved?: string[] }> {
     const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
     const v = await r.json().catch(() => null);
-    if (!r.ok) throw new Error(v?.error?.message ?? `${r.status} ${r.statusText}`);
+    if (!r.ok) throw new Error(v?.error?.message ?? reasonText(new ApiError(r.status, "", v?.error?.code ?? null)));
     return v ?? {};
   }
   async function act(what: string, f: () => Promise<string>): Promise<void> {

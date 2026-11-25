@@ -1,0 +1,30 @@
+[
+  {
+    "content": [
+      {
+        "id": "tu_1",
+        "input": {
+          "code": "return 1;",
+          "title": "Edit"
+        },
+        "name": "run_script",
+        "type": "tool_use"
+      }
+    ],
+    "role": "assistant"
+  },
+  {
+    "content": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "content": "Your reply was cut off at max_tokens, so this call did not run. Make it shorter (a smaller script, or several).",
+        "is_error": true,
+        "tool_use_id": "tu_1",
+        "type": "tool_result"
+      }
+    ],
+    "role": "user"
+  }
+]

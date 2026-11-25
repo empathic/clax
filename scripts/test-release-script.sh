@@ -39,6 +39,8 @@ export GH_REPO=empathic/clax-test
 # No heartbeat but in the case that checks it; each case's clock stands
 # still at $C/now unless a fake moves it.
 export CLAX_RELEASE_HEARTBEAT_SECONDS=0
+# The fakes' wait for a condition (scripts/lib/wait.sh).
+export WAIT_LIB="$HERE/scripts/lib/wait.sh"
 # release.sh runs under the bash running this test (`/bin/bash
 # scripts/test-release-script.sh` tries macOS's bash 3.2).
 TEST_BASH="$BASH"
@@ -71,6 +73,22 @@ case "$1" in
         echo "fake bazel-sync" ;;
     *) echo "fake just: unexpected: $*" >&2; exit 2 ;;
 esac
+SH
+# A `sleep` first on PATH ($T/heartbeat-bin) in the case that checks the
+# heartbeat: a sleep of 30 s, release.sh's ticker's there, ends when
+# it reads a line the fake check-version writes into the FIFO
+# $FAKE_STATE/tick, so release.sh prints one heartbeat per line written,
+# whatever the time. A writer closing the FIFO without a line for this wait
+# ends nothing: the wait opens it again. release.sh kills a wait it no longer
+# needs. Any other sleep is the system's.
+mkdir -p "$T/heartbeat-bin"
+fake_exe "$T/heartbeat-bin/sleep" <<'SH'
+#!/bin/sh
+if [ "$*" = 30 ] && [ -p "$FAKE_STATE/tick" ]; then
+    until read -r _ < "$FAKE_STATE/tick"; do :; done
+    exit 0
+fi
+exec /bin/sleep "$@"
 SH
 fake_exe "$T/bin/gh" <<'SH'
 #!/bin/sh
@@ -169,17 +187,19 @@ if [ "${1:-}" != --print ]; then
     if [ -s "$FAKE_STATE/check-advance" ]; then
         echo $(( $(cat "$CLAX_RELEASE_NOW_FILE") + $(cat "$FAKE_STATE/check-advance") )) > "$CLAX_RELEASE_NOW_FILE"
     fi
-    # $FAKE_STATE/check-heartbeat: the next run waits, at most a minute, for
+    # $FAKE_STATE/check-heartbeat: the next run ends one wait of the fake
+    # heartbeat sleep (a line into the FIFO $FAKE_STATE/tick) and waits for
     # a heartbeat of its step in release.sh's output ($FAKE_OUT): a line
-    # with the text the file holds.
+    # with the text the file holds, failing if none comes.
     if [ -e "$FAKE_STATE/check-heartbeat" ]; then
         want="$(cat "$FAKE_STATE/check-heartbeat")"
         rm "$FAKE_STATE/check-heartbeat"
-        i=0
-        while [ "$i" -lt 1200 ] && ! grep -F "$want" "$FAKE_OUT" >/dev/null 2>&1; do
-            sleep 0.05
-            i=$((i + 1))
-        done
+        echo tick > "$FAKE_STATE/tick" &
+        tick=$!
+        # shellcheck source=scripts/lib/wait.sh
+        . "$WAIT_LIB"
+        wait_for "release.sh's heartbeat" grep -sqF "$want" "$FAKE_OUT" \
+            || { kill "$tick" 2>/dev/null; echo "fake check-version: no heartbeat came" >&2; exit 1; }
     fi
     if [ -e "$FAKE_STATE/check-fail" ]; then echo "fake check-version: plugins/x/VERSION is 0.5.0, not 0.6.0" >&2; exit 1; fi
     echo "fake check-version: the versions agree"
@@ -498,19 +518,11 @@ case_3b() {
     else fail "resume at the local release branch with no worktree (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_3e() {
-    # The release branch checked out in the checkout itself: the run works
-    # there, and leaves it there after the push.
+    # The release branch checked out in the checkout itself: refused, as any
+    # branch but main is (case_17).
     new_case
     git -C "$C/repo" switch -q --no-track -c release/0.6.0 origin/prod
-    act; rc=$?
-    rel="$(o rev-parse -q --verify refs/heads/release/0.6.0)"
-    if [ "$rc" = 0 ] && origin_ok && has "step 2/10 Make the release branch, in a worktree of its own: done already" \
-        && [ "$(git -C "$C/repo" symbolic-ref --short HEAD)" = release/0.6.0 ] \
-        && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$rel" ] && [ -z "$(git -C "$C/repo" status --porcelain)" ] \
-        && [ ! -e "$WT" ] && [ "$(git -C "$C/repo" worktree list --porcelain | grep -c '^worktree ')" = 1 ] \
-        && ! logs "removed "; then
-        pass "a release branch checked out in the checkout already is prepared in place and left there after the push"
-    else fail "a release branch checked out in the checkout (rc=$rc: $(cat "$C/out"))"; fi
+    refuse "the release branch checked out in the checkout it is run from" "is on release/0.6.0, not main: run just release from a checkout of main"
 }
 case_3f() {
     # A checkout with changes and untracked files, on main: the run works
@@ -619,6 +631,31 @@ case_3d3() {
         && [ "$(count "bump 0.6.0")" = 0 ]; then
         pass "while prod holds a release not carried to main, lines both changed stop step 3 for a merge by hand"
     else fail "a merge over the same lines with an uncarried release on prod (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_17() {
+    # The checkout the script runs from is on main, level with origin's.
+    new_case
+    git -C "$C/repo" switch -q -c feature
+    refuse "a checkout on another branch" "is on feature, not main: run just release from a checkout of main"
+    release 0.6.0; rc=$?
+    if [ "$rc" = 1 ] && has "is on feature, not main"; then pass "a dry run on another branch says so too"
+    else fail "a dry run on another branch (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_17b() {
+    new_case
+    git -C "$C/repo" switch -q --detach origin/main
+    refuse "a detached checkout, though at origin/main's commit" "is on no branch (a detached HEAD), not main"
+}
+case_17c() {
+    # main here is behind origin's, then ahead of it.
+    new_case
+    git -C "$C/repo" -c commit.gpgsign=false commit -q --allow-empty -m "More on main"
+    git -C "$C/repo" push -q origin main
+    git -C "$C/repo" reset -q --hard HEAD~1
+    refuse "a main behind origin's" "is not origin/main ($(o rev-parse main | cut -c1-12)): bring it level"
+    git -C "$C/repo" pull -q --ff-only origin main
+    git -C "$C/repo" -c commit.gpgsign=false commit -q --allow-empty -m "Not pushed"
+    refuse "a main with a commit origin lacks" "this checkout's main ($(git -C "$C/repo" rev-parse HEAD | cut -c1-12)) is not origin/main"
 }
 case_18() {
 
@@ -752,9 +789,7 @@ case_31c() {
 }
 case_32() {
     new_case
-    mkdir -p "$T/no-just"
-    for tool in gh bazelisk; do [ -e "$T/no-just/$tool" ] || ln -s "$(readlink "$T/bin/$tool")" "$T/no-just/$tool"; done
-    CASE_PATH="$T/no-just:/usr/bin:/bin" refuse "a missing just" "just is not on PATH"
+    CASE_PATH="$(PATH="$FAKE_PATH" path_without "$T/no-just" just)" refuse "a missing just" "just is not on PATH"
 }
 case_33() {
     new_case
@@ -827,13 +862,16 @@ case_40() {
     # A heartbeat while the version check runs, its clock moved on by 3m12s,
     # past the step's 5s estimate: the share done (630s of 655s, the step
     # counted for no more than its weight), the time taken, and no time left
-    # claimed.
+    # claimed. The fake heartbeat sleep ends once, when the fake check says,
+    # so there is exactly one heartbeat.
     new_case
     echo 192 > "$FAKE_STATE/check-advance"
     echo "Check the version files: 3m12s" > "$FAKE_STATE/check-heartbeat"
-    CLAX_RELEASE_HEARTBEAT_SECONDS=0.05 act; rc=$?
+    mkfifo "$FAKE_STATE/tick"
+    CASE_PATH="$T/heartbeat-bin:$FAKE_PATH" CLAX_RELEASE_HEARTBEAT_SECONDS=30 act; rc=$?
     if [ "$rc" = 0 ] && prepared_ok \
         && has "[96%] step 6/10 Check the version files: 3m12s (past this step's estimate of 5s; how much longer is not known)" \
+        && [ "$(grep -c "Check the version files: 3m12s" "$C/out")" = 1 ] \
         && ! grep -F "Check the version files: 3m12s" "$C/out" | grep -F "left" >/dev/null; then
         pass "a heartbeat past its step's estimate tells the share done and the time taken, and claims no time left"
     else fail "a heartbeat past its step's estimate (rc=$rc: $(cat "$C/out"))"; fi
@@ -841,13 +879,15 @@ case_40() {
 case_40b() {
     # A heartbeat while the version check runs, its clock moved on by 3s,
     # within the step's 5s estimate: the share done (628s of 655s) and the
-    # time left (27s).
+    # time left (27s). The fake heartbeat sleep ends once, as in case_40.
     new_case
     echo 3 > "$FAKE_STATE/check-advance"
     echo "Check the version files: 3s" > "$FAKE_STATE/check-heartbeat"
-    CLAX_RELEASE_HEARTBEAT_SECONDS=0.05 act; rc=$?
+    mkfifo "$FAKE_STATE/tick"
+    CASE_PATH="$T/heartbeat-bin:$FAKE_PATH" CLAX_RELEASE_HEARTBEAT_SECONDS=30 act; rc=$?
     if [ "$rc" = 0 ] && prepared_ok \
         && has "[95%] step 6/10 Check the version files: 3s (under a minute left, estimated)" \
+        && [ "$(grep -c "Check the version files: 3s" "$C/out")" = 1 ] \
         && ! has "past this step's estimate"; then
         pass "a heartbeat within its step's estimate tells the share done, the time taken and the time left"
     else fail "a heartbeat within its step's estimate (rc=$rc: $(cat "$C/out"))"; fi
@@ -893,7 +933,7 @@ case_42() {
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_2b case_2c case_3 case_3b case_3c case_3d case_3d2 case_3d3 case_3e case_3f case_18 case_18b case_19 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_29 case_30 case_31 case_31b case_31c case_32 case_33 case_36 case_37 case_38 case_39 case_40 case_40b case_41 case_42"
+CASES="case_1 case_2 case_2b case_2c case_3 case_3b case_3c case_3d case_3d2 case_3d3 case_3e case_17 case_17b case_17c case_3f case_18 case_18b case_19 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_29 case_30 case_31 case_31b case_31c case_32 case_33 case_36 case_37 case_38 case_39 case_40 case_40b case_41 case_42"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its

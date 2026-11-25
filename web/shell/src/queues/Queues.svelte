@@ -2,16 +2,24 @@
 
 <script lang="ts">
   // The Queues page (`/queues`, spec 2026-10-27-clax-sdk-design §5.3, §6.2):
-  // every report queue the viewer is a member of, with its origins, what
-  // its reporters see, the viewer's role and its reports counted by state.
-  // New queue makes one (the maker is its admin). A queue's admin edits it
+  // every report queue the viewer is a member of (for the owner and the
+  // instance's administrators, every queue, those they are no member of
+  // marked), with its origins, what its reporters see, the viewer's role
+  // and its reports counted by state. New queue makes one (the maker is
+  // its admin); where this browser may not make one (`GET
+  // /api/viewers/me`'s `queues.may_make`), a line says who does instead.
+  // A queue's admin edits it
   // in place, deletes it after confirming, and opens Manage for its members
   // and service grants (`QueueAdmin`). A refused change says why until the
   // next one. The list is fetched again after each change and when the
   // stream comes back. A queue's name opens its reports (`/queues/<qid>`,
   // `QueueView`), and a report its own view (`/queues/<qid>/<tid>`,
   // `ReportView`; spec 2026-10-29-feedback-loop-design §8): the page moves
-  // between them in place, through the browser's history.
+  // between them in place, through the browser's history. Above the list,
+  // **Requests** holds agents' pending requests for a report queue
+  // addressed to the viewer (`QueueRequestCard`), shown only while there
+  // are some: an approval lists the queues again, so the new one shows. A
+  // daemon without the route shows no section.
   import { onMount } from "svelte";
   import type { EventStream } from "../stream";
   import * as api from "./api";
@@ -20,9 +28,15 @@
   import QueueForm from "./QueueForm.svelte";
   import QueueView from "./QueueView.svelte";
   import ReportView from "./ReportView.svelte";
+  import type { QueueRequest } from "../api";
 
-  const p: { stream?: EventStream } = $props();
-  let queues = $state<api.Queue[] | null>(null);
+  /** `onready`: called once the page shows its first data (the queues, or why they did not load). */
+  const p: { stream?: EventStream; onready?: () => void } = $props();
+  // The pending requests for a queue as listed, each kept, decided, until the list is fetched again.
+  let requests = $state<QueueRequest[]>([]);
+  let queues = $state<api.ListedQueue[] | null>(null);
+  // Whether New queue shows: until the daemon says otherwise, it does (the daemon refuses a queue it does not allow).
+  let mayMake = $state(true);
   let counts = $state<Record<string, Counts | "failed">>({});
   let loadError = $state<string | null>(null);
   let error = $state<string | null>(null);
@@ -52,6 +66,7 @@
   }
 
   async function load() {
+    void api.queueAccess().then(a => { mayMake = a.may_make; }, () => {});
     try {
       queues = (await api.listQueues()).queues;
       loadError = null;
@@ -61,6 +76,12 @@
     }
     if (route.view === "list") count();
   }
+  /** Fetches the pending queue requests; a refusal (an older daemon has no such route) leaves none. */
+  async function loadRequests() {
+    try { requests = (await api.listPendingQueueRequests()).requests; } catch { requests = []; }
+  }
+  /** A request decided on its card: an approval made a queue, so the list is fetched again. */
+  const decided = (r: QueueRequest) => { if (r.status === "approved") void load(); };
   /** Counts each queue's reports by state, for the list. */
   function count() {
     for (const q of queues ?? []) void countReports(c => api.reportPage(q.id, c)).then(c => { counts[q.id] = c; }, () => { counts[q.id] = "failed"; });
@@ -99,10 +120,10 @@
   });
 
   onMount(() => {
-    void load();
+    void Promise.all([load(), loadRequests()]).then(() => p.onready?.());
     const back = () => moved();
     addEventListener("popstate", back);
-    const off = p.stream?.watch(["gallery"], e => { if (e.type === "ready" || e.type === "resync") void load(); });
+    const off = p.stream?.watch(["gallery"], e => { if (e.type === "ready" || e.type === "resync") { void load(); void loadRequests(); } });
     return () => { removeEventListener("popstate", back); off?.(); };
   });
 </script>
@@ -117,11 +138,19 @@
     <h2 id="queues-h">Queues</h2>
     {#if queues}<span class="qc">{queues.length}</span>{/if}
     <span class="sp"></span>
-    {#if editing !== "new"}<button type="button" class="primary" onclick={() => open("new")}>New queue</button>{/if}
+    {#if editing !== "new" && mayMake}<button type="button" class="primary" onclick={() => open("new")}>New queue</button>{/if}
   </header>
   <p class="qsub">A queue collects reports filed from your sites' pages, for people and their agents to triage.</p>
+  {#if !mayMake}<p class="qsub qpolicy">An administrator makes new queues on this Clax. You can triage the queues you're added to.</p>{/if}
   {#if loadError || error}<p class="qerr" role="alert">{error ?? loadError}</p>{/if}
   <p class="qstat" role="status">{status}</p>
+  {#if requests.length}
+    <section class="qreqs" aria-labelledby="qreqs-h">
+      <h3 id="qreqs-h">Requests</h3>
+      <!-- The card loads with the first request, so the page without one carries none of it. -->
+      {#await import("../q/QueueRequestCard.svelte") then { default: QueueRequestCard }}<div class="qreqlist">{#each requests as r (r.id)}<QueueRequestCard request={r} {nav} onDecided={decided} />{/each}</div>{/await}
+    </section>
+  {/if}
   {#if editing === "new"}<QueueForm onSave={f => save(f)} onCancel={() => { editing = null; }} />{/if}
   {#if queues?.length}
     <ul class="qlist">
@@ -134,6 +163,7 @@
             <header class="qrow">
               <h3><a href={queueHref(q.id)} onclick={nav}>{q.name}</a></h3>
               <span class="role">{q.role === "admin" ? "Admin" : "Triage"}</span>
+              {#if q.member === false}<span class="role" title="You oversee this queue as an administrator of this Clax">Not a member</span>{/if}
               <span class="sp"></span>
               {#if q.role === "admin"}
                 <span class="acts">
@@ -156,7 +186,7 @@
       {/each}
     </ul>
   {:else if queues}
-    <p class="qnone">There are no queues yet. Make one with New queue.</p>
+    <p class="qnone">{mayMake ? "There are no queues yet. Make one with New queue." : "You aren't a member of any queue yet."}</p>
   {:else if !loadError}
     <p class="qnone">Loading…</p>
   {/if}
@@ -172,6 +202,9 @@
   .qsub { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
   .qerr { margin: 12px 0 0; color: var(--danger); font-size: 13px; }
   .qstat { margin: 8px 0; min-height: 1.5em; color: var(--muted); font-size: 13px; }
+  .qreqs { margin: 0 0 16px; }
+  .qreqs h3 { margin: 0 0 8px; font-size: 14px; }
+  .qreqlist { display: flex; flex-direction: column; gap: 8px; }
   .qlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
   .qcard { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; min-width: 0; }
   .qcard > :global(.qform) { margin: 0; padding: 0; border: 0; background: none; }

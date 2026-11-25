@@ -304,6 +304,7 @@ fn cose_raw_key(cose: &[u8], alg: i64) -> Result<Vec<u8>, Refusal> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

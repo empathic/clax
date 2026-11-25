@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { deviceLink as DeviceLink } from "./device-link";
 import type { CapEnv, HandlerFactory } from "./host";
+import { settled } from "../test/settled";
 
 // The viewer's gesture (gesture.ts's own checks are gesture.test.ts's), and a
 // gate that holds each lazy chunk's load until the test opens it.
@@ -46,7 +47,7 @@ async function registry(): Promise<{ REGISTRY: Record<string, HandlerFactory>; l
 }
 
 /** Lets the call that is waiting on its chunk run to the gate. */
-const settle = () => new Promise(r => setTimeout(r, 0));
+const settle = settled;
 
 describe("a lazy capability judges the viewer's gesture when the call arrives, not when its chunk has loaded", () => {
   beforeEach(() => { sessionStorage.clear(); at.verdict = "ok"; });

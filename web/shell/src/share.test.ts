@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { settled } from "./test/settled";
 import { flush, mount } from "./test/svelte";
 import type { Share as ShareRow, Sharing } from "./hosted/api";
 import Share from "./ui/Share.svelte";
@@ -33,15 +34,13 @@ function serve(state: { sharing: Sharing }, sent: { method: string; url: string;
   return sent;
 }
 
-const until = async <T,>(f: () => T | null | undefined | false): Promise<T> => {
-  for (let i = 0; i < 200; i++) {
-    flush();
-    const v = f();
-    if (v) return v;
-    await new Promise(r => setTimeout(r, 5));
-  }
-  throw new Error("not reached");
-};
+/** `f`'s first truthy value, applying updates before each look. */
+const until = <T,>(f: () => T | null | undefined | false): Promise<T> => vi.waitFor(() => {
+  flush();
+  const v = f();
+  if (!v) throw new Error("not reached");
+  return v;
+});
 
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = ""; });
 
@@ -93,15 +92,13 @@ describe("Share", () => {
   it("shows nothing to who may not share, or on a daemon without sharing", async () => {
     serve({ sharing: { artifact_id: ID, can_share: false } });
     const m = mount(Share, { id: ID, title: "Plan" });
-    await new Promise(r => setTimeout(r, 20));
-    flush();
+    await settled();
     expect(m.root.querySelector("button.share")).toBeNull();
     expect(shareOpen.current).toBeNull();
     m.unmount();
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 404 })));
     const l = mount(Share, { id: ID, title: "Plan" });
-    await new Promise(r => setTimeout(r, 20));
-    flush();
+    await settled();
     expect(l.root.querySelector("button.share")).toBeNull();
     l.unmount();
   });
@@ -111,6 +108,10 @@ describe("Share", () => {
     const m = mount(Share, { id: ID, title: "Plan" });
     const b = await until(() => m.root.querySelector<HTMLButtonElement>("button.share"));
     expect(b.classList.contains("hide-sm")).toBe(true);
+    expect(b.classList.contains("icon"), "an icon button").toBe(true);
+    expect(b.getAttribute("aria-label")).toBe("Share");
+    expect(b.title).toBe("Share this artifact");
+    expect(b.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(shareOpen.current).not.toBeNull();
     flush(() => b.click());
     const dialog = await until(() => document.querySelector("[role=dialog]"));
@@ -356,6 +357,85 @@ describe("Share dialog", () => {
     const old = mount(ShareDialog, { id: ID, title: "Plan", initial: open(), onClose: vi.fn() });
     expect(old.root.querySelector("input[name=world]")).toBeNull();
     old.unmount();
+  });
+
+  it("serves the clax unrestricted only once the person confirms what that lets it do, and returns it to self at once", async () => {
+    const site_url = `https://${ID}.clax.run/`;
+    const at = (content_security_policy: "self" | "unrestricted") => open({ site_access: "world", content_security_policy, site_url });
+    const state = { sharing: at("self") as Sharing };
+    const sent = serve(state);
+    const m = mount(ShareDialog, { id: ID, title: "Plan", initial: at("self"), onClose: vi.fn() });
+    const root = m.root;
+    const box = root.querySelector<HTMLButtonElement>("button[name=content_security_policy]")!;
+    const confirm = () => root.querySelector("[data-testid=csp-confirm]");
+    const idle = () => until(() => root.querySelector("[role=dialog]")!.getAttribute("aria-busy") === "false");
+    expect(root.querySelector("button[name=content_security_policy]")!.textContent).toBe("Serve without Clax's Content Security Policy…");
+    expect(confirm()).toBeNull();
+    expect(root.querySelector("[data-testid=csp-note]")).toBeNull();
+    // Its button shows the explanation first, and sends nothing.
+    flush(() => box.click());
+    await until(() => confirm());
+    expect(confirm()!.textContent).toContain("Clax then sends no Content-Security-Policy holding its pages to their own site: they may load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.");
+    expect(root.querySelector("button[name=content_security_policy]")!.textContent, "not on until confirmed").toBe("Serve without Clax's Content Security Policy…");
+    expect(sent).toEqual([]);
+    // Cancel sends nothing and leaves it off.
+    flush(() => [...confirm()!.querySelectorAll("button")].find(b => b.textContent === "Cancel")!.click());
+    expect(confirm()).toBeNull();
+    expect(root.querySelector("button[name=content_security_policy]")!.textContent).toBe("Serve without Clax's Content Security Policy…");
+    expect(sent).toEqual([]);
+    // Confirm sends `unrestricted`, and the clax says it is served unrestricted.
+    flush(() => box.click());
+    await until(() => confirm());
+    state.sharing = at("unrestricted");
+    flush(() => [...confirm()!.querySelectorAll("button")].find(b => b.textContent === "Confirm")!.click());
+    await until(() => root.querySelector("[data-testid=csp-note]"));
+    await idle();
+    expect(sent).toEqual([{ method: "PATCH", url: `/api/artifacts/${ID}`, body: { content_security_policy: "unrestricted" } }]);
+    expect(root.querySelector("button[name=content_security_policy]")!.textContent).toBe("Restore Clax's Content Security Policy");
+    expect(confirm()).toBeNull();
+    expect(root.querySelector("[data-testid=csp-note]")!.textContent).toBe("Served without Clax's Content Security Policy: its pages load and send where they choose.");
+    // Its button then sends `self` at once, with no question.
+    state.sharing = at("self");
+    flush(() => box.click());
+    await until(() => !root.querySelector("[data-testid=csp-note]"));
+    await idle();
+    expect(confirm()).toBeNull();
+    expect(sent[1]).toEqual({ method: "PATCH", url: `/api/artifacts/${ID}`, body: { content_security_policy: "self" } });
+    expect(root.querySelector("button[name=content_security_policy]")!.textContent).toBe("Serve without Clax's Content Security Policy…");
+    m.unmount();
+    // A daemon that does not say offers no such setting.
+    const old = mount(ShareDialog, { id: ID, title: "Plan", initial: open({ site_access: "world", site_url }), onClose: vi.fn() });
+    expect(old.root.querySelector("button[name=content_security_policy]")).toBeNull();
+    old.unmount();
+  });
+
+  it("puts the Content Security Policy setting back to what the daemon holds when a change is refused", async () => {
+    const site_url = `https://${ID}.clax.run/`;
+    const sent: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "PATCH") {
+        sent.push(JSON.parse(String(init!.body)));
+        return new Response(JSON.stringify({ error: { code: "admin_only", message: "only who manages it changes its Content Security Policy" } }), { status: 403 });
+      }
+      return new Response("{}", { status: 404 });
+    }));
+    for (const held of ["self", "unrestricted"] as const) {
+      sent.length = 0;
+      const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open({ site_access: "private", content_security_policy: held, site_url }), onClose: vi.fn() });
+      const root = m.root;
+      const box = root.querySelector<HTMLButtonElement>("button[name=content_security_policy]")!;
+      expect(!!root.querySelector("[data-testid=csp-note]"), held).toBe(held === "unrestricted");
+      flush(() => box.click());
+      if (held === "self") {
+        const c = await until(() => root.querySelector("[data-testid=csp-confirm]"));
+        flush(() => [...c.querySelectorAll("button")].find(b => b.textContent === "Confirm")!.click());
+      }
+      const err = await until(() => root.querySelector("[role=alert]"));
+      expect(err.textContent).toBe("only who manages it changes its Content Security Policy");
+      expect(sent).toEqual([{ content_security_policy: held === "unrestricted" ? "self" : "unrestricted" }]);
+      expect(root.querySelector("button[name=content_security_policy]")!.textContent, held).toBe(held === "unrestricted" ? "Restore Clax's Content Security Policy" : "Serve without Clax's Content Security Policy…");
+      m.unmount();
+    }
   });
 
   it("says what the daemon refused", async () => {

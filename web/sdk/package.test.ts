@@ -122,7 +122,7 @@ describe("the SDK package", () => {
 
   it("carries its license text and the bundled packages' notices", () => {
     expect(readFileSync(join(pkg, "LICENSE"), "utf8")).toContain("GNU Lesser General Public License, version 2.1 only");
-    expect(readFileSync(join(pkg, "LICENSES/LGPL-2.1-only.txt"), "utf8")).toBe(readFileSync(join(web, "../LICENSES/LGPL-2.1-only.txt"), "utf8"));
+    expect(readFileSync(join(pkg, "LICENSES/LGPL-2.1-only.txt"), "utf8")).toBe(readFileSync(join(web, "../docs/licenses/LGPL-2.1-only.txt"), "utf8"));
     const notices = readFileSync(join(pkg, "THIRD-PARTY-NOTICES.txt"), "utf8");
     for (const dep of ["svelte", "modern-screenshot"]) expect(notices).toMatch(new RegExp(`^${dep} \\S+ \\(MIT\\)$`, "m"));
   });

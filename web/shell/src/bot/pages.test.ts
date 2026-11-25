@@ -3,8 +3,7 @@ import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { settle, stubFetch } from "../people/fixtures";
 import { flush, mount } from "../test/svelte";
 import AuditPage from "./AuditPage.svelte";
-import { meBot, settings, week } from "./fixtures";
-import HeaderBot from "./HeaderBot.svelte";
+import { errorDetail, meBot, settings } from "./fixtures";
 import { forget } from "./me";
 import MePage from "./MePage.svelte";
 import SettingsPage from "./SettingsPage.svelte";
@@ -27,7 +26,7 @@ describe("Settings", () => {
     });
     const m = mount(SettingsPage, {});
     await settle();
-    expect([...m.root.querySelectorAll(".bcard h3")].map(h => h.textContent)).toEqual(["[serve]", "[bot]", "Remotes"]);
+    expect([...m.root.querySelectorAll(".bcard h3")].map(h => h.textContent)).toEqual(["[serve]", "[bot]"]);
     const port = m.root.querySelector<HTMLInputElement>("#set-serve-port")!;
     expect(port.readOnly).toBe(true);
     const portField = port.closest(".field")!.textContent!;
@@ -63,11 +62,11 @@ describe("Settings", () => {
     expect(alerts[1]).toBe("[sample] is not used: max_tokens must be at least 16");
   });
 
-  it("on a daemon without a settings screen, says where it is configured", async () => {
+  it("on a daemon without a configuration screen, says where it is configured", async () => {
     stubFetch({});
     const m = mount(SettingsPage, {});
     await settle();
-    expect(m.root.textContent).toContain("This Clax has no settings screen");
+    expect(m.root.textContent).toContain("This Clax has no configuration screen");
   });
 });
 
@@ -154,6 +153,33 @@ describe("You", () => {
     }
   });
 
+  it("shows the person's own key's last failed request, what the provider said, and keeps its problem line", async () => {
+    const auth = errorDetail({ class: "auth", status: 401, type: "authentication_error", message: "invalid x-api-key", request_id: "req_011Mine" });
+    stubFetch({
+      "GET /api/me/bot": meBot({ key: { own: { set: true, last4: "4f2c", set_at: "2026-10-21T13:00:00Z", last_ok_at: null, problem: "your key: it was set for https://api.anthropic.com; set it again", last_problem: { ...auth, at: "2026-10-21T13:55:00Z" } }, use_own: true } }),
+      "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
+    });
+    const m = mount(MePage, { now: () => new Date("2026-10-21T14:05:00Z") });
+    await settle();
+    const last = m.root.querySelector(".mek-last")!;
+    expect(last.querySelector(".merr-lead")!.textContent).toBe("The last request with this key failed 10 min ago: the model provider refused the key.");
+    expect(last.querySelector(".merr-said")!.textContent).toBe("The provider said: “invalid x-api-key”");
+    expect(last.querySelector(".merr-meta")!.textContent).toBe("HTTP 401 · authentication_error · request req_011Mine");
+    expect(last.querySelector(".merr-next")).toBeNull();
+    expect(m.root.querySelector(".mek-problem")!.textContent).toBe("your key: it was set for https://api.anthropic.com; set it again");
+  });
+
+  it("shows no last failure for a key that has none", async () => {
+    stubFetch({
+      "GET /api/me/bot": meBot({ key: { own: { set: true, last4: "4f2c", set_at: "2026-10-21T13:00:00Z", last_ok_at: "2026-10-21T14:00:00Z" }, use_own: true } }),
+      "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
+    });
+    const m = mount(MePage, {});
+    await settle();
+    expect(m.root.querySelector(".mek")).not.toBeNull();
+    expect(m.root.querySelector(".mek-last")).toBeNull();
+  });
+
   it("shows the provider host a key is bound to before it is saved, and a key set for another", async () => {
     let me = meBot({ provider_host: "https://api.anthropic.com" });
     stubFetch({
@@ -223,30 +249,3 @@ describe("Audit's export", () => {
   });
 });
 
-describe("the gallery header's ClaxBot", () => {
-  it("shows the week's meter and Admin for an admin, and the banner at the limit", async () => {
-    const main = document.createElement("main");
-    main.className = "gal";
-    document.body.append(main);
-    stubFetch({ "GET /api/me/bot": meBot({ role: "admin", week: week({ spent_milli: 2_000_000 }) }) });
-    const m = mount(HeaderBot, {});
-    await settle();
-    const meter = m.root.querySelector<HTMLAnchorElement>(".bot-meter")!;
-    expect(meter.getAttribute("aria-label")).toBe("ClaxBot: 2,000 of 2,000 credits used this week");
-    expect(meter.classList.contains("out")).toBe(true);
-    expect(m.root.querySelector(".admin-link")!.getAttribute("href")).toBe("/admin");
-    const banner = main.querySelector('.bbanner[role="alert"]')!;
-    expect(banner.textContent).toContain("This week's credits are used up.");
-    click(button(banner, "Ask an admin for a lift"));
-    expect(banner.querySelector("#bbanner-ask")!.textContent).toContain("Admin › People & flags");
-    m.unmount();
-    expect(main.querySelector(".bbanner")).toBeNull();
-  });
-
-  it("shows nothing where the daemon has no ClaxBot", async () => {
-    stubFetch({});
-    const m = mount(HeaderBot, {});
-    await settle();
-    expect(m.root.querySelector("a")).toBeNull();
-  });
-});

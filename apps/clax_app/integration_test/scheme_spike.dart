@@ -25,8 +25,9 @@ const _work = MethodChannel('dev.empathic.clax/scheme-worker');
 const spikeArtifactId = 'abcdefghjkmn';
 
 /// How long one step of the spike may take before it fails, naming the
-/// step. A bound on a failure, not a wait: every step ends on an event.
-const _stepCap = Duration(seconds: 60);
+/// step: a hang guard, not a wait, since every step ends on an event; a
+/// loaded machine's slow step is waited for.
+const _stepCap = Duration(minutes: 3);
 
 /// What the spike reads in one WebView, from the shell page and its
 /// content frame (spec §4.3).
@@ -560,8 +561,10 @@ window.addEventListener('message', (e) => {
     String step,
     bool Function() ready,
   ) async {
+    // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
     final end = DateTime.now().add(_stepCap);
     while (!ready()) {
+      // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
       if (DateTime.now().isAfter(end)) {
         fail('spike step "$step": ${jsonEncode(_state())}');
       }

@@ -1,0 +1,156 @@
+{
+  "content": {
+    "calls": [
+      {
+        "code": null,
+        "ok": true,
+        "op": "draft.theirs"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "draft.theirs"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "draft.rebase"
+      },
+      {
+        "code": "conflict",
+        "ok": false,
+        "op": "draft.publish"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "draft.rebase"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "draft.theirs"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "draft.theirs"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "draft.theirs"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.read"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.list"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "draft.rebase"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "draft.publish"
+      }
+    ],
+    "logs": [],
+    "published": {
+      "version": 3
+    },
+    "value": {
+      "draft.publish: after the rebase": {
+        "returned": {
+          "version": 3
+        }
+      },
+      "draft.publish: over a version someone else published": {
+        "code": "conflict",
+        "message": "the artifact is at version 2; someone else published",
+        "retryable": false,
+        "threw": "HostError: the artifact is at version 2; someone else published"
+      },
+      "draft.rebase": {
+        "returned": {
+          "changed": [
+            "extra.css",
+            "index.html"
+          ],
+          "conflicts": [
+            "index.html"
+          ],
+          "version": 2
+        }
+      },
+      "draft.rebase: again, with nothing new": {
+        "returned": {
+          "changed": [
+            "extra.css",
+            "index.html"
+          ],
+          "conflicts": [],
+          "version": 2
+        }
+      },
+      "draft.rebase: an argument": {
+        "code": "invalid_args",
+        "message": "clax.draft.rebase: takes at most 0 arguments, got 1",
+        "retryable": false,
+        "threw": "HostError: clax.draft.rebase: takes at most 0 arguments, got 1"
+      },
+      "draft.theirs: a file both changed (its heading)": {
+        "returned": "<h1>NEW goals</h1>"
+      },
+      "draft.theirs: a file only theirs has": {
+        "returned": "Theirs."
+      },
+      "draft.theirs: a file theirs does not have": {
+        "returned": null
+      },
+      "draft.theirs: before a rebase (its heading)": {
+        "returned": "<h1>Quarterly goals</h1>"
+      },
+      "draft.theirs: no argument": {
+        "code": "invalid_args",
+        "message": "clax.draft.theirs: argument 1 (path) is missing",
+        "retryable": false,
+        "threw": "HostError: clax.draft.theirs: argument 1 (path) is missing"
+      },
+      "files.list: after the rebase": {
+        "returned": [
+          {
+            "bytes": 19,
+            "content_type": "text/css",
+            "path": "extra.css"
+          },
+          {
+            "bytes": 561,
+            "content_type": "text/html",
+            "path": "index.html"
+          },
+          {
+            "bytes": 7,
+            "content_type": "text/plain",
+            "path": "notes.txt"
+          }
+        ]
+      },
+      "files.read: the draft keeps its own (its accent and heading)": {
+        "returned": [
+          "--accent: #00c;",
+          "<h1>Quarterly goals</h1>"
+        ]
+      }
+    }
+  },
+  "content_bytes": 2177,
+  "is_error": null
+}

@@ -17,14 +17,21 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Page } from "@playwright/test";
-import { NO_KEY_CONFIG, api, expect as baseExpect, publish, registerSession, startDaemon, test } from "./fixtures";
+import { NO_KEY_CONFIG, api, expect, publish, registerSession, startDaemon, test, until as untilValue } from "./fixtures";
 import { ask, waitAnswer } from "./questions-helpers";
 
 // Each test runs two daemons of its own and goes through a sign-in, a
-// push, an outage and many reloads; each wait is on its condition, and on a
-// loaded machine one may take far past the suite's 5 s, so the test's own
-// timeout bounds the waits, and an expectation fails only after 60 s.
-const expect = baseExpect.configure({ timeout: 60_000 });
+// push, an outage and many reloads; each wait is on its condition, bounded
+// only by the suite's hang guards.
+
+/** Runs `sql` on a running daemon's database. The daemon writes to it as
+ * the test runs (its linked sync retries an unreachable remote, say), so
+ * sqlite3 waits for the daemon's lock rather than failing on it at once,
+ * up to the 60 s an expectation waits. */
+function onDatabase(db: string, sql: string): void {
+  const r = spawnSync("sqlite3", ["-cmd", ".timeout 60000", db, sql]);
+  expect(r.status, String(r.stderr)).toBe(0);
+}
 
 const SECRET = "e2e setup secret";
 const SHOTS = !!process.env.CLAX_E2E_SHOTS;
@@ -42,15 +49,11 @@ function freePort(): Promise<number> {
   });
 }
 
-/** Waits until `f` answers something truthy, `what` naming it when the test
- * times out first. */
-async function until<T>(what: string, f: () => Promise<T | null | undefined | false>): Promise<T> {
-  test.info().annotations.push({ type: "waiting", description: what });
-  for (;;) {
-    const v = await f().catch(() => null);
-    if (v) return v;
-    await new Promise(r => setTimeout(r, 200));
-  }
+/** Waits until `f` answers something truthy ([`untilValue`]), an error it
+ * throws counting as no answer yet: a daemon stopped for an outage, or
+ * starting again, refuses its calls meanwhile. */
+function until<T>(what: string, f: () => Promise<T | null | undefined | false>): Promise<T> {
+  return untilValue(what, () => f().catch(() => null));
 }
 
 /** Photographs `page` in both themes at both sizes, `prep` run after each change. */
@@ -83,7 +86,6 @@ async function threads(page: Page) {
 }
 
 test("a public comment comes down tagged, a local reply goes up, and an outage shows pending then not sent", async ({ browser }) => {
-  test.setTimeout(180_000);
   const port = await freePort();
   const origin = `http://localhost:${port}`;
   const hosted = await startDaemon({ config: `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`, port, env: { CLAX_E2E_SETUP_SECRET: SECRET }, home: undefined });
@@ -167,9 +169,7 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
 
     // Past the backoff's cap its row is marked not sent (here, on the scratch
     // home's database, rather than waiting five minutes): Retry shows.
-    const db = join(local.home, "clax.db");
-    const r = spawnSync("sqlite3", [db, "UPDATE linked_outbox SET failed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = 'Not sent: unreachable'"]);
-    expect(r.status, String(r.stderr)).toBe(0);
+    onDatabase(join(local.home, "clax.db"), "UPDATE linked_outbox SET failed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = 'Not sent: unreachable'");
     await page.reload();
     await threads(page);
     // Said once, under the comment not sent, with Retry beside it.
@@ -215,7 +215,6 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
 });
 
 test("a local agent's question is asked on the hosted copy, answered there, and the local card resolves tagged", async ({ browser }) => {
-  test.setTimeout(180_000);
   const port = await freePort();
   const origin = `http://localhost:${port}`;
   const hosted = await startDaemon({ config: `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`, port, env: { CLAX_E2E_SETUP_SECRET: SECRET }, home: undefined });
@@ -331,8 +330,7 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
       const v = await api(local.base, local.token, `/api/questions/${late.question.id}`) as { question: { linked: { state: string | null } | null } };
       return v.question.linked?.state === "pending";
     });
-    const r = spawnSync("sqlite3", [join(local.home, "clax.db"), `UPDATE linked_questions SET failed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = 'Not sent: unreachable' WHERE question_id = '${late.question.id}'`]);
-    expect(r.status, String(r.stderr)).toBe(0);
+    onDatabase(join(local.home, "clax.db"), `UPDATE linked_questions SET failed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = 'Not sent: unreachable' WHERE question_id = '${late.question.id}'`);
     const openLink = async (phone: boolean) => {
       await page.goto(`${local.base}/a/${artifact.id}`);
       if (phone) {

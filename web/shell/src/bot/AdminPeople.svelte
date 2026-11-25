@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // Admin › People & flags (spec 2026-10-21-claxbot §5, §7.4): every
+  // Settings, Roles & ClaxBot access (spec 2026-10-21-claxbot §5, §7.4): every
   // connected person with their role (the owner changes it; the owner's own
   // row cannot), whether they may use ClaxBot, whose key their runs use,
   // their weekly credits (the free tier and the lift an admin grants, with a
@@ -14,6 +14,7 @@
   import { credits, meter, tokens } from "./model";
   import Meter from "./Meter.svelte";
   import Switch from "./Switch.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   let { role }: { role: Role } = $props();
   let people = $state<AdminPerson[] | null>(null);
@@ -59,7 +60,9 @@
     if (!reason.trim()) { err = "Say why: the audit log records it."; return; }
     void act(p.person, async () => { await setLift(p.person, Math.round(n * 1000), reason.trim()); editing = null; });
   }
-  onMount(() => { void load(); });
+  // Shown in Settings, the screen waits for the first list.
+  const release = holdReveal();
+  onMount(() => { void load().finally(release); });
 </script>
 
 {#if err}<p class="err" role="alert">{err}</p>{/if}

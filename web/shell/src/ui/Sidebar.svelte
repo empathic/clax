@@ -3,6 +3,9 @@
 <script lang="ts" module>
   /** The threads of other pages open in place, by ID (IDs are unique across artifacts). */
   let unfolded: string[] = $state([]);
+  /** With the views, the reply drafts left unsent in cards that went, by
+   * thread ID, for the page's life; given back to the thread's next card. */
+  const drafts = new Map<string, string>();
 </script>
 
 <script lang="ts">
@@ -14,6 +17,7 @@
   import type { AnchorResult } from "../../../bridge/src/protocol";
   import type { Participants, Version } from "../api";
   import type { Decided } from "../view/changelog-model";
+  import type { SidebarView } from "./sidebar-view.svelte";
   import type { WholeHost } from "../view/whole-comment";
   import { relativeTime } from "../format";
   import { type Thread, type Viewer, resolvedByLabel } from "../threads";
@@ -37,7 +41,8 @@
     onSelect(t: Thread): void;
     onSend(t: Thread): void;
     onResolve(t: Thread): void;
-    onReply(t: Thread, body: string): void;
+    /** Posts a reply; a promise it answers rejects when the post failed, and the box keeps the text. */
+    onReply(t: Thread, body: string): void | Promise<unknown>;
     /** Hears the thread whose card the pointer is over, and null when it leaves. */
     onHover?(t: Thread | null): void;
     /** This viewer, to show its own name on threads it resolved. */
@@ -114,6 +119,12 @@
      * puts this viewer's approval card above a thread waiting for their
      * approval (spec 2026-10-08 §9.5); the extension's panel, nothing. */
     above?: Snippet<[Thread, Date]>;
+    /** The view shown, its switch, and the side the timeline's band is on
+     * (the sidebar's outer edge; right by default): with it, the sidebar
+     * leads its list with the Timeline | Threads tabs, which load apart
+     * (SidebarViews.svelte). Without it (the extension's side panel), the
+     * thread list alone. */
+    view?: { now: SidebarView; onChange(v: SidebarView): void; side?: "left" | "right" };
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
@@ -163,9 +174,9 @@
   const theirs = $derived(!!chosen?.person && !chosen.via && (own === undefined ? !chosen.person.owner : chosen.person.public_id !== own));
   const target = $derived(chosen ? `${agentsByHandle.get(chosen.handle)}${theirs ? ` (${chosen.person!.name}'s)` : ""}` : pick ? "…" : p.agent);
   const ticked = $derived(new Set(p.selection?.ids ?? []));
-  // The cards in the order shown, for a Shift range: the Addressed group, Open, then Detached.
+  // The cards in the order shown, for a Shift range: the Addressed group,
+  // Open, then Detached (the timeline gives its own).
   const order = $derived([...group, ...open, ...detached].filter(t => selectable(t, false)).map(t => t.id));
-  const toggleCard = (t: Thread, shift: boolean) => p.onToggle?.(t, shift, order);
   const unsentCount = $derived(unsent(p.threads, p.claimed).length);
   let unsentHint: string | null = $state(null);
   $effect(() => keyboardTrail.onClear(() => { unsentHint = null; }));
@@ -199,6 +210,26 @@
   const foldOf = (t: Thread) => far(t)
     ? { open: unfolded.includes(t.id), onToggle: (o: boolean) => { unfolded = o ? [...unfolded, t.id] : unfolded.filter(x => x !== t.id); } }
     : undefined;
+  // With the views (`view`), a reply's draft outlives its card: a switch
+  // of view, a move to another group, a closed sidebar. A card reports its
+  // text as typed, "" once posted (`onReply` drops the draft once the post
+  // went through, and keeps it when it failed), and "" when it goes, its
+  // box already out of the document: a draft is dropped on "" only while
+  // the thread's box is here and empty, as the viewer emptied it. Who else
+  // sees it typed is the live layers' alone.
+  const replyBox = (id: string) => [...(aside?.querySelectorAll<HTMLElement>(".thread-card") ?? [])].find(c => c.dataset.thread === id)?.querySelector<HTMLInputElement>('input[aria-label="Reply"]');
+  const replyText = (t: Thread, text: string) => {
+    if (p.view) {
+      if (text.trim()) drafts.set(t.id, text);
+      else if (replyBox(t.id)?.value.trim() === "") drafts.delete(t.id);
+    }
+    p.live?.onText(t.id, text);
+  };
+  const replied = (t: Thread, body: string) => {
+    const r = p.onReply(t, body);
+    if (!(r instanceof Promise)) { drafts.delete(t.id); return; }
+    return r.then(() => { drafts.delete(t.id); });
+  };
   // The question module (loaded apart, owner only) fills the slot: it hears
   // where the slot is now, each time the sidebar mounts.
   $effect(() => {
@@ -210,22 +241,55 @@
   <button type="button" class="ghost go-page" aria-label={`Go to page ${pageLabel(t.anchor.file)}`} onclick={() => p.onSelect(t)}>Go to page ↗</button>
 {/snippet}
 
-{#snippet cards(list: Thread[])}
-  {#each list as t (t.id)}
-    {@render p.above?.(t, clock.now)}
+<!-- A thread's card. Under a timeline row (`row`: the Shift-range order
+     there, and the row's close) a thread of another page is unfolded, the
+     row being its fold: folding the card closes the row. -->
+{#snippet card(t: Thread, row?: { order: string[]; close(): void })}
     <ThreadCard {t} n={(p.numbers ?? s.numbers).get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
       history={historyOf(t, p.versions, names(t), { working: t.status === "open" ? threadAgent(p.working ?? [], t.id, agentsByHandle) : null })}
       marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
-      versions={p.versions} onSeen={p.onSeen} fold={foldOf(t)} clip={p.clip} tools={far(t) ? go : undefined}
-      checked={ticked.has(t.id)} onToggle={p.onToggle && !p.readOnly && !p.noSend && selectable(t, false) ? toggleCard : undefined} readOnly={p.readOnly} noReply={!!p.noReply} noSend={p.noSend}
-      writers={p.live?.writers} onReplyText={p.live ? (x, text) => p.live!.onText(x.id, text) : undefined}
-      onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover}>
+      versions={p.versions} onSeen={p.onSeen} fold={row ? far(t) ? { open: true, onToggle: o => { if (!o) row.close(); } } : undefined : foldOf(t)} clip={p.clip} tools={far(t) ? go : undefined}
+      checked={ticked.has(t.id)} onToggle={p.onToggle && !p.readOnly && !p.noSend && selectable(t, false) ? (x, shift) => p.onToggle?.(x, shift, row?.order ?? order) : undefined} readOnly={p.readOnly} noReply={!!p.noReply} noSend={p.noSend}
+      writers={p.live?.writers} onReplyText={p.live || p.view ? replyText : undefined} draft={p.view ? drafts.get(t.id) : undefined}
+      onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.view ? replied : p.onReply} onHover={p.onHover}>
       {#snippet send(guard: (e: Event, act: () => void) => void)}
         <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} {own} aid={asks} threads={[t.id]}
           onSend={e => guard(e, () => p.onSend(t))} onChoose={h => p.onChoose?.(h)} />
       {/snippet}
     </ThreadCard>
+{/snippet}
+
+{#snippet cards(list: Thread[])}
+  {#each list as t (t.id)}
+    {@render p.above?.(t, clock.now)}
+    {@render card(t)}
   {/each}
+{/snippet}
+
+{#snippet empty()}<p class="muted small empty-open">{group.length ? "Nothing else open." : p.noReply ? p.noReply : p.readOnly ? "Nothing open." : `Nothing open. Press C and click anything to comment on it${p.compose ? ", or use New comment for the whole artifact" : ""}.`}</p>{/snippet}
+
+{#snippet sections()}
+  {#if group.length}
+    {#await import("./AddressedGroup.svelte") then { default: AddressedGroup }}
+      <AddressedGroup n={p.decided!.n} agent={p.agent} count={group.length}>{@render cards(group)}</AddressedGroup>
+    {/await}
+  {/if}
+  <section class="section-open">
+    <h2 class="gh you"><span class="sw" aria-hidden="true"></span><span class="t">Open</span> <span class="c">{open.length}</span></h2>
+    <!-- Why the cards have no reply box, where the empty list's line does not already say it. -->
+    {#if p.noReply && (open.length || group.length)}<p class="muted small no-reply">{p.noReply}</p>{/if}
+    {#if open.length === 0}{@render empty()}{:else}{@render cards(open)}{/if}
+  </section>
+  <div class="tail">
+    <details class="section-detached" aria-label={`Detached ${detached.length}`} bind:open={detachedOpen}>
+      <summary><h2 class="gh oth"><span class="sw" aria-hidden="true"></span><span class="t">Detached</span> <span class="c">{detached.length}</span></h2></summary>
+      {@render cards(detached)}
+    </details>
+    <details class="section-resolved" aria-label={`Resolved ${resolvedRest.length}`} bind:open={resolvedOpen}>
+      <summary><h2 class="gh set"><span class="sw" aria-hidden="true"></span><span class="t">Resolved</span> <span class="c">{resolvedRest.length}</span></h2></summary>
+      {@render cards(resolvedRest)}
+    </details>
+  </div>
 {/snippet}
 
 <aside class="sidebar" aria-label="Comment threads" bind:this={aside}>
@@ -264,27 +328,13 @@
       </SelectionBar>
     {/await}
   {/if}
-  {#if group.length}
-    {#await import("./AddressedGroup.svelte") then { default: AddressedGroup }}
-      <AddressedGroup n={p.decided!.n} agent={p.agent} count={group.length}>{@render cards(group)}</AddressedGroup>
+  <!-- The tabs and the timeline load apart: the extension's side panel, which passes no view, carries none of them. -->
+  {#if p.view}
+    {#await import("./SidebarViews.svelte") then { default: SidebarViews }}
+      <SidebarViews view={p.view!} threads={p.threads} versions={p.versions} working={p.working} claimed={p.claimed} me={p.me} now={clock.now} selected={p.selected}
+        numbers={p.numbers ?? s.numbers} detached={s.detached} above={p.above} onSeen={p.onSeen} onSelect={p.onSelect} {card} {sections} {empty} note={p.noReply && p.threads.length ? p.noReply : ""} />
     {/await}
-  {/if}
-  <section class="section-open">
-    <h2 class="gh you"><span class="sw" aria-hidden="true"></span><span class="t">Open</span> <span class="c">{open.length}</span></h2>
-    <!-- Why the cards have no reply box, where the empty list's line does not already say it. -->
-    {#if p.noReply && (open.length || group.length)}<p class="muted small no-reply">{p.noReply}</p>{/if}
-    {#if open.length === 0}<p class="muted small empty-open">{group.length ? "Nothing else open." : p.noReply ? p.noReply : p.readOnly ? "Nothing open." : `Nothing open. Press C and click anything to comment on it${p.compose ? ", or use New comment for the whole artifact" : ""}.`}</p>{:else}{@render cards(open)}{/if}
-  </section>
-  <div class="tail">
-    <details class="section-detached" aria-label={`Detached ${detached.length}`} bind:open={detachedOpen}>
-      <summary><h2 class="gh oth"><span class="sw" aria-hidden="true"></span><span class="t">Detached</span> <span class="c">{detached.length}</span></h2></summary>
-      {@render cards(detached)}
-    </details>
-    <details class="section-resolved" aria-label={`Resolved ${resolvedRest.length}`} bind:open={resolvedOpen}>
-      <summary><h2 class="gh set"><span class="sw" aria-hidden="true"></span><span class="t">Resolved</span> <span class="c">{resolvedRest.length}</span></h2></summary>
-      {@render cards(resolvedRest)}
-    </details>
-  </div>
+  {:else}{@render sections()}{/if}
 </aside>
 
 <!-- The sidebar's styles (spec §8, "Thread sidebar") travel with its lazy

@@ -20,7 +20,7 @@ done
 
 # "<frame> <sha256>" per frame, in order.
 sums() {
-  (cd "$tmp/$1/frames" && shasum -a 256 -- *.png) | awk '{ print $2, $1 }'
+  (cd "$tmp/$1/frames" && if command -v sha256sum >/dev/null 2>&1; then sha256sum -- *.png; else shasum -a 256 -- *.png; fi) | awk '{ print $2, $1 }'
 }
 sums a > "$tmp/a.sums"
 sums b > "$tmp/b.sums"

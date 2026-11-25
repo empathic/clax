@@ -227,6 +227,7 @@ impl LiveIds {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -243,6 +244,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod store_tests {
     use super::*;
     use clax_core::Home;

@@ -6,6 +6,7 @@
 //! `bazel/cargo.bzl`), so an edit recompiles, relinks and reruns each module
 //! on its own, in parallel; `clax_split = "root"` holds this file's own tests.
 //! Gate every new test module the same way.
+#![warn(clippy::disallowed_methods)]
 
 #[cfg(any(not(clax_split), clax_split = "calls"))]
 mod calls;
@@ -17,6 +18,8 @@ mod comments;
 mod confirmations;
 #[cfg(any(not(clax_split), clax_split = "connect_instance"))]
 mod connect_instance;
+#[cfg(any(not(clax_split), clax_split = "content_security_policy"))]
+mod content_security_policy;
 #[cfg(any(not(clax_split), clax_split = "db"))]
 mod db;
 #[cfg(any(not(clax_split), clax_split = "live"))]

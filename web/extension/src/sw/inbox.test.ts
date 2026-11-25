@@ -4,6 +4,7 @@ import type { TabMsg } from "../../../shell/src/stream-hub";
 import type { WorkerToPanel } from "../messages";
 import { ApiFailure } from "./api";
 import { HUB_ID, RETRY_LIMIT, RETRY_MAX_MS, WorkerInbox } from "./inbox";
+import { settled } from "../../../shell/src/test/settled";
 
 const A = "7q3k9mzx2b4t";
 const B = "8r4m0nzy3c5v";
@@ -41,7 +42,7 @@ function harness(answer: () => unknown = () => ({ unread: 2, questions: [questio
     after: (fn, ms) => { const t = { fn, ms, live: true }; timers.push(t); return t; },
     cancel: h => { (h as { live: boolean }).live = false; },
   });
-  const settle = () => new Promise(r => setTimeout(r, 0));
+  const settle = settled;
   return { inbox, hub, calls, timers, settle, answer: (f: () => unknown) => { reply = f; } };
 }
 

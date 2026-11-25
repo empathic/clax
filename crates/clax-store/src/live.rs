@@ -704,6 +704,7 @@ impl Store {
     /// IDs, oldest address first. Records nothing: production links inside
     /// a snapshot's transaction, and the snapshot lists them.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(crate) fn link_pending(&self, id: &ArtifactId, n: u32) -> Result<Vec<String>> {
         self.with_tx(|tx| link_pending_in(tx, id, n, None, &self.now()))
     }
@@ -1191,6 +1192,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use crate::Store;
     use crate::test_util::DAEMON;

@@ -398,11 +398,12 @@ async fn blob(
     d: DeniedToGrants,
     sees: SeesLive,
     site: Extension<SiteRequest>,
+    req: HeaderMap,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
     let asset_id = param(p)?;
-    assets::serve_blob(&s, sees, asset_id, site.artifact.clone()).await
+    assets::serve_blob(&s, sees, asset_id, site.artifact.clone(), &req).await
 }
 
 /// `/_blob/<asset ID>`: on a legacy artifact's site, its asset's bytes, as
@@ -422,7 +423,7 @@ async fn legacy_blob(
         .store_call(move |st| Ok(st.get_artifact(&id)?.is_some_and(|a| a.legacy_paths)))
         .await?;
     if legacy {
-        return assets::serve_blob(&s, sees, asset_id, site.artifact.clone()).await;
+        return assets::serve_blob(&s, sees, asset_id, site.artifact.clone(), &req).await;
     }
     serve_current(&s, &site, format!("_blob/{asset_id}"), &req).await
 }
@@ -442,7 +443,7 @@ async fn scoped_blob(
     d.refuse_agents()?;
     let (aid, asset_id) = param(p)?;
     if aid == site.artifact.as_str() {
-        return assets::serve_blob(&s, sees, asset_id, site.artifact.clone()).await;
+        return assets::serve_blob(&s, sees, asset_id, site.artifact.clone(), &req).await;
     }
     let id = site.artifact.clone();
     let legacy = s

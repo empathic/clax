@@ -18,6 +18,8 @@
 :root {
   --bg: #f7f7f5; --card: #ffffff; --raised: #ffffff; --hover: #f2f2ef; --fg: #1c1b19; --muted: #5f5d58;
   --border: #e6e5e1; --border-hover: #d6d4ce; --border-strong: #85827b;
+  /* The timeline's band (Timeline.svelte): the pending count's neutral fill, beside --you's. */
+  --band: #bdb9ae;
   --accent: var(--agent); --accent-ink: var(--agent-ink); --accent-hover: #285f24; --on-accent: #ffffff; --accent-tint: #e8f1e6;
   --primary-hover: #3a3935;
   --danger: #b3261e; --danger-tint: #fbeceb; --focus: var(--agent);
@@ -55,7 +57,7 @@
    (3.3 on --hover). */
 :root:not([data-theme="light"]) { @media (prefers-color-scheme: dark) {
   --bg: #141413; --card: #1c1c1a; --raised: #232321; --hover: #2a2a27; --fg: #ecebe7; --muted: #a9a69f;
-  --border: #2c2c29; --border-hover: #3a3a36; --border-strong: #7c7972;
+  --border: #2c2c29; --border-hover: #3a3a36; --border-strong: #7c7972; --band: #5c5a54;
   --accent-hover: #8fd082; --on-accent: #141413; --accent-tint: #1f2a1d; --primary-hover: #d6d4ce;
   --danger: #ff8a80; --danger-tint: #3a1f1c;
   --you: #ff7a57; --you-ink: #ff7a57; --agent: #7cc36f; --agent-ink: #7cc36f; --comment-hl: #2e1e19; --shadow: rgba(0,0,0,.5);
@@ -73,7 +75,7 @@
 } }
 :root[data-theme="dark"] {
   --bg: #141413; --card: #1c1c1a; --raised: #232321; --hover: #2a2a27; --fg: #ecebe7; --muted: #a9a69f;
-  --border: #2c2c29; --border-hover: #3a3a36; --border-strong: #7c7972;
+  --border: #2c2c29; --border-hover: #3a3a36; --border-strong: #7c7972; --band: #5c5a54;
   --accent-hover: #8fd082; --on-accent: #141413; --accent-tint: #1f2a1d; --primary-hover: #d6d4ce;
   --danger: #ff8a80; --danger-tint: #3a1f1c;
   --you: #ff7a57; --you-ink: #ff7a57; --agent: #7cc36f; --agent-ink: #7cc36f; --comment-hl: #2e1e19; --shadow: rgba(0,0,0,.5);
@@ -117,7 +119,9 @@ button:disabled { opacity: .5; cursor: default; }
 .gbar button.icon { background: none; border-color: transparent; }
 .gbar button.icon:not(:disabled):hover { background-color: var(--hover); }
 .search { margin-left: auto; width: 260px; min-width: 0; max-width: 50%; }
-.gal { max-width: 1360px; margin: 0 auto; padding: 28px 32px 40px; }
+/* The gallery's pages fill the window, so the footer under them is below
+   it, where nothing that lands above it is seen moving it. */
+.gal { max-width: 1360px; min-height: 100vh; margin: 0 auto; padding: 28px 32px 40px; }
 /* Clax's source, and a hosted Clax's Terms of Service and Privacy Policy, under the gallery, the inbox and People (after main, which People mounts into). */
 .glegal { padding: 0 var(--gutter) 32px; text-align: center; font-size: 12.5px; color: var(--muted); }
 .glegal a { color: inherit; text-decoration: underline; }
@@ -140,8 +144,11 @@ button:disabled { opacity: .5; cursor: default; }
 .card .ft { grid-row: 4; align-self: end; }
 .ctags { grid-row: 3; grid-column: 1; z-index: 1; display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 10px; min-width: 0; pointer-events: none; }
 .ctags .tag { pointer-events: auto; }
-.card .cb2 { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; padding: 13px 14px 10px; align-items: baseline; }
-.card .v { font-size: 26px; line-height: 1; grid-row: span 2; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* The version is a quiet badge at the head of the meta line, its type the
+   meta line's size: the title leads the card. */
+.card .cb2 { display: grid; gap: 3px; padding: 13px 14px 10px; }
+.card .v { display: inline-block; font: 500 11px/15px var(--font); padding: 0 6px; margin-right: 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-variant-numeric: tabular-nums; vertical-align: 1px; }
+.card .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .card h3 { margin: 0; font-size: 15px; line-height: 1.3; overflow-wrap: break-word; }
 .card .by { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .card .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--agent); margin-right: 5px; vertical-align: 1px; }
@@ -188,7 +195,7 @@ code { font: 12.5px var(--mono); background: var(--hover); border: 1px solid var
   .gal { padding: 18px 16px 32px; }
   .grp h2 { font-size: 16px; }
   .cards { grid-template-columns: 1fr; gap: 10px; }
-  .card .v { font-size: 22px; } .card h3 { font-size: 15px; }
+  .card h3 { font-size: 15px; }
   .gfoot { flex-direction: column; gap: 8px; }
 }
 /* The top bar (spec §8): 60px; the title over its by-line; quiet buttons
@@ -242,6 +249,8 @@ code { font: 12.5px var(--mono); background: var(--hover); border: 1px solid var
   .ttl .by.app .lineage { display: inline; font-size: inherit; }
   .topbar .version-menu { display: contents; }
   .ttl h1 { font-size: 15px; }
+  /* The title asks for 80px before the roster gets any (the roster gives way first, Who.svelte), and however narrow it gets, its tags never spill over the controls beside it. */
+  .ttl { flex: 1 1 80px; overflow: clip; overflow-clip-margin: 3px; }
   /* Above the home indicator on a phone with no bottom bezel. */
   .phone-tabs { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 12; padding-bottom: env(safe-area-inset-bottom); background: var(--card); border-top: 1px solid var(--border); }
   .phone-tabs button { flex: 1; border: 0; border-radius: 0; background: none; font-size: 15px; color: var(--muted); min-height: 52px; }
@@ -323,21 +332,27 @@ input, select { line-height: 1.2; }
 
 /* The changelog (spec §8): no band over the page. The version menu's panel
    and the Addressed group carry their own styles. */
-.version-menu { position: relative; }
-.vbtn { display: flex; align-items: baseline; gap: 5px; padding: 0 10px; height: 32px; position: relative; font: 600 14px/32px var(--font); }
-.vbtn span { font: 400 12.5px var(--font); color: var(--muted); }
+.version-menu { position: relative; display: flex; align-items: center; }
+.vbtn, .vmain { display: flex; align-items: baseline; gap: 5px; padding: 0 10px; height: 32px; position: relative; font: 600 14px/32px var(--font); }
+.vbtn span, .vmain:not(.primary) span { font: 400 12.5px var(--font); color: var(--muted); }
+/* The split button: the main part and the ▾ share a seam. */
+.version-menu.split .vmain { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.version-menu.split .vbtn { padding: 0 8px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .vbtn .new { position: absolute; top: 5px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--agent); }
 /* Pins sit over the artifact, whose colours Clax does not set: literal colours. */
 .thread-pin.addressed, .thread-pin.addressed:not(:disabled):hover { background-color: #fff; border-color: #2f6f2a; color: #1c1b19; }
 .thread-pin[data-v]::after { content: attr(data-v); position: absolute; left: 22px; top: 2px; font: 600 10.5px/14px var(--font); background: #fff; color: #1c1b19; border: 1px solid #2f6f2a; border-radius: var(--radius-xs); padding: 0 4px; white-space: nowrap; }
-.topbar a.latest { font: 600 14px var(--font); color: var(--accent-ink); padding: 0 6px; }
 /* Needs your eyes (spec §8): the rest group's swatch; the needs group's
    and the markers' styles load with them (ui/NeedsGroup.svelte, ui/Markers.svelte). */
 .rest h2 .sw { border-radius: 50%; width: 10px; height: 10px; background: var(--border-strong); }
-/* The quiet notice that the daemon cannot be reached (conn-notice.ts): the
-   page keeps retrying underneath, so it asks nothing of the viewer. */
-.conn-notice { position: fixed; left: var(--gutter); bottom: calc(var(--gutter) + env(safe-area-inset-bottom)); max-width: calc(100% - 2 * var(--gutter)); z-index: 40; display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 12px; background: var(--raised); color: var(--muted); border: 1px solid var(--border); border-radius: 999px; box-shadow: var(--elev); font-size: 12px; pointer-events: none; }
+/* The calm notice that Clax cannot be reached (conn-notice.ts): the page
+   keeps retrying underneath, so it asks nothing of the viewer and lets
+   clicks through. An answer that is not Clax's (it may have been taken
+   down) carries the warning's colours, so it is noticed. */
+.conn-notice { position: fixed; left: var(--gutter); bottom: calc(var(--gutter) + env(safe-area-inset-bottom)); max-width: calc(100% - 2 * var(--gutter)); z-index: 40; display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 12px; background: var(--raised); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 999px; box-shadow: var(--elev); font-size: 13px; pointer-events: none; }
 .conn-notice::before { content: ""; width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--border-strong); animation: conn-pulse 1.6s ease-in-out infinite; }
+.conn-notice[data-warn] { background: var(--tag-orange-bg); color: var(--tag-orange-fg); border-color: var(--tag-orange-bd); font-weight: 500; }
+.conn-notice[data-warn]::before { background: var(--tag-orange-fg); }
 .conn-notice[hidden] { display: none; }
 @keyframes conn-pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .conn-notice::before { animation: none; } }

@@ -22,6 +22,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/paths.dart';
+import '../support/settle.dart';
 
 class FakeKey implements SecureKey {
   FakeKey([this.value]);
@@ -1109,12 +1110,7 @@ void main() {
       // Undo saves where it stepped back to with real file I/O: wait for
       // it outside the fake clock.
       final done = find.text('Undid the last change');
-      for (var i = 0; i < 200 && done.evaluate().isEmpty; i++) {
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 10)),
-        );
-        await tester.pump();
-      }
+      await settle(tester, done);
       final r = api.calls.lastWhere((c) => c.name == 'restoreVersion');
       expect(r.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
       expect(done, findsOneWidget);
@@ -1133,12 +1129,11 @@ void main() {
       await tester.tap(find.text('Use the built-in home screen'));
       expect(changed, 1);
       // The save is real file I/O: wait for it outside the fake clock.
-      for (var i = 0; i < 200 && !HomeSettings.loadSync(dir).builtin; i++) {
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 10)),
-        );
-        await tester.pump();
-      }
+      await settleUntil(
+        tester,
+        () => HomeSettings.loadSync(dir).builtin,
+        what: 'the built-in home screen saved',
+      );
       expect(HomeSettings.loadSync(dir).builtin, isTrue);
     });
 

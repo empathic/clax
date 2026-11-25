@@ -41,6 +41,7 @@ import 'support/fake_queue.dart';
 import 'support/fake_core.dart';
 import 'support/fake_surface.dart';
 import 'support/fake_voice.dart';
+import 'support/settle.dart';
 
 const _page = '<!doctype html><title>Runs</title><h1>Runs</h1>';
 
@@ -310,34 +311,6 @@ void main() {
     }
   }
 
-  /// Pumps until [condition] holds; fails after [frames] frames without it.
-  Future<void> pumpUntil(
-    WidgetTester tester,
-    bool Function() condition, {
-    int frames = 200,
-  }) async {
-    for (var i = 0; i < frames; i++) {
-      if (condition()) return;
-      await tester.pump(const Duration(milliseconds: 10));
-    }
-    fail('condition not reached: $condition (calls: ${work.calls})');
-  }
-
-  /// Pumps until [text] shows, letting the app's real file reads finish
-  /// (they do not settle in fake time). Turns while the pending make has a
-  /// call in flight do not count, so its file's speed fails nothing.
-  Future<void> pumpUntilShown(WidgetTester tester, String text) async {
-    for (var i = 0; i < 200;) {
-      if (find.text(text).evaluate().isNotEmpty) return;
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 10)),
-      );
-      await tester.pump(const Duration(milliseconds: 10));
-      if (!pendingMake.busy) i++;
-    }
-    fail('"$text" never showed');
-  }
-
   /// Lets the app's file writes finish: turns the real event loop, where
   /// the pending make's file calls run, and the test's frames, where their
   /// answers land, until no call is in flight, however long that takes.
@@ -345,6 +318,7 @@ void main() {
   Future<void> settleFiles(WidgetTester tester) async {
     do {
       await tester.runAsync(
+        // ignore: timing_delay -- settleFiles' poll interval, in a wait on pendingMake.busy
         () => Future<void>.delayed(const Duration(milliseconds: 1)),
       );
       await tester.pump();
@@ -396,7 +370,7 @@ void main() {
     await submit(tester, 'a tracker for my runs');
     await pumpRoute(tester);
     expect(find.byType(AppScreen), findsOneWidget);
-    await pumpUntil(tester, () => work.calls.contains('stop'));
+    await settleUntil(tester, () => work.calls.contains('stop'));
     expect(work.calls, [
       'requestPermission',
       'start($title, Getting started)',
@@ -421,18 +395,18 @@ void main() {
         return _made;
       });
     await submit(tester, 'a tracker for my runs');
-    await pumpUntil(tester, () => work.calls.last.contains('Waiting for Clax'));
+    await settleUntil(tester, () => work.calls.last.contains('Waiting for Clax'));
     expect(agent.runs, 1, reason: 'no run while the app is away');
 
     comeBack(tester);
     await tester.pump();
     expect(find.text('Picking up where it left off'), findsOneWidget);
     expect(find.text('Couldn’t make it'), findsNothing);
-    await pumpUntil(tester, () => agent.runs == 2);
+    await settleUntil(tester, () => agent.runs == 2);
 
     leave(tester);
     gate.complete();
-    await pumpUntil(
+    await settleUntil(
       tester,
       () => work.calls.contains('ready(Runs is ready, Tap to open it)'),
     );
@@ -513,7 +487,7 @@ void main() {
       throw const AgentError('The API key was refused');
     });
     await tester.tap(find.text('Retry'));
-    await pumpUntil(tester, () => work.calls.last.startsWith('failed'));
+    await settleUntil(tester, () => work.calls.last.startsWith('failed'));
     expect(
       work.calls.last,
       'failed(Couldn’t make your app, The API key was refused)',
@@ -554,7 +528,7 @@ void main() {
         ],
       },
     ], artifactId: aid);
-    await pumpUntil(tester, () => work.targets.isNotEmpty);
+    await settleUntil(tester, () => work.targets.isNotEmpty);
     expect(work.calls, [
       'ready(Runs has a question, Which unit should distances use?)',
     ]);
@@ -586,7 +560,7 @@ void main() {
     ])).question.id;
     final answered = await ask();
     final open = await ask();
-    await pumpUntil(tester, () => work.targets.length == 2);
+    await settleUntil(tester, () => work.targets.length == 2);
     await api.answerQuestion(answered, [
       const QuestionAnswer(selected: ['km']).toJson(),
     ]);
@@ -625,7 +599,7 @@ void main() {
         ],
       },
     ], artifactId: other);
-    await pumpUntil(tester, () => work.targets.isNotEmpty);
+    await settleUntil(tester, () => work.targets.isNotEmpty);
     comeBack(tester);
     await tester.pump();
     expect(find.byType(QuestionsSheetView), findsNothing);
@@ -651,7 +625,7 @@ void main() {
     await pumpApp(tester);
     leave(tester);
     final qid = await askUnits();
-    await pumpUntil(tester, () => work.targets.isNotEmpty);
+    await settleUntil(tester, () => work.targets.isNotEmpty);
     api.withdrawUnannounced(qid);
     comeBack(tester);
     await pumpRoute(tester);
@@ -664,7 +638,7 @@ void main() {
     leave(tester);
     final a = await askUnits();
     final b = await askUnits();
-    await pumpUntil(tester, () => work.targets.length == 2);
+    await settleUntil(tester, () => work.targets.length == 2);
     comeBack(tester);
     work.tap('question:$b');
     await pumpRoute(tester);
@@ -685,7 +659,7 @@ void main() {
     leave(tester);
     final first = await askUnits(about: log);
     final second = await askUnits(about: diary);
-    await pumpUntil(tester, () => work.targets.length == 2);
+    await settleUntil(tester, () => work.targets.length == 2);
     comeBack(tester);
     await pumpRoute(tester);
     expect(find.byType(QuestionsSheetView), findsNothing);
@@ -702,7 +676,7 @@ void main() {
   testWidgets('a change that lands in the background says so', (tester) async {
     final aid = api.seedArtifact('Runs', {'index.html': _page});
     await pumpApp(tester);
-    await pumpUntil(tester, () => api.waitingPolls == 1);
+    await settleUntil(tester, () => api.waitingPolls == 1);
     final gate = Completer<void>();
     agent.steps.add((r) async {
       r.onProgress?.call(const OutputTokens(10));
@@ -710,10 +684,10 @@ void main() {
       return change(edits: [edit('<h1>Runs</h1>', '<h1>My runs</h1>')]);
     });
     api.sendComment(aid, 'Call it My runs');
-    await pumpUntil(tester, () => agent.runs == 1);
+    await settleUntil(tester, () => agent.runs == 1);
     leave(tester);
     gate.complete();
-    await pumpUntil(
+    await settleUntil(
       tester,
       () => work.calls.contains('ready(Runs changed, Tap to see it)'),
     );
@@ -734,7 +708,7 @@ void main() {
     Future<void> changeAway(WidgetTester tester) async {
       aid = api.seedArtifact('Groceries', {'index.html': _page});
       await pumpApp(tester);
-      await pumpUntil(tester, () => api.waitingPolls == 1);
+      await settleUntil(tester, () => api.waitingPolls == 1);
       gate = Completer<void>();
       agent.steps
         ..add((r) async {
@@ -749,8 +723,8 @@ void main() {
               change(edits: [edit('<h1>Runs</h1>', '<h1>My runs</h1>')]),
         );
       api.sendComment(aid, 'Call it My runs');
-      await pumpUntil(tester, () => agent.runs == 1);
-      await pumpUntil(
+      await settleUntil(tester, () => agent.runs == 1);
+      await settleUntil(
         tester,
         () => work.calls.contains(
           'update(Changing Groceries, Working on your comment)',
@@ -766,7 +740,7 @@ void main() {
       work.pausesRuns = true;
       await changeAway(tester);
       work.stopNow();
-      await pumpUntil(tester, () => work.calls.contains('pauseDone'));
+      await settleUntil(tester, () => work.calls.contains('pauseDone'));
       final pauses = work.calls.where((c) => c.startsWith('paused')).toList();
       expect(pauses, ['paused(Groceries, $aid)']);
       expect(
@@ -776,7 +750,7 @@ void main() {
       expect(agent.runs, 1, reason: 'held while the app is away');
 
       comeBack(tester);
-      await pumpUntil(tester, () => api.currentVersion(aid) == 2);
+      await settleUntil(tester, () => api.currentVersion(aid) == 2);
       expect(work.calls, contains('clearPaused'));
       expect(agent.runs, 2);
       expect(work.calls.where((c) => c.startsWith('pauseDone')), hasLength(1));
@@ -788,7 +762,7 @@ void main() {
       work.stopNow();
       await tester.pump(const Duration(milliseconds: 50));
       gate.complete();
-      await pumpUntil(tester, () => api.currentVersion(aid) == 2);
+      await settleUntil(tester, () => api.currentVersion(aid) == 2);
       expect(agent.runs, 1, reason: 'the run was not aborted');
       expect(work.calls.where((c) => c.startsWith('paused')), isEmpty);
       expect(work.calls, isNot(contains('pauseDone')));
@@ -804,7 +778,7 @@ void main() {
       throw const AgentError.cancelled();
     });
     await submit(tester, 'a tracker for my runs');
-    await pumpUntil(tester, () => agent.runs == 1);
+    await settleUntil(tester, () => agent.runs == 1);
     await pumpRoute(tester);
     await settleFiles(tester);
     expect(
@@ -814,7 +788,7 @@ void main() {
     );
     leave(tester);
     await tester.tap(find.text('Cancel'));
-    await pumpUntil(tester, () => work.calls.contains('stop'));
+    await settleUntil(tester, () => work.calls.contains('stop'));
     await pumpRoute(tester);
     expect(work.calls.last, 'stop');
     expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
@@ -837,16 +811,16 @@ void main() {
       'nothing', (tester) async {
     final aid = api.seedArtifact('Runs', {'index.html': _page});
     await pumpApp(tester);
-    await pumpUntil(tester, () => api.waitingPolls == 1);
+    await settleUntil(tester, () => api.waitingPolls == 1);
     agent.steps.add((r) async {
       await r.cancelled;
       throw const AgentError.cancelled();
     });
     api.sendComment(aid, 'Call it My runs');
-    await pumpUntil(tester, () => agent.runs == 1);
+    await settleUntil(tester, () => agent.runs == 1);
     leave(tester);
     await tester.binding.handleRequestAppExit();
-    await pumpUntil(tester, () => work.calls.contains('stop'));
+    await settleUntil(tester, () => work.calls.contains('stop'));
     expect(work.calls.where((c) => c.startsWith('ready')), isEmpty);
     expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
   });
@@ -856,7 +830,7 @@ void main() {
   ) async {
     final aid = api.seedArtifact('Runs', {'index.html': _page});
     await pumpApp(tester);
-    await pumpUntil(tester, () => api.waitingPolls == 1);
+    await settleUntil(tester, () => api.waitingPolls == 1);
     agent.steps
       ..add(
         (_) async => change(edits: [edit('<h1>Runs</h1>', '<h1>My runs</h1>')]),
@@ -873,7 +847,7 @@ void main() {
     );
     leave(tester);
     api.sendComment(aid, 'Call it My runs');
-    await pumpUntil(tester, () => work.calls.contains('stop'));
+    await settleUntil(tester, () => work.calls.contains('stop'));
     await tester.pump(const Duration(milliseconds: 50));
     expect(work.calls.where((c) => c.startsWith('ready')), isEmpty);
     expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
@@ -887,7 +861,7 @@ void main() {
         .writeAsStringSync('{"request": "a tracker for my runs"}');
     agent.steps.add((_) async => _made);
     await pumpApp(tester);
-    await pumpUntilShown(tester, 'Interrupted');
+    await settle(tester, find.text('Interrupted'));
     expect(find.text('This wasn’t finished.'), findsNothing, reason: 'no dialog');
     await settleFiles(tester);
     expect(
@@ -896,7 +870,7 @@ void main() {
       reason: 'kept until the person chooses',
     );
     await tester.tap(find.text('a tracker for my runs'));
-    await pumpUntilShown(tester, 'Make it again');
+    await settle(tester, find.text('Make it again'));
     expect(find.text('This wasn’t finished.'), findsOneWidget);
     expect(find.text('“a tracker for my runs”'), findsOneWidget);
     await tester.tap(find.text('Make it again'));
@@ -914,20 +888,20 @@ void main() {
     File('${dir.path}/pending-make.json')
         .writeAsStringSync('{"request": "laps"}');
     await pumpApp(tester);
-    await pumpUntilShown(tester, 'Interrupted');
+    await settle(tester, find.text('Interrupted'));
     await tester.tap(find.text('laps'));
-    await pumpUntilShown(tester, 'Discard');
+    await settle(tester, find.text('Discard'));
     await tester.tapAt(const Offset(4, 4));
     await pumpRoute(tester);
     expect(find.text('Interrupted'), findsOneWidget);
     await tester.tap(find.text('laps'));
-    await pumpUntilShown(tester, 'Discard');
+    await settle(tester, find.text('Discard'));
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await pumpRoute(tester);
     expect(find.text('This wasn’t finished.'), findsNothing);
     expect(find.text('Interrupted'), findsOneWidget);
     await tester.tap(find.text('laps'));
-    await pumpUntilShown(tester, 'Discard');
+    await settle(tester, find.text('Discard'));
     await tester.tap(find.text('Discard'));
     await pumpRoute(tester);
     expect(find.text('Interrupted'), findsNothing);
@@ -970,7 +944,7 @@ void main() {
         })
         ..add((_) async => _calls(done));
       await submit(tester, 'a tracker for my runs');
-      await pumpUntil(tester, () => work.calls.contains('stop'));
+      await settleUntil(tester, () => work.calls.contains('stop'));
       await pumpRoute(tester);
       expect(find.byType(AppScreen), findsOneWidget);
       expect(work.calls, [
@@ -1015,7 +989,7 @@ void main() {
       );
       final makingRoute = ModalRoute.of(making.context)!;
       gate.complete();
-      await pumpUntil(tester, () => work.calls.contains('stop'));
+      await settleUntil(tester, () => work.calls.contains('stop'));
       await pumpRoute(tester);
       expect(find.byType(MakingScreen), findsNothing);
       expect(find.byType(AppScreen), findsOneWidget);
@@ -1065,13 +1039,13 @@ void main() {
           return _calls(done);
         });
       await submit(tester, 'a tracker for my runs');
-      await pumpUntil(
+      await settleUntil(
         tester,
         () => work.calls.last.contains('Waiting for Clax'),
       );
       expect(turns!.turns, 2, reason: 'held while the app is away');
       comeBack(tester);
-      await pumpUntil(tester, () => work.calls.contains('stop'));
+      await settleUntil(tester, () => work.calls.contains('stop'));
       expect(turns!.turns, 3);
       expect(seen[2].messages, seen[1].messages, reason: 'the same turn');
       expect(
@@ -1098,15 +1072,15 @@ void main() {
         throw _dns;
       });
       await submit(tester, 'a tracker for my runs');
-      await pumpUntilShown(tester, 'Cancel');
+      await settle(tester, find.text('Cancel'));
       shown.complete();
-      await pumpUntil(
+      await settleUntil(
         tester,
         () => work.calls.last.contains('Waiting for Clax'),
       );
       await pumpRoute(tester);
       await tester.tap(find.text('Cancel'));
-      await pumpUntil(tester, () => work.calls.contains('stop'));
+      await settleUntil(tester, () => work.calls.contains('stop'));
       await pumpRoute(tester);
       expect(work.calls.last, 'stop');
       expect(
@@ -1124,7 +1098,7 @@ void main() {
       turns = _Turns();
       final aid = api.seedArtifact('Runs', {'index.html': _page});
       await pumpApp(tester);
-      await pumpUntil(tester, () => api.waitingPolls == 1);
+      await settleUntil(tester, () => api.waitingPolls == 1);
       final gate = Completer<void>();
       turns!.steps
         ..add((r) async {
@@ -1148,12 +1122,12 @@ void main() {
           ]),
         );
       api.sendComment(aid, 'Call it My runs');
-      await pumpUntil(
+      await settleUntil(
         tester,
         () => work.calls.any((c) => c.endsWith('Renaming the heading)')),
       );
       gate.complete();
-      await pumpUntil(tester, () => work.calls.contains('stop'));
+      await settleUntil(tester, () => work.calls.contains('stop'));
       expect(api.currentVersion(aid), 2);
       expect(await api.listDrafts(), isEmpty);
     });
@@ -1165,7 +1139,7 @@ void main() {
       final week = api.seedArtifact('Week', {'index.html': _page});
       final aid = api.seedArtifact('Runs', {'index.html': _page});
       await pumpApp(tester);
-      await pumpUntil(tester, () => api.waitingPolls == 1);
+      await settleUntil(tester, () => api.waitingPolls == 1);
       String? result;
       turns!.steps
         ..add(
@@ -1181,7 +1155,7 @@ void main() {
         });
       api.sendComment(aid, 'Show my week here');
       final question = find.text('Let Clax read Week?');
-      await pumpUntil(tester, () => question.evaluate().isNotEmpty);
+      await settleUntil(tester, () => question.evaluate().isNotEmpty);
       expect(turns!.turns, 1, reason: 'the run waits for the answer');
       expect(
         work.calls,
@@ -1190,7 +1164,7 @@ void main() {
       await tester.tap(find.text('Always for this app'));
       await tester.pump();
       await tester.tap(find.text('Always allow'));
-      await pumpUntil(tester, () => work.calls.contains('stop'));
+      await settleUntil(tester, () => work.calls.contains('stop'));
       expect(question, findsNothing);
       expect(result, isNot(contains('did not allow')));
       await settleFiles(tester);
@@ -1231,7 +1205,7 @@ void main() {
     }
 
     Future<QueueWiring> started(WidgetTester tester) async {
-      await pumpUntil(tester, () => wirings.isNotEmpty);
+      await settleUntil(tester, () => wirings.isNotEmpty);
       return wirings.single;
     }
 

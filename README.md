@@ -18,8 +18,11 @@ Everything runs locally, at <http://localhost:7480>. Nothing needs an account.
 
 In Claude Code:
 
-```
+```sh
 /plugin marketplace add empathic/clax
+```
+
+```sh
 /plugin install clax@clax
 ```
 
@@ -37,6 +40,9 @@ lists the read-only tools if you'd rather allow just those.
 
 ```sh
 codex plugin marketplace add empathic/clax
+```
+
+```sh
 codex plugin add clax@clax
 ```
 
@@ -46,10 +52,21 @@ asking, but stops before the six that replace or remove data; the
 [plugin's README](plugins/clax/README.md#tool-approval) has the lines that
 approve them.
 
-### Pi, Grok Build, or every harness at once
+### Pi
+
+```sh
+pi install npm:@empathic/clax-pi
+```
+
+Pi loads the package in its next session. The package downloads the Clax
+release it needs on first use. A comment you send to Pi starts a new turn,
+even when the session is idle. The [package's README](plugins/pi/README.md)
+covers the tools, the `/clax` command, and the comment loop.
+
+### Every harness at once
 
 Install the `clax` command, then let it set up every harness it finds on
-your `PATH`:
+your `PATH`. Grok Build installs this way:
 
 ```sh
 curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash
@@ -68,7 +85,8 @@ A few things differ by harness:
   `clax init` offers, once, to approve those for you.
 - **Grok Build** asks before every tool call. For headless runs, pass
   `--always-approve` or `--allow 'MCPTool(clax_grok__*)'`.
-- **Pi** and **Codex** wake on a new comment by themselves, even when idle.
+- **Pi** and **Codex** start a new turn when you send them a comment, even
+  when the session is idle.
 
 You can also install each plugin from a clone of this repository, with no
 build needed. See [Install](docs/usage.md#install) in the usage guide.

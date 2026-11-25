@@ -1,0 +1,106 @@
+/* The gallery entry's own styles (shell/index.html carries them beside
+   theme.css; the artifact view has none of them): the header that never
+   moves, the skeleton, and the gallery's phone layout. */
+/* The header's slots never move what is already in it (view/gallery-frame.ts):
+   the theme switch ends it and the search box (the gallery's list) sits
+   before it, both fixed; the links fill a slot right-aligned against them,
+   every one (ClaxBot's meter first) decided at the header's first render.
+   Before it, the slot holds the width the links took when this browser last
+   showed the page (--sk-links, the inline clax-shape script's), so they fill
+   it in place. */
+.gbar > .glinks { margin-left: auto; display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex: none; min-width: var(--sk-links, 0px); }
+.gbar > .search { margin-left: 0; flex: none; }
+.gbar .inbox-link, .gbar .queues-link, .gbar .settings-link, .gbar .bot-meter { display: inline-flex; align-items: center; gap: 6px; flex: none; min-height: 32px; padding: 0 8px; border-radius: var(--radius-sm); font: 600 14px var(--font); color: var(--fg); text-decoration: none; white-space: nowrap; }
+.gbar .settings-link { min-width: 32px; justify-content: center; }
+.gbar .inbox-link:hover, .gbar .inbox-link[aria-current="page"], .gbar .queues-link:hover, .gbar .queues-link[aria-current="page"], .gbar .settings-link:hover, .gbar .settings-link[aria-current="page"], .gbar .bot-meter:hover, .gbar .bot-meter[aria-current="page"] { background: var(--hover); }
+.gbar .inbox-link svg, .gbar .queues-link svg, .gbar .settings-link svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; color: var(--muted); }
+.gbar .settings-link svg { width: 18px; height: 18px; }
+.gbar .settings-link:hover svg, .gbar .settings-link[aria-current="page"] svg { color: var(--fg); }
+.gbar .inbox-link .count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--you); color: var(--on-you); font: 600 11.5px/20px var(--font); text-align: center; font-variant-numeric: tabular-nums; }
+/* ClaxBot's week (ui/BotMeter.svelte): in words where the bar has room, else
+   a ring filled to the share used beside that share. */
+.gbar .bot-meter { font: 500 13px var(--font); color: var(--muted); font-variant-numeric: tabular-nums; }
+.gbar .bot-meter.warn { color: var(--tag-yellow-fg); }
+.gbar .bot-meter.out { color: var(--danger); }
+.gbar .bot-meter .ring { width: 14px; height: 14px; flex: none; border-radius: 50%; background: conic-gradient(currentColor var(--used, 0%), var(--border-strong) 0); -webkit-mask: radial-gradient(circle, transparent 3.5px, #000 4px); mask: radial-gradient(circle, transparent 3.5px, #000 4px); }
+.gbar .bot-meter .short { display: none; }
+/* The feedback menu's place, held from the header's first render; its count
+   is a badge over the button, which keeps its width. */
+.gbar .fb-slot { display: inline-flex; flex: none; min-width: 32px; min-height: 32px; }
+.gbar .fb-btn > .fb-count { position: absolute; top: 0; right: -4px; min-width: 16px; padding: 0 4px; font-size: 10.5px; line-height: 16px; }
+@media (max-width: 860px) { .gbar .glinks .word, .gbar .bot-meter .long { display: none; } .gbar .bot-meter .short { display: inline-flex; align-items: center; gap: 5px; } }
+/* At a phone's width the mark alone names Clax (its title stays for
+   assistive technology), so every link fits the bar's one row, touch
+   targets and all, and nothing wraps under the theme switch. */
+@media (max-width: 480px) { .gbar > h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } .gbar .bot-meter { padding: 0 6px; } }
+@media (pointer: coarse) { .gbar .inbox-link, .gbar .queues-link, .gbar .settings-link, .gbar .bot-meter { min-height: 44px; } .gbar .queues-link, .gbar .settings-link, .gbar .fb-slot { min-width: 44px; } .gbar .fb-slot { min-height: 44px; } }
+/* The groups' looks the skeleton shares with the content (ui/NeedsGroup.svelte). */
+.needs h2 .sw { border-radius: 0 8px 8px 0; background: var(--you); }
+.needs .cards { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+.needs .card h3 { font-size: 17px; }
+/* Where a page's content is on its way (view/gallery-frame.ts): the parts
+   the content will have, in its own boxes, as the inline clax-shape script
+   marks them on the root (`data-sk`, and the heights it knows as --sk-*),
+   before the page paints: the usage banner's place, the inbox summary's,
+   the tag bar's, the groups with their headings and cards (or the empty
+   gallery's), and lines on a page beside the gallery (`data-page`). The
+   placeholders pulse gently; the headings are the content's own words,
+   shown where the shape is known. The sign-in pages show none of the frame. */
+.gskel .vh { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.gskel .sk-ban, .gskel .sk-sum, .gskel .sk-tb, .gskel .sk-empty, .gskel .sk-need, .gskel .sk-nt, .gskel .sk-e, .gskel .sk-ls { display: none; }
+.gskel .sk-h, .gskel .sk-c, .gskel .sk-l, .gskel .sk-mk, .gskel .sk-nt, .gskel .sk-ban, .gskel .sk-sum, .gskel .sk-tb { background-color: var(--hover); border-radius: var(--radius-sm); }
+.gskel .sk-ban, .gskel .sk-sum, .gskel .sk-tb { background-clip: content-box; }
+.gskel .sk-ban { height: var(--sk-ban, 62px); padding-bottom: 18px; }
+.gskel .sk-sum { height: var(--sk-sum, 240px); padding-bottom: 34px; }
+.gskel .sk-tb { height: var(--sk-tb, 44px); padding-bottom: 24px; }
+@media (pointer: coarse) { .gskel .sk-tb { height: var(--sk-tb, 52px); } }
+.gskel .sk-c { display: flex; flex-direction: column; border: 1px solid transparent; border-radius: var(--radius); color: transparent; }
+/* A skeleton card's rows in a card's measures (theme.css .card): .cb2, its
+   h3 and .by with the version's badge, .mks with a chip, and .ft. */
+.gskel .sk-hd { display: grid; gap: 3px; padding: 13px 14px 10px; }
+.gskel .sk-t { font-size: 15px; line-height: 1.3; }
+.gskel .sk-b { font-size: 12px; }
+.gskel .sk-v { display: inline-block; font: 500 11px/15px var(--font); padding: 0 6px; border: 1px solid transparent; vertical-align: 1px; }
+.gskel .sk-m { display: none; padding: 0 12px 10px; }
+.gskel .sk-chip { display: inline-flex; font: 500 12px/1 var(--font); padding: 4px 9px; }
+.gskel .sk-f { min-height: 37px; margin-top: auto; }
+.gskel .sk-need .sk-m { display: flex; }
+.gskel .sk-need .sk-t { font-size: 17px; }
+.gskel .sk-empty { place-items: center; gap: 10px; padding: 80px 0 40px; }
+.gskel .sk-mk { width: 160px; height: 96px; border-radius: 48px; }
+.gskel .sk-empty .sk-l { width: min(380px, 80%); height: 21px; }
+.gskel .sk-empty .sk-l + .sk-l { width: min(360px, 70%); height: 25px; }
+.gskel .sk-nt { width: min(320px, 100%); height: 92px; border-radius: var(--radius); }
+.gskel .sk-h { width: min(240px, 60%); height: 28px; margin: 0 0 4px; }
+.gskel .sk-ls { gap: 14px; max-width: 880px; margin: 0 auto; }
+.gskel .sk-ls .sk-l { height: 14px; }
+.gskel .sk-ls .sk-l:nth-child(3) { width: 84%; }
+.gskel .sk-ls .sk-l:nth-child(4) { width: 92%; }
+.gskel .sk-ls .sk-l:nth-child(5) { width: 58%; }
+/* Under Needs your eyes, the height the group took last time at this width (--sk-nh), where known. */
+.gskel .sk-need { height: var(--sk-nh, auto); overflow: hidden; }
+html:not([data-sk~="known"]) .gskel .sk-rest h2 > * { visibility: hidden; }
+html[data-sk~="ban"] .gskel .sk-ban, html[data-page="gallery"][data-sk~="sum"] .gskel .sk-sum, html[data-page="gallery"][data-sk~="tb"] .gskel .sk-tb, html[data-sk~="need"] .gskel .sk-need { display: block; }
+html[data-page="gallery"][data-sk~="empty"] .gskel .sk-empty { display: grid; }
+html[data-sk~="tile"] .gskel .sk-nt, html[data-sk~="need"] .gskel .sk-e { display: inline-block; }
+html[data-sk~="need"] .gskel .sk-a, html[data-sk~="flat"] .gskel h2, html[data-sk~="empty"] .gskel .sk-tb, html[data-sk~="empty"] .gskel .grp { display: none; }
+html[data-page="page"] .gskel .grp, html[data-page="page"] .gskel .sk-sum, html[data-page="page"] .gskel .sk-tb, html[data-page="page"] .gskel .sk-empty, html[data-page="page"] .gbar > .search { display: none; }
+html[data-page="page"] .gskel .sk-ls { display: grid; }
+html[data-page="auth"] #app > .gbar, html[data-page="auth"] #app > .gal, html[data-page="auth"] #app > .glegal { display: none; }
+@media (prefers-reduced-motion: no-preference) { .gskel .sk { animation: gskel 1.2s ease-in-out infinite alternate; } }
+@keyframes gskel { to { opacity: .45; } }
+@media (max-width: 700px) {
+  /* The gallery's search box takes a row of its own under the bar (not on a
+     page beside the gallery, whose frame holds the box hidden). */
+  html:not([data-page="page"]) .gbar:has(> .search) { flex-wrap: wrap; height: auto; padding-top: 10px; padding-bottom: 10px; row-gap: 10px; }
+  .gbar > .search { order: 1; flex: 1 0 100%; width: auto; max-width: none; }
+  .needs .cards { grid-template-columns: 1fr; }
+  .needs .card h3, .gskel .sk-need .sk-t { font-size: 15px; }
+}
+/* A page beside the gallery while it loads: laid out (what it focuses takes
+   focus) but with no height, before the skeleton, until it shows its first data. */
+.gal > .gpage.pending { height: 0; overflow: hidden; }
+/* Coming back to the gallery, `main` is held tall enough (the inline
+   clax-page script's --gback, the place kept in the history entry) to be
+   scrolled there at once, until the content is in (ui/Gallery.svelte). */
+html[data-page="gallery"] .gal { min-height: calc(100vh + var(--gback, 0px)); }

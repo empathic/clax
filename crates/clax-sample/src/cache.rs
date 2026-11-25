@@ -72,6 +72,7 @@ impl AnswerCache {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::request::Tier;
@@ -85,6 +86,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "t0 is an origin only: the cache is given each time, t0 plus a fixed offset"
+    )]
     #[test]
     fn an_answer_replays_while_younger_than_both_windows() {
         let c = AnswerCache::default();

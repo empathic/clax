@@ -5,7 +5,7 @@
 // shell counts the pick as the viewer's own gesture. The hold neither selects
 // text nor follows a link.
 import { type CDPSession, type Locator, type Page } from "@playwright/test";
-import { test, expect, type Daemon, last, openArtifact, publish, record } from "./fixtures";
+import { test, expect, type Daemon, last, openArtifact, publish, record, until } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -14,16 +14,25 @@ const PAGE = `<!doctype html><html><head><title>Hold</title><style>body{margin:0
 </head>
 <body><main><h2 id="t">Quarterly goals</h2><p id="p">Grow revenue in every region this year.</p><p><a id="link" href="#elsewhere">Read the plan</a></p></main></body></html>`;
 
-/** How long the finger rests: past the bridge's hold (450 ms) and the
- * browser's own long-press. Input with a duration, as a key schedule is. */
+/** How long the finger rests at least: past the browser's own long-press,
+ * which Chromium times on its own clock. Input with a duration, as a key
+ * schedule is; the bridge's hold (450 ms) is waited on, not timed. */
 const HOLD_MS = 800;
 
-/** Holds one finger on the middle of `target` for `HOLD_MS`, then lifts it. */
-async function holdOn(cdp: CDPSession, target: Locator) {
+/** The shell's count of `clax:hover` messages (`record`): the bridge reports
+ * one when a held finger arms. */
+const hovers = (page: Page) => page.evaluate(() => (window as unknown as { claxMsgs: { type: string }[] }).claxMsgs.filter(m => m.type === "clax:hover").length);
+
+/** Holds one finger on the middle of `target` for `HOLD_MS` and until the
+ * bridge's hold has armed (it outlines the target), then lifts it. */
+async function holdOn(page: Page, cdp: CDPSession, target: Locator) {
   const b = (await target.boundingBox())!;
   const at = { x: b.x + Math.min(40, b.width / 2), y: b.y + b.height / 2 };
+  const before = await hovers(page);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
+  // oxlint-disable-next-line clax-timing/timer-delay -- the finger's rest is input with a duration, past Chromium's own long-press on its own clock; the bridge's arming is waited on below
   await new Promise(r => setTimeout(r, HOLD_MS));
+  await until("the bridge's hold to arm", async () => (await hovers(page)) > before);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 
@@ -47,7 +56,7 @@ for (const mode of ["subdomain"] as const) {
     const ctx = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 800 } });
     const page = await ctx.newPage();
     const { frame, cdp } = await openOnPhone(page, `Hold heading ${mode}`, mode);
-    await holdOn(cdp, frame.locator("#t"));
+    await holdOn(page, cdp, frame.locator("#t"));
     // Outlined while held, picked on release.
     expect((await last(page, "clax:hover")).selector).toBe("#t");
     const start = await last(page, "clax:pick-start");
@@ -62,7 +71,7 @@ for (const mode of ["subdomain"] as const) {
     const ctx = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 800 } });
     const page = await ctx.newPage();
     const { frame, cdp } = await openOnPhone(page, `Hold link ${mode}`, mode);
-    await holdOn(cdp, frame.locator("#link"));
+    await holdOn(page, cdp, frame.locator("#link"));
     const start = await last(page, "clax:pick-start");
     expect(start.anchor).toMatchObject({ kind: "element", selector: "#link" });
     await expect(page.locator(".composer")).toBeVisible();
@@ -81,7 +90,7 @@ for (const mode of ["subdomain"] as const) {
       const bar = (await page.locator("header.topbar").boundingBox())!;
       await page.mouse.move(bar.x + 40, bar.y + bar.height / 2);
     });
-    await holdOn(cdp, frame.locator("#t"));
+    await holdOn(page, cdp, frame.locator("#t"));
     const start = await last(page, "clax:pick-start");
     expect(start.anchor).toMatchObject({ kind: "element", selector: "#t" });
     await expect(page.locator(".composer")).toBeVisible();

@@ -441,6 +441,7 @@ pub fn served_page(draft: &str, base: Option<&str>) -> String {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::working::ManualClock;

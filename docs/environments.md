@@ -84,6 +84,10 @@ never be the same site, to a browser, as Clax).
   signs in with GitHub is a new person, as on clax.dev.
 - **Later pushes:** the same Worker, redeployed: its artifacts and people
   stay (they live in its Durable Objects).
+- **Reset:** label the pull request `preview-reset` and push (or rerun the
+  deploy job). The deploy tears the preview down first, removes the label,
+  and deploys it fresh. A branch that renumbered its migrations needs
+  this: a preview its earlier builds migrated cannot be upgraded.
 - **Close or merge:** `preview.yml`'s teardown job runs
   `teardown.mjs pr-<N>`, which deletes the route, the DNS record, the
   custom domain, the Worker with its Durable Objects, then its queue and
@@ -183,7 +187,16 @@ Cloudflare's docs.
    `PREVIEW_SITE_ZONE`: the sites `<ID>.pr-<N>.PREVIEW_SITE_ZONE` and
    `<ID>.dev.PREVIEW_SITE_ZONE` are two levels below it, past what
    Universal SSL covers.
-4. Make the token above.
+4. Turn off Web Analytics' automatic setup on `PREVIEW_SITE_ZONE`
+   (Analytics & Logs, Web Analytics, the zone, Manage site, Disable); the
+   same holds for prod's `clax.run` and staging's site zone. It is on by default for a proxied zone, and adds
+   Cloudflare's beacon script (`static.cloudflareinsights.com`) to every
+   HTML page the zone serves: a script the clax's maker did not write,
+   which Clax's Content-Security-Policy refuses on each load, so the
+   artifact page tells whoever administers the clax that it tried to
+   reach another site. (`Cache-Control: no-transform` would stop the
+   injection too, and Cloudflare's compression of the page with it.)
+5. Make the token above.
 
 ### Previews
 
@@ -219,7 +232,7 @@ The next push to a pull request deploys its preview.
    The settings are kept in `~/.config/clax/deploy/setup.dev.env`, and
    later runs need no flags.
 3. Sign in to dev as the owner, make an agent token named `smoke`
-   (settings, Agent tokens), and set it as the `preview` environment's
+   (Settings, Agents & machines, Agent tokens), and set it as the `preview` environment's
    `CLAX_DEV_SMOKE_TOKEN`.
 
 Every green push to `main` deploys dev from then on. Until

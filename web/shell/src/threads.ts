@@ -1,5 +1,6 @@
 import type { Anchor } from "../../bridge/src/protocol";
-import { ApiError, getToken } from "./api";
+import { getToken } from "./api";
+import { readJson } from "./trouble";
 
 export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" | "inject";
 /** `withheld`: held until `approver` (a display name) approves an author
@@ -49,17 +50,18 @@ export type Viewer = { public_id: string; display_name: string | null; created_a
   /** The owner's browser; a connected person's (`person`). */
   owner?: boolean; person?: boolean };
 
-async function ok<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    let msg = res.statusText;
-    let code: string | null = null;
-    try { const e = (await res.json()).error; msg = e?.message ?? msg; code = typeof e?.code === "string" ? e.code : null; } catch { /* not JSON */ }
-    throw new ApiError(res.status, msg, code);
-  }
-  return res.json() as Promise<T>;
-}
-const post = (url: string, body?: unknown) =>
-  fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+const ok = readJson;
+/** The latest name save, settled either way. A hosted daemon's visitor has
+ * no guest session until it answers and is refused a write meanwhile (401
+ * `guest_name_required`). */
+let naming: Promise<unknown> | null = null;
+/** A write, sent once the latest name save has answered, so one that needs
+ * a guest session goes with the session that save makes. With no save, at
+ * once. */
+const write = (url: string, init: RequestInit): Promise<Response> => naming ? naming.then(() => fetch(url, init)) : fetch(url, init);
+/** A JSON `POST`; `viaPage` marks one the page made through a capability (`x-clax-via: page`). */
+const post = (url: string, body?: unknown, viaPage = false) =>
+  write(url, { method: "POST", headers: { "content-type": "application/json", ...viaPage && { "x-clax-via": "page" } }, body: body === undefined ? undefined : JSON.stringify(body) });
 
 /** One thread of the artifact, with all its comments. */
 export async function fetchThread(aid: string, tid: string): Promise<Thread> {
@@ -88,28 +90,20 @@ export async function createThread(aid: string, input: { anchor: Anchor; body: s
   if (input.clip) form.set("clip", input.clip, "clip.png");
   if (input.viaPage) form.set("via_page", "true");
   const headers: Record<string, string> = input.viaPage ? { "x-clax-via": "page" } : {};
-  return ok(await fetch(`/api/artifacts/${aid}/threads`, { method: "POST", headers, body: form }));
+  return ok(await write(`/api/artifacts/${aid}/threads`, { method: "POST", headers, body: form }));
 }
 /** Adds a comment to a thread; `viaPage` marks one the page wrote through
  * the `comments` capability (`via_page`, `x-clax-via: page`). A refusal
  * throws `ApiError` with the daemon's code. */
 export async function addComment(aid: string, tid: string, body: string, viaPage = false): Promise<Thread> {
-  const url = `/api/artifacts/${aid}/threads/${tid}/comments`;
-  const res = viaPage
-    ? await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-clax-via": "page" }, body: JSON.stringify({ body, via_page: true }) })
-    : await post(url, { body });
-  return (await ok<{ thread: Thread }>(res)).thread;
+  return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/comments`, { body, ...viaPage && { via_page: true } }, viaPage))).thread;
 }
 /** Sends a thread to the agent `to` names (a participant handle), or with
  * `to` null to every live owner and watcher; the body carries no `to` then.
  * `viaPage` marks a page's send (its `sendToClaude`, `x-clax-via: page`):
  * the approval request it makes names the page and the viewer. */
 export async function sendToAgent(aid: string, tid: string, to: string | null = null, viaPage = false): Promise<Thread> {
-  const url = `/api/artifacts/${aid}/threads/${tid}/send`;
-  const res = viaPage
-    ? await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-clax-via": "page" }, body: to === null ? undefined : JSON.stringify({ to }) })
-    : await post(url, to === null ? undefined : { to });
-  return (await ok<{ thread: Thread }>(res)).thread;
+  return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/send`, to === null ? undefined : { to }, viaPage))).thread;
 }
 /** Sends `threadIds` as one batch with an optional `note`, to the agent `to`
  * names or, with `to` null, without a target (the body has no `to` key). All
@@ -124,7 +118,7 @@ const withToken = (token: string | null): Record<string, string> => (token ? { a
 /** Reopens a thread. The daemon lets a named viewer or the owner shell (its
  * `token`) do it; anyone else gets 403 `forbidden`. */
 export async function reopenThread(aid: string, tid: string, token: string | null = null): Promise<Thread> {
-  return (await ok<{ thread: Thread }>(await fetch(`/api/artifacts/${aid}/threads/${tid}/reopen`, { method: "POST", headers: withToken(token) }))).thread;
+  return (await ok<{ thread: Thread }>(await write(`/api/artifacts/${aid}/threads/${tid}/reopen`, { method: "POST", headers: withToken(token) }))).thread;
 }
 /** Deletes a thread with its comments and clip; the same caller rule as `reopenThread`. */
 export async function deleteThread(aid: string, tid: string, token: string | null = null): Promise<void> {
@@ -171,8 +165,14 @@ export function seedViewer(v: Viewer | null): void {
   announceViewer(v);
 }
 
+/** Saves this viewer's name; on a hosted daemon a visitor's first save
+ * makes them a guest. A write that needs a guest session waits for it
+ * (`write`) and is sent whether it succeeds or fails. */
 export async function setViewerName(name: string): Promise<Viewer> {
-  const v = (await ok<{ viewer: Viewer }>(await fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: name }) }))).viewer;
+  const res = fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: name }) });
+  // Its answer carries the guest session's cookie.
+  naming = res.catch(() => {});
+  const v = (await ok<{ viewer: Viewer }>(await res)).viewer;
   viewerMemo = Promise.resolve(v);
   announceViewer(v);
   return v;

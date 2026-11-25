@@ -5,6 +5,7 @@
 //! store is `clax-store`'s; the one query run here is the latency
 //! calibration's, on its own in-memory database (`perf`).
 
+pub mod analytics;
 pub mod anchor;
 pub mod audit;
 pub mod brief;
@@ -36,6 +37,7 @@ pub mod ids;
 pub mod live;
 pub mod live_layers;
 pub mod manifest;
+pub mod media;
 pub mod mentions;
 pub mod model;
 pub mod names;
@@ -102,3 +104,27 @@ pub use ids::{
 pub use model::RegisterSession;
 pub use publish::html_title;
 pub use secret::Secret;
+
+#[cfg(test)]
+#[warn(clippy::disallowed_methods)]
+pub(crate) mod test_util {
+    /// How long a test's wait on something that will happen may take
+    /// before the test calls it a hang and fails, naming what it waited
+    /// for: `clax_testkit::HANG`, which this crate's own tests cannot
+    /// reach. A hang guard only: it never decides whether a test passes.
+    pub const HANG: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// The next value on `rx`, bounded by the [`HANG`] guard.
+    ///
+    /// # Panics
+    /// Past the [`HANG`] guard, or when every sender is gone first, naming
+    /// `what`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "recv_within is the HANG guard on a wait"
+    )]
+    pub fn recv_within<T>(what: &str, rx: &std::sync::mpsc::Receiver<T>) -> T {
+        rx.recv_timeout(HANG)
+            .unwrap_or_else(|e| panic!("{what}: {e} (hang guard {HANG:?})"))
+    }
+}

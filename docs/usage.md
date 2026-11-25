@@ -61,8 +61,12 @@ named. `clax init` writes the Clax plugins built into that binary to
 your `PATH` (Claude Code, Codex, Pi and Grok Build), and sets the `bin`
 setting in `~/.clax/config.toml` to itself, so the plugins run your build
 rather than the release they pin. The registration replaces any older one,
-including registrations under Clax's previous name. Start a new session in
-each harness afterwards. Moving or deleting the clone afterwards changes
+including registrations under Clax's previous name. When Pi's
+`settings.json` already lists the Clax Pi package from npm
+(`npm:@empathic/clax-pi`) or from git, `clax init` keeps that registration,
+adds no copy of its own for Pi, and says how to switch (`pi remove
+<source>`, then `clax init` again): Pi does not start with two copies. Start a new
+session in each harness afterwards. Moving or deleting the clone afterwards changes
 nothing.
 
 For Codex, `clax init` also offers, once, to approve the Clax tools that
@@ -145,6 +149,7 @@ clax comments reply <ID>#2 "Thanks"  # reply as you (- reads stdin); also resolv
 clax comments name "Alex"            # your name, in the CLI and every browser of yours
 clax versions <ID>                   # versions: label, publisher, time, threads addressed
 clax db get <ID> tasks t1            # the page database: get, list, query, set, update, delete, str-replace, batch
+clax queue create <name> --origin <ORIGIN> --write-env .env  # make a queue and its service grant; run by an agent, ask its person for one and wait
 clax queue ls --queue <QID>          # a report queue's active reports (CLAX_QUEUE sets the queue; --state all for every state)
 clax queue show <report>             # one report: context, conversation, fixes; also clip, diagnostics
 clax queue claim <report> --session <SID>  # also renew, release, reply, fix --summary …, resolve --reason …
@@ -162,6 +167,8 @@ clax agents                          # list your agents; clax agents rename <age
 clax approvals                       # list whose content reaches your agents, and what waits for you
 clax init                            # register the plugins with each harness (clax uninit removes them)
 clax bin                             # show which clax the plugins run (clax bin set <path> | --this, clax bin clear)
+clax bot surface check shell.d.ts    # check a ClaxBot surface file (.d.ts or a .json manifest); prints what a model would read
+clax bot surface convert shell.d.ts  # write it in the other notation (--to dts|json, -o <file>)
 clax haiku                           # print one of ten haiku about Clax
 ```
 
@@ -180,9 +187,9 @@ Only your own browser spends the key: the page asks you to allow it once each ti
 
 A page that declares a capability reaching past itself (the internet, Claude, Clax's controls, notifications, sharing, files, the camera or your location) gets it only once the person who answers for the artifact approves it in Clax: on your own Clax, you as its owner; on a hosted Clax, the page's maker. Never an agent or the page. When a version declares something new, or a new `net` host, the artifact's view shows an approval bar to those who may approve: Review opens a dialog naming what the version asks for and what approving lets the page do, with Approve and Not now. Until it is approved the page's `use()` resolves `null` for it and the version before keeps what was approved. The Permissions panel (More › Permissions…) lists what the page declares and what is in force, with the network hosts, the Claude grant and the reads of other artifacts' documents, each with its revoke, and a Withdraw for an approved capability. Your approval also grants the network hosts and the Claude use that waited; a hosted maker's approval leaves those to your answer the first time the page uses them. The routes are in `docs/contract.md` ("Approving capabilities").
 
-Every setting in `config.toml` can also come from the environment: `CLAX_<TABLE>__<KEY>`, a double underscore for each level (`CLAX_SERVE__PORT=7481`, `CLAX_SAMPLE__MAX_TOKENS=8000`, `CLAX_BOT__MODELS__DEFAULT=claude-opus-5-5`), which overrides the file, which overrides the defaults (`[hosted]` alone is read from the file only). An invalid table turns off only what it configures; `clax doctor` warns about it. The `[bot]` table configures ClaxBot (its provider, models, caps and credits; `docs/contract.md`, "`config.toml`"). The local daemon's `GET /api/settings` lists every setting with the value in effect and where it came from (`default`, `file` or `env:<NAME>`), and the value pending the next start when the file now differs, and `PUT /api/settings` writes the ones the file holds back into `config.toml`, keeping its comments; the owner and the admins the owner names may use either, and a change takes effect when the daemon next starts. ClaxBot runs in the daemon once a model key is set: `[bot] api_key_env` names the variable it reads the instance key from (`ANTHROPIC_API_KEY`), or an admin sets one at `/admin` (Provider); its runs, credits and audit are under `/me`, `/admin` and `/audit` (`docs/contract.md`, "ClaxBot routes"). ClaxBot speaks Anthropic's Messages API by default; `[bot] api = "openai"` (Chat Completions, as Mistral and Subconscious serve it, `base_url = "https://api.mistral.ai/v1"`) or `api = "gemini"` (`base_url = "https://generativelanguage.googleapis.com/v1beta"`) points it at another provider, as does the API picker under Provider. A model a run uses is priced, unit by unit, by its rate card (its four token lines, each at cost plus margin or at fixed credits per million tokens), else by tokenulator.dev's price catalog for the provider in effect (which the daemon fetches once a day from `[bot] price_catalog_url`, tokenulator.dev's by default; `off` turns it off), else by the instance's default rates; a price no admin set is an estimate (with "Require an explicit price" set, a model without a rate card is refused instead). Admin › Pricing shows each model's credits per million tokens and where each rate comes from, flags a rate card whose cost drifted from the catalog's, and edits, adds (by hand or from tokenulator.dev) and removes rate cards, the default rates and the catalog's refresh; the model pickers under Provider show each listed model's price, and say when one is only estimated. A `[bot]` value set in the file or the environment overrides the admin pages' one and shows read-only there.
+Every setting in `config.toml` can also come from the environment: `CLAX_<TABLE>__<KEY>`, a double underscore for each level (`CLAX_SERVE__PORT=7481`, `CLAX_SAMPLE__MAX_TOKENS=8000`, `CLAX_BOT__MODELS__DEFAULT=claude-opus-5-5`), which overrides the file, which overrides the defaults (`[hosted]` alone is read from the file only). An invalid table turns off only what it configures; `clax doctor` warns about it. The `[bot]` table configures ClaxBot (its provider, models, caps and credits; `docs/contract.md`, "`config.toml`"). The local daemon's `GET /api/settings` lists every setting with the value in effect and where it came from (`default`, `file` or `env:<NAME>`), and the value pending the next start when the file now differs, and `PUT /api/settings` writes the ones the file holds back into `config.toml`, keeping its comments; the owner and the admins the owner names may use either, and a change takes effect when the daemon next starts. ClaxBot runs in the daemon once a model key is set: `[bot] api_key_env` names the variable it reads the instance key from (`ANTHROPIC_API_KEY`), or an admin sets one in Settings, Model provider; its runs, credits and audit are in Settings (Your ClaxBot, the ClaxBot screens and the Audit log) (`docs/contract.md`, "ClaxBot routes"). ClaxBot speaks Anthropic's Messages API by default; `[bot] api = "openai"` (Chat Completions, as Mistral and Subconscious serve it, `base_url = "https://api.mistral.ai/v1"`) or `api = "gemini"` (`base_url = "https://generativelanguage.googleapis.com/v1beta"`) points it at another provider, as does the API picker under Provider. A model a run uses is priced, unit by unit, by its rate card (its four token lines, each at cost plus margin or at fixed credits per million tokens), else by tokenulator.dev's price catalog for the provider in effect (which the daemon fetches once a day from `[bot] price_catalog_url`, tokenulator.dev's by default; `off` turns it off), else by the instance's default rates; a price no admin set is an estimate (with "Require an explicit price" set, a model without a rate card is refused instead). Settings, Pricing shows each model's credits per million tokens and where each rate comes from, flags a rate card whose cost drifted from the catalog's, and edits, adds (by hand or from tokenulator.dev) and removes rate cards, the default rates and the catalog's refresh; the model pickers under Provider show each listed model's price, and say when one is only estimated. A `[bot]` value set in the file or the environment overrides the admin pages' one and shows read-only there.
 
-ClaxBot can search the web and read pages (`clax.web.search` and `clax.web.fetch`) once an admin turns either on at `/admin` (Web). Fetching needs nothing more: the daemon fetches pages itself, as `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaxBot/1.0)` (a hosted daemon adds `; +<its public origin>` before the closing parenthesis; a local one names no address of its own), resolving every name it fetches, on each redirect too, and connecting only to an address it checked is public, and converts HTML to Markdown itself, so the page goes nowhere else. Searching, and reading PDF and Office documents, need a Cloudflare account to send them through: the account ID and an API token with Workers AI Read and AI Gateway Read (check against your account), set on the same page (the token sealed like a model key, and sent only to `https://api.cloudflare.com`). Without both the page says search needs them, a search is not offered, and a PDF or Office document is refused; whatever the credentials, web use is off when the instance's public origin or site domain names no host, since the instance could not then refuse a fetch of its own hosts (the page shows the reason, `unavailable` in `GET /api/admin/web`, which also carries a Worker's finding that its AI binding cannot run where it runs); setting or clearing them takes effect at once, in runs already going too. Searches go through Cloudflare's Web Search API on the account's AI Gateway, billed to its AI Gateway credits or a provider key stored on the gateway (`byok_alias`); PDF and Office documents are converted to Markdown through Workers AI. The `[bot.web]` table sets the same settings the Web page shows, as the rest of `[bot]` does:
+ClaxBot can search the web and read pages (`clax.web.search` and `clax.web.fetch`) once an admin turns either on in Settings, Web access. Fetching needs nothing more: the daemon fetches pages itself, as `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaxBot/1.0)` (a hosted daemon adds `; +<its public origin>` before the closing parenthesis; a local one names no address of its own), resolving every name it fetches, on each redirect too, and connecting only to an address it checked is public, and converts HTML to Markdown itself, so the page goes nowhere else. Searching, and reading PDF and Office documents, need a Cloudflare account to send them through: the account ID and an API token with Workers AI Read and AI Gateway Read (check against your account), set on the same page (the token sealed like a model key, and sent only to `https://api.cloudflare.com`). Without both the page says search needs them, a search is not offered, and a PDF or Office document is refused; whatever the credentials, web use is off when the instance's public origin or site domain names no host, since the instance could not then refuse a fetch of its own hosts (the page shows the reason, `unavailable` in `GET /api/admin/web`, which also carries a Worker's finding that its AI binding cannot run where it runs); setting or clearing them takes effect at once, in runs already going too. Searches go through Cloudflare's Web Search API on the account's AI Gateway, billed to its AI Gateway credits or a provider key stored on the gateway (`byok_alias`); PDF and Office documents are converted to Markdown through Workers AI. The `[bot.web]` table sets the same settings the Web page shows, as the rest of `[bot]` does:
 
 ```toml
 [bot.web]
@@ -204,7 +211,11 @@ allowlist = []                # hosts for allowlist; "*.example.com" matches sub
 
 The per-run caps count every search and fetch that reached the source, whether or not it was charged: a failed search is free but counts, so a script cannot retry a provider that is down without end; a page read again from the run's page store neither costs nor counts. A failed web call throws a `HostError` whose `code` says why and whose `retryable` is true when the same call may succeed if made again.
 
-The account ID and token are set only at `/admin`. For tests, `CLAX_TEST_WEB_FIXTURES=<path>` in the daemon's environment answers every search and fetch from that JSON file (`{searches: {<query>: [hit]}, pages: {<url>: {status, content_type, text, links} | {redirect}}}`) instead of Cloudflare, and web use counts as configured.
+The account ID and token are set only in Settings, Web access. For tests, `CLAX_TEST_WEB_FIXTURES=<path>` in the daemon's environment answers every search and fetch from that JSON file (`{searches: {<query>: [hit]}, pages: {<url>: {status, content_type, text, links} | {redirect}}}`) instead of Cloudflare, and web use counts as configured.
+
+A host gives ClaxBot's runs operations of its own as a surface definition (`docs/superpowers/specs/2026-11-10-claxbot-surfaces-design.md`, "The surface file"), written as a `.d.ts` file, for a person, or as a JSON manifest, for a program; both say the same, and `crates/clax-surface`'s documentation gives each notation. `clax bot surface check <file>` reads one, by its name (`<name>.d.ts` or `<name>.json`), as a host's, and prints the declaration a model would read of it; `--dts` prints the definition as a `.d.ts` file again instead, as Clax writes one, and `--ops` its operations as a table (the name a script calls, access, whether it waits, whether it runs once, error codes), so an author sees what was understood. A file that is not a definition is refused on stderr with what is wrong and where, a mistake a line: `error: shell.d.ts:12: …` for a line of a file, `error: shell.json: /operations/2/params/0/schema/minimum: …` for a value of a manifest, by its JSON Pointer; the command exits with 1. A manifest's mistakes are said in its order, the first of each operation, interface and kind (a program gets every entry wrong the same way), 64 at the most, and a last line then says how many entries were not looked at; a `.d.ts` file's first is. A file that reads may get notes on stderr (`note: shell.json: …`, exit 0) for an allow pattern of a kind that matches no operation of the surface or of Clax's own: it will match only another surface's, or was written without the surface's name (`settings.*` for `shell.settings.*`); a pattern of one name with no `.` that names nothing (`windows` for `shell.windows`), and one whose first name is `clax` (Clax's operations are named without it), are refused. `--ops` lists what each kind allows after the operations. With `--json`, stdout has one object, `{"name", "notation", "operations", "kinds": [{"name", "allow"}], "notes", "text"}`, or for a file that is refused `{"file", "errors": [{"line" or "pointer", "message"}]}` and nothing on stderr; the last error has `"stopped": true` and `"unread"` when the reader stopped there. `clax bot surface convert <file>` writes the definition in the other notation (`--to dts` or `--to json` names one), on standard output or to `-o <file>`, which it replaces only with `--force` and never when it is the file being read (a file's `//` comments and layout are not part of its definition, and would be lost); it writes nothing for a file `check` refuses. What it writes is the same text for the same definition whichever notation it read. A printed `.d.ts` file names the core's types (`Int`, `Instruction`, `Content`, `Image`), which no file of Clax's declares yet: to type-check it with `tsc`, declare them beside it (`type Int = number; type Instruction = string;`, and the other two as your host is given them). `--own` reads the file as Clax's own surface (`crates/clax-bot/src/clax.d.ts`), which may be named `clax` and may charge. Both commands read the file and nothing else: no Clax home, no daemon, no network.
+
+A host registers its surface with the local daemon at run time, with the daemon's token (`docs/contract.md`, "ClaxBot surfaces"). `GET /api/bot/surfaces` (with the daemon's token, `Authorization: Bearer <token>`) shows what is registered now, in the order it was first registered: each surface's `name`, its `registration` ID, the `hash` of its definition, whether its host is `connected` (serving it now, or within the last 15 seconds), the operations `withheld` from every run and why, and when it was registered and last served. A registration whose host has not served it for about five minutes after it stopped being connected is dropped from the list, and none is held across a restart of the daemon; its host comes back by registering again with its ID, and the calls that waited for it are still there. A call of a host that is listed and not connected waits for it until the call's deadline (30 seconds, or 24 hours for an operation that waits) and is sent when it serves again; at the deadline the script is thrown `unavailable`.
 
 A new artifact needs a title: `--title`, or else the page's `<title>`. Updates keep the current title unless `--title` is given.
 
@@ -232,15 +243,55 @@ stores = { ios = "https://apps.apple.com/app/…", android = "https://play.googl
 
 `site_domain` is required for a hosted daemon to serve sites: there is no hosted default (`<ID>.localhost` is the local daemon's). The site domain is a domain of its own, neither the public host nor under it nor above it: point a wildcard DNS record (`*.clax-sites.example`) at the proxy, give it a certificate whose hosts include `*.clax-sites.example`, and have the proxy pass those hosts to the daemon too. Each artifact's page and its runtime are served on its own host, which only those its access allows can read (`crates/clax-worker/README.md`, "DNS for the public host and the site domain", describes the same on Cloudflare; `docs/hosted/public-suffix.md`, listing the domain on the Public Suffix List).
 
-Start the daemon with the secret in that variable and open `https://clax.example/setup` to make the first person, the owner; without a secret, setup stays closed. From then on people sign in through the browser: the owner invites a person on People (a link, `/join/<code>`, good for a day), a signed-in person makes a one-use, ten-minute sign-in link for another device and agent tokens for their remote agents, and the owner shares a page by link, where anyone may read it and, once they give a name, comment as a guest. Nothing is served as "this machine" in hosted mode (the owner's browser holds a token of its session's, never the daemon token), a person's rights limit their browser as they limit their agents, a page's content is served only on its artifact's own host under `site_domain`, to those its access allows, setup, sign-in codes and guest names are rate-limited per client address, sign-ins and sign-outs are in the audit journal, and a bad `[hosted]` table stops the daemon from starting. Client addresses are the connection's peer unless `behind_cloudflare` is set: behind a proxy on the same machine every client is the proxy's loopback address, so they share one address's limits and its 128 streams and sockets, and the daemon logs a warning the first time it sees such a request. The Chrome extension works only with a local daemon, never a hosted one, and a hosted daemon shows live pages only to the owner (their browser and the daemon token). With Terms of Service and a Privacy Policy set, the sign-in, join and setup pages say that signing in agrees to them, each such sign-in records the person's agreement to `legal_version`, a signed-in person who has not agreed to it is asked once, and the gallery, People and the artifact view's more menu link both; without them, nothing is shown or asked. `legal = "bundled"` serves `docs/legal`'s documents at `/terms` and `/privacy`: they are Empathic's, for the service it operates.
+Start the daemon with the secret in that variable and open `https://clax.example/setup` to make the first person, the owner; without a secret, setup stays closed. From then on people sign in through the browser: the owner invites a person in Settings, People (a link, `/join/<code>`, good for a day), a signed-in person makes a one-use, ten-minute sign-in link for another device and agent tokens for their remote agents, and the owner shares a page by link, where anyone may read it and, once they give a name, comment as a guest. Nothing is served as "this machine" in hosted mode (the owner's browser holds a token of its session's, never the daemon token), a person's rights limit their browser as they limit their agents, a page's content is served only on its artifact's own host under `site_domain`, to those its access allows, setup, sign-in codes and guest names are rate-limited per client address, sign-ins and sign-outs are in the audit journal, and a bad `[hosted]` table stops the daemon from starting. Client addresses are the connection's peer unless `behind_cloudflare` is set: behind a proxy on the same machine every client is the proxy's loopback address, so they share one address's limits and its 128 streams and sockets, and the daemon logs a warning the first time it sees such a request. The Chrome extension works only with a local daemon, never a hosted one, and a hosted daemon shows live pages only to the owner (their browser and the daemon token). With Terms of Service and a Privacy Policy set, the sign-in, join and setup pages say that signing in agrees to them, each such sign-in records the person's agreement to `legal_version`, a signed-in person who has not agreed to it is asked once, and the gallery, People and the artifact view's more menu link both; without them, nothing is shown or asked. `legal = "bundled"` serves `docs/legal`'s documents at `/terms` and `/privacy`: they are Empathic's, for the service it operates.
 
-An agent connects to a hosted Clax (clax.dev among them) as its person, with an agent token: on People, Agent tokens, Create token shows the token once, with the lines that add it to Claude Code (`claude mcp add --transport http clax <MCP URL> --header "Authorization: Bearer <token>"`), to Codex (an `[mcp_servers.clax]` table for `~/.codex/config.toml`) and to Grok Build (`grok mcp add --transport http clax_hosted <MCP URL> --header "Authorization: Bearer <token>"`; the name `clax_hosted` keeps it apart from the plugins' `clax` and `clax_grok` servers). Pi has no built-in MCP support, so its extension cannot take a token: it works with a Clax on your machine (or one it is connected to with `clax connect`), and that Clax publishes to clax.dev (Publishing to a public Clax, below). The plugins are for a Clax on your machine; with a token alone, an agent gets the tools without the `clax` skill or the plugin's hooks.
+A hosted Clax counts visits to each artifact's site (site analytics): every page load reports one page view to the site itself, never to another host, and nothing is counted on a Clax on your machine. Whoever administers an artifact reads its numbers in the artifact view's More › Analytics…: daily visitors, page views, median load time, a chart of visits per day marked where each version was published, and the pages, referring sites, countries, devices and versions viewed, over 7 days, 30 days, 90 days or 13 months of UTC days. A visitor is counted at most once a day by a hash that changes daily; no address, cookie or User-Agent is kept, and a browser that sends Global Privacy Control is not counted. The panel's Stop counting visits turns it off for that artifact at once, keeping what was counted (Count visits turns it on again); totals are kept 13 months. The routes and what is counted are in `docs/contract.md` ("Security model", Site analytics).
+
+An agent connects to a hosted Clax (clax.dev among them) as its person, with an agent token: in Settings, Agents & machines, under Agent tokens, Create token shows the token once, with the lines that add it to Claude Code (`claude mcp add --transport http clax <MCP URL> --header "Authorization: Bearer <token>"`), to Codex (an `[mcp_servers.clax]` table for `~/.codex/config.toml`) and to Grok Build (`grok mcp add --transport http clax_hosted <MCP URL> --header "Authorization: Bearer <token>"`; the name `clax_hosted` keeps it apart from the plugins' `clax` and `clax_grok` servers). Pi has no built-in MCP support, so its extension cannot take a token: it works with a Clax on your machine (or one it is connected to with `clax connect`), and that Clax publishes to clax.dev (Publishing to a public Clax, below). The plugins are for a Clax on your machine; with a token alone, an agent gets the tools without the `clax` skill or the plugin's hooks.
 
 A new person's gallery on a hosted Clax starts with the Clax Quickstart, a pinned page of theirs that walks from sign-in to a first comment round trip. The site seeds it at the person's first sign-in (GitHub or a sign-in link) or when they accept an invite, into a gallery that never held an artifact. A local home is not seeded: its gallery starts empty, and a quickstart an earlier build seeded there stays. While nobody has touched a quickstart, each later sign-in (on a hosted Clax) and each start (for one a local home holds) moves it to the release this Clax ships, as a new version labelled `Quickstart <release>`; the first comment thread on it, a version or a change of its capabilities by anyone else, or an approval or withdrawal by a person stops its updates for good. `[gallery] quickstart = false` in `config.toml` (or `CLAX_GALLERY__QUICKSTART=false`) turns seeding and updates off.
 
-The same page is a hosted Clax's landing page: a visitor who is not signed in and opens the site's root (`https://clax.dev/`) is sent to `/start/`, where the site shows the shell's minimal chrome (its header, with Sign in, or Your gallery once signed in; no threads or comments) around the quickstart this release carries, served as it ships at `/start/index.html`. Its Sign in with GitHub signs in on that site, in the same window. The page's reel (`/start/reel.mp4` and `reel-poster.jpg`) is served from wherever the Worker's `REEL_URL` and `REEL_POSTER_URL` name: Cloudflare Stream on clax.dev, the dev server itself under `just clax-dev-local`; without them the page shows no player. The quickstart seeded into a person's gallery plays the same reel: its site sends a request for `reel.mp4` or `reel-poster.jpg`, which the shipped copy does not carry, to the same place. The gallery's other pages (`/inbox`, `/people`, …) still send such a visitor to `/signin`. A build without the quickstart, or a daemon with `[gallery] quickstart = false`, has no landing page: the root sends a signed-out visitor to `/signin`, and `/start/` is 404.
+The same page is a hosted Clax's landing page: a visitor who is not signed in and opens the site's root (`https://clax.dev/`) is sent to `/start/`, where the site shows the shell's minimal chrome (its header, with Sign in, or Your gallery once signed in; no threads or comments) around the quickstart this release carries, served as it ships at `/start/index.html`. Its Sign in with GitHub signs in on that site, in the same window. The page's reel (`/start/reel.mp4` and `reel-poster.jpg`) is served from wherever the Worker's `REEL_URL` and `REEL_POSTER_URL` name: Cloudflare Stream on clax.dev, the dev server itself under `just clax-dev-local`; without them the page shows no player. The quickstart seeded into a person's gallery plays the same reel: its site sends a request for `reel.mp4` or `reel-poster.jpg`, which the shipped copy does not carry, to the same place. The gallery's other pages (`/inbox`, `/settings`, …) still send such a visitor to `/signin`. A build without the quickstart, or a daemon with `[gallery] quickstart = false`, has no landing page: the root sends a signed-out visitor to `/signin`, and `/start/` is 404.
 
 `app_links` and `stores` concern the Clax app, and every key is optional. `apple_team_id` (10 uppercase letters and digits, the team that signs the app) serves `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`; `android_package` and `android_sha256` (the signing certificate's SHA-256 fingerprint, 32 hex bytes joined by `:`), given together, serve `/.well-known/assetlinks.json`. With them, a Get in Clax link (`/a/<id>/get`) opens in the Clax app on iPhone, iPad and Android; without them those files are 404 and the link opens the get page in the browser. `stores.ios` and `stores.android`, `https://` URLs, are offered on that page to someone without the app. App links work only for the domains the app's build declares, clax.dev alone; any other hosted Clax's get page offers Open in Clax (`clax:get?url=…`, on every platform) and Download .clax. The Cloudflare Worker reads the same settings from `APPLE_TEAM_ID`, `ANDROID_PACKAGE`, `ANDROID_SHA256`, `IOS_STORE_URL` and `ANDROID_STORE_URL` (`crates/clax-worker/README.md`).
+
+### Settings
+
+The gear at the end of the gallery's header opens Settings (`/settings`):
+everything you set about yourself here and, for the owner and admins,
+about this Clax. It shows the owner and connected people; each sees only
+the screens that are theirs.
+
+| Group | Screen | What is on it |
+|---|---|---|
+| You | Account | Who this browser is signed in as, sign-in links for your other devices, your devices, signing out (a hosted Clax) |
+| | Agents & machines | Your agents and the machines they run on, what each may do, who reaches them, and, on a hosted Clax, your agent tokens |
+| | Shared links | The pages shared by link and what each link allows (a hosted Clax) |
+| | Your ClaxBot | Your credits this week, your own model key, web access, your runs |
+| | Confirmations | Whether confirming takes a passkey, and your passkeys (a Clax on your machine) |
+| People | People | The owner's: invites, connection requests, guests, each person's rights, machines and agents, revoked people |
+| | Roles & ClaxBot access | Admins', with ClaxBot: who is an admin, who may use ClaxBot, weekly credits |
+| ClaxBot | Model provider, Web access, Pricing, Usage | Admins', with ClaxBot |
+| System | Configuration | `config.toml`, field by field (a Clax on your machine) |
+| | Remotes | The instances you answered Never for (a Clax on your machine) |
+| | Audit log | What happened here, newest first |
+
+On a hosted Clax, **Sign out** ends Settings' navigation and its overview,
+on every screen; nothing else in the header signs you out.
+
+Each screen has its own address (`/settings/<screen>`, such as
+`/settings/people`), and a section of one its own (`/settings/agents#ht-h`
+is Agent tokens). The pages these screens were before, `/people`, `/admin`
+(with its `?tab=`), `/me` and `/audit`, go to them.
+
+**Search.** `/settings` leads with a search over every screen and what is
+on it, by title and by the words people look for ("api key" finds Agent
+tokens); a result says where it is and opens at its section. **Cmd+K**
+(Ctrl+K) opens the same search over any page of the gallery, listing every
+screen before you type, so it also takes you anywhere in Settings by
+name: arrow keys move, Enter opens, Escape closes. It also finds what
+lives on the Queues and Tags pages (a queue's members and service grants,
+managing tags).
 
 ### People
 
@@ -249,7 +300,7 @@ agents. Use a trusted LAN: Clax traffic is not encrypted, so anyone on the
 network can read pages and comments as they travel, and a sniffed browser
 cookie acts as its person in the browser.
 
-- **Inviting.** Serve on the LAN, open People (`/people`) in your browser
+- **Inviting.** Serve on the LAN, open Settings, People (`/settings/people`) in your browser
   and choose **Invite a person**. Give them the command it shows, `clax
   connect http://<your LAN address>:<port>/i/<code>`: it works once, within
   24 hours. They run it on their machine, with Clax installed. An invite
@@ -310,7 +361,7 @@ clax remote remove clax.example        # forget it, revoking its token there
 `clax remote add` asks the public Clax for a sign-in naming this machine,
 prints a code and opens its approval page. Signed in there as the person to
 publish as, check the code and approve: this Clax receives an agent token of
-yours, which your People page there lists (named `Clax on <host name>`) and
+yours, which Settings, Agents & machines there lists (named `Clax on <host name>`) and
 revokes. Codes last ten minutes and work once.
 
 An agent cannot add a remote (`clax remote add` under a harness answers
@@ -360,7 +411,7 @@ name, and anything that would change a page there (`publish`, `db_*`,
 appears there by its name, so a person there can send it a thread, and
 what they send reaches it here as a local comment does (`wait_for_feedback`,
 the `follow_command` the watch answers, channel notifications). Revoking
-this machine's token on your People page there signs it out; the next
+this machine's token in Settings, Agents & machines there signs it out; the next
 call answers `remote_sign_in_required` again.
 
 Nothing of this needs the other instance to be on the internet: one on
@@ -413,12 +464,12 @@ to a public Clax", **Apps from the Clax app**) has the details.
 - **Connect.** Settings › Sharing › clax.dev › Connect (it also starts the
   first time you choose Publish to clax.dev… or Get my apps). The app
   shows a code and opens the approval page; signed in there, check the
-  code and approve. The app is then a device of yours there: People lists
+  code and approve. The app is then a device of yours there: Settings, Account lists
   it under Devices, where you can revoke it, and it may also change who can
   see your pages and whether anyone may comment on them. Disconnect
   forgets clax.dev here and asks it to revoke the device; when clax.dev
   can't be reached, the app is disconnected all the same and the device
-  stays listed there, under People › Devices, until you revoke it there.
+  stays listed there, under Settings, Account, Devices, until you revoke it there.
   Your public copies stay up.
 - **Publish.** Publish to clax.dev… on an app's long-press menu, or on its
   Overview. The first publish shows what goes up (the version, its files)
@@ -473,7 +524,7 @@ published from the app, is not an app: its get page says so.
 
 ## Use from an agent
 
-Each harness gets the same forty-two tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
+Each harness gets the same forty-three tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch`, `queue_request`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
 
 The plugins run `CLAX_BIN`, else the `bin` setting, else the release they
 pin (see "Which clax the plugins run"). `status` and `clax doctor --agent`
@@ -543,11 +594,11 @@ test daemon, for integration tests only) and `clax-fake-exe`. Beside
 Worker's event loop on wasm32) and `clax-git` (git objects, packs and smart
 HTTP, without I/O), with `clax-content-git` (artifact content kept in git)
 over both; `clax-bot-sandbox` (the contract of ClaxBot's code-mode
-sandbox and the conformance suite every sandbox passes, for both targets)
-depends on no workspace crate, and `clax-bot-js` (the native sandbox, over
-embedded QuickJS) on it alone; `clax-bot` (ClaxBot's run loop: the
+sandbox and the conformance suite every sandbox passes, for both targets) and `clax-surface` (ClaxBot surface definitions: their model, the readers of the `.d.ts` and manifest notations, checks and printers, for both targets)
+depend on no workspace crate (`clax-commands` reads surface definitions through `clax-surface`, for `clax bot surface`), and `clax-bot-js` (the native sandbox, over
+embedded QuickJS) on `clax-bot-sandbox` alone; `clax-bot` (ClaxBot's run loop: the
 `clax` script API, prompts, the step state machine and its driver) sits
-over `clax-store`, `clax-sample` and `clax-bot-sandbox`, `clax-http` over
+over `clax-store`, `clax-sample`, `clax-bot-sandbox` and `clax-surface`, `clax-http` over
 it, and `clax-server` over `clax-bot-js` too, an optional dependency
 behind its default `native-sandbox` feature (without it, as in the
 crates.io package, scripts answer `unavailable`); the hosted Worker,
@@ -613,9 +664,9 @@ just dev claude --resume  # extra arguments go to the harness
   try plugin, skill or hook changes in Grok, run `just install`.
 
 **A second person: `scripts/dev-second-person.sh <invite>`.** To try People
-(`/people`) and the other multi-person surfaces alone, run the dev daemon on
+(`/settings/people`) and the other multi-person surfaces alone, run the dev daemon on
 the LAN (`just watch --bind 0.0.0.0`), open People as the owner
-(http://localhost:7481/people), choose **Invite a person**, and pass the
+(http://localhost:7481/settings/people), choose **Invite a person**, and pass the
 command's invite URL to the script. It connects a scratch Clax home (never
 `~/.clax` or the dev home) as that person's machine, prints the browser link
 that makes a browser that person (open it at the LAN address: there the
@@ -661,6 +712,75 @@ uninstall` takes it away again.
 - `just perf` runs the perf benchmarks. Performance is measured on demand
   and gates nothing: no check runs them, and they report a measure over its
   budget without failing.
+- `just smoke-bot-surfaces` (`scripts/smoke-bot-surfaces.sh`, about a
+  minute, gating nothing) runs the ClaxBot surfaces protocol between a
+  real `clax serve` and `fake_host` processes, across a restart of the
+  daemon: run it after changing the protocol's routes, its hub or
+  `fake_host`.
+
+Tests wait on conditions, never on time: no sleep stands in for a
+condition, no wall-clock budget decides a result, and timed rules run on
+an injected clock (a hang guard such as `clax_testkit::HANG`, `HANG_MS`,
+`WAIT_MS` or Dart's `stuckAfter` only ends a test that is stuck). The
+languages' linters hold the rule in test code (product code keeps real
+time where it is the contract, and is never flagged), each with its own
+narrow exemption, which names why real time is the contract at that one
+site:
+
+- Rust: clippy's `disallowed-methods` in `clippy.toml` refuse real time
+  (sleeps, intervals, timeouts, `Instant::now`, `SystemTime::now`,
+  chrono's `now`, `recv_timeout`) in test code: a test bounds a wait with
+  `clax_testkit::{within, recv_within, until}` and moves time with
+  tokio's paused clock or a manual clock the code under test already
+  takes (`ManualSleeper`, `ManualClock`).
+  `--config=clippy` (and the native runs) allow the lint on the command
+  line, so product code is never flagged; test code turns it back on
+  with `#[warn(clippy::disallowed_methods)]` on each `#[cfg(test)]`
+  module and function and `#![warn(clippy::disallowed_methods)]` at each
+  test crate root (`tests/`, `benches/`, clax-testkit, clax-fake-exe),
+  which `//scripts:rust_test_timing` checks, and `-D warnings` makes a
+  finding an error. Exemption:
+  `#[expect(clippy::disallowed_methods, reason = "…")]` on the one
+  function (the HANG helpers, a test-support wait on a real process); in
+  clax-commands, linted again alone with a clippy.toml of its own (its
+  disallowed methods turned back on everywhere, without the timing
+  rules), an `#[allow]`.
+- TypeScript and JavaScript: oxlint, with the in-repo plugin
+  `web/lint/timing.mjs` (`clax-timing/*`) and the built-in
+  `no-restricted-properties` for `waitForTimeout`, configured for test
+  files only in `web/lint/timing.json` and run by `//web:lint` over web's,
+  Pi's, the home app's and the Worker's tests: timers with a delay outside
+  fake timers, literal timeouts that are no named hang guard (`timeout: 0`
+  is one), clock differences that decide something, disabled tests and
+  counted turns. Exemption: `// oxlint-disable-next-line
+  clax-timing/<rule> -- <why>`.
+- Dart: `//apps/clax_app/timing_lint:test_timing` reads the app's
+  `test/` and `integration_test/` with package:analyzer's parser (an
+  analyzer plugin would need pub at analysis time, which Bazel's sandbox
+  does not give): `sleep`, real `Future.delayed` and `pump(d)` (inside
+  `runAsync`, or anywhere in `integration_test/`), `DateTime.now()` and
+  `Stopwatch` outside a `Clock`, literal timeouts below `stuckAfter`, and
+  counted loops of event-loop turns. Exemption: `// ignore:
+  timing_<rule> -- <why>` on the line or the line before.
+- Shell: no linter reads it, so `scripts/check-test-timing.sh`
+  (`//scripts:test_timing`) refuses a foreground `sleep <delay>`,
+  Python's `time.sleep(`, and a comparison that judges a clock reading
+  (`time.time()`, `time.monotonic()`, `Date.now()`, `date +%s`,
+  `$SECONDS`, or a name computed from one: a budget, or a deadline ending
+  a wait) in the scripts every sh_test in `scripts/BUILD.bazel` runs and
+  in `scripts/test-*.sh`, `scripts/*.test.sh`, `scripts/fake-*`,
+  `scripts/smoke-*.sh` and `scripts/*-smoke.sh`, with the Python and Node
+  they embed (not the perf benchmarks, which measure and gate nothing); a
+  test uses `scripts/lib/wait.sh`'s `wait_for` (in Python, a poll bounded
+  by a count), asserts the outcome rather than its duration, and a hang
+  is a process that never ends by itself (`exec sleep`, `sleep N &`),
+  killed by its PID. Exemption: `# timing: <why>`.
+
+An exemption without a reason, or one with nothing left to exempt, is a
+finding too (but oxlint's timing run, and clax-commands' `#[allow]`s,
+cannot tell a stale one). Every rule is binding: a finding fails the
+ordinary gate (`--config=clippy`, `//web:lint`,
+`//apps/clax_app/timing_lint:test_timing`, `//scripts:test_timing`).
 
 Each crate's integration tests are one test binary, `tests/integration.rs`, with
 a module per file in `tests/`; the few that must not share a process with
@@ -1527,8 +1647,11 @@ staging; merging it releases it. The only local step is cutting it.
 
 ### The runbook
 
-1. **Cut** the release pull request, from any branch with a clean
-   checkout:
+1. **Cut** the release pull request, from a checkout on `main` at
+   `origin/main`'s commit (preflight refuses any other branch, a detached
+   HEAD, and a `main` behind or ahead of origin's; a run that only says
+   where a release is, its pull request open or merged, runs from
+   anywhere):
 
    ```
    just release 0.6.0                              # a dry run: the checks, and every step with whether it is done
@@ -1569,10 +1692,12 @@ staging; merging it releases it. The only local step is cutting it.
      the merge commit (a run again), nothing is uploaded
      (`--unless-live`): only the checks and the smoke run.
    - **publish:** the tag `v<version>` on the merge commit and the GitHub
-     release, from the candidate's files.
+     release, from the candidate's files, as a draft (a published release
+     is immutable, so every asset is on it first).
    - **fleet:** `fleet-image.yml`, run on the tag and waited for (a tag
      made with a workflow's token starts no workflow): the `clax-fleet`
-     image of the version, and `clax-fleet.yaml` on the release.
+     image of the version, and `clax-fleet.yaml` on the draft.
+   - **release:** publishes the draft, once it holds `clax-fleet.yaml`.
    - **carry:** as the release GitHub App, `scripts/carry-release.sh`
      merges `prod`'s merge commit into `main`'s tip (all that `prod` has
      and `main` lacks: the release branch's own commits, and those of an

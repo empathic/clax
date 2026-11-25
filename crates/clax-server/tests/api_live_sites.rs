@@ -448,16 +448,16 @@ async fn answers_keep_a_pair_from_being_suggested() {
 }
 
 #[tokio::test]
-async fn joins_are_refused_for_the_daemons_own_origin_unknown_sites_and_one_origin() {
+async fn joins_are_refused_for_unknown_sites_and_one_origin() {
     let ts = TestServer::spawn().await;
     let v = ts.viewer(Some("Ana")).await;
     comment(&ts, &v.cookie, &format!("{A}/"), "App").await;
     let own = ts.base.clone();
     let code = |v: &Value| v["error"]["code"].as_str().unwrap_or("").to_string();
-    let (st, e) = join(&ts, &own, A).await;
-    assert_eq!((st, code(&e)), (400, "own_origin".into()));
+    // The daemon's own origin is an origin like any other: with no live
+    // pages it is no site to join.
     let (st, e) = join(&ts, A, &own).await;
-    assert_eq!((st, code(&e)), (400, "own_origin".into()));
+    assert_eq!((st, code(&e)), (400, "unknown_site".into()));
     let (st, e) = join(&ts, B, "http://localhost:9").await;
     assert_eq!((st, code(&e)), (400, "unknown_site".into()));
     let (st, e) = join(&ts, A, A).await;

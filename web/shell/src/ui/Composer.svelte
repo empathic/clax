@@ -11,8 +11,10 @@
   import { nextFrame } from "../view/after-paint";
   import { guardedAction } from "../view/trail";
 
-  type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void; onDropped?(): void; send?: boolean };
-  let { draft, onCancel, onSubmit, onText, onFocused, onDropped, send }: Props = $props();
+  // `inline`: a failed post says why in the composer's own status line, in
+  // the words `inline` gives for its error.
+  type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void; onDropped?(): void; send?: boolean; inline?(e: unknown): string };
+  let { draft, onCancel, onSubmit, onText, onFocused, onDropped, send, inline }: Props = $props();
   const uid = $props.id();
   let body = $state("");
   let busy = $state(false);
@@ -46,13 +48,17 @@
   // Set before the first await, so a second Post or shortcut in the same
   // turn cannot post twice.
   let posting = false;
+  // Why the last post failed, said in the status line with `inline`.
+  let failed: string | null = $state(null);
   async function post() {
     if (!canPost || posting) return;
     posting = true;
     busy = true;
-    // `onSubmit` reports a failure in the stage's notice banner and rethrows;
-    // the draft stays so the viewer can retry.
-    try { await onSubmit(body); } catch { posting = false; busy = false; }
+    failed = null;
+    // `onSubmit` rethrows a failure, which the stage's notice banner shows
+    // or, with `inline`, the composer's own status line; the draft stays so
+    // the viewer can retry.
+    try { await onSubmit(body); } catch (e) { posting = false; busy = false; if (inline) failed = inline(e); }
   }
 
   // Post (a click, Enter on it, or the shortcut) while the screenshot is
@@ -129,5 +135,5 @@
     <button type="submit" class="primary" onclick={e => { if (!guard(e, () => {})) e.preventDefault(); }} title={draft.capturing ? "Posts once the screenshot is taken" : `${send ? "Send" : "Post comment"} (${submitKeysLabel()})`} disabled={busy || !body.trim()}
       aria-disabled={draft.capturing ? "true" : undefined} aria-describedby={draft.capturing && !clipUrl ? `${uid}-status` : undefined}>{send ? "Send" : "Post comment"}</button>
   </div>
-  <p class="act-hint" role="status">{hint ?? ""}</p>
+  <p class="act-hint" class:act-failed={!hint && !!failed} role="status">{hint ?? failed ?? ""}</p>
 </form>

@@ -286,6 +286,12 @@ need!(ToolCallIdReport, None, Own, DEFAULT_LIMIT);
 // rights decide each (its triage members and their agents); the right
 // below is held somewhere, as a path without an artifact asks.
 need!(QueuesList, None, Own, DEFAULT_LIMIT);
+// Queue requests (`clax_store::queue_requests`): any agent may ask its
+// person for a queue and read its own request's answer; no right is
+// checked, as none makes a queue.
+need!(QueueRequestAsk, None, Own, DEFAULT_LIMIT);
+need!(QueueRequestGet, None, Own, DEFAULT_LIMIT);
+need!(QueueRequestTake, None, Own, DEFAULT_LIMIT);
 need!(QueueReportsList, Comments, "read", Own, DEFAULT_LIMIT);
 need!(QueueWatch, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(QueueUnwatch, Comments, "watch", Own, DEFAULT_LIMIT);
@@ -522,6 +528,13 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ),
     ("POST", "/api/sessions/{id}/terminal", SessionTerminal::INFO),
     ("GET", "/api/queues", QueuesList::INFO),
+    ("POST", "/api/queue-requests", QueueRequestAsk::INFO),
+    ("GET", "/api/queue-requests/{id}", QueueRequestGet::INFO),
+    (
+        "POST",
+        "/api/queue-requests/{id}/take",
+        QueueRequestTake::INFO,
+    ),
     ("GET", "/api/queues/{qid}/reports", QueueReportsList::INFO),
     ("POST", "/api/queues/{qid}/watch", QueueWatch::INFO),
     ("DELETE", "/api/queues/{qid}/watch", QueueUnwatch::INFO),
@@ -678,6 +691,9 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("surface::where_to_ask", SessionWhereToAsk),
     route_need!("surface::terminal", SessionTerminal),
     route_need!("queues::list", QueuesList),
+    route_need!("queue_requests::ask", QueueRequestAsk),
+    route_need!("queue_requests::get", QueueRequestGet),
+    route_need!("queue_requests::take", QueueRequestTake),
     route_need!("queue_agent::list", QueueReportsList),
     route_need!("queue_agent::watch", QueueWatch),
     route_need!("queue_agent::unwatch", QueueUnwatch),
@@ -1995,6 +2011,37 @@ fn check_head(s: &AppState, parts: &Parts) -> Result<GrantHead, Refusal> {
 #[derive(Clone, Debug)]
 pub struct BearerGrant {
     pub grant_id: String,
+    /// The grant's scope ([`clax_store::queue_requests::QUEUE_REQUEST_SCOPE`]),
+    /// for a grant that may reach [`SCOPED_ROUTES`] alone.
+    pub scope: Option<String>,
+}
+
+/// The routes an agent token of a scoped grant reaches, by method and
+/// route pattern, beside the remote MCP endpoint (whose tools' requests
+/// come back through this layer, each checked here) and
+/// [`crate::hosted::SELF_REVOKE_PATH`]: asking for a queue, reading
+/// that request and taking its answer, and the session routes the MCP endpoint registers and
+/// keeps its session by. Every other route refuses it 403 `forbidden`.
+pub const SCOPED_ROUTES: &[(&str, &str)] = &[
+    ("POST", "/api/queue-requests"),
+    ("GET", "/api/queue-requests/{id}"),
+    ("POST", "/api/queue-requests/{id}/take"),
+    ("POST", "/api/sessions"),
+    ("GET", "/api/sessions/{id}"),
+    ("PATCH", "/api/sessions/{id}"),
+];
+
+/// Whether `method` at route pattern `matched` is one of
+/// [`SCOPED_ROUTES`] (`HEAD` as `GET`).
+pub fn scoped_route(method: &Method, matched: &str) -> bool {
+    let m = if method == Method::HEAD {
+        "GET"
+    } else {
+        method.as_str()
+    };
+    SCOPED_ROUTES
+        .iter()
+        .any(|(rm, rp)| *rm == m && *rp == matched)
 }
 
 /// The routes a person's own device reaches with its agent token, by
@@ -2059,9 +2106,11 @@ async fn bearer_head(s: &AppState, headers: &HeaderMap) -> Result<BearerGrant, R
         .filter(|_| s.hosted.is_some())
         .ok_or_else(grant_auth::invalid_token)?
         .to_string();
-    let found = s.store_call(move |st| st.bearer_grant(&token)).await?;
-    let grant_id = found.ok_or_else(grant_auth::invalid_token)?;
-    Ok(BearerGrant { grant_id })
+    let found = s
+        .store_call(move |st| st.bearer_grant_scoped(&token))
+        .await?;
+    let (grant_id, scope) = found.ok_or_else(grant_auth::invalid_token)?;
+    Ok(BearerGrant { grant_id, scope })
 }
 
 /// Whether a request has no body: no or a zero `Content-Length`, and no
@@ -2282,6 +2331,7 @@ fn bearer_key(grant_id: &str) -> [u8; 32] {
 /// [`VerifiedGrant`] (which its audit rows name), its body read within
 /// [`PERSON_DEVICE_BODY_LIMIT`];
 /// any other token is refused there as on every route outside a grant's.
+/// A scoped grant's token reaches [`SCOPED_ROUTES`] alone beside those two.
 async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Next) -> Response {
     let matched = req.extensions().get::<MatchedPath>().map(|m| m.as_str());
     let self_revoke =
@@ -2299,6 +2349,9 @@ async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Nex
         // The handler reads no body.
         req.extensions_mut().insert(b);
         return next.run(req).await;
+    }
+    if b.scope.is_some() && !matched.is_some_and(|m| scoped_route(req.method(), m)) {
+        return crate::auth::grants_refused().into_response();
     }
     if matched.is_some_and(|m| person_device_route(req.method(), m)) {
         let gid = b.grant_id.clone();
@@ -2410,6 +2463,7 @@ pub async fn test_caller(_d: DeniedToGrants, caller: Caller) -> axum::Json<serde
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -2505,7 +2559,7 @@ mod tests {
         let waiting = tokio::spawn(async move { g.reserve(1).await.err().map(|e| e.code) });
         gate.wait_until(
             |s| s.queued == 1 && s.budget_waiting == 1,
-            Duration::from_secs(5),
+            crate::test_util::HANG,
         )
         .await
         .expect("both waiting");
@@ -2548,16 +2602,18 @@ mod tests {
                 .err()
                 .map(|e| e.code)
         });
-        gate.wait_until(|s| s.queued == 1, Duration::from_secs(5))
+        gate.wait_until(|s| s.queued == 1, crate::test_util::HANG)
             .await
             .expect("queued for the key's permit");
         timer.advance(read_deadline(limit) - Duration::from_secs(1));
         tokio::task::yield_now().await;
         assert!(!read.is_finished());
         timer.advance(Duration::from_secs(1));
-        let got = tokio::time::timeout(Duration::from_secs(5), read)
-            .await
-            .expect("the read ends at its deadline, not after the queue's 30 s");
+        let got = crate::test_util::within(
+            "the read's end at its deadline, not after the queue's 30 s",
+            read,
+        )
+        .await;
         assert_eq!(got.unwrap(), Some("timeout"));
         drop(held);
         gate.wait_until(
@@ -2567,7 +2623,7 @@ mod tests {
                     ..GateState::default()
                 }
             },
-            Duration::from_secs(5),
+            crate::test_util::HANG,
         )
         .await
         .expect("everything released");

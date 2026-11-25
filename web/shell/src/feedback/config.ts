@@ -47,3 +47,9 @@ export function configOnce(): Promise<unknown> {
   return (asked ??= askConfig());
 }
 
+/** Takes the route's answer the page already holds (the gallery's
+ * bootstrap block), so `configOnce` asks nothing. A page that asked already keeps that answer. */
+export function seedConfig(body: unknown): void {
+  asked ??= Promise.resolve(body);
+}
+

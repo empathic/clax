@@ -14,12 +14,15 @@
   import PasskeyList from "./PasskeyList.svelte";
   import PasskeySetup from "./PasskeySetup.svelte";
   import Switch from "../bot/Switch.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   let { now }: { now?: Date } = $props();
   let s = $state<PasskeySettings | null>(null);
   let busy = $state(false);
   let err = $state<string | null>(null);
-  void passkeySettings(true).then(x => { s = x; });
+  // Shown in Settings, the screen waits for the passkey settings.
+  const release = holdReveal();
+  void passkeySettings(true).then(x => { s = x; }).finally(release);
   const why = $derived(s ? (s.available ? unavailableHere() : s.unavailable_reason) : null);
   const disabled = $derived(!!why || !s?.passkeys.length);
 

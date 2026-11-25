@@ -1137,6 +1137,10 @@ impl clax_http::bot::Runs for DriverRuns {
     fn cancelled(&self, run: &str) {
         self.0.cancel(run);
     }
+
+    fn messaged(&self, run: &str) {
+        self.0.messaged(run);
+    }
 }
 
 /// The driver of a daemon on `state` (native): its deps over the server's
@@ -1182,11 +1186,27 @@ pub fn driver_with_web(
         Arc::new(clax_http::bot::Settings {
             store: state.store.clone(),
             enabled: bot.enabled,
+            model_takes_images: state
+                .settings
+                .running
+                .as_ref()
+                .and_then(|cfg| cfg.bot().ok())
+                .is_some_and(|b| b.model_takes_images),
         }),
         bot.keys(),
         Arc::new(StoreClock(state.store.clone())),
     )
     .with_web(web);
+    // A run bound to a surface a host registered calls its host through
+    // the daemon's broker, which the host's routes serve
+    // (`clax_http::bot_surfaces`).
+    let mut deps = deps;
+    let broker: Arc<dyn clax_bot::broker::CallBroker> = state.bot_surfaces.broker().clone();
+    deps.providers
+        .set_resolver(Arc::new(clax_bot::outside::Registrations::new(
+            broker,
+            deps.policy.clone(),
+        )));
     let driver = Arc::new(clax_bot::Driver::new(
         clax_store::bot_runs::DriverId::mint(),
         Arc::new(deps),
@@ -1218,6 +1238,14 @@ pub fn driver_with_web(
         },
         web_check: bot.web_check.clone(),
         admin_web_check: bot.admin_web_check.clone(),
+        // The runs it drives bind the surfaces whose hosts joined their
+        // artifact and are connected (`crate::routes::bot_joins`). A
+        // hosted daemon has no host route, so it keeps no join and reads
+        // none.
+        joins: state.hosted.is_none().then(|| {
+            let hub: Arc<dyn clax_http::bot_joins::JoinedSurfaces> = state.bot_surfaces.clone();
+            hub
+        }),
     });
     driver
 }

@@ -958,9 +958,70 @@ impl Store {
             Ok(out)
         })
     }
+
+    /// Up to `limit` of the people who may join a queue: the owner and
+    /// every connected, unrevoked person, whose name contains `q` (as
+    /// [`Store::search_viewers`] matches it) or whose public ID is `q`,
+    /// the owner first, then by name and public ID, each with the avatar
+    /// of the GitHub account linked to them, if any. Reads at most
+    /// [`MAX_SEARCH_SCAN`] people.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn search_people(&self, q: &str, limit: usize) -> Result<Vec<PersonMatch>> {
+        let needle = q.trim().to_lowercase();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT v.public_id, v.display_name, v.owner,
+                        (SELECT gi.avatar_url FROM github_identities gi
+                          WHERE gi.viewer_id = v.id AND gi.blocked_at IS NULL)
+                 FROM viewers v
+                 WHERE v.owner = 1 OR (v.person = 1 AND v.person_revoked_at IS NULL)
+                 ORDER BY v.owner DESC, v.display_name COLLATE NOCASE, v.public_id",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(PersonMatch {
+                    public_id: r.get(0)?,
+                    name: r.get(1)?,
+                    owner: r.get(2)?,
+                    avatar_url: r.get(3)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for m in rows.take(MAX_SEARCH_SCAN) {
+                if out.len() >= limit {
+                    break;
+                }
+                let m = m?;
+                let named = m
+                    .name
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase().contains(&needle));
+                if named || m.public_id.to_lowercase() == needle {
+                    out.push(m);
+                }
+            }
+            Ok(out)
+        })
+    }
+}
+
+/// One of [`Store::search_people`]'s answers.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct PersonMatch {
+    pub public_id: String,
+    pub name: Option<String>,
+    /// The owner of this Clax.
+    pub owner: bool,
+    /// The avatar of the GitHub account linked to them.
+    pub avatar_url: Option<String>,
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{Claim, MAX_NAME_CHARS, MAX_SEARCH_SCAN};
     use crate::test_util::{DAEMON, artifact, store};
@@ -1740,6 +1801,51 @@ mod tests {
         assert_eq!(ids("a_b"), std::slice::from_ref(&under.public_id));
         assert!(ids("%").len() == 1 && ids("_").len() == 1);
     }
+    /// Only the owner and connected, unrevoked people are found, by name
+    /// or by their whole public ID, the owner first; a plain viewer and a
+    /// revoked person are not, and an empty query finds no one.
+    #[test]
+    fn search_people_finds_the_owner_and_connected_people_alone() {
+        let (_d, st) = store();
+        let owner = st.set_owner_name("Alex", true).unwrap();
+        let ana = st.upsert_viewer(&new_ulid(), Some("Ana")).unwrap();
+        let al = st.upsert_viewer(&new_ulid(), Some("Alma")).unwrap();
+        let gone = st.upsert_viewer(&new_ulid(), Some("Alba")).unwrap();
+        let guest = st.upsert_viewer(&new_ulid(), Some("Alf")).unwrap();
+        st.with_write(|c| {
+            c.execute(
+                "UPDATE viewers SET person = 1 WHERE public_id IN (?1, ?2, ?3)",
+                rusqlite::params![ana.public_id, al.public_id, gone.public_id],
+            )?;
+            c.execute(
+                "UPDATE viewers SET person_revoked_at = 'x' WHERE public_id = ?1",
+                [&gone.public_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let ids = |q: &str, n: usize| -> Vec<String> {
+            st.search_people(q, n)
+                .unwrap()
+                .into_iter()
+                .map(|m| m.public_id)
+                .collect()
+        };
+        assert_eq!(
+            ids("al", 20),
+            [owner.public_id.clone(), al.public_id.clone()]
+        );
+        assert_eq!(ids("AL", 1), std::slice::from_ref(&owner.public_id));
+        assert_eq!(
+            ids(&ana.public_id, 20),
+            std::slice::from_ref(&ana.public_id)
+        );
+        assert!(ids(&guest.public_id, 20).is_empty());
+        assert!(ids("  ", 20).is_empty());
+        let found = st.search_people("alex", 20).unwrap();
+        assert!(found[0].owner && found[0].avatar_url.is_none());
+    }
+
     #[test]
     fn search_scans_at_most_max_search_scan_names() {
         assert_eq!(MAX_SEARCH_SCAN, 10_000);

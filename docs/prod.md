@@ -187,7 +187,7 @@ on (`crates/clax-worker/README.md`, "ClaxBot's runs").
 
 The deploy's smoke runs as an agent token, never the owner token, which
 never goes to GitHub. Signed in to clax.dev as the owner, make an agent
-token named `smoke` (People, Agent tokens: Machine `smoke`, Create token;
+token named `smoke` (Settings, Agents & machines, Agent tokens: Machine `smoke`, Create token;
 the token is the part after `Bearer ` in the command it shows) and set it
 as `CLAX_SMOKE_TOKEN`. The smoke runs every step an agent can and names
 each owner-only step it skips.
@@ -254,6 +254,11 @@ Its credentials, in the `staging` environment:
 zone's SSL/TLS, Edge Certificates): a site host is two levels below the
 zone, beyond what the universal certificate covers, as on the previews'
 site zone.
+
+`clax.run` and `clax-staging.run` need Web Analytics' automatic setup
+turned off, for the reason [docs/environments.md](environments.md) gives
+under "Cloudflare": left on, Cloudflare adds its beacon script to every
+clax's pages, and Clax's Content-Security-Policy refuses it on each load.
 
 ### The release App
 
@@ -418,13 +423,18 @@ ships; its jobs, in order:
   from, the record's build, the Cloudflare Worker version the deploy made
   (the record's `version_id`, from `wrangler deploy`'s "Current Version
   ID") and what `/healthz` answers.
-- **publish:** the GitHub release `vX.Y.Z`, tagged on the merge commit,
+- **publish:** the tag `vX.Y.Z` on the merge commit and the GitHub
+  release as a draft (a published release is immutable, the repository's
+  setting, so every asset is on it before it is published),
   from `release-dist`, once its `SOURCE_TREE` is the merge commit's tree;
   a release of the version from that tree already is kept, one from
   another tree fails the job (`scripts/release-exists-check.sh --tree`).
   The tag, made with the workflow's token, runs no workflow.
 - **fleet:** so `fleet-image.yml` is run on the tag here, and waited for,
-  unless a run of the tag passed or is running.
+  unless a run of the tag passed or is running. It adds `clax-fleet.yaml`
+  to the draft.
+- **release:** publishes the draft, once it holds `clax-fleet.yaml`; a
+  release published already is kept.
 - **carry**, in the `release` environment: `scripts/carry-release.sh`, as
   the release App ("The release App", above).
 - **pi:** once CI's `bazel` job passed on the carry's commit of `main`
@@ -462,8 +472,8 @@ just env-deploy …                      # its first deploy
 unset CLAX_KEK
 ```
 
-Once deployed, the owner checks the backup is the Worker's key: Admin,
-Provider shows the key's fingerprint (never public), and this prints the
+Once deployed, the owner checks the backup is the Worker's key: Settings, Model
+provider shows the key's fingerprint (never public), and this prints the
 backup's, with the key in `CLAX_KEK` as above:
 
 ```

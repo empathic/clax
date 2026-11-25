@@ -389,6 +389,32 @@ const RESOLVED: Record<ResolveReason, string> = {
   other: "Resolved",
 };
 
+/** The query parameter of a link that opens the overlay on one report:
+ * `?clax-report=<report ID>` on any page that mounts the overlay. */
+export const REPORT_LINK_PARAM = "clax-report";
+
+/** The report ID a link to one report names in `win`'s URL
+ * (`REPORT_LINK_PARAM`), taken out of the URL in place
+ * (`history.replaceState`, keeping its state), so a reload or a copied
+ * address does not open it again; null when the URL names none. */
+export function takeReportLink(win: Pick<Window, "location" | "history">): string | null {
+  let url: URL;
+  try {
+    url = new URL(win.location.href);
+  } catch {
+    return null;
+  }
+  if (!url.searchParams.has(REPORT_LINK_PARAM)) return null;
+  const id = url.searchParams.get(REPORT_LINK_PARAM)?.trim() ?? "";
+  url.searchParams.delete(REPORT_LINK_PARAM);
+  try {
+    win.history.replaceState(win.history.state, "", url.href);
+  } catch {
+    // A sandboxed frame may refuse; the link still opens the report.
+  }
+  return id && id.length <= 128 ? id : null;
+}
+
 /** A report's state as the reporter reads it. */
 export function stateLabel(r: Pick<Report, "state" | "resolve_reason">): string {
   switch (r.state) {
@@ -417,6 +443,11 @@ export function waitingFix(r: Report): FixAttempt | null {
   return last && last.outcome === "pending" ? last : null;
 }
 
+/** The fix a preview banner names: the one waiting, else the latest. */
+export function previewFix(r: Report): FixAttempt | null {
+  return waitingFix(r) ?? r.fixes?.at(-1) ?? null;
+}
+
 /** A link a report shows, when it is an `https:` or `http:` URL; none for
  * any other scheme (a `javascript:` URL is never made a link). */
 export function safeLink(url: string | undefined): string | null {
@@ -439,12 +470,18 @@ export const realTimers: Timers = {
   clear: h => clearTimeout(h as ReturnType<typeof setTimeout>),
 };
 
+/** How many times its wait the poll waits at most after failed loads. */
+export const POLL_BACKOFF_MAX = 8;
+
 /** Calls `load` at once and then `ms` after each call settles, until
  * `stop`: never two at once, and none after `stop`. A failed load is
- * `onError`'s and the poll keeps going. */
+ * `onError`'s and the poll keeps going, the wait doubling after each
+ * failure in a row (to `POLL_BACKOFF_MAX` times `ms`) and back to `ms`
+ * after a load that succeeds. */
 export class Poll {
   private timer: unknown = null;
   private live = false;
+  private failures = 0;
 
   constructor(private readonly load: () => Promise<void>, private readonly timers: Timers = realTimers, private readonly ms = POLL_MS, private readonly onError: (e: unknown) => void = () => {}) {}
 
@@ -476,14 +513,16 @@ export class Poll {
     this.running = true;
     try {
       await this.load();
+      this.failures = 0;
     } catch (e) {
+      this.failures++;
       if (this.live) this.onError(e);
     } finally {
       this.running = false;
     }
     if (!this.live) return;
     if (this.again) { this.again = false; void this.tick(); return; }
-    this.timer = this.timers.set(() => { this.timer = null; void this.tick(); }, this.ms);
+    this.timer = this.timers.set(() => { this.timer = null; void this.tick(); }, this.ms * Math.min(2 ** this.failures, POLL_BACKOFF_MAX));
   }
 }
 
@@ -565,9 +604,13 @@ export class BadgeWatch {
 export interface ReporterApi {
   fileReport(r: NewReport): Promise<Report>;
   myReports(cursor?: string): Promise<ReportPage>;
+  report(reportId: string): Promise<Report>;
   comment(reportId: string, body: string): Promise<Report>;
   verify(reportId: string, v?: Verification): Promise<Report>;
   reopen(reportId: string, r: Reopening): Promise<Report>;
   badge(): Promise<Badge>;
   seen(reportId: string): Promise<void>;
+  /** The reporter's reports whose fix waits for its verdict on this page's
+   * origin: a preview deployment's. */
+  previews(): Promise<Report[]>;
 }
