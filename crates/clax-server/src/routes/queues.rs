@@ -425,7 +425,8 @@ fn maker_of(st: &Store, qid: &str) -> clax_core::Result<String> {
 /// their viewer's (`*owner` before they have one). `pending` are the
 /// GitHub logins added who have not signed in here yet, oldest first;
 /// `github_logins` says whether people sign in here with GitHub (a hosted
-/// Clax), so whether adding by login is worth offering.
+/// Clax with GitHub sign-in, or a local one with `[github]`:
+/// [`AppState::github_sign_in_on`]), so whether adding by login is offered.
 pub async fn members(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -450,7 +451,7 @@ pub async fn members(
             Ok((members, st.queue_invites(&qid)?))
         })
         .await?;
-    let github_logins = s.hosted.is_some();
+    let github_logins = s.github_sign_in_on();
     Ok(Json(
         json!({ "members": members, "pending": pending, "github_logins": github_logins }),
     ))
@@ -476,7 +477,9 @@ pub struct AddMemberBody {
 /// `invalid_login` (not 1 to 39 letters, digits or hyphens, or starting
 /// with a hyphen); 400 `queue_maker` for the maker's login; 404
 /// `not_found` for a blocked account's or a revoked person's; 400
-/// `limit_reached` past 100 waiting.
+/// `limit_reached` past 100 waiting; 409 `github_sign_in_off` where no
+/// one signs in with GitHub ([`AppState::github_sign_in_on`]), whose
+/// invite could never bind, so none is kept.
 pub async fn add_member(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -491,6 +494,13 @@ pub async fn add_member(
     let qid = path(qid)?;
     let b = body(req)?;
     admin_of(&s, &qid, a).await?;
+    if !s.github_sign_in_on() {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "github_sign_in_off",
+            "no one signs in to this Clax with GitHub, so a GitHub login added here would never become a member: turn on GitHub sign-in ([github] in config.toml), or add a connected person by name",
+        ));
+    }
     let v = s
         .store_call(move |st| {
             Ok(
