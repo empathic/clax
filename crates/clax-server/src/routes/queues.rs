@@ -44,7 +44,7 @@ use clax_http::auth::Caller;
 use clax_http::error::ApiError;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
-use clax_store::queues::{NewQueue, QueuePatch};
+use clax_store::queues::{NewQueue, QueueMemberTo, QueuePatch};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -281,12 +281,19 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /api/queues/<qid>/members` → `{members: [{public_id, name,
-/// role}]}`: an admin reads the queue's people (`name` the person's display
-/// name, or `null`). A queue a person made lists them first, at `role`
-/// `"owner"` (an admin who alone deletes the queue), then the people added
-/// to it in the order they were added; a queue the instance's owner made
-/// lists only the people added.
+/// `GET /api/queues/<qid>/members` → `{members: [{id, public_id, name,
+/// github_login, pending, role}]}`: an admin reads the queue's people
+/// (`name` the person's display name, or `null`). A queue a person made
+/// lists them first, at `role` `"owner"` (an admin who alone deletes the
+/// queue; `id` and `public_id` theirs, `pending` false), then the people
+/// and pending GitHub logins added to it in the order they were added
+/// ([`Store::add_queue_member`]): a bound row's `public_id` and `name`,
+/// `github_login` only when it was added by one; a pending row's
+/// `public_id` `null`, `pending` true, and its `github_login`. `id` is
+/// every row's own (the owner's its public ID), which `DELETE
+/// /api/queues/<qid>/members/pending/<id>` takes for a pending row (which
+/// has no public ID to be named by). A queue the instance's owner made
+/// lists only the people and pending logins added.
 pub async fn members(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -300,25 +307,40 @@ pub async fn members(
     let members = s
         .store_call(move |st| {
             let maker = st.queue(&qid)?.and_then(|q| q.person);
-            let rows = st.queue_members(&qid)?;
-            let rows = rows.into_iter().filter(|(p, _)| Some(p) != maker.as_ref());
-            let people: Vec<(String, Value)> = maker
+            let rows = st.queue_members_listing(&qid)?;
+            let ids: Vec<String> = maker
                 .iter()
-                .map(|p| (p.clone(), json!("owner")))
-                .chain(rows.map(|(p, role)| (p, json!(role))))
+                .cloned()
+                .chain(rows.iter().filter_map(|(_, p, _, _)| p.clone()))
                 .collect();
-            let ids: Vec<String> = people.iter().map(|(p, _)| p.clone()).collect();
             let viewers = st.viewers_by_public_ids(&ids)?;
-            Ok(people
-                .into_iter()
-                .map(|(p, role)| {
-                    let name = viewers
-                        .iter()
-                        .find(|v| v.public_id == p)
-                        .and_then(|v| v.display_name.clone());
-                    json!({"public_id": p, "name": name, "role": role})
-                })
-                .collect::<Vec<_>>())
+            let name_of = |p: &str| {
+                viewers
+                    .iter()
+                    .find(|v| v.public_id == p)
+                    .and_then(|v| v.display_name.clone())
+            };
+            let mut out: Vec<Value> = Vec::new();
+            if let Some(p) = &maker {
+                out.push(json!({
+                    "id": p, "public_id": p, "name": name_of(p),
+                    "github_login": null, "pending": false, "role": "owner",
+                }));
+            }
+            for (id, p, login, role) in rows {
+                if maker.is_some() && p.as_ref() == maker.as_ref() {
+                    continue;
+                }
+                out.push(json!({
+                    "id": id,
+                    "public_id": p,
+                    "name": p.as_deref().and_then(name_of),
+                    "github_login": login,
+                    "pending": p.is_none(),
+                    "role": role,
+                }));
+            }
+            Ok(out)
         })
         .await?;
     Ok(Json(json!({ "members": members })))
@@ -346,16 +368,27 @@ pub async fn put_member(
     d.refuse_agents()?;
     let person = admin_person(&s, &d).await?;
     let (qid, member) = path(p)?;
-    let b = body(req)?;
-    admin_of(&s, &qid, person).await?;
+    let role = body(req)?.role;
+    admin_of(&s, &qid, person.clone()).await?;
+    let q2 = qid.clone();
+    let m2 = member.clone();
+    let was_member = s
+        .store_call(move |st| st.queue_role(&q2, Some(&m2)))
+        .await?
+        .is_some();
+    let (q3, m3) = (qid.clone(), member.clone());
     s.store_call(move |st| {
-        match st.viewer_by_public_id(&member)? {
+        match st.viewer_by_public_id(&m3)? {
             Some(v) if v.person && v.person_revoked_at.is_none() => {}
             _ => return Err(CoreError::NotFound),
         }
-        st.set_member(&ctx, &qid, &member, Some(b.role))
+        st.set_member(&ctx, &q3, &m3, Some(role))
     })
     .await?;
+    if !was_member {
+        s.store_call(move |st| st.note_queue_member_access(&qid, &member, role, person.as_deref()))
+            .await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -373,6 +406,75 @@ pub async fn delete_member(
     let (qid, member) = path(p)?;
     admin_of(&s, &qid, person).await?;
     s.store_call(move |st| st.set_member(&ctx, &qid, &member, None))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /api/queues/<qid>/members` body: `person` (an existing connected
+/// person's public ID) or `github_login` (`@octocat` or `octocat`), never
+/// both.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddMemberBody {
+    person: Option<String>,
+    github_login: Option<String>,
+    role: Role,
+}
+
+/// `PUT /api/queues/<qid>/members {person|github_login, role}` → 201
+/// `{member}`: an admin adds someone at `role`, as the Share dialog adds a
+/// person (`PUT /api/artifacts/<id>/shares`). `person` is an existing
+/// connected, unrevoked person, as `PUT …/members/<public_id>` takes
+/// (`not_found` otherwise); `github_login` a GitHub account already
+/// linked here names that account's person at once, any other waits,
+/// pending, for that account's first GitHub sign-in
+/// ([`clax_store::queues::Store::add_queue_member`]). 400 `invalid_login`
+/// for a bad login, `invalid_args` for both or neither field.
+pub async fn add_member(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    ctx: AuditCtx,
+    qid: Result<Path<String>, PathRejection>,
+    req: Result<Json<AddMemberBody>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    d.refuse_agents()?;
+    let person = admin_person(&s, &d).await?;
+    let qid = path(qid)?;
+    let b = body(req)?;
+    admin_of(&s, &qid, person.clone()).await?;
+    let to = match (b.person, b.github_login) {
+        (Some(p), None) => QueueMemberTo::Person(p),
+        (None, Some(l)) => QueueMemberTo::GitHub(l),
+        _ => {
+            return Err(ApiError::from(CoreError::invalid(
+                "invalid_args",
+                "give exactly one of person or github_login",
+            )));
+        }
+    };
+    let member = s
+        .store_call(move |st| st.add_queue_member(&ctx, &qid, &to, b.role, person.as_deref()))
+        .await?;
+    Ok((StatusCode::CREATED, Json(json!({ "member": member }))))
+}
+
+/// `DELETE /api/queues/<qid>/members/pending/<id>` → 204: an admin removes
+/// a member, bound or pending, by the row's own ID (the `id` the members
+/// listing gives; a pending row has no public ID). An `id` that is none
+/// changes nothing.
+pub async fn remove_member(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    ctx: AuditCtx,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<StatusCode, ApiError> {
+    d.refuse_agents()?;
+    let person = admin_person(&s, &d).await?;
+    let (qid, id) = path(p)?;
+    admin_of(&s, &qid, person).await?;
+    s.store_call(move |st| st.remove_queue_member(&ctx, &qid, &id))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

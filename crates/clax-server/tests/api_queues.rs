@@ -248,9 +248,14 @@ async fn members_hold_the_role_an_admin_gives_them() {
     assert_eq!(s, 204, "{v}");
     let (s, v) = browser(&w.ts, &w.owner, Method::GET, &members, None).await;
     assert_eq!(s, 200, "{v}");
+    let ms = v["members"].as_array().unwrap();
+    assert_eq!(ms.len(), 1, "{v}");
+    assert!(ms[0]["id"].is_string(), "{v}");
     assert_eq!(
-        v["members"],
-        json!([{"public_id": w.sam_public, "name": "Sam", "role": "triage"}])
+        json!({"public_id": ms[0]["public_id"].clone(), "name": ms[0]["name"].clone(),
+               "github_login": ms[0]["github_login"].clone(), "pending": ms[0]["pending"].clone(),
+               "role": ms[0]["role"].clone()}),
+        json!({"public_id": w.sam_public, "name": "Sam", "github_login": null, "pending": false, "role": "triage"})
     );
     let (_, v) = browser(&w.ts, &w.sam, Method::GET, "/api/queues", None).await;
     assert_eq!(v["queues"][0]["id"], qid.as_str());
@@ -331,6 +336,106 @@ async fn members_hold_the_role_an_admin_gives_them() {
     assert_eq!(v["members"], json!([]));
 }
 
+#[tokio::test]
+async fn members_are_added_by_person_or_by_a_pending_github_login_triage_cannot() {
+    let w = world().await;
+    let qid = make_queue(&w, &w.owner, "Bugs").await;
+    let members = format!("/api/queues/{qid}/members");
+
+    // An existing connected person, by public ID.
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PUT,
+        &members,
+        Some(json!({"person": w.sam_public, "role": "triage"})),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(
+        (v["member"]["person"].as_str(), v["member"]["github_login"].as_ref()),
+        (Some(w.sam_public.as_str()), Some(&Value::Null))
+    );
+
+    // A login nobody here has signed in with: pending.
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PUT,
+        &members,
+        Some(json!({"github_login": "@Octo-Cat", "role": "admin"})),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["member"]["person"], Value::Null, "{v}");
+    assert_eq!(v["member"]["github_login"], json!("octo-cat"), "{v}");
+    let pending_id = v["member"]["id"].as_str().unwrap().to_string();
+
+    let (s, v) = browser(&w.ts, &w.owner, Method::GET, &members, None).await;
+    assert_eq!(s, 200, "{v}");
+    let pending = v["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == json!(pending_id))
+        .unwrap();
+    assert_eq!(
+        (&pending["public_id"], &pending["pending"], &pending["role"]),
+        (&Value::Null, &json!(true), &json!("admin"))
+    );
+
+    // Both: 400.
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PUT,
+        &members,
+        Some(json!({"person": w.sam_public, "github_login": "octo-cat", "role": "triage"})),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "invalid_args"), "{v}");
+
+    // Sam, now triage, may not add anyone or remove the pending one.
+    let (s, v) = browser(
+        &w.ts,
+        &w.sam,
+        Method::PUT,
+        &members,
+        Some(json!({"github_login": "nobody", "role": "triage"})),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
+    let (s, v) = browser(
+        &w.ts,
+        &w.sam,
+        Method::DELETE,
+        &format!("{members}/pending/{pending_id}"),
+        None,
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
+
+    // The owner removes the pending row by its ID.
+    let (s, _) = browser(
+        &w.ts,
+        &w.owner,
+        Method::DELETE,
+        &format!("{members}/pending/{pending_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, 204);
+    let (_, v) = browser(&w.ts, &w.owner, Method::GET, &members, None).await;
+    assert!(
+        v["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["id"] != json!(pending_id)),
+        "{v}"
+    );
+}
+
 /// Ana, connected beside Sam: her browser cookie and public ID.
 async fn ana(w: &World) -> (String, String) {
     let client = w.ts.connect_person("Ana", "clax:collaborator").await;
@@ -396,12 +501,24 @@ async fn a_queue_names_its_owner_to_every_member() {
     for cookie in [&w.sam, &ana] {
         let (s, v) = browser(&w.ts, cookie, Method::GET, &members, None).await;
         assert_eq!(s, 200, "{v}");
+        let ms = v["members"].as_array().unwrap();
+        assert_eq!(ms.len(), 2, "{v}");
+        // The owner's row is named by their public ID, Ana's by her own
+        // row's (a GitHub login's or the random one `set_member` left
+        // unset, as it was before this id existed).
+        assert_eq!(ms[0]["id"], json!(w.sam_public), "{v}");
+        assert!(ms[1]["id"].is_string(), "{v}");
+        let strip_id = |m: &Value| {
+            let mut m = m.clone();
+            m.as_object_mut().unwrap().remove("id");
+            m
+        };
         assert_eq!(
-            v["members"],
-            json!([
-                {"public_id": w.sam_public, "name": "Sam", "role": "owner"},
-                {"public_id": ana_public, "name": "Ana", "role": "admin"},
-            ])
+            [strip_id(&ms[0]), strip_id(&ms[1])],
+            [
+                json!({"public_id": w.sam_public, "name": "Sam", "github_login": null, "pending": false, "role": "owner"}),
+                json!({"public_id": ana_public, "name": "Ana", "github_login": null, "pending": false, "role": "admin"}),
+            ]
         );
     }
 

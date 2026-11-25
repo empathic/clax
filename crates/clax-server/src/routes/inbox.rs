@@ -111,7 +111,7 @@ impl Filter {
             kinds.push(Kind::parse(k).ok_or_else(|| {
                 invalid(format!(
                     "'{k}' is not a kind: reply, version, published, question, finished, \
-                     approval, connection or ended"
+                     approval, connection, ended, push, remote_request or access"
                 ))
             })?);
         }
@@ -556,13 +556,15 @@ pub async fn summary(
                 .collect::<clax_core::Result<Vec<_>>>()?;
             let (rows, _) = db.inbox_list(&InboxQuery {
                 recipient: me.clone(),
-                // What waits on the reader: replies, and approval,
-                // connection and remote connection requests.
+                // What waits on the reader: replies, approval,
+                // connection and remote connection requests, and access
+                // granted to them.
                 kinds: vec![
                     Kind::Reply,
                     Kind::Connection,
                     Kind::Approval,
                     Kind::RemoteRequest,
+                    Kind::Access,
                 ],
                 read: ReadFilter::Unread,
                 limit: SUMMARY_LATEST,
