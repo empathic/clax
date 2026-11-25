@@ -4492,16 +4492,28 @@ and changing either; 403 `not_queue_admin` for a triage member). Open to
 every member: the queue's own settings (`PATCH /api/queues/<qid>`: name,
 origins, `reporters_see`), its installs (`…/installs`) and who answers it
 (`…/responders`); a non-member is 404 `not_a_member` on every one. `GET
-/api/queues/<qid>/members` (an admin's) answers `{members: [{public_id,
-name, role}]}`: a queue a person made lists them first with `role`
-`owner`, then the people added to it, in the order they were added, at
-`admin` or `triage`; a queue the instance's owner made lists only the
-people added. `owner` is a role of that listing alone: `PUT
-…/members/<public_id>` takes `admin` or `triage`. `DELETE
-/api/queues/<qid>` (204) is the owner's alone: any other member is 403
-`not_queue_owner`, and a non-member 404 `not_a_member`. Its service grants
-are revoked, its reporter tokens end, and its reports stay on their
-artifacts.
+/api/queues/<qid>/members` (an admin's) answers `{members: [{id,
+public_id, name, github_login, pending, role}]}`: a queue a person made
+lists them first with `role` `owner` (`id` and `public_id` theirs,
+`pending` false), then the people and pending GitHub logins added to it,
+in the order they were added, at `admin` or `triage`; a queue the
+instance's owner made lists only the people and pending logins added.
+`owner` is a role of that listing alone: `PUT …/members/<public_id>`
+takes `admin` or `triage`, for a connected person already on this Clax.
+`PUT /api/queues/<qid>/members {person|github_login, role}` (201
+`{member}`, as the Share dialog's `PUT /api/hosted/artifacts/<aid>/shares`
+adds a person) adds by GitHub login too, as a share does
+(`crates/clax-store/src/shares.rs`): a login a GitHub account here has
+already signed in with names that account's person at once; any other
+waits, pending (`id` present, `public_id` null, `pending` true), until
+that account's first GitHub sign-in binds it to the person it signs in
+as. `DELETE /api/queues/<qid>/members/pending/<id>` (204) removes a
+member, bound or pending, by the row's own `id` (the only way to remove a
+pending login, which has no public ID); `id` naming no such row changes
+nothing. `DELETE /api/queues/<qid>` (204) is the owner's alone: any other
+member is 403 `not_queue_owner`, and a non-member 404 `not_a_member`. Its
+service grants are revoked, its reporter tokens end, and its reports stay
+on their artifacts.
 
 **States.** A report is `open` (waiting for someone: filed, released, its
 lease lapsed, or reopened), `claimed` (an agent's session holds its
@@ -5852,6 +5864,14 @@ An item is made in the same transaction as its source:
   version to a public Clax was refused (the public copy moved, the remote
   unreachable, its token revoked there): one item per artifact, remote and
   version. It adds `push: {n, origin, code, message, url}`.
+- **`access`**: for whoever was just given access to a queue (a
+  membership, `PUT /api/queues/<qid>/members`) or an artifact (a share,
+  `PUT /api/hosted/artifacts/<aid>/shares`), including at the GitHub
+  sign-in that binds a pending login's: one item per grant (keyed by the
+  queue or the artifact, so granting it again makes no second item), never
+  for the instance owner. It adds `access: {what: "queue"|"artifact", id,
+  level, by}` (`level` a queue role or a share's access; `by` who granted
+  it, a public ID or `null`).
 
 No connected person gets an item about a live page, and a revoked person
 gets none.
