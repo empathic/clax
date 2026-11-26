@@ -6,7 +6,7 @@
 //! a flow log the test appends to as chitin-approve does.
 
 use clax_core::working::ManualClock;
-use clax_testkit::{TestServer, error_code as code};
+use clax_testkit::{TestServer, error_code as code, until};
 use reqwest::Method;
 use serde_json::{Value, json};
 use std::io::Write;
@@ -38,6 +38,17 @@ struct Rig {
     dir: tempfile::TempDir,
 }
 
+/// Lets `ms` of real time pass so that something which must NOT happen has
+/// had its chance to (a queue, a late approval): there is no condition to
+/// wait on for an absence.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "an absence has no condition to wait on: the test lets real time pass and then checks nothing happened"
+)]
+async fn lull(ms: u64) {
+    tokio::time::sleep(Duration::from_millis(ms)).await;
+}
+
 impl Rig {
     fn bin_dir(&self) -> PathBuf {
         self.dir.path().join("bin")
@@ -48,16 +59,12 @@ impl Rig {
     /// The arguments of the `n`th queue, once it has run.
     async fn queued(&self, n: u32) -> Vec<String> {
         let p = self.bin_dir().join(format!("say.{n}"));
-        for _ in 0..100 {
-            if let Ok(s) = std::fs::read_to_string(&p)
-                && s.ends_with('\n')
-                && s.lines().count() >= 16
-            {
-                return s.lines().map(str::to_string).collect();
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("chitin was not asked to queue #{n}");
+        until(&format!("chitin is asked to queue #{n}"), || async {
+            let s = std::fs::read_to_string(&p).ok()?;
+            (s.ends_with('\n') && s.lines().count() >= 16)
+                .then(|| s.lines().map(str::to_string).collect())
+        })
+        .await
     }
     /// Appends chitin's flow-log line for item `n` (`outcome`, `extra`).
     fn flow(&self, n: u32, outcome: &str, extra: Value) {
@@ -225,7 +232,7 @@ async fn the_browser_answering_first_leaves_the_passkey_nothing_to_answer() {
     r.queued(1).await;
     r.ts.confirm(&id, false).await;
     r.flow(1, "approved", json!({"signer": "webauthn"}));
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    lull(2500).await;
     assert_eq!(r.settled(&id, 0).await["status"], "declined");
     let (s, v) = open_world(&r.ts, &aid, Some(&id)).await;
     assert_eq!((s, code(&v)), (403, "declined"));
@@ -240,7 +247,7 @@ async fn an_approval_after_the_confirmation_expired_answers_nothing() {
     r.queued(1).await;
     clock.advance(clax_http::confirm::CONFIRMATION_TTL_SECS);
     r.flow(1, "approved", json!({"signer": "webauthn"}));
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    lull(2500).await;
     assert_eq!(r.settled(&id, 0).await["status"], "expired");
     let (s, v) = open_world(&r.ts, &aid, Some(&id)).await;
     assert_eq!((s, code(&v)), (410, "confirmation_expired"));
@@ -279,7 +286,7 @@ async fn without_confirm_to_nothing_is_queued() {
     ts.register_session("claude", "c-1").await;
     let aid = page(&ts, "Off").await;
     held(&open_world(&ts, &aid, None).await);
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    lull(1500).await;
     assert!(!Path::new(&dir.path().join("say.1")).exists());
 }
 
@@ -293,7 +300,7 @@ async fn with_five_of_claxs_items_waiting_nothing_more_is_queued() {
     let r = rig(None, Some(&serde_json::to_string(&full).unwrap())).await;
     let aid = page(&r.ts, "Capped").await;
     let id = held(&open_world(&r.ts, &aid, None).await);
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    lull(1500).await;
     assert!(!r.bin_dir().join("say.1").exists());
     // The browser card still asks.
     r.ts.confirm(&id, true).await;

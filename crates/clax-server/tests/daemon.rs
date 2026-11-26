@@ -214,11 +214,7 @@ async fn serve_serves_the_socket_it_was_handed_and_leaves_it_open() {
         .await
         .unwrap();
     assert_eq!(res.status(), 202);
-    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    by(20, "the daemon stops", handle).await.unwrap().unwrap();
     // A connection made after the daemon stopped waits for the next one.
     let _c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     assert!(held.accept().is_ok());
@@ -617,9 +613,8 @@ async fn a_second_daemon_on_a_home_exits_before_opening_its_database() {
         }),
         ..config_on(&home, 0)
     };
-    let e = tokio::time::timeout(std::time::Duration::from_secs(60), serve(second, None))
+    let e = by(60, "the second daemon gives up", serve(second, None))
         .await
-        .expect("the second daemon gives up")
         .expect_err("the second daemon refuses the home");
     let e = format!("{e:#}");
     assert!(e.contains("another clax daemon"), "{e}");
@@ -642,13 +637,10 @@ async fn a_daemon_starts_once_the_one_before_it_has_stopped() {
     // supervisor's restart, and waits for it.
     let h = home.clone();
     let next = tokio::spawn(async move { embedded(&h).await });
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    lull(500).await;
     assert!(!next.is_finished(), "the successor waits for the lock");
     stop_embedded(first).await;
-    let next = tokio::time::timeout(std::time::Duration::from_secs(30), next)
-        .await
-        .expect("the successor starts")
-        .unwrap();
+    let next = by(30, "the successor starts", next).await.unwrap();
     assert_eq!(read_daemon_info(&home).unwrap().port, next.info.port);
     stop_embedded(next).await;
 }
@@ -665,6 +657,16 @@ async fn by<F: std::future::IntoFuture>(secs: u64, what: &str, fut: F) -> F::Out
     tokio::time::timeout(bound, fut)
         .await
         .unwrap_or_else(|_| panic!("{what}: not within {bound:?}"))
+}
+
+/// Lets `ms` of real time pass so that something which must NOT happen has
+/// had its chance to: there is no condition to wait on for an absence.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "an absence has no condition to wait on: the test lets real time pass and then checks nothing happened"
+)]
+async fn lull(ms: u64) {
+    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
 }
 
 /// The config of a daemon handed `held` as launchd's socket.

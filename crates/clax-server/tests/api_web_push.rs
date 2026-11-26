@@ -4,11 +4,10 @@
 //! an agent's question, is pushed to every subscribed device through its
 //! push service (here a local one standing in for Apple's).
 use clax_core::webpush::{Message, Receiver};
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, until, within};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// The `tailscale serve` name these tests trust.
@@ -53,9 +52,8 @@ async fn push_service() -> (String, mpsc::UnboundedReceiver<Pushed>, Arc<AtomicU
 
 /// The next push, within a generous bound (the daemon sends it from a task).
 async fn next(rx: &mut mpsc::UnboundedReceiver<Pushed>) -> Pushed {
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
+    within("a push", rx.recv())
         .await
-        .expect("a push within 30 s")
         .expect("the push service runs")
 }
 
@@ -316,14 +314,10 @@ async fn an_agents_question_is_pushed_to_the_owners_devices() {
     )
     .await;
     next(&mut rx).await;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while devices(&ts).await != 0 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the gone device is forgotten"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    until("the gone device is forgotten", || async {
+        (devices(&ts).await == 0).then_some(())
+    })
+    .await;
 }
 
 #[tokio::test]
