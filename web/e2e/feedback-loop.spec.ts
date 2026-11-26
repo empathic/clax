@@ -271,7 +271,7 @@ test("a fix proposed for a preview is checked there: the preview attaches its or
     };
     site.grant(await grant("leave app backend", false));
     preview.grant(await grant("leave app previews", true));
-    await expect(card.locator("li.line", { hasText: "leave app previews" }).locator(".limit")).toHaveText(`previews: ${pattern}`);
+    await expect(card.locator("li.line", { hasText: "leave app previews" }).locator(".limit")).toHaveText(`· previews: ${pattern}`);
 
     // The reporter files a report on the site.
     const emp1 = await reporterOn(browser, site, "emp-1");
