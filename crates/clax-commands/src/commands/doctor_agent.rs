@@ -17,11 +17,19 @@
 //! - Grok Build only: `grok`, the installed Grok's version, and
 //!   `claude_copy`, whether the Claude Code plugin has stood down in a Grok
 //!   session.
+//! - Antigravity only, after `feedback`: `antigravity`, the installed
+//!   `agy`'s version; `antigravity_permissions`, whether Antigravity's
+//!   settings approve the Clax tools; `antigravity_sessions`, each live
+//!   session the shim registered without a conversation ID; and
+//!   `claude_copy`, whether the Claude Code plugin has stood down in an
+//!   Antigravity session.
 //! - `channel` (Claude Code): whether the installed plugin declares the Clax
 //!   channel, and how the latest session was launched.
 
+use crate::antigravity_permissions::{self, SETUP_COMMAND, settings_path};
 use crate::client::Client;
 use clax_core::Home;
+use clax_core::antigravity::{MIN_AGY, PERMISSION_RULE, PLUGIN as ANTIGRAVITY_PLUGIN};
 use clax_mcp::{ClaxTools, plugin};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -32,6 +40,7 @@ pub enum DoctorAgent {
     Claude,
     Codex,
     Grok,
+    Antigravity,
     Pi,
 }
 
@@ -48,6 +57,7 @@ impl DoctorAgent {
             DoctorAgent::Claude => "claude",
             DoctorAgent::Codex => "codex",
             DoctorAgent::Grok => "grok",
+            DoctorAgent::Antigravity => clax_core::antigravity::HARNESS,
             DoctorAgent::Pi => "pi",
         }
     }
@@ -57,6 +67,7 @@ impl DoctorAgent {
             DoctorAgent::Claude => "Claude Code",
             DoctorAgent::Codex => "Codex",
             DoctorAgent::Grok => "Grok Build",
+            DoctorAgent::Antigravity => "Antigravity",
             DoctorAgent::Pi => "Pi",
         }
     }
@@ -68,6 +79,7 @@ impl DoctorAgent {
             }
             DoctorAgent::Codex => "reinstall with `codex plugin add clax@clax`",
             DoctorAgent::Grok => "reinstall with `clax init --agent grok`",
+            DoctorAgent::Antigravity => "reinstall with `clax init --agent antigravity`",
             DoctorAgent::Pi => {
                 "reinstall with `pi install npm:@empathic/clax-pi`, or `clax init` for the copy built into this clax"
             }
@@ -86,7 +98,44 @@ impl DoctorAgent {
             DoctorAgent::Grok => {
                 include_str!("../../../../plugins/clax-grok/skills/clax/SKILL.md")
             }
+            DoctorAgent::Antigravity => {
+                include_str!("../../../../plugins/clax-antigravity/skills/clax/SKILL.md")
+            }
             DoctorAgent::Pi => include_str!("../../../../plugins/pi/skills/clax/SKILL.md"),
+        }
+    }
+
+    /// The files beside the skill, `skills/clax/references/<name>`, this
+    /// binary was built with: (name, text).
+    fn built_references(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            DoctorAgent::Antigravity => &[
+                (
+                    "asking.md",
+                    include_str!(
+                        "../../../../plugins/clax-antigravity/skills/clax/references/asking.md"
+                    ),
+                ),
+                (
+                    "runtime-capabilities.md",
+                    include_str!(
+                        "../../../../plugins/clax-antigravity/skills/clax/references/runtime-capabilities.md"
+                    ),
+                ),
+                (
+                    "tools.md",
+                    include_str!(
+                        "../../../../plugins/clax-antigravity/skills/clax/references/tools.md"
+                    ),
+                ),
+                (
+                    "working-beside-others.md",
+                    include_str!(
+                        "../../../../plugins/clax-antigravity/skills/clax/references/working-beside-others.md"
+                    ),
+                ),
+            ],
+            _ => &[],
         }
     }
 }
@@ -195,6 +244,8 @@ fn read_json(path: &Path) -> Option<Value> {
 ///   `pi list`).
 /// - Grok Build: directories under `<grok home>` holding a
 ///   `.grok-plugin/plugin.json` that names clax-grok ([`grok_plugin_copies`]).
+/// - Antigravity: `<antigravity root>/.gemini/config/plugins/clax-antigravity/`,
+///   where `agy plugin install` puts it.
 pub fn plugin_roots(agent: DoctorAgent, dirs: &Dirs) -> Vec<PathBuf> {
     let mut roots = match agent {
         DoctorAgent::Codex => cached_copies(
@@ -232,6 +283,10 @@ pub fn plugin_roots(agent: DoctorAgent, dirs: &Dirs) -> Vec<PathBuf> {
             pi_found(dirs, &probe).roots()
         }
         DoctorAgent::Grok => grok_plugin_copies(&dirs.grok_home),
+        DoctorAgent::Antigravity => {
+            let root = antigravity_plugins(dirs).join(ANTIGRAVITY_PLUGIN);
+            if root.is_dir() { vec![root] } else { vec![] }
+        }
     };
     sort_newest_first(&mut roots);
     roots
@@ -754,11 +809,17 @@ fn grok_plugin_copies(grok_home: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// `<antigravity root>/.gemini/config/plugins`.
+fn antigravity_plugins(dirs: &Dirs) -> PathBuf {
+    dirs.antigravity_root.join(".gemini/config/plugins")
+}
+
 fn where_installed(agent: DoctorAgent, dirs: &Dirs) -> String {
     match agent {
         DoctorAgent::Codex => dirs.codex_home.join("plugins/cache").display().to_string(),
         DoctorAgent::Claude => dirs.claude_dir.join("plugins").display().to_string(),
         DoctorAgent::Grok => dirs.grok_home.display().to_string(),
+        DoctorAgent::Antigravity => antigravity_plugins(dirs).display().to_string(),
         DoctorAgent::Pi => dirs.pi_dir.join("settings.json").display().to_string(),
     }
 }
@@ -842,6 +903,7 @@ fn install_hint(agent: DoctorAgent) -> &'static str {
             "`/plugin marketplace add <checkout>`, then `/plugin install clax@clax`"
         }
         DoctorAgent::Grok => "`clax init --agent grok`",
+        DoctorAgent::Antigravity => "`clax init --agent antigravity`",
         DoctorAgent::Pi => {
             "`pi install npm:@empathic/clax-pi`, or `clax init` for the copy built into this clax"
         }
@@ -881,7 +943,8 @@ fn root_check(agent: DoctorAgent, root: &Path, binary_version: &str) -> Value {
 }
 
 /// `skill`: the installed skill states this binary's tool count and is the
-/// skill this binary was built with.
+/// skill this binary was built with, and each of its reference files is
+/// there and as this binary has it.
 pub fn skill_check(agent: DoctorAgent, root: Option<&Path>, tool_count: usize) -> Value {
     let Some(root) = root else {
         return check("skill", false, "no installed plugin, so no installed skill");
@@ -920,11 +983,35 @@ pub fn skill_check(agent: DoctorAgent, root: Option<&Path>, tool_count: usize) -
                 agent.reinstall()
             ),
         ),
-        Some((v, n)) => check(
-            "skill",
-            true,
-            format!("{shown}: plugin {v}, {n} tools, as this clax"),
-        ),
+        Some((v, n)) => {
+            let refs = agent.built_references();
+            for (name, built) in refs {
+                let path = root.join("skills/clax/references").join(name);
+                let problem = match std::fs::read_to_string(&path) {
+                    Err(_) => "is missing",
+                    Ok(text) if text != *built => "differs from the one this clax was built with",
+                    Ok(_) => continue,
+                };
+                return check(
+                    "skill",
+                    false,
+                    format!(
+                        "stale skill: {} {problem}; {}",
+                        path.display(),
+                        agent.reinstall()
+                    ),
+                );
+            }
+            let refs = match refs.len() {
+                0 => String::new(),
+                k => format!(", and so are its {k} reference files"),
+            };
+            check(
+                "skill",
+                true,
+                format!("{shown}: plugin {v}, {n} tools, as this clax{refs}"),
+            )
+        }
     }
 }
 
@@ -981,6 +1068,9 @@ fn mcp_sessions_check(agent: DoctorAgent, sessions: &Result<Vec<Value>, String>)
                 DoctorAgent::Grok => {
                     " (`grok mcp list` shows whether Grok has the clax_grok server)"
                 }
+                DoctorAgent::Antigravity => {
+                    " (it registers a conversation's session at the conversation's first Clax tool call, not when agy starts)"
+                }
                 DoctorAgent::Pi => "",
             };
             check(
@@ -1009,8 +1099,8 @@ fn mcp_sessions_check(agent: DoctorAgent, sessions: &Result<Vec<Value>, String>)
 }
 
 /// `hooks`: the harness's last lines in hooks.log. Failed when the latest
-/// is the launcher finding no binary, or when no Claude Code or Grok Build
-/// hook has run. Stand-down lines are not hook runs.
+/// is the launcher finding no binary, or when no Claude Code, Grok Build or
+/// Antigravity hook has run. Stand-down lines are not hook runs.
 pub fn hooks_check(agent: DoctorAgent, home: &Home) -> Value {
     if agent == DoctorAgent::Pi {
         return check(
@@ -1032,6 +1122,10 @@ pub fn hooks_check(agent: DoctorAgent, home: &Home) -> Value {
                 ),
                 DoctorAgent::Grok => format!(
                     "no hook has run ({} has no grok line); clax-grok's hooks run once the plugin is installed and trusted (clax init installs it with --trust)",
+                    log.display()
+                ),
+                DoctorAgent::Antigravity => format!(
+                    "no hook has run ({} has no antigravity line); clax-antigravity's hooks run on each turn of a conversation once the plugin is installed",
                     log.display()
                 ),
                 _ => format!("no hook has run ({} has no claude line)", log.display()),
@@ -1080,9 +1174,124 @@ pub fn grok_version_check(version_line: Option<&str>) -> Value {
     }
 }
 
-/// `claude_copy`: never failed. Whether the Claude Code plugin has stood
-/// down in a Grok session, from its `standdown` lines in hooks.log.
-pub fn claude_copy_check(home: &Home) -> Value {
+/// `antigravity`: `agy --version`'s first line names an `X.Y.Z` of at least
+/// [`MIN_AGY`]; failed when `agy` did not answer, its line names no
+/// version, or the version is older.
+pub fn antigravity_version_check(version_line: Option<&str>) -> Value {
+    let min = semver::Version::new(MIN_AGY.0, MIN_AGY.1, MIN_AGY.2);
+    let Some(line) = version_line else {
+        return check(
+            "antigravity",
+            false,
+            "agy is not on PATH, or `agy --version` failed: install the Antigravity CLI",
+        );
+    };
+    let found = line
+        .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .find_map(|w| semver::Version::parse(w).ok());
+    match found {
+        Some(v) if v >= min => check("antigravity", true, format!("agy {v}")),
+        Some(v) => check(
+            "antigravity",
+            false,
+            format!(
+                "agy {v} is older than {min}, the oldest Antigravity CLI Clax is checked against: update agy"
+            ),
+        ),
+        None => check(
+            "antigravity",
+            false,
+            format!("`agy --version` printed {line:?}, which names no version"),
+        ),
+    }
+}
+
+/// `antigravity_permissions`: whether the settings file under `root`
+/// ([`settings_path`]) lets every Clax tool run without asking; failed
+/// otherwise, since a headless run then refuses the tools.
+pub fn antigravity_permissions_check(root: &Path) -> Value {
+    let path = settings_path(root);
+    let shown = path.display();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => Ok(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    };
+    let (ok, detail) = match text.and_then(|t| antigravity_permissions::assess(&t)) {
+        Ok(antigravity_permissions::State::Allowed) => (
+            true,
+            format!("{shown} allows every Clax tool, so Antigravity runs them without asking"),
+        ),
+        Ok(antigravity_permissions::State::Missing) => (
+            false,
+            format!(
+                "{shown} does not allow the Clax tools, so Antigravity asks before every Clax tool call and a headless run refuses them. Add \"{PERMISSION_RULE}\" to permissions.allow there, or run `{SETUP_COMMAND}`, which offers to add it; it approves every Clax tool, delete included"
+            ),
+        ),
+        Ok(antigravity_permissions::State::Blocked(rules)) => (
+            false,
+            format!(
+                "{shown} has ask or deny rules for the Clax tools, which Antigravity applies over any allow rule: {}. Antigravity asks before those tools or refuses them, and a headless run refuses them. Remove those rules; `{SETUP_COMMAND}` then adds \"{PERMISSION_RULE}\" to permissions.allow if it is not there",
+                rules.join(", ")
+            ),
+        ),
+        Err(e) => (
+            false,
+            format!(
+                "{shown} could not be read as Antigravity settings ({e}), so whether it approves the Clax tools is unknown: fix the file, then run `{SETUP_COMMAND}`"
+            ),
+        ),
+    };
+    check("antigravity_permissions", ok, detail)
+}
+
+/// `antigravity_sessions`: failed when a live session has a `pid` (a shim
+/// registered it) and no harness session ID, which means Antigravity sent
+/// that shim's tool calls without the conversation's ID. Not failed when
+/// the sessions could not be listed: `mcp` reports that.
+pub fn antigravity_sessions_check(sessions: &Result<Vec<Value>, String>) -> Value {
+    let s = match sessions {
+        Err(e) => {
+            return check(
+                "antigravity_sessions",
+                true,
+                format!("{e}, so no session was checked"),
+            );
+        }
+        Ok(s) => s,
+    };
+    let lines: Vec<String> = s
+        .iter()
+        .filter(|s| {
+            !s["pid"].is_null() && s["harness_session_id"].as_str().is_none_or(str::is_empty)
+        })
+        .map(|s| {
+            format!(
+                "session {} (pid {}) has no conversation ID: Antigravity sent its tool calls without one, so every conversation of that agy process shares this session; check that `agy --version` is {}.{}.{} or later",
+                s["id"].as_str().unwrap_or("?"),
+                s["pid"],
+                MIN_AGY.0,
+                MIN_AGY.1,
+                MIN_AGY.2
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        check(
+            "antigravity_sessions",
+            true,
+            "every live Antigravity session has its conversation ID",
+        )
+    } else {
+        check("antigravity_sessions", false, lines.join("\n"))
+    }
+}
+
+/// `claude_copy`, for Grok Build or Antigravity: never failed. Whether the
+/// Claude Code plugin has stood down under `host`, from its `standdown`
+/// lines in hooks.log that name that host.
+pub fn claude_copy_check(home: &Home, host: DoctorAgent) -> Value {
+    let host_word = format!("host={}", host.harness());
     let n = [
         home.hooks_log_path().with_extension("log.1"),
         home.hooks_log_path(),
@@ -1091,25 +1300,26 @@ pub fn claude_copy_check(home: &Home) -> Value {
     .filter_map(|p| std::fs::read_to_string(p).ok())
     .map(|t| {
         t.lines()
-            .filter(|l| l.contains(" standdown ") && l.contains(" host=grok"))
+            .filter(|l| {
+                l.split_whitespace().nth(1) == Some("standdown")
+                    && l.split_whitespace().any(|w| w == host_word)
+            })
             .count()
     })
     .sum::<usize>();
-    if n == 0 {
-        check(
-            "claude_copy",
-            true,
-            "the Claude Code plugin has not run in a Grok session",
-        )
-    } else {
-        check(
-            "claude_copy",
-            true,
-            format!(
-                "the Claude Code plugin is enabled in Grok and stood down {n} time(s): clax-grok acts instead. `grok plugin disable clax` removes its idle clax server"
-            ),
-        )
-    }
+    let detail = match (host, n) {
+        (DoctorAgent::Antigravity, 0) => {
+            "the Claude Code plugin has not run in an Antigravity session".to_string()
+        }
+        (DoctorAgent::Antigravity, n) => format!(
+            "the Claude Code plugin is installed in Antigravity and stood down {n} time(s): clax-antigravity acts instead. `agy plugin uninstall clax` removes the copy"
+        ),
+        (_, 0) => "the Claude Code plugin has not run in a Grok session".to_string(),
+        (_, n) => format!(
+            "the Claude Code plugin is enabled in Grok and stood down {n} time(s): clax-grok acts instead. `grok plugin disable clax` removes its idle clax server"
+        ),
+    };
+    check("claude_copy", true, detail)
 }
 
 /// The first `name` on the `PATH` value `path`.
@@ -1246,9 +1456,9 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
         let path = std::env::var_os("PATH").unwrap_or_default();
         let line = on_path(&path, "grok").and_then(|g| version_line(&g));
         out.push(grok_version_check(line.as_deref()));
-        out.push(claude_copy_check(home));
+        out.push(claude_copy_check(home, agent));
     }
-    let feedback = sessions.map(|list| {
+    let feedback = sessions.as_ref().map_err(String::clone).map(|list| {
         list.iter()
             .map(|s| {
                 let id = s["id"].as_str().unwrap_or_default().to_string();
@@ -1265,6 +1475,17 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
             .collect()
     });
     out.push(feedback_check(&feedback));
+    if agent == DoctorAgent::Antigravity {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let line = on_path(&path, "agy").and_then(|a| version_line(&a));
+        out.push(antigravity_version_check(line.as_deref()));
+        out.push(match &dirs {
+            Some(dirs) => antigravity_permissions_check(&dirs.antigravity_root),
+            None => check("antigravity_permissions", false, "HOME is not set"),
+        });
+        out.push(antigravity_sessions_check(&sessions));
+        out.push(claude_copy_check(home, agent));
+    }
     if agent == DoctorAgent::Claude {
         out.push(channel_check(plugin_root.as_deref(), home));
     }
@@ -1309,6 +1530,9 @@ mod tests {
             );
             self.write(&format!("{rel}/scripts/ensure-clax.sh"), launcher());
             self.write(&format!("{rel}/skills/clax/SKILL.md"), agent.built_skill());
+            for (name, text) in agent.built_references() {
+                self.write(&format!("{rel}/skills/clax/references/{name}"), text);
+            }
             self.home().join(rel)
         }
         /// A Pi package root at `rel` naming the Clax package at this
@@ -1514,6 +1738,7 @@ mod tests {
             DoctorAgent::Claude,
             DoctorAgent::Codex,
             DoctorAgent::Grok,
+            DoctorAgent::Antigravity,
             DoctorAgent::Pi,
         ] {
             let (p, root) = plugin_check(agent, &f.dirs(), V);
@@ -1978,6 +2203,7 @@ mod tests {
             DoctorAgent::Claude,
             DoctorAgent::Codex,
             DoctorAgent::Grok,
+            DoctorAgent::Antigravity,
             DoctorAgent::Pi,
         ] {
             assert_eq!(
@@ -2075,7 +2301,7 @@ mod tests {
             "no grok hook has run"
         );
         assert!(
-            claude_copy_check(&home)["detail"]
+            claude_copy_check(&home, DoctorAgent::Grok)["detail"]
                 .as_str()
                 .unwrap()
                 .contains("has not run"),
@@ -2089,7 +2315,7 @@ mod tests {
             false,
             "a stand-down is not a Claude Code hook run"
         );
-        let c = claude_copy_check(&home);
+        let c = claude_copy_check(&home, DoctorAgent::Grok);
         assert_eq!(c["ok"], true);
         assert!(
             c["detail"]
@@ -2110,6 +2336,329 @@ mod tests {
         assert_eq!(grok_version_check(Some("grok 1.0.44"))["ok"], false);
         assert_eq!(grok_version_check(Some("grok dev"))["ok"], false);
         assert_eq!(grok_version_check(None)["ok"], false);
+    }
+
+    const AGY_PLUGIN: &str = ".gemini/config/plugins/clax-antigravity";
+    const AGY_MANIFEST: &str = ".antigravity-plugin/plugin.json";
+    const AGY_REINSTALL: &str = "reinstall with `clax init --agent antigravity`";
+
+    #[test]
+    fn the_installed_plugin_is_found_under_gemini_config() {
+        let f = Fixture::new();
+        let root = f.plugin(AGY_PLUGIN, AGY_MANIFEST, V, DoctorAgent::Antigravity);
+        f.plugin(
+            ".gemini/config/plugins/other",
+            AGY_MANIFEST,
+            V,
+            DoctorAgent::Antigravity,
+        );
+        assert_eq!(
+            plugin_roots(DoctorAgent::Antigravity, &f.dirs()),
+            vec![root.clone()]
+        );
+        let (p, found) = plugin_check(DoctorAgent::Antigravity, &f.dirs(), V);
+        assert_eq!(p["ok"], true, "{p}");
+        assert_eq!(found.as_deref(), Some(root.as_path()));
+        let s = skill_check(
+            DoctorAgent::Antigravity,
+            found.as_deref(),
+            ClaxTools::tool_count(),
+        );
+        assert_eq!(s["ok"], true, "{s}");
+        assert!(
+            s["detail"]
+                .as_str()
+                .unwrap()
+                .ends_with("as this clax, and so are its 4 reference files"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn no_antigravity_plugin_names_the_plugins_directory_and_clax_init() {
+        let f = Fixture::new();
+        let (p, root) = plugin_check(DoctorAgent::Antigravity, &f.dirs(), V);
+        assert_eq!(root, None);
+        assert_eq!(
+            p["detail"],
+            format!(
+                "no installed Antigravity plugin found in {}; install it with `clax init --agent antigravity`",
+                f.home().join(".gemini/config/plugins").display()
+            )
+        );
+        f.write(
+            &format!("{AGY_PLUGIN}/{AGY_MANIFEST}"),
+            &json!({"name": "clax-antigravity", "version": "0.1.0"}).to_string(),
+        );
+        let (p, _) = plugin_check(DoctorAgent::Antigravity, &f.dirs(), V);
+        assert_eq!(p["ok"], false, "{p}");
+        assert!(
+            p["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("stale plugin: {AGY_REINSTALL}")),
+            "{p}"
+        );
+    }
+
+    #[test]
+    fn an_antigravity_skill_with_a_changed_or_missing_reference_is_stale() {
+        let f = Fixture::new();
+        let root = f.plugin(AGY_PLUGIN, AGY_MANIFEST, V, DoctorAgent::Antigravity);
+        let (name, _) = DoctorAgent::Antigravity.built_references()[1];
+        let reference = root.join("skills/clax/references").join(name);
+        std::fs::write(&reference, "edited\n").unwrap();
+        let s = skill_check(
+            DoctorAgent::Antigravity,
+            Some(&root),
+            ClaxTools::tool_count(),
+        );
+        assert_eq!(s["ok"], false, "{s}");
+        assert_eq!(
+            s["detail"],
+            format!(
+                "stale skill: {} differs from the one this clax was built with; {AGY_REINSTALL}",
+                reference.display()
+            )
+        );
+        std::fs::remove_file(&reference).unwrap();
+        let s = skill_check(
+            DoctorAgent::Antigravity,
+            Some(&root),
+            ClaxTools::tool_count(),
+        );
+        assert_eq!(s["ok"], false, "{s}");
+        assert_eq!(
+            s["detail"],
+            format!(
+                "stale skill: {} is missing; {AGY_REINSTALL}",
+                reference.display()
+            )
+        );
+    }
+
+    #[test]
+    fn the_agy_version_at_the_minimum_or_newer_passes() {
+        for line in ["1.5.18", "1.6.0"] {
+            let c = antigravity_version_check(Some(line));
+            assert_eq!(c["name"], "antigravity");
+            assert_eq!(c["ok"], true, "{c}");
+            assert_eq!(c["detail"], format!("agy {line}"));
+        }
+    }
+
+    #[test]
+    fn the_agy_version_check_warns_below_the_minimum_naming_both_versions() {
+        let c = antigravity_version_check(Some("1.5.17"));
+        assert_eq!(c["ok"], false, "{c}");
+        assert_eq!(
+            c["detail"],
+            "agy 1.5.17 is older than 1.5.18, the oldest Antigravity CLI Clax is checked against: update agy"
+        );
+    }
+
+    #[test]
+    fn an_agy_version_that_cannot_be_read_fails() {
+        let c = antigravity_version_check(Some("agy dev"));
+        assert_eq!(c["ok"], false, "{c}");
+        assert_eq!(
+            c["detail"],
+            "`agy --version` printed \"agy dev\", which names no version"
+        );
+        let c = antigravity_version_check(None);
+        assert_eq!(c["ok"], false, "{c}");
+        assert_eq!(
+            c["detail"],
+            "agy is not on PATH, or `agy --version` failed: install the Antigravity CLI"
+        );
+    }
+
+    fn agy_settings(f: &Fixture, settings: Value) {
+        f.write(
+            ".gemini/antigravity-cli/settings.json",
+            &settings.to_string(),
+        );
+    }
+
+    #[test]
+    fn the_antigravity_permission_rule_present_passes() {
+        let f = Fixture::new();
+        agy_settings(
+            &f,
+            json!({"model": "m", "permissions": {"allow": [PERMISSION_RULE]}}),
+        );
+        let c = antigravity_permissions_check(f.home());
+        assert_eq!(c["name"], "antigravity_permissions");
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(
+            c["detail"],
+            format!(
+                "{} allows every Clax tool, so Antigravity runs them without asking",
+                settings_path(f.home()).display()
+            )
+        );
+    }
+
+    #[test]
+    fn the_antigravity_permission_rule_missing_names_the_rule_the_file_and_clax_init() {
+        let f = Fixture::new();
+        let want = format!(
+            "{} does not allow the Clax tools, so Antigravity asks before every Clax tool call and a headless run refuses them. Add \"{PERMISSION_RULE}\" to permissions.allow there, or run `{SETUP_COMMAND}`, which offers to add it; it approves every Clax tool, delete included",
+            settings_path(f.home()).display()
+        );
+        let c = antigravity_permissions_check(f.home());
+        assert_eq!(c["ok"], false, "no settings file: {c}");
+        assert_eq!(c["detail"], want);
+        agy_settings(&f, json!({"permissions": {"allow": ["mcp(other/*)"]}}));
+        let c = antigravity_permissions_check(f.home());
+        assert_eq!(c["ok"], false, "{c}");
+        assert_eq!(c["detail"], want);
+    }
+
+    #[test]
+    fn the_antigravity_permission_rule_blocked_names_the_rules() {
+        let f = Fixture::new();
+        agy_settings(
+            &f,
+            json!({"permissions": {
+                "allow": [PERMISSION_RULE],
+                "ask": ["mcp(*)"],
+                "deny": ["mcp(clax-antigravity_clax/delete)"]
+            }}),
+        );
+        let c = antigravity_permissions_check(f.home());
+        assert_eq!(c["ok"], false, "{c}");
+        assert_eq!(
+            c["detail"],
+            format!(
+                "{} has ask or deny rules for the Clax tools, which Antigravity applies over any allow rule: mcp(*), mcp(clax-antigravity_clax/delete). Antigravity asks before those tools or refuses them, and a headless run refuses them. Remove those rules; `{SETUP_COMMAND}` then adds \"{PERMISSION_RULE}\" to permissions.allow if it is not there",
+                settings_path(f.home()).display()
+            )
+        );
+    }
+
+    #[test]
+    fn antigravity_settings_that_do_not_parse_fail() {
+        let f = Fixture::new();
+        f.write(".gemini/antigravity-cli/settings.json", "{");
+        let c = antigravity_permissions_check(f.home());
+        assert_eq!(c["ok"], false, "{c}");
+        let d = c["detail"].as_str().unwrap();
+        assert!(
+            d.starts_with(&format!(
+                "{} could not be read as Antigravity settings (",
+                settings_path(f.home()).display()
+            )) && d.ends_with(&format!("fix the file, then run `{SETUP_COMMAND}`")),
+            "{d}"
+        );
+    }
+
+    #[test]
+    fn antigravity_sessions_with_their_conversation_ids_pass() {
+        let sessions = Ok(vec![
+            json!({"id": "s1", "harness": "antigravity", "pid": 10, "harness_session_id": "c1"}),
+            // A row no shim registered.
+            json!({"id": "s2", "harness": "antigravity", "pid": null, "harness_session_id": null}),
+        ]);
+        let c = antigravity_sessions_check(&sessions);
+        assert_eq!(c["name"], "antigravity_sessions");
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(
+            c["detail"],
+            "every live Antigravity session has its conversation ID"
+        );
+        let c = antigravity_sessions_check(&Err("no daemon is running".into()));
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(
+            c["detail"],
+            "no daemon is running, so no session was checked"
+        );
+    }
+
+    #[test]
+    fn an_antigravity_session_without_its_conversation_id_is_named() {
+        let sessions = Ok(vec![
+            json!({"id": "s1", "harness": "antigravity", "pid": 10, "harness_session_id": "c1"}),
+            json!({"id": "s3", "harness": "antigravity", "pid": 11, "harness_session_id": null}),
+            json!({"id": "s4", "harness": "antigravity", "pid": 12}),
+        ]);
+        let c = antigravity_sessions_check(&sessions);
+        assert_eq!(c["ok"], false, "{c}");
+        let line = |id: &str, pid: u32| {
+            format!(
+                "session {id} (pid {pid}) has no conversation ID: Antigravity sent its tool calls without one, so every conversation of that agy process shares this session; check that `agy --version` is 1.5.18 or later"
+            )
+        };
+        assert_eq!(
+            c["detail"],
+            format!("{}\n{}", line("s3", 11), line("s4", 12))
+        );
+    }
+
+    #[test]
+    fn antigravity_stand_downs_are_counted_apart_from_grok_ones() {
+        let f = Fixture::new();
+        let home = f.clax_home();
+        let c = claude_copy_check(&home, DoctorAgent::Antigravity);
+        assert_eq!(c["ok"], true);
+        assert_eq!(
+            c["detail"],
+            "the Claude Code plugin has not run in an Antigravity session"
+        );
+        for line in [
+            "2026-11-26T10:00:00Z standdown mode=mcp agent=claude host=antigravity",
+            "2026-11-26T10:00:01Z standdown mode=hook agent=claude host=antigravity",
+            "2026-11-26T10:00:02Z standdown mode=hook agent=claude host=grok",
+            "2026-11-26T10:00:03Z hook agent=antigravity event=stop exit=0 stderr=\"host=antigravity\"",
+        ] {
+            crate::hooklog::append(&home, line);
+        }
+        let c = claude_copy_check(&home, DoctorAgent::Antigravity);
+        assert_eq!(c["ok"], true);
+        assert_eq!(
+            c["detail"],
+            "the Claude Code plugin is installed in Antigravity and stood down 2 time(s): clax-antigravity acts instead. `agy plugin uninstall clax` removes the copy"
+        );
+        let grok = claude_copy_check(&home, DoctorAgent::Grok);
+        assert!(
+            grok["detail"]
+                .as_str()
+                .unwrap()
+                .contains("stood down 1 time(s)"),
+            "{grok}"
+        );
+    }
+
+    #[test]
+    fn antigravity_hooks_are_expected() {
+        let f = Fixture::new();
+        let home = f.clax_home();
+        let c = hooks_check(DoctorAgent::Antigravity, &home);
+        assert_eq!(c["ok"], false, "{c}");
+        assert_eq!(
+            c["detail"],
+            format!(
+                "no hook has run ({} has no antigravity line); clax-antigravity's hooks run on each turn of a conversation once the plugin is installed",
+                home.hooks_log_path().display()
+            )
+        );
+        crate::hooklog::append(
+            &home,
+            "t1 hook agent=antigravity event=stop exit=0 stderr=\"\"",
+        );
+        assert_eq!(hooks_check(DoctorAgent::Antigravity, &home)["ok"], true);
+    }
+
+    #[test]
+    fn no_antigravity_session_says_the_shim_registers_at_the_first_tool_call() {
+        let c = mcp_check(DoctorAgent::Antigravity, &Ok(vec![]));
+        assert_eq!(c["ok"], false, "{c}");
+        assert!(
+            c["detail"].as_str().unwrap().ends_with(
+                "(it registers a conversation's session at the conversation's first Clax tool call, not when agy starts)"
+            ),
+            "{c}"
+        );
     }
 
     #[test]

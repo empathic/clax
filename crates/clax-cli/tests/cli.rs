@@ -1511,6 +1511,183 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
     }
 }
 
+/// `src`'s files copied under `dst`, as `agy plugin install` copies a plugin.
+fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let from = entry.unwrap().path();
+        let to = dst.join(from.file_name().unwrap());
+        if from.is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).unwrap();
+        }
+    }
+}
+
+#[test]
+fn doctor_agent_checks_an_antigravity_install() {
+    let e = Env::new();
+    let installed = e.dir.path().join(".gemini/config/plugins/clax-antigravity");
+    let source = clax_fake_exe::repo().join("plugins/clax-antigravity");
+    copy_tree(&source, &installed);
+    write(
+        e.dir.path(),
+        ".gemini/antigravity-cli/settings.json",
+        r#"{"permissions":{"allow":["mcp(clax-antigravity_clax/*)"]}}"#,
+    );
+    write(
+        e.dir.path(),
+        "ax/logs/hooks.log",
+        "t1 standdown mode=mcp agent=claude host=antigravity\nt2 standdown mode=hook agent=claude host=antigravity\nt3 standdown mode=hook agent=claude host=grok\n",
+    );
+    let agy_dir = e.dir.path().join("agy-bin");
+    clax_fake_exe::install(&agy_dir.join("agy"), "#!/bin/sh\necho 1.5.18\n");
+    let path = std::env::join_paths(std::iter::once(agy_dir).chain(std::env::split_paths(
+        &crate::common::system_path_without(e.dir.path(), &["clax", "agy"]),
+    )))
+    .unwrap();
+    e.cmd().args(["serve", "--port", "0"]).assert().success();
+    let info: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(e.dir.path().join("ax/daemon.json")).unwrap(),
+    )
+    .unwrap();
+    let http = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap();
+    let register = |body: serde_json::Value| -> String {
+        let v: serde_json::Value = http
+            .post(format!("http://127.0.0.1:{}/api/sessions", info["port"]))
+            .bearer_auth(info["token"].as_str().unwrap())
+            .json(&body)
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        v["session"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{v}"))
+            .to_string()
+    };
+    let with_id = register(serde_json::json!({
+        "harness": "antigravity", "harness_session_id": "conv-1",
+        "cwd": "/w", "pid": 1, "parent_pid": 2
+    }));
+    let without_id = register(serde_json::json!({
+        "harness": "antigravity", "cwd": "/w", "pid": 1, "parent_pid": 3
+    }));
+
+    let doctor = |args: &[&str]| {
+        e.cmd()
+            .args(["doctor", "--agent", "antigravity"])
+            .args(args)
+            .env("PATH", &path)
+            .output()
+            .unwrap()
+    };
+    let checks = || -> Vec<serde_json::Value> {
+        let v: serde_json::Value = serde_json::from_slice(&doctor(&["--json"]).stdout).unwrap();
+        v["checks"].as_array().unwrap().clone()
+    };
+    let by_name = |checks: &[serde_json::Value], n: &str| {
+        checks
+            .iter()
+            .find(|c| c["name"] == n)
+            .unwrap_or_else(|| panic!("no {n} check in {checks:?}"))
+            .clone()
+    };
+    let all = checks();
+    let names: Vec<&str> = all.iter().filter_map(|c| c["name"].as_str()).collect();
+    let tail = &names[names.iter().position(|n| *n == "binary").unwrap()..];
+    assert_eq!(
+        tail,
+        [
+            "binary",
+            "upgrade",
+            "plugin",
+            "skill",
+            "mcp",
+            "hooks",
+            "feedback",
+            "antigravity",
+            "antigravity_permissions",
+            "antigravity_sessions",
+            "claude_copy",
+        ]
+    );
+    let plugin = by_name(&all, "plugin");
+    assert_eq!(plugin["ok"], true, "{plugin}");
+    assert!(
+        plugin["detail"]
+            .as_str()
+            .unwrap()
+            .contains(&installed.display().to_string()),
+        "{plugin}"
+    );
+    let skill = by_name(&all, "skill");
+    assert_eq!(skill["ok"], true, "{skill}");
+    let agy = by_name(&all, "antigravity");
+    assert_eq!(agy["ok"], true, "{agy}");
+    assert_eq!(agy["detail"], "agy 1.5.18");
+    let permissions = by_name(&all, "antigravity_permissions");
+    assert_eq!(permissions["ok"], true, "{permissions}");
+    let mcp = by_name(&all, "mcp");
+    assert_eq!(mcp["ok"], true, "{mcp}");
+    let sessions = by_name(&all, "antigravity_sessions");
+    assert_eq!(sessions["ok"], false, "{sessions}");
+    let detail = sessions["detail"].as_str().unwrap();
+    assert!(
+        detail.starts_with(&format!(
+            "session {without_id} (pid 1) has no conversation ID"
+        )) && !detail.contains(&with_id),
+        "{detail}"
+    );
+    let copy = by_name(&all, "claude_copy");
+    assert!(
+        copy["detail"]
+            .as_str()
+            .unwrap()
+            .contains("stood down 2 time(s)"),
+        "{copy}"
+    );
+
+    // Each reference file the plugin ships is part of the skill.
+    let references = installed.join("skills/clax/references");
+    let mut names: Vec<_> = std::fs::read_dir(&references)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert!(!names.is_empty());
+    for name in names {
+        let file = references.join(&name);
+        let text = std::fs::read(&file).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        let skill = by_name(&checks(), "skill");
+        assert_eq!(skill["ok"], false, "{name:?}: {skill}");
+        assert_eq!(
+            skill["detail"],
+            format!(
+                "stale skill: {} is missing; reinstall with `clax init --agent antigravity`",
+                file.display()
+            )
+        );
+        std::fs::write(&file, text).unwrap();
+    }
+
+    let text = String::from_utf8(doctor(&[]).stdout).unwrap();
+    for n in [
+        "antigravity",
+        "antigravity_permissions",
+        "antigravity_sessions",
+        "claude_copy",
+    ] {
+        assert!(text.contains(&format!(" {n} ")), "{n} in {text}");
+    }
+    e.stop();
+}
+
 const NO_SESSION_NOTE: &str = "note: published without an agent session; comments on this page will wait until an agent session watches it";
 
 #[test]
