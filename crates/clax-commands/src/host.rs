@@ -1,6 +1,8 @@
-//! Whether Grok Build started this run of the Claude Code plugin's copy.
-//! Grok loads Claude Code plugins too; in a Grok session only `--agent
-//! grok` acts (spec D17), so a Claude Code copy that Grok runs stands down.
+//! Whether Grok Build or Antigravity started this run of the Claude Code
+//! plugin's copy. Grok loads Claude Code plugins too, and Antigravity
+//! imports them (`agy plugin import claude`); in a Grok session only
+//! `--agent grok` acts (spec D17), and under Antigravity only `--agent
+//! antigravity`, so a Claude Code copy that either runs stands down.
 
 use clax_core::Home;
 use clax_hooks::input::HookInput;
@@ -22,18 +24,32 @@ pub fn grok_runs_mcp(env: impl Fn(&str) -> Option<String>, parent_pid: u32) -> b
 
 /// True when Grok runs this hook: `GROK_HOOK_EVENT` is set (Grok sets it
 /// for every hook it runs, and its shell tool does not pass it on), or the
-/// input is Grok's envelope (`hookEventName`).
+/// input is Grok's envelope ([`HookInput::is_grok_envelope`]: `hookEventName`
+/// without Antigravity's `conversationId`).
 pub fn grok_runs_hook(env: impl Fn(&str) -> Option<String>, input: &HookInput) -> bool {
     var(&env, "GROK_HOOK_EVENT").is_some() || input.is_grok_envelope()
 }
 
-/// Appends `<time> standdown mode=<mode> agent=claude host=grok` to
-/// hooks.log, the line the wrapper writes for the same event.
-pub fn log_standdown(home: &Home, mode: &str) {
+/// True when Antigravity runs this hook: the input is Antigravity's
+/// envelope (`conversationId`).
+pub fn antigravity_runs_hook(input: &HookInput) -> bool {
+    input.is_antigravity_envelope()
+}
+
+/// True when Antigravity started this MCP server: its parent's command line
+/// (`None` when it could not be read) runs `agy`.
+pub fn antigravity_runs_mcp(parent_argv: Option<&[String]>) -> bool {
+    parent_argv.is_some_and(clax_core::antigravity::is_agy)
+}
+
+/// Appends `<time> standdown mode=<mode> agent=claude host=<host>` to
+/// hooks.log, the line the wrapper writes for the same event. `host` is
+/// "grok" or "antigravity".
+pub fn log_standdown(home: &Home, mode: &str, host: &str) {
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     crate::hooklog::append(
         home,
-        &format!("{at} standdown mode={mode} agent=claude host=grok"),
+        &format!("{at} standdown mode={mode} agent=claude host={host}"),
     );
 }
 
@@ -77,5 +93,32 @@ mod tests {
             !grok_runs_hook(env(&[("GROK_SESSION_ID", "g")]), &claude),
             "a Claude Code hook in a session started from a Grok shell acts"
         );
+    }
+
+    #[test]
+    fn antigravity_runs_a_hook_whose_input_is_its_envelope() {
+        let agy = HookInput::parse(r#"{"conversationId":"c","hookEventName":"Stop"}"#);
+        let claude = HookInput::parse(r#"{"session_id":"s","hook_event_name":"Stop"}"#);
+        let grok = HookInput::parse(r#"{"session_id":"s","sessionId":"s","hookEventName":"Stop"}"#);
+        assert!(antigravity_runs_hook(&agy));
+        assert!(!antigravity_runs_hook(&claude));
+        assert!(!antigravity_runs_hook(&grok));
+        assert!(
+            !grok_runs_hook(env(&[]), &agy),
+            "Antigravity's envelope is not Grok's"
+        );
+    }
+
+    #[test]
+    fn antigravity_runs_an_mcp_server_whose_parent_is_agy() {
+        let parent = |s: &str| {
+            let argv: Vec<String> = s.split_whitespace().map(str::to_string).collect();
+            antigravity_runs_mcp(Some(&argv))
+        };
+        assert!(parent("/Users/x/.local/bin/agy"));
+        assert!(parent("/bin/bash /tmp/t/agy -p x"));
+        assert!(!parent("claude --resume"));
+        assert!(!parent("/bin/zsh -c agy"));
+        assert!(!antigravity_runs_mcp(None), "an unreadable parent");
     }
 }

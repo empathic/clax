@@ -72,7 +72,7 @@ fail() { echo "FAIL: $1"; FAILED=1; }
 TOOLS="$ROOT/tools"
 mkdir -p "$TOOLS"
 for t in bash sh env awk head tail grep sed tr cat mktemp mv mkdir rm chmod date wc cp sleep ls \
-    curl tar gzip shasum sha256sum perl find uname sysctl; do
+    curl tar gzip shasum sha256sum perl find uname sysctl ps; do
     if p="$(command -v "$t" 2>/dev/null)" && [ -x "$p" ]; then ln -sf "$p" "$TOOLS/$t"; fi
 done
 # curl runs through a guard that refuses, and records in $TOOLS/offhost.log,
@@ -139,6 +139,7 @@ new_env() {
     export PATH="$FAKEBIN:$TOOLS"
     unset CLAX_BIN CLAX_HOME CLAX_PORT CLAX_SOURCE_DIR CLAX_INSTALL_DIR CLAX_CONFIG_DIR CLAX_RELEASE_BASE_URL CLAX_RELEASE_VERSION
     unset GROK_SESSION_ID GROK_HOOK_EVENT GROK_PLUGIN_ROOT GROK_HOME CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_PLUGIN_ROOT CLAUDE_PROJECT_DIR CLAX_SESSION_ID
+    unset ANTIGRAVITY_CONVERSATION_ID PLUGIN_ROOT PLUGIN_DATA
     # The fake server, never GitHub; the managed-install cases name a mode.
     export CLAX_RELEASE_BASE_URL="$BASE/none"
 }
@@ -575,13 +576,16 @@ run_under_claude() {
     OUT="$("$TOOLS/bash" -c 'export CLAUDE_PID=$$; "$1" "$2" "${@:3}"; exit $?' _ "$TOOLS/bash" "$SCRIPT" "$@" 2>"$SANDBOX/stderr" < /dev/null)"
     RC=$?; ERR="$(cat "$SANDBOX/stderr")"
 }
+# Checks that $OUT is the stand-down server's answer to $REQS, its
+# instructions naming the plugin $1 (clax-grok by default); prints the text
+# of its status tool. Fails (non-zero) otherwise.
 standdown_text() {
-    "$PY" - "$OUT" <<'PYEOF'
+    "$PY" - "$OUT" "${1:-clax-grok}" <<'PYEOF'
 import json, sys
 lines = [json.loads(l) for l in sys.argv[1].splitlines()]
 assert [l["id"] for l in lines] == [0, 1, "call-2", 3, 4], lines
 init = lines[0]["result"]
-assert init["serverInfo"]["name"] == "clax" and "clax-grok" in init["instructions"], init
+assert init["serverInfo"]["name"] == "clax" and sys.argv[2] in init["instructions"], init
 tools = lines[1]["result"]["tools"]
 assert [t["name"] for t in tools] == ["status"], tools
 call = lines[2]["result"]
@@ -664,6 +668,88 @@ new_env
 mcp_as claude GROK_SESSION_ID=019a-g
 if [ -n "$want" ] && [ "$(standdown_text)" = "$want" ]; then pass "grok guard: the wrapper's text is the binary's"
 else fail "grok guard: the stand-down text differs from crates/clax-mcp/src/standdown.rs"; fi
+
+# --- Antigravity guard: the Claude Code copy stands down under Antigravity ----
+
+# A fake `agy` that runs its arguments as its child, so their parent is an
+# `agy` process.
+AGY_BIN="$ROOT/agy-bin"
+mkdir -p "$AGY_BIN"
+printf '#!/bin/bash\n"$@"\n' | fake_exe "$AGY_BIN/agy"
+mcp_under_agy() { local agent="$1"; shift; OUT="$(printf '%s\n' "$REQS" | env "$@" "$AGY_BIN/agy" "$TOOLS/bash" "$SCRIPT" exec mcp --agent "$agent" 2>"$SANDBOX/stderr")"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"; }
+# Runs the Claude Code copy's stop hook with Antigravity's input, and the
+# variables $@.
+agy_hook() { OUT="$(printf '{"conversationId":"c0ffee00","hookEventName":"Stop","terminationReason":"NO_TOOL_CALL"}' | env "$@" "$TOOLS/bash" "$SCRIPT" exec hook --agent claude stop 2>"$SANDBOX/stderr")"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"; }
+AGY_WANT="$(sed -n 's/^pub const ANTIGRAVITY_STANDDOWN: &str = "\(.*\)";$/\1/p' "$HERE/../crates/clax-mcp/src/standdown.rs")"
+
+new_env
+recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
+mcp_under_agy claude
+if [ "$RC" = 0 ] && [ -n "$AGY_WANT" ] && [ "$(standdown_text clax-antigravity)" = "$AGY_WANT" ] && [ ! -e "$SANDBOX/ran" ] \
+    && hooks_log | grep ' standdown mode=mcp agent=claude host=antigravity$' >/dev/null; then
+    pass "antigravity guard: the Claude copy's MCP server under agy serves the binary's status text only and runs no clax"
+else fail "antigravity guard: Claude copy MCP under agy (rc=$RC out=$OUT err=$ERR ran=$(cat "$SANDBOX/ran" 2>/dev/null) log=$(hooks_log))"; fi
+
+new_env
+recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
+ANTIGRAVITY_CONVERSATION_ID=c0ffee00 run_under_claude exec mcp --agent claude
+if [ "$RC" = 0 ] && grep -q -- '--agent claude' "$SANDBOX/ran" 2>/dev/null && ! hooks_log | grep standdown >/dev/null; then
+    pass "antigravity guard: Claude Code's own MCP server runs clax with ANTIGRAVITY_CONVERSATION_ID inherited"
+else fail "antigravity guard: Claude Code parent with ANTIGRAVITY_CONVERSATION_ID (rc=$RC out=$OUT err=$ERR)"; fi
+
+for agent in antigravity codex; do
+    new_env
+    recording_clax "$FAKEBIN"
+    set_bin "$FAKEBIN/clax"
+    mcp_under_agy "$agent"
+    if grep -q -- "mcp --agent $agent" "$SANDBOX/ran" 2>/dev/null && ! hooks_log | grep standdown >/dev/null; then
+        pass "antigravity guard: --agent $agent under agy is never stood down"
+    else fail "antigravity guard: --agent $agent under agy (out=$OUT log=$(hooks_log))"; fi
+done
+
+new_env
+recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
+agy_hook ANTIGRAVITY_CONVERSATION_ID=c0ffee00
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ ! -e "$SANDBOX/ran" ] \
+    && hooks_log | grep ' standdown mode=hook agent=claude host=antigravity$' >/dev/null && ! hooks_log | grep host=grok >/dev/null; then
+    pass "antigravity guard: a Claude copy hook that Antigravity runs prints nothing, runs no clax and logs host=antigravity"
+else fail "antigravity guard: Claude copy hook under Antigravity (rc=$RC out=$OUT err=$ERR log=$(hooks_log))"; fi
+
+new_env
+recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
+agy_hook ANTIGRAVITY_CONVERSATION_ID=c0ffee00 GROK_HOOK_EVENT=Stop
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ ! -e "$SANDBOX/ran" ] \
+    && hooks_log | grep ' standdown mode=hook agent=claude host=grok$' >/dev/null && ! hooks_log | grep host=antigravity >/dev/null; then
+    pass "antigravity guard: a hook Grok runs with ANTIGRAVITY_CONVERSATION_ID inherited still logs host=grok"
+else fail "antigravity guard: Grok hook with ANTIGRAVITY_CONVERSATION_ID (rc=$RC out=$OUT log=$(hooks_log))"; fi
+
+new_env
+recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
+OUT="$(printf '{"session_id":"s"}' | ANTIGRAVITY_CONVERSATION_ID=c0ffee00 CLAUDE_PLUGIN_ROOT="$SANDBOX" "$TOOLS/bash" "$SCRIPT" exec hook --agent claude stop 2>"$SANDBOX/stderr")"; RC=$?
+if [ "$RC" = 0 ] && grep -q -- 'hook --agent claude stop' "$SANDBOX/ran" 2>/dev/null && ! hooks_log | grep standdown >/dev/null; then
+    pass "antigravity guard: a Claude Code hook (CLAUDE_PLUGIN_ROOT set) acts with ANTIGRAVITY_CONVERSATION_ID inherited"
+else fail "antigravity guard: Claude Code hook with ANTIGRAVITY_CONVERSATION_ID (rc=$RC log=$(hooks_log))"; fi
+
+new_env
+recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
+OUT="$(printf '{"conversationId":"c0ffee00","hookEventName":"Stop"}' | ANTIGRAVITY_CONVERSATION_ID=c0ffee00 "$TOOLS/bash" "$SCRIPT" exec hook --agent antigravity stop 2>"$SANDBOX/stderr")"; RC=$?
+if [ "$RC" = 0 ] && grep -q -- 'hook --agent antigravity stop' "$SANDBOX/ran" 2>/dev/null && ! hooks_log | grep standdown >/dev/null; then
+    pass "antigravity guard: --agent antigravity hooks are never stood down"
+else fail "antigravity guard: --agent antigravity hook (rc=$RC log=$(hooks_log))"; fi
+
+new_env
+recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
+ANTIGRAVITY_CONVERSATION_ID=c0ffee00 run exec status
+if [ "$RC" = 0 ] && [ "$OUT" = "args: status" ]; then
+    pass "antigravity guard: CLI mode is never stood down"
+else fail "antigravity guard: CLI mode (rc=$RC out=$OUT)"; fi
 
 # --- No alias for the previous name -------------------------------------------
 # Its variables, its binary on PATH and its home are all ignored and left

@@ -731,10 +731,10 @@ pub fn log_run(
 /// Runs the hook. Never fails the harness: any error or timeout prints one
 /// line to stderr and leaves stdout empty, except for a Codex session
 /// start's approval notice ([`codex_notice`]), which is printed either way.
-/// Never starts a daemon. Each run is
-/// logged to hooks.log. A Claude Code hook that Grok Build runs stands down:
-/// it prints nothing and logs one standdown line. An Antigravity run prints
-/// in Antigravity's shapes ([`HookOutput::for_antigravity`]).
+/// Never starts a daemon. Each run is logged to hooks.log. A Claude Code
+/// hook that Grok Build or Antigravity runs stands down: it prints nothing
+/// and logs one standdown line. An Antigravity run prints in Antigravity's
+/// shapes ([`HookOutput::for_antigravity`]).
 pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let started = Instant::now();
     let parent_pid = std::os::unix::process::parent_id();
@@ -1036,6 +1036,19 @@ fn wake_ledger(home: &Home, agent: Agent, input: &HookInput) -> Option<std::path
     )
 }
 
+/// The host that runs this Claude Code hook when another harness does:
+/// Grok Build or Antigravity, in whose sessions only their own plugins'
+/// hooks act ([`crate::host`]).
+fn standdown_host(input: &HookInput) -> Option<&'static str> {
+    if crate::host::grok_runs_hook(|k| std::env::var(k).ok(), input) {
+        Some("grok")
+    } else if crate::host::antigravity_runs_hook(input) {
+        Some("antigravity")
+    } else {
+        None
+    }
+}
+
 /// Handles one hook run; `None` means it stood down.
 fn handle(
     agent: Agent,
@@ -1048,11 +1061,9 @@ fn handle(
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let input = HookInput::parse(&stdin);
     if matches!(agent, Agent::Claude)
-        && crate::host::grok_runs_hook(|k| std::env::var(k).ok(), &input)
+        && let Some(host) = standdown_host(&input)
     {
-        // Grok Build runs the Claude Code copy's hooks too; in a Grok
-        // session only clax-grok's hooks act (spec D17).
-        crate::host::log_standdown(home, "hook");
+        crate::host::log_standdown(home, "hook", host);
         return Ok(None);
     }
     // Grok Build discards an allowing prompt hook's output, and a
@@ -1260,8 +1271,8 @@ fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let input = HookInput::parse(&stdin);
-    if crate::host::grok_runs_hook(|k| std::env::var(k).ok(), &input) {
-        crate::host::log_standdown(home, "hook");
+    if let Some(host) = standdown_host(&input) {
+        crate::host::log_standdown(home, "hook", host);
         return AskMsg::Quiet;
     }
     let Some(client) = Client::discover(home) else {

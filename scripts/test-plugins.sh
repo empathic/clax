@@ -181,6 +181,10 @@ want="$(sed -n 's/^pub const GROK_STANDDOWN: &str = "\(.*\)";$/\1/p' crates/clax
 got="$(sed -n 's/^GROK_STANDDOWN="\(.*\)"$/\1/p' scripts/ensure-clax.sh | sed 's/\\`/`/g')"
 if [ -n "$want" ] && [ "$want" = "$got" ]; then pass "the wrapper's GROK_STANDDOWN matches crates/clax-mcp/src/standdown.rs"
 else fail "the wrapper's GROK_STANDDOWN differs from crates/clax-mcp/src/standdown.rs"; fi
+want="$(sed -n 's/^pub const ANTIGRAVITY_STANDDOWN: &str = "\(.*\)";$/\1/p' crates/clax-mcp/src/standdown.rs)"
+got="$(sed -n 's/^ANTIGRAVITY_STANDDOWN="\(.*\)"$/\1/p' scripts/ensure-clax.sh | sed 's/\\`/`/g')"
+if [ -n "$want" ] && [ "$want" = "$got" ]; then pass "the wrapper's ANTIGRAVITY_STANDDOWN matches crates/clax-mcp/src/standdown.rs"
+else fail "the wrapper's ANTIGRAVITY_STANDDOWN differs from crates/clax-mcp/src/standdown.rs"; fi
 
 # The Claude Code hooks quote the plugin root, which may contain spaces.
 if python3 - plugins/claude-code/hooks/hooks.json 2>/dev/null <<'PY'

@@ -52,16 +52,10 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("{}", one_line(&format!("{e:#}"))));
     }
     let parent_pid = std::os::unix::process::parent_id();
-    if matches!(a.agent, Agent::Claude)
-        && crate::host::grok_runs_mcp(|k| std::env::var(k).ok(), parent_pid)
-    {
-        // Grok Build runs the Claude Code copy too; in a Grok session only
-        // clax-grok's server acts (spec D17).
-        crate::host::log_standdown(home, "mcp");
+    if let Some((host, text)) = standdown_host(a.agent, parent_pid) {
+        crate::host::log_standdown(home, "mcp", host);
         let rt = tokio::runtime::Runtime::new()?;
-        let result = rt.block_on(clax_mcp::standdown::serve(
-            clax_mcp::standdown::GROK_STANDDOWN,
-        ));
+        let result = rt.block_on(clax_mcp::standdown::serve(text));
         rt.shutdown_timeout(Duration::from_millis(100));
         return result;
     }
@@ -158,6 +152,25 @@ impl std::io::Write for QuietStderr {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Self::quiet(std::io::stderr().flush().map(|()| 0), 0).map(|_| ())
+    }
+}
+
+/// The host, and what its stand-down server says, when another harness
+/// runs this Claude Code copy's server: Antigravity when the parent is
+/// `agy`, Grok Build by its variables ([`crate::host`]). Under either only
+/// that harness's own plugin acts. `None` for every other agent, and for a
+/// server Claude Code runs.
+fn standdown_host(agent: Agent, parent_pid: u32) -> Option<(&'static str, &'static str)> {
+    if !matches!(agent, Agent::Claude) {
+        return None;
+    }
+    let parent_argv = clax_mcp::channel::process_argv(parent_pid).ok();
+    if crate::host::antigravity_runs_mcp(parent_argv.as_deref()) {
+        Some(("antigravity", clax_mcp::standdown::ANTIGRAVITY_STANDDOWN))
+    } else if crate::host::grok_runs_mcp(|k| std::env::var(k).ok(), parent_pid) {
+        Some(("grok", clax_mcp::standdown::GROK_STANDDOWN))
+    } else {
+        None
     }
 }
 

@@ -1,6 +1,6 @@
-//! The Claude Code plugin's copy stands down when Grok Build runs it:
-//! `clax mcp --agent claude` serves the stand-down server and `clax hook
-//! --agent claude` does nothing; everywhere else they act.
+//! The Claude Code plugin's copy stands down when Grok Build or Antigravity
+//! runs it: `clax mcp --agent claude` serves the stand-down server and `clax
+//! hook --agent claude` does nothing; everywhere else they act.
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
@@ -18,10 +18,16 @@ const HARNESS_VARS: &[&str] = &[
     "CLAUDE_PROJECT_DIR",
     "CLAX_SESSION_ID",
     "CLAX_BIN",
+    "ANTIGRAVITY_CONVERSATION_ID",
+    "PLUGIN_ROOT",
+    "PLUGIN_DATA",
 ];
 
 fn clax(home: &std::path::Path, env: &[(&str, String)]) -> Command {
-    let mut c = Command::new(crate::common::clax());
+    in_test_env(Command::new(crate::common::clax()), home, env)
+}
+
+fn in_test_env(mut c: Command, home: &std::path::Path, env: &[(&str, String)]) -> Command {
     for k in HARNESS_VARS {
         c.env_remove(k);
     }
@@ -43,10 +49,26 @@ struct Mcp {
     stdout: BufReader<ChildStdout>,
 }
 
+/// A stand-in `agy`: runs `clax --port 0 mcp --agent claude` as its child,
+/// with stdin and stdout passed through, so the server's parent is an `agy`.
+const FAKE_AGY: &str = "#!/bin/bash\n\"$CLAX_TEST_BIN\" --port 0 mcp --agent claude\n";
+
 impl Mcp {
     fn start(home: &std::path::Path, agent: &str, env: &[(&str, String)]) -> Mcp {
-        let mut child = clax(home, env)
-            .args(["--port", "0", "mcp", "--agent", agent])
+        let mut cmd = clax(home, env);
+        cmd.args(["--port", "0", "mcp", "--agent", agent]);
+        Mcp::spawn(cmd)
+    }
+    /// The Claude Code copy's server, started by [`FAKE_AGY`] installed in
+    /// `bin`.
+    fn under_agy(home: &std::path::Path, bin: &std::path::Path) -> Mcp {
+        let agy = clax_fake_exe::install(&bin.join("agy"), FAKE_AGY);
+        let mut cmd = in_test_env(Command::new(agy), home, &[]);
+        cmd.env("CLAX_TEST_BIN", crate::common::clax());
+        Mcp::spawn(cmd)
+    }
+    fn spawn(mut cmd: Command) -> Mcp {
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -238,4 +260,96 @@ fn a_claude_hook_outside_grok_acts() {
     );
     assert!(err.contains("no clax daemon is running"), "{err}");
     assert!(hooks_log(&home).contains(" hook agent=claude event=stop "));
+}
+
+#[test]
+fn the_claude_code_copy_antigravity_starts_serves_only_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    let mut m = Mcp::under_agy(&home, dir.path());
+    assert_eq!(m.tool_names(), ["status"]);
+    let call = m.request(2, "tools/call", json!({"name": "status", "arguments": {}}));
+    assert_ne!(call["result"]["isError"], json!(true), "{call}");
+    let text = call["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("Clax runs from the clax-antigravity plugin in Antigravity")
+            && text.contains("clax init --agent antigravity")
+            && text.ends_with("To remove this copy: agy plugin uninstall clax"),
+        "{text}"
+    );
+    assert!(
+        !home.join("daemon.json").exists(),
+        "a standing-down server starts no daemon"
+    );
+    let log = hooks_log(&home);
+    assert!(
+        log.contains(" standdown mode=mcp agent=claude host=antigravity"),
+        "{log}"
+    );
+}
+
+/// The `Stop` input Antigravity sends a hook.
+const AGY_STOP: &str = r#"{"conversationId":"c0ffee00","hookEventName":"Stop","terminationReason":"NO_TOOL_CALL","executionNum":0,"fullyIdle":true}"#;
+
+#[test]
+fn a_claude_code_hook_antigravity_runs_does_nothing_and_logs_its_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    let (out, err) = claude_stop(
+        &home,
+        &[("ANTIGRAVITY_CONVERSATION_ID", "c0ffee00".into())],
+        AGY_STOP,
+    );
+    assert_eq!((out.as_str(), err.as_str()), ("", ""));
+    let log = hooks_log(&home);
+    assert!(
+        log.contains(" standdown mode=hook agent=claude host=antigravity"),
+        "{log}"
+    );
+    assert!(!log.contains("host=grok"), "{log}");
+    assert!(!log.contains(" hook agent=claude "), "{log}");
+}
+
+#[test]
+fn a_claude_code_hook_grok_runs_still_logs_grok() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    // Grok started from an Antigravity shell passes on its conversation ID.
+    let (out, err) = claude_stop(
+        &home,
+        &[
+            ("GROK_HOOK_EVENT", "Stop".into()),
+            ("ANTIGRAVITY_CONVERSATION_ID", "c0ffee00".into()),
+        ],
+        r#"{"sessionId":"s1","session_id":"s1","hookEventName":"Stop","reason":"end_turn"}"#,
+    );
+    assert_eq!((out.as_str(), err.as_str()), ("", ""));
+    let log = hooks_log(&home);
+    assert!(
+        log.contains(" standdown mode=hook agent=claude host=grok"),
+        "{log}"
+    );
+    assert!(!log.contains("host=antigravity"), "{log}");
+}
+
+#[test]
+fn claude_code_itself_still_acts_with_antigravitys_variables_inherited() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    // Claude Code started from an Antigravity shell: Claude Code's own
+    // envelope and plugin root, Antigravity's conversation ID inherited.
+    let inherited = [
+        ("ANTIGRAVITY_CONVERSATION_ID", "c0ffee00".to_string()),
+        ("CLAUDE_PLUGIN_ROOT", dir.path().display().to_string()),
+    ];
+    let (_, err) = claude_stop(&home, &inherited, r#"{"session_id":"s1"}"#);
+    assert!(err.contains("no clax daemon is running"), "{err}");
+    let log = hooks_log(&home);
+    assert!(log.contains(" hook agent=claude event=stop "), "{log}");
+    assert!(!log.contains("standdown"), "{log}");
+    // The test process is the server's parent, standing in for Claude Code.
+    let mut m = Mcp::start(&home, "claude", &inherited);
+    assert_eq!(m.tool_names().len(), 43);
+    drop(m);
+    let _ = clax(&home, &[]).arg("stop").output();
 }
