@@ -1632,6 +1632,7 @@ fn doctor_agent_checks_an_antigravity_install() {
     assert_eq!(agy["detail"], "agy 1.5.18");
     let permissions = by_name(&all, "antigravity_permissions");
     assert_eq!(permissions["ok"], true, "{permissions}");
+    assert_eq!(permissions.get("warn"), None, "{permissions}");
     let mcp = by_name(&all, "mcp");
     assert_eq!(mcp["ok"], true, "{mcp}");
     let sessions = by_name(&all, "antigravity_sessions");
@@ -1685,6 +1686,29 @@ fn doctor_agent_checks_an_antigravity_install() {
     ] {
         assert!(text.contains(&format!(" {n} ")), "{n} in {text}");
     }
+
+    // Without the rule: a warning, printed `warn`, not a failure.
+    write(
+        e.dir.path(),
+        ".gemini/antigravity-cli/settings.json",
+        r#"{"permissions":{"allow":[]}}"#,
+    );
+    let permissions = by_name(&checks(), "antigravity_permissions");
+    assert_eq!(permissions["ok"], true, "{permissions}");
+    assert_eq!(permissions["warn"], true, "{permissions}");
+    assert!(
+        permissions["detail"]
+            .as_str()
+            .unwrap()
+            .contains("clax init --agent antigravity"),
+        "{permissions}"
+    );
+    let text = String::from_utf8(doctor(&[]).stdout).unwrap();
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("warn antigravity_permissions ")),
+        "{text}"
+    );
     e.stop();
 }
 

@@ -26,6 +26,7 @@
 //! - `channel` (Claude Code): whether the installed plugin declares the Clax
 //!   channel, and how the latest session was launched.
 
+use super::doctor::warn;
 use crate::antigravity_permissions::{self, SETUP_COMMAND, settings_path};
 use crate::client::Client;
 use clax_core::Home;
@@ -1207,9 +1208,12 @@ pub fn antigravity_version_check(version_line: Option<&str>) -> Value {
 }
 
 /// `antigravity_permissions`: whether the settings file under `root`
-/// ([`settings_path`]) lets every Clax tool run without asking; failed
-/// otherwise, since a headless run then refuses the tools.
+/// ([`settings_path`]) lets every Clax tool run without asking. A warning
+/// when it does not (the rule is the person's choice, and without it a
+/// headless run refuses the tools); failed when the file cannot be read or
+/// parsed.
 pub fn antigravity_permissions_check(root: &Path) -> Value {
+    const NAME: &str = "antigravity_permissions";
     let path = settings_path(root);
     let shown = path.display();
     let text = match std::fs::read_to_string(&path) {
@@ -1217,32 +1221,33 @@ pub fn antigravity_permissions_check(root: &Path) -> Value {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(e) => Err(e.to_string()),
     };
-    let (ok, detail) = match text.and_then(|t| antigravity_permissions::assess(&t)) {
-        Ok(antigravity_permissions::State::Allowed) => (
+    match text.and_then(|t| antigravity_permissions::assess(&t)) {
+        Ok(antigravity_permissions::State::Allowed) => check(
+            NAME,
             true,
             format!("{shown} allows every Clax tool, so Antigravity runs them without asking"),
         ),
-        Ok(antigravity_permissions::State::Missing) => (
-            false,
+        Ok(antigravity_permissions::State::Missing) => warn(
+            NAME,
             format!(
                 "{shown} does not allow the Clax tools, so Antigravity asks before every Clax tool call and a headless run refuses them. Add \"{PERMISSION_RULE}\" to permissions.allow there, or run `{SETUP_COMMAND}`, which offers to add it; it approves every Clax tool, delete included"
             ),
         ),
-        Ok(antigravity_permissions::State::Blocked(rules)) => (
-            false,
+        Ok(antigravity_permissions::State::Blocked(rules)) => warn(
+            NAME,
             format!(
                 "{shown} has ask or deny rules for the Clax tools, which Antigravity applies over any allow rule: {}. Antigravity asks before those tools or refuses them, and a headless run refuses them. Remove those rules; `{SETUP_COMMAND}` then adds \"{PERMISSION_RULE}\" to permissions.allow if it is not there",
                 rules.join(", ")
             ),
         ),
-        Err(e) => (
+        Err(e) => check(
+            NAME,
             false,
             format!(
                 "{shown} could not be read as Antigravity settings ({e}), so whether it approves the Clax tools is unknown: fix the file, then run `{SETUP_COMMAND}`"
             ),
         ),
-    };
-    check("antigravity_permissions", ok, detail)
+    }
 }
 
 /// `antigravity_sessions`: failed when a live session has a `pid` (a shim
@@ -2490,6 +2495,7 @@ mod tests {
         let c = antigravity_permissions_check(f.home());
         assert_eq!(c["name"], "antigravity_permissions");
         assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(c.get("warn"), None, "{c}");
         assert_eq!(
             c["detail"],
             format!(
@@ -2500,23 +2506,26 @@ mod tests {
     }
 
     #[test]
-    fn the_antigravity_permission_rule_missing_names_the_rule_the_file_and_clax_init() {
+    fn the_antigravity_permission_rule_missing_is_a_warning_naming_the_rule_the_file_and_clax_init()
+    {
         let f = Fixture::new();
         let want = format!(
             "{} does not allow the Clax tools, so Antigravity asks before every Clax tool call and a headless run refuses them. Add \"{PERMISSION_RULE}\" to permissions.allow there, or run `{SETUP_COMMAND}`, which offers to add it; it approves every Clax tool, delete included",
             settings_path(f.home()).display()
         );
         let c = antigravity_permissions_check(f.home());
-        assert_eq!(c["ok"], false, "no settings file: {c}");
+        assert_eq!(c["ok"], true, "no settings file: {c}");
+        assert_eq!(c["warn"], true, "no settings file: {c}");
         assert_eq!(c["detail"], want);
         agy_settings(&f, json!({"permissions": {"allow": ["mcp(other/*)"]}}));
         let c = antigravity_permissions_check(f.home());
-        assert_eq!(c["ok"], false, "{c}");
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(c["warn"], true, "{c}");
         assert_eq!(c["detail"], want);
     }
 
     #[test]
-    fn the_antigravity_permission_rule_blocked_names_the_rules() {
+    fn the_antigravity_permission_rule_blocked_is_a_warning_naming_the_rules() {
         let f = Fixture::new();
         agy_settings(
             &f,
@@ -2527,7 +2536,8 @@ mod tests {
             }}),
         );
         let c = antigravity_permissions_check(f.home());
-        assert_eq!(c["ok"], false, "{c}");
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(c["warn"], true, "{c}");
         assert_eq!(
             c["detail"],
             format!(
@@ -2540,17 +2550,20 @@ mod tests {
     #[test]
     fn antigravity_settings_that_do_not_parse_fail() {
         let f = Fixture::new();
-        f.write(".gemini/antigravity-cli/settings.json", "{");
-        let c = antigravity_permissions_check(f.home());
-        assert_eq!(c["ok"], false, "{c}");
-        let d = c["detail"].as_str().unwrap();
-        assert!(
-            d.starts_with(&format!(
-                "{} could not be read as Antigravity settings (",
-                settings_path(f.home()).display()
-            )) && d.ends_with(&format!("fix the file, then run `{SETUP_COMMAND}`")),
-            "{d}"
-        );
+        for text in ["{", r#"{"permissions":{"allow":"x"}}"#] {
+            f.write(".gemini/antigravity-cli/settings.json", text);
+            let c = antigravity_permissions_check(f.home());
+            assert_eq!(c["ok"], false, "{text}: {c}");
+            assert_eq!(c.get("warn"), None, "{text}: {c}");
+            let d = c["detail"].as_str().unwrap();
+            assert!(
+                d.starts_with(&format!(
+                    "{} could not be read as Antigravity settings (",
+                    settings_path(f.home()).display()
+                )) && d.ends_with(&format!("fix the file, then run `{SETUP_COMMAND}`")),
+                "{d}"
+            );
+        }
     }
 
     #[test]

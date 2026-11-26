@@ -27,7 +27,7 @@ fn check(name: &str, ok: bool, detail: impl Into<String>) -> serde_json::Value {
 }
 
 /// A passing check that the person should still read: printed `warn`.
-fn warn(name: &str, detail: impl Into<String>) -> serde_json::Value {
+pub(super) fn warn(name: &str, detail: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"name": name, "ok": true, "warn": true, "detail": detail.into()})
 }
 
