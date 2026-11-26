@@ -132,7 +132,8 @@ impl ServerHandler for Conversations {
     /// Runs the call with its caller's tools: its root conversation's,
     /// without feedback for a subagent. Once the server is shutting down
     /// ([`Conversations::end_all`]) a call is an error result,
-    /// `shutting_down`.
+    /// `shutting_down`. A call the client cancels is dropped, its result
+    /// never sent.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -151,7 +152,12 @@ impl ServerHandler for Conversations {
             Some(c) if c.subagent => tools.without_feedback(),
             _ => tools,
         };
-        tools.call_tool(request, context).await
+        // rmcp only cancels the token; an open wait would otherwise poll on.
+        let cancelled = context.ct.clone();
+        tokio::select! {
+            r = tools.call_tool(request, context) => r,
+            () = cancelled.cancelled() => Err(McpError::internal_error("cancelled", None)),
+        }
     }
 
     async fn list_tools(

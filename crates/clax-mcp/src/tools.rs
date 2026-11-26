@@ -1434,6 +1434,13 @@ pub struct ClaxTools {
     /// Feedback is appended to results and `wait_for_feedback` waits; false
     /// for a subagent's tools ([`ClaxTools::without_feedback`]).
     feedback: bool,
+    /// [`ClaxTools::with_unbounded_wait`].
+    unbounded_wait: bool,
+    /// An unbounded `wait_for_feedback` is open; shared by clones, fresh in
+    /// [`ClaxTools::for_client`].
+    waiting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// [`ClaxTools::headless`].
+    headless: bool,
     tool_router: std::sync::Arc<ToolRouter<Self>>,
 }
 
@@ -1453,6 +1460,26 @@ impl Drop for CallGuard<'_> {
         if clax_rt::in_runtime() {
             self.tools.report_call(&self.call, self.outcome);
         }
+    }
+}
+
+/// The one open unbounded `wait_for_feedback` of a [`ClaxTools`], held
+/// until the wait returns or is dropped.
+struct OpenWait(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl OpenWait {
+    /// `None` while another is open.
+    fn take(flag: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<OpenWait> {
+        use std::sync::atomic::Ordering;
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| OpenWait(flag.clone()))
+    }
+}
+
+impl Drop for OpenWait {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -1504,8 +1531,26 @@ impl ClaxTools {
             reports: Default::default(),
             clock: std::sync::Arc::new(clax_core::working::SystemClock),
             feedback: true,
+            unbounded_wait: false,
+            waiting: Default::default(),
+            headless: false,
             tool_router: std::sync::Arc::new(Self::tool_router()),
         }
+    }
+
+    /// `wait_for_feedback` with no `timeout_s` waits until there is
+    /// something to hand over (an interactive Antigravity run). One such
+    /// wait is open at a time; another call meanwhile returns at once with
+    /// `already_waiting: true`.
+    pub fn with_unbounded_wait(mut self, on: bool) -> ClaxTools {
+        self.unbounded_wait = on;
+        self
+    }
+
+    /// `status` and `watch` say nothing wakes this run.
+    pub fn headless(mut self, on: bool) -> ClaxTools {
+        self.headless = on;
+        self
     }
 
     /// These tools capturing the agent's git state with `git` on each call
@@ -1655,7 +1700,7 @@ impl ClaxTools {
 
     /// These tools on `client`, with their own per-session state: no
     /// session but the client's, and their own open questions, connection
-    /// requests and tool-call reports.
+    /// requests, tool-call reports and open wait.
     pub fn for_client(&self, client: DaemonClient) -> ClaxTools {
         ClaxTools {
             client,
@@ -1663,6 +1708,7 @@ impl ClaxTools {
             ask_surface: Default::default(),
             connect_pages: Default::default(),
             reports: Default::default(),
+            waiting: Default::default(),
             ..self.clone()
         }
     }
@@ -2775,7 +2821,8 @@ impl ClaxTools {
     }
 
     /// `status.push`: the daemon's `push` for `session`, refined by the
-    /// channel under Claude Code, and with the monitor command under Grok.
+    /// channel under Claude Code, with the monitor command under Grok, and
+    /// with `headless: true` in a headless Antigravity run.
     fn refined_push(&self, push: Value, session: Option<&Session>) -> Value {
         let bin = self.follow_bin();
         let hs = session.and_then(|s| s.harness_session_id.as_deref());
@@ -2790,6 +2837,12 @@ impl ClaxTools {
             && let Some(hs) = hs
         {
             push["follow_command"] = json!(crate::channel::grok_follow_command(&bin, hs));
+        }
+        if self.headless
+            && push.is_object()
+            && session.is_some_and(|s| s.harness == clax_core::antigravity::HARNESS)
+        {
+            push["headless"] = json!(true);
         }
         push
     }
@@ -4252,7 +4305,10 @@ impl ClaxTools {
     }
 
     /// Tier 4. Its own result carries the feedback, so no piggyback follows.
-    /// A subagent's wait is refused.
+    /// A subagent's wait is refused. Unbounded
+    /// ([`ClaxTools::with_unbounded_wait`]) and with no `timeout_s`, it
+    /// polls again each time a poll hands over nothing, while no other such
+    /// wait of these tools is open.
     async fn do_wait(&self, a: WaitArgs) -> CallToolResult {
         if !self.feedback {
             return render::error(
@@ -4271,27 +4327,46 @@ impl ClaxTools {
         if let Err(e) = self.require_session().await {
             return e;
         }
+        let unbounded = self.unbounded_wait && a.timeout_s.is_none();
+        let _open = if unbounded {
+            let Some(open) = OpenWait::take(&self.waiting) else {
+                return render::success(json!({"already_waiting": true, "call_again": false}));
+            };
+            Some(open)
+        } else {
+            None
+        };
         let secs = a
             .timeout_s
-            .unwrap_or(DEFAULT_WAIT_S)
+            .unwrap_or(if unbounded {
+                MAX_WAIT_S
+            } else {
+                DEFAULT_WAIT_S
+            })
             .clamp(MIN_WAIT_S, MAX_WAIT_S);
-        match self
-            .client
-            .feedback("wait", secs, artifact.as_deref())
-            .await
-        {
-            Err(e) => self.fail(e),
-            Ok(res) => {
-                let h = self.handover(&res).await;
-                self.forget_answered(&h);
-                // A note alone is no feedback: the agent still calls again.
-                let call_again =
-                    h.feedback.is_empty() && h.answers.is_empty() && h.withheld.is_empty();
-                render::success_with(
-                    json!({"waited_s": res["waited_s"], "call_again": call_again}),
-                    h,
-                )
+        let mut waited_s = 0;
+        loop {
+            let res = match self
+                .client
+                .feedback("wait", secs, artifact.as_deref())
+                .await
+            {
+                Err(e) => return self.fail(e),
+                Ok(res) => res,
+            };
+            waited_s += res["waited_s"].as_u64().unwrap_or(0);
+            let h = self.handover(&res).await;
+            self.forget_answered(&h);
+            // A note is handed over once: an unbounded wait returns it too.
+            if unbounded && h.is_empty() {
+                continue;
             }
+            // A note alone is no feedback: the agent still calls again.
+            let call_again = h.feedback.is_empty() && h.answers.is_empty() && h.withheld.is_empty();
+            return render::success_with(
+                json!({"waited_s": waited_s, "call_again": call_again}),
+                h,
+            );
         }
     }
 }
@@ -5519,6 +5594,18 @@ mod tests {
                 assert!(a.destructive_hint.is_some(), "{}", t.name);
             }
         }
+    }
+
+    #[test]
+    fn each_conversation_has_its_own_open_wait() {
+        let client = || DaemonClient::new("http://127.0.0.1:9".into(), "t".into(), None);
+        let tools = ClaxTools::new(client(), String::new(), None, PathBuf::new());
+        let open = OpenWait::take(&tools.waiting).expect("none is open");
+        assert!(OpenWait::take(&tools.clone().waiting).is_none());
+        let other = tools.for_client(client());
+        assert!(OpenWait::take(&other.waiting).is_some());
+        drop(open);
+        assert!(OpenWait::take(&tools.waiting).is_some());
     }
 
     /// Forty-three tools, `connect_instance` (spec 2026-10-29 §3),

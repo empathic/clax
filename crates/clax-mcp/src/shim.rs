@@ -182,8 +182,11 @@ fn parse_lsof_cwd(out: &str) -> Option<PathBuf> {
 ///
 /// Under Antigravity nothing is registered before a call: each root
 /// conversation gets its own session on its first call, heartbeated from
-/// then on ([`Conversations`]). On exit every one is ended, and the files
-/// Antigravity's hooks keep for it (`run/tool-hook/antigravity-<ID>`,
+/// then on ([`Conversations`]). Unless the parent's command line shows an
+/// interactive `agy` run, the run is headless: `wait_for_feedback` keeps
+/// its bounds and `status` says nothing wakes it; in an interactive run a
+/// wait with no `timeout_s` has none. On exit every one is ended, and the
+/// files Antigravity's hooks keep for it (`run/tool-hook/antigravity-<ID>`,
 /// `run/wake-nudge/antigravity-<ID>.json`) are removed for an ID made of
 /// `[A-Za-z0-9._-]`.
 pub async fn run(
@@ -278,6 +281,12 @@ pub async fn run(
     }
 
     if harness == Harness::Antigravity {
+        let parent = tokio::task::spawn_blocking(move || crate::channel::process_argv(parent_pid))
+            .await
+            .ok()
+            .and_then(Result::ok);
+        let headless = clax_core::antigravity::run_is_headless(&[parent]);
+        let tools = tools.with_unbounded_wait(!headless).headless(headless);
         let conversations = Arc::new(Conversations::new(tools, reg, connect, heartbeat));
         let served = serve(conversations.clone(), None).await;
         for root in conversations.end_all(END_TIMEOUT).await {

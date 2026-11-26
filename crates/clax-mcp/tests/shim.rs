@@ -6,12 +6,18 @@ use clax_core::Home;
 use clax_core::daemon::read_daemon_info;
 use clax_fake_exe::clax_bin;
 use clax_testkit::{until, within};
-use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::service::RunningService;
+use rmcp::model::{
+    CallToolRequest, CallToolRequestParams, CallToolResult, ClientRequest, ServerResult,
+};
+use rmcp::service::{PeerRequestOptions, RequestHandle, RunningService};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+
+/// A stand-in for `agy`: runs the shim as its child, with stdin and stdout
+/// passed through, so the shim's parent command line is `agy`'s.
+const FAKE_AGY: &str = "#!/bin/bash\n\"$CLAX_TEST_BIN\" --port 0 mcp --agent antigravity\n";
 
 /// A running shim with its own `CLAX_HOME`; dropping it stops the daemon the
 /// shim started. The shim logs its warnings to `<dir>/shim.log`
@@ -50,8 +56,24 @@ impl Shim {
 
     /// Starts an Antigravity shim, with `CLAX_SESSION_ID` set (it must not
     /// be used), against a daemon already serving its home, so the daemon
-    /// can be asked about sessions before any call.
+    /// can be asked about sessions before any call. Its parent is no `agy`,
+    /// so the run counts as headless.
     async fn start_antigravity() -> Shim {
+        let dir = Shim::serving_daemon();
+        Shim::spawn(dir, None, "antigravity", ("CLAX_SESSION_ID", "from-env")).await
+    }
+
+    /// [`Shim::start_antigravity`] run by a fake `agy` given `flags`: an
+    /// interactive run with none, a headless one with `-p x`.
+    async fn start_agy(flags: &[&str]) -> Shim {
+        let dir = Shim::serving_daemon();
+        let agy = clax_fake_exe::install(&dir.path().join("agy"), FAKE_AGY);
+        let args = flags.iter().map(|f| f.to_string()).collect();
+        Shim::launch(dir, agy, args, ("CLAX_SESSION_ID", "from-env")).await
+    }
+
+    /// A directory whose home `<dir>/ax` a daemon serves.
+    fn serving_daemon() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let out = std::process::Command::new(clax_bin(None))
             .args(["--port", "0", "serve"])
@@ -61,7 +83,7 @@ impl Shim {
             .output()
             .expect("run clax serve");
         assert!(out.status.success(), "{out:?}");
-        Shim::spawn(dir, None, "antigravity", ("CLAX_SESSION_ID", "from-env")).await
+        dir
     }
 
     /// Starts `clax mcp --agent <agent>` with the inherited harness
@@ -72,10 +94,27 @@ impl Shim {
         agent: &str,
         session_var: (&str, &str),
     ) -> Shim {
+        let mut args: Vec<String> = ["--port", "0", "mcp", "--agent", agent]
+            .map(str::to_string)
+            .into();
+        if let Some(ms) = heartbeat_ms {
+            args.extend(["--heartbeat-interval-ms".to_string(), ms.to_string()]);
+        }
+        Shim::launch(dir, clax_bin(None), args, session_var).await
+    }
+
+    /// Runs `program` with `args`, the inherited harness environment
+    /// cleared and only `session_var` set, as the shim or its parent.
+    async fn launch(
+        dir: tempfile::TempDir,
+        program: PathBuf,
+        args: Vec<String>,
+        session_var: (&str, &str),
+    ) -> Shim {
         std::fs::create_dir_all(dir.path().join("work")).unwrap();
         let home = dir.path().join("ax");
         let work = dir.path().join("work");
-        let cmd = tokio::process::Command::new(clax_bin(None)).configure(|c| {
+        let cmd = tokio::process::Command::new(program).configure(|c| {
             for var in [
                 "GROK_SESSION_ID",
                 "GROK_HOOK_EVENT",
@@ -89,7 +128,8 @@ impl Shim {
             ] {
                 c.env_remove(var);
             }
-            c.args(["--port", "0", "mcp", "--agent", agent])
+            c.args(&args)
+                .env("CLAX_TEST_BIN", clax_bin(None))
                 .env("CLAX_HOME", &home)
                 .env("CLAX_CODEX_BIN", "")
                 .env("HOME", dir.path())
@@ -99,9 +139,6 @@ impl Shim {
                 .env(clax_mcp::git::DEADLINE_VAR, "20000")
                 .env("RUST_LOG", "warn")
                 .current_dir(&work);
-            if let Some(ms) = heartbeat_ms {
-                c.args(["--heartbeat-interval-ms", &ms.to_string()]);
-            }
         });
         let log = std::fs::File::create(dir.path().join("shim.log")).unwrap();
         let (transport, _) = TokioChildProcess::builder(cmd)
@@ -155,6 +192,50 @@ impl Shim {
             .expect("JSON body")
     }
 
+    /// POSTs `body` to `path` on the daemon with its token.
+    async fn post(&self, path: &str, body: Value) -> Value {
+        let token = read_daemon_info(&self.home()).expect("daemon.json").token;
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .post(format!("{}{path}", self.daemon_base()))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .expect("daemon answers")
+            .json()
+            .await
+            .expect("JSON body")
+    }
+
+    /// Waits until session `sid` has `n` feedback polls of the kind
+    /// `query` names (`parked=wait`, `held=true`; empty for every open
+    /// `wait_for_feedback` poll).
+    async fn until_waiters(&self, sid: &str, query: &str, n: u64) {
+        let what = format!("{n} feedback polls ({query}) of {sid}");
+        let path = format!("/api/_test/sessions/{sid}/feedback/waiters?until={n}&{query}");
+        within(
+            &what,
+            until(&what, || async {
+                (self.get(&path).await["count"] == n).then_some(())
+            }),
+        )
+        .await;
+    }
+
+    /// Ends every open `wait_for_feedback` poll of session `sid` now, as if
+    /// it had run out; how many that was.
+    async fn expire(&self, sid: &str) -> Value {
+        self.post(
+            &format!("/api/_test/sessions/{sid}/feedback/expire"),
+            json!({}),
+        )
+        .await["expired"]
+            .clone()
+    }
+
     async fn live_sessions(&self) -> Vec<Value> {
         self.get("/api/sessions?live=true").await["sessions"]
             .as_array()
@@ -187,6 +268,24 @@ impl Shim {
         let mut params = CallToolRequestParams::new(name).with_arguments(args);
         params.meta = Some(meta.into());
         self.client().call_tool(params).await.expect("tool call")
+    }
+
+    /// Sends a `wait_for_feedback` call with `args` from root conversation
+    /// `root`, returning its handle, by which the test can cancel it.
+    async fn start_wait(&self, root: &str, args: Value) -> RequestHandle<RoleClient> {
+        let (Value::Object(meta), Value::Object(args)) = (from_conversation(root, root), args)
+        else {
+            panic!("the meta and the tool arguments are objects")
+        };
+        let mut params = CallToolRequestParams::new("wait_for_feedback").with_arguments(args);
+        params.meta = Some(meta.into());
+        self.client()
+            .send_cancellable_request(
+                ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+                PeerRequestOptions::no_options(),
+            )
+            .await
+            .expect("the call is sent")
     }
 
     /// Runs `clax stop` against this shim's home and checks the daemon
@@ -887,5 +986,165 @@ async fn every_conversation_is_ended_on_exit_and_its_hook_files_removed() {
     for f in &beside {
         assert!(f.exists(), "{}", f.display());
     }
+    shim.finish().await;
+}
+
+/// The result a `wait_for_feedback` call answered `handle` with.
+async fn wait_result(handle: RequestHandle<RoleClient>) -> CallToolResult {
+    match within("the wait's result", handle.await_response()).await {
+        Ok(ServerResult::CallToolResult(r)) => r,
+        other => panic!("not a tool result: {other:?}"),
+    }
+}
+
+/// The session ID of root conversation `root`, registering it.
+async fn session_of(shim: &Shim, root: &str) -> String {
+    let s = ok(&shim
+        .call_with_meta(from_conversation(root, root), "status", json!({}))
+        .await);
+    s["session"]["id"].as_str().unwrap().to_string()
+}
+
+/// Cancels the wait `handle` names and waits until its poll is gone.
+async fn cancel_wait(shim: &Shim, sid: &str, handle: RequestHandle<RoleClient>) {
+    handle.cancel(Some("test".into())).await.unwrap();
+    shim.until_waiters(sid, "", 0).await;
+}
+
+#[tokio::test]
+async fn an_unbounded_wait_outlasts_a_server_poll() {
+    let shim = Shim::start_agy(&[]).await;
+    let sid = session_of(&shim, "r1").await;
+    let mut wait = shim.start_wait("r1", json!({})).await;
+    shim.until_waiters(&sid, "parked=wait", 1).await;
+    // Past its first take, the open poll never stops at `first_take`; the
+    // next poll does.
+    let hold = format!("/api/_test/sessions/{sid}/feedback/hold");
+    shim.post(&hold, json!({"hold": true, "at": "first_take"}))
+        .await;
+    assert_eq!(shim.expire(&sid).await, 1);
+    shim.until_waiters(&sid, "held=true", 1).await;
+    assert!(wait.rx.try_recv().is_err(), "the wait answered");
+    shim.post(&hold, json!({"hold": false})).await;
+    cancel_wait(&shim, &sid, wait).await;
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn an_unbounded_wait_returns_the_comment() {
+    let shim = Shim::start_agy(&[]).await;
+    let p = ok(&shim
+        .call_with_meta(
+            from_conversation("r1", "r1"),
+            "publish",
+            json!({"html": "<main><h2>Goals</h2></main>", "title": "Loop"}),
+        )
+        .await);
+    let sid = session_of(&shim, "r1").await;
+    let wait = shim.start_wait("r1", json!({})).await;
+    shim.until_waiters(&sid, "", 1).await;
+    comment(
+        &shim,
+        p["artifact_id"].as_str().unwrap(),
+        "@agent two columns",
+    )
+    .await;
+    let r = wait_result(wait).await;
+    let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(v["feedback"][0]["body"], "@agent two columns", "{v}");
+    assert_eq!(v["call_again"], false, "{v}");
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_second_wait_while_one_is_open_returns_at_once() {
+    let shim = Shim::start_agy(&[]).await;
+    let sid = session_of(&shim, "r1").await;
+    let wait = shim.start_wait("r1", json!({})).await;
+    shim.until_waiters(&sid, "", 1).await;
+    let second = ok(&shim
+        .call_with_meta(
+            from_conversation("r1", "r1"),
+            "wait_for_feedback",
+            json!({}),
+        )
+        .await);
+    assert_eq!(second["already_waiting"], true, "{second}");
+    assert_eq!(second["call_again"], false, "{second}");
+    let open = shim
+        .get(&format!("/api/_test/sessions/{sid}/feedback/waiters"))
+        .await;
+    assert_eq!(open["count"], 1, "{open}");
+    cancel_wait(&shim, &sid, wait).await;
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_cancelled_wait_can_be_opened_again() {
+    let shim = Shim::start_agy(&[]).await;
+    let sid = session_of(&shim, "r1").await;
+    let first = shim.start_wait("r1", json!({})).await;
+    shim.until_waiters(&sid, "", 1).await;
+    cancel_wait(&shim, &sid, first).await;
+
+    let mut again = shim.start_wait("r1", json!({})).await;
+    tokio::select! {
+        r = &mut again.rx => panic!("the wait answered instead of waiting: {r:?}"),
+        () = shim.until_waiters(&sid, "", 1) => {}
+    }
+    cancel_wait(&shim, &sid, again).await;
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_wait_with_a_timeout_is_bounded() {
+    let shim = Shim::start_agy(&[]).await;
+    let sid = session_of(&shim, "r1").await;
+    let wait = shim.start_wait("r1", json!({"timeout_s": 5})).await;
+    shim.until_waiters(&sid, "", 1).await;
+    assert_eq!(shim.expire(&sid).await, 1);
+    let v = ok(&wait_result(wait).await);
+    assert_eq!(v["call_again"], true, "{v}");
+    let status = ok(&shim
+        .call_with_meta(from_conversation("r1", "r1"), "status", json!({}))
+        .await);
+    assert_eq!(status["push"]["headless"], Value::Null, "{status}");
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_headless_run_waits_with_bounds_and_says_nothing_wakes_it() {
+    let shim = Shim::start_agy(&["-p", "x"]).await;
+    let sid = session_of(&shim, "r1").await;
+    let wait = shim.start_wait("r1", json!({})).await;
+    shim.until_waiters(&sid, "", 1).await;
+    assert_eq!(shim.expire(&sid).await, 1);
+    let v = ok(&wait_result(wait).await);
+    assert_eq!(v["call_again"], true, "{v}");
+
+    let status = ok(&shim
+        .call_with_meta(from_conversation("r1", "r1"), "status", json!({}))
+        .await);
+    assert_eq!(status["push"]["headless"], true, "{status}");
+    let p = ok(&shim
+        .call_with_meta(
+            from_conversation("r1", "r1"),
+            "publish",
+            json!({"html": "<main><h2>Goals</h2></main>", "title": "Loop"}),
+        )
+        .await);
+    let watched = ok(&shim
+        .call_with_meta(
+            from_conversation("r1", "r1"),
+            "watch",
+            json!({"url_or_id": p["artifact_id"]}),
+        )
+        .await);
+    assert_eq!(
+        watched["wake"]["do"],
+        "Nothing wakes a headless run. Comments reach you on your next Clax tool call. End \
+your turn when you are done.",
+        "{watched}"
+    );
     shim.finish().await;
 }
