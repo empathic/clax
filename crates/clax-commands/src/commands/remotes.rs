@@ -44,8 +44,9 @@ pub enum Cmd {
     /// the answer and prints it: connected, dismissed, muted, not_now (with
     /// until) or expired. Asks as the agent's Clax session: --session, else
     /// the live session its harness's session variable names
-    /// (CODEX_THREAD_ID, GROK_SESSION_ID, CLAUDE_CODE_SESSION_ID), else the
-    /// live session whose harness process is an ancestor of this one.
+    /// (CODEX_THREAD_ID, GROK_SESSION_ID, CLAUDE_CODE_SESSION_ID,
+    /// ANTIGRAVITY_CONVERSATION_ID), else the live session whose harness
+    /// process is an ancestor of this one.
     Request(RequestArgs),
 }
 
@@ -72,6 +73,7 @@ const SESSION_VARIABLES: &[(&str, &str)] = &[
     ("CODEX_THREAD_ID", "codex"),
     ("GROK_SESSION_ID", "grok"),
     ("CLAUDE_CODE_SESSION_ID", "claude"),
+    ("ANTIGRAVITY_CONVERSATION_ID", "antigravity"),
 ];
 
 /// The live session among `sessions` (`GET /api/sessions?live=true`'s)
@@ -413,6 +415,7 @@ mod tests {
         let sessions = [
             json!({"id": "s_codex", "harness": "codex", "harness_session_id": "th-1", "parent_pid": 40}),
             json!({"id": "s_claude", "harness": "claude", "harness_session_id": "cc-1", "parent_pid": 30}),
+            json!({"id": "s_agy", "harness": "antigravity", "harness_session_id": "conv-1", "parent_pid": 50}),
             json!({"id": "s_far", "harness": "claude", "harness_session_id": "cc-2", "parent_pid": 20}),
         ];
         assert_eq!(
@@ -422,6 +425,15 @@ mod tests {
         assert_eq!(
             session_among(&sessions, env(&[("CLAUDE_CODE_SESSION_ID", "cc-1")]), &[]).as_deref(),
             Some("s_claude")
+        );
+        assert_eq!(
+            session_among(
+                &sessions,
+                env(&[("ANTIGRAVITY_CONVERSATION_ID", "conv-1")]),
+                &[30]
+            )
+            .as_deref(),
+            Some("s_agy")
         );
         // A variable naming no live session falls back to the ancestors,
         // the nearest first.

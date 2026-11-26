@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests scripts/dev-home.sh, scripts/dev.sh and the hand-off from a bare
 # `just dev` to scripts/watch.sh, and the install and uninstall recipes, with a
-# scratch HOME and CARGO_HOME, fake `claude`, `codex`, `grok`, `pi` and `cargo`
+# scratch HOME and CARGO_HOME, fake `claude`, `codex`, `grok`, `agy`, `pi` and `cargo`
 # commands, a fake clax, and `sleep` processes standing in for daemons. No
 # cargo build, no real harness, no real daemon, nothing on 7480 or 7481.
 set -uo pipefail
@@ -172,7 +172,7 @@ rm -rf "$HOME/.clax"
 # check, before it builds anything or probes a port.
 FAKE="$T/fake"
 mkdir -p "$FAKE"
-for h in claude codex grok pi; do
+for h in claude codex grok agy pi; do
     fake_exe "$FAKE/$h" <<'SH'
 #!/bin/sh
 c="$(command -v clax)"
@@ -239,6 +239,16 @@ if [ "$(wc -l < "$T/calls" | tr -d ' ')" = 1 ] \
     && [ -n "$tmpdir" ] && [ ! -e "$tmpdir" ] && [ -z "$(ls -A "$GROK_HOME")" ] && grep -q 'just install' "$T/out"; then
     pass "just dev grok runs Grok once, with the build on PATH and ~/.clax-dev, its own GROK_HOME untouched and the installed plugin"
 else fail "just dev grok ($line; $(cat "$T/err"))"; fi
+
+devrun antigravity --conversation c-1
+line="$(cat "$T/calls")"
+tmpdir="$(printf '%s' "$line" | sed -n 's#.*clax=\(.*\)/clax (.*#\1#p')"
+if [ "$(wc -l < "$T/calls" | tr -d ' ')" = 1 ] \
+    && echo "$line" | grep -F "agy --conversation c-1 | clax=$tmpdir/clax (clax 9.9.9-dev) home=$HOME/.clax-dev" >/dev/null \
+    && echo "$line" | grep -F "clax_bin=$tmpdir/clax " >/dev/null \
+    && [ -n "$tmpdir" ] && [ ! -e "$tmpdir" ] && grep -q 'clax-antigravity' "$T/out" && grep -q 'just install' "$T/out"; then
+    pass "just dev antigravity runs agy once, with the build on PATH and in CLAX_BIN, ~/.clax-dev and the installed plugin"
+else fail "just dev antigravity ($line; $(cat "$T/err"))"; fi
 
 : > "$T/calls"
 if CLAX_DEV_BIN="$T/clax-build" PATH="$FAKE:$PATH" CLAX_HOME="$T/mine" "$HERE/dev.sh" pi >/dev/null 2>&1 \
@@ -367,6 +377,9 @@ else fail "an unknown harness prints usage ($(cat "$T/err"))"; fi
 if CLAX_DEV_BIN="$T/clax-build" PATH="$(PATH=/usr/bin:/bin path_without "$T/no-claude" claude)" "$HERE/dev.sh" claude >/dev/null 2>"$T/err"; then fail "a missing harness CLI fails"
 elif grep -q "claude is not on PATH" "$T/err"; then pass "a missing harness CLI fails and says so"
 else fail "a missing harness CLI ($(cat "$T/err"))"; fi
+if CLAX_DEV_BIN="$T/clax-build" PATH="$(PATH=/usr/bin:/bin path_without "$T/no-agy" agy)" "$HERE/dev.sh" antigravity >/dev/null 2>"$T/err"; then fail "a missing agy fails"
+elif grep -q "agy is not on PATH" "$T/err"; then pass "just dev antigravity without agy fails and names agy"
+else fail "a missing agy ($(cat "$T/err"))"; fi
 
 # A bare `just dev`, or one whose first argument is an option, is `just watch`.
 rm -rf "$HOME/.clax-dev"
