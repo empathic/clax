@@ -50,6 +50,25 @@ impl HookOutput {
         }})))
     }
 
+    /// This output as Antigravity reads it: a block becomes
+    /// `{"decision":"continue","reason":…}`, added context becomes
+    /// `{"injectSteps":[{"systemMessage":{"systemMessage":…}}]}`, and
+    /// anything else prints nothing.
+    pub fn for_antigravity(self) -> HookOutput {
+        let Some(v) = self.0 else {
+            return HookOutput::none();
+        };
+        if v["decision"] == "block" {
+            return HookOutput(Some(json!({"decision": "continue", "reason": v["reason"]})));
+        }
+        match v["hookSpecificOutput"]["additionalContext"].as_str() {
+            Some(text) => HookOutput(Some(
+                json!({"injectSteps": [{"systemMessage": {"systemMessage": text}}]}),
+            )),
+            None => HookOutput::none(),
+        }
+    }
+
     pub fn value(&self) -> Option<&Value> {
         self.0.as_ref()
     }
@@ -103,5 +122,29 @@ mod tests {
                 &json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "no"}})
             )
         );
+    }
+
+    #[test]
+    fn a_block_becomes_a_continue() {
+        assert_eq!(
+            HookOutput::block("r").for_antigravity().value(),
+            Some(&json!({"decision": "continue", "reason": "r"}))
+        );
+    }
+
+    #[test]
+    fn added_context_becomes_an_injected_system_message() {
+        assert_eq!(
+            HookOutput::additional_context("UserPromptSubmit", "t")
+                .for_antigravity()
+                .value(),
+            Some(&json!({"injectSteps": [{"systemMessage": {"systemMessage": "t"}}]}))
+        );
+    }
+
+    #[test]
+    fn nothing_else_is_printed_for_antigravity() {
+        assert_eq!(HookOutput::none().for_antigravity().value(), None);
+        assert_eq!(HookOutput::deny("x").for_antigravity().value(), None);
     }
 }
