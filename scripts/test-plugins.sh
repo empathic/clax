@@ -458,6 +458,8 @@ for r in refs:
     name = "references/" + os.path.basename(r)
     if "`" + name + "`" not in text:
         bad.append(f"{skill} does not name `{name}`")
+if "`~/.gemini/config/plugins/clax-antigravity/skills/clax/references/`" not in text:
+    bad.append(f"{skill} does not give the installed references directory")
 print("; ".join(bad))
 sys.exit(1 if bad else 0)
 PY2
@@ -506,6 +508,13 @@ if [ -n "$live" ] && echo "$live" | grep -F 'mcp_clax-antigravity_clax_wait_for_
     && echo "$live" | grep -F 'timeout_s' >/dev/null && echo "$live" | grep -F 'watch' >/dev/null; then
     pass "$agy_skill has the Live feedback in Antigravity section"
 else fail "$agy_skill needs a '## Live feedback in Antigravity' section naming mcp_clax-antigravity_clax_wait_for_feedback, timeout_s and watch"; fi
+# A headless run must not be told to wait in a loop: the always-on rules and
+# the skill both say so (antigravity design §6.5).
+headless='In a headless run (`agy -p`) nothing wakes you: do not wait unless'
+for f in plugins/clax-antigravity/rules/AGENTS.md "$agy_skill"; do
+    if tr '\n' ' ' < "$f" | tr -s ' ' | grep -F "$headless" >/dev/null; then pass "$f tells a headless run not to wait"
+    else fail "$f must say: $headless the person asked you to"; fi
+done
 for f in "${skill_copies[@]}"; do
     if [ ! -f "$f" ]; then fail "$f is missing"; continue; fi
     if [ "$(frontmatter "$f" name)" = "clax" ]; then pass "$f is named clax"; else fail "$f frontmatter name is not clax"; fi

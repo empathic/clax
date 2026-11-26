@@ -48,8 +48,9 @@ there a call the rule does not allow is refused.
 ## Reference files
 
 Antigravity loads only the start of a long skill, so the rest of this one
-is in files beside it, in `references/`. Read the one you need with your
-file tool, from the directory this file is in:
+is in files beside it. Read the one you need with your file tool, from the
+`references` directory beside this file; in an installed plugin that is
+`~/.gemini/config/plugins/clax-antigravity/skills/clax/references/`:
 
 - Before you ask the person anything, read `references/asking.md` (where
   to ask them and how to use `ask`).
@@ -317,10 +318,13 @@ turn can end while it is open, and when a comment is sent to you it
 finishes and starts a new turn with the comments. If you are busy then, its
 result reaches you at your next step instead.
 
+A `watch` result's `wake.do` says what to do in this run: follow it. In an
+interactive run it comes to these steps; a headless run is below.
+
 1. After your first publish or `watch` in a conversation (publishing
    watches the artifact with replies on), call
    `mcp_clax-antigravity_clax_wait_for_feedback` with no `timeout_s`, then
-   end your turn. The `watch` result's `wake` says the same in its `do`.
+   end your turn.
 2. When the call finishes, handle what it brought as in "Comment loop",
    then call `wait_for_feedback` again with no `timeout_s` and end your
    turn.
@@ -339,7 +343,7 @@ After a conversation is resumed (`agy --conversation <ID>`), the earlier
 wait and its watches are gone: `watch` the pages still in play, then call
 `wait_for_feedback` again.
 
-In a headless run (`agy -p`) nothing wakes the conversation. A wait there
-is bounded as `timeout_s` says (50 seconds by default, at most 600), and
-the run does not exit until it finishes. Comments reach you on your next
-Clax tool call; wait again only when the person asked you to.
+In a headless run (`agy -p`) nothing wakes you: do not wait unless the
+person asked you to. A wait there is bounded as `timeout_s` says (50
+seconds by default, at most 600), and the run does not exit until it
+finishes. Comments reach you on your next Clax tool call.
