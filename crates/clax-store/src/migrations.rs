@@ -6712,10 +6712,9 @@ mod tests {
             )
             .unwrap();
         }
-        let before = |c: &Connection| -> (
-            Vec<(i64, String, String, Option<String>)>,
-            Vec<(String, String)>,
-        ) {
+        /// An inbox item's `seq`, `kind`, `key` and `recipient`.
+        type Item = (i64, String, String, Option<String>);
+        let before = |c: &Connection| -> (Vec<Item>, Vec<(String, String)>) {
             let items = c
                 .prepare("SELECT seq, kind, key, recipient FROM inbox_items ORDER BY seq")
                 .unwrap()

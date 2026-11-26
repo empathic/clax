@@ -45,7 +45,9 @@ impl Reply {
 }
 
 /// The `User-Agent` of every model call: names Clax to the provider and to a
-/// local LLM proxy, which records it per call.
+/// local LLM proxy, which records it per call. Native only: a Worker's
+/// `fetch` sends the runtime's own.
+#[cfg(not(target_arch = "wasm32"))]
 pub const USER_AGENT: &str = concat!("Clax/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone)]

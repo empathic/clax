@@ -40,11 +40,13 @@ impl Flow {
     /// The sign-in a request to `s` with `headers` runs: the hosted one, or
     /// the local one on one of its origins; `Err` with the answer (404 when
     /// GitHub sign-in is off, 400 on a host none of `[github] origins`
-    /// names).
-    fn of(s: &AppState, headers: &HeaderMap) -> Result<Flow, Response> {
+    /// names), boxed, since a `Response` is large next to a `Flow`.
+    fn of(s: &AppState, headers: &HeaderMap) -> Result<Flow, Box<Response>> {
         if let Some(h) = &s.hosted {
             let Some(g) = h.github.clone() else {
-                return Err(clax_http::error::ApiError::not_found().into_response());
+                return Err(Box::new(
+                    clax_http::error::ApiError::not_found().into_response(),
+                ));
             };
             return Ok(Flow {
                 github: g,
@@ -54,7 +56,9 @@ impl Flow {
             });
         }
         let Some(l) = &s.local_github else {
-            return Err(clax_http::error::ApiError::not_found().into_response());
+            return Err(Box::new(
+                clax_http::error::ApiError::not_found().into_response(),
+            ));
         };
         let host = headers
             .get(header::HOST)
@@ -68,11 +72,11 @@ impl Flow {
                 secure: false,
                 hosted: None,
             };
-            return Err(failed(
+            return Err(Box::new(failed(
                 &f,
                 StatusCode::BAD_REQUEST,
                 &format!("GitHub sign-in on this Clax starts at {first}/auth/github."),
-            ));
+            )));
         };
         Ok(Flow {
             github: l.github.clone(),
@@ -144,7 +148,7 @@ pub async fn start(
 ) -> Response {
     let f = match Flow::of(&s, &headers) {
         Ok(f) => f,
-        Err(res) => return res,
+        Err(res) => return *res,
     };
     let g = &f.github;
     let next = q.ok().and_then(|Query(q)| q.next);
@@ -230,7 +234,7 @@ pub async fn callback(
 ) -> Response {
     let f = match Flow::of(&s, &headers) {
         Ok(f) => f,
-        Err(res) => return res,
+        Err(res) => return *res,
     };
     if let Some(h) = &f.hosted
         && h.attempt(Attempt::SignIn, &headers, &extensions).is_err()
