@@ -581,6 +581,56 @@ async fn an_embedded_daemon_stops_on_its_control_and_removes_daemon_json() {
 }
 
 #[tokio::test]
+async fn a_second_daemon_on_a_home_exits_before_opening_its_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let first = embedded(&home).await;
+    let (_stop, stop_rx) = tokio::sync::watch::channel(false);
+    let (_trim, trim_rx) = tokio::sync::mpsc::channel(1);
+    let second = ServeConfig {
+        stop: StopOn::Embedded(EmbeddedControl {
+            stop: stop_rx,
+            trim: trim_rx,
+        }),
+        ..config_on(&home, 0)
+    };
+    let e = tokio::time::timeout(std::time::Duration::from_secs(60), serve(second, None))
+        .await
+        .expect("the second daemon gives up")
+        .expect_err("the second daemon refuses the home");
+    let e = format!("{e:#}");
+    assert!(e.contains("another clax daemon"), "{e}");
+    assert!(e.contains(&format!("pid {}", first.info.pid)), "{e}");
+    assert_eq!(
+        read_daemon_info(&home).map(|i| i.port),
+        Some(first.info.port),
+        "daemon.json still names the first"
+    );
+    assert_eq!(healthz(first.info.port).await, 200);
+    stop_embedded(first).await;
+}
+
+#[tokio::test]
+async fn a_daemon_starts_once_the_one_before_it_has_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let first = embedded(&home).await;
+    // The successor starts while its predecessor still serves, as under a
+    // supervisor's restart, and waits for it.
+    let h = home.clone();
+    let next = tokio::spawn(async move { embedded(&h).await });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!next.is_finished(), "the successor waits for the lock");
+    stop_embedded(first).await;
+    let next = tokio::time::timeout(std::time::Duration::from_secs(30), next)
+        .await
+        .expect("the successor starts")
+        .unwrap();
+    assert_eq!(read_daemon_info(&home).unwrap().port, next.info.port);
+    stop_embedded(next).await;
+}
+
+#[tokio::test]
 async fn an_embedded_daemon_installs_no_signal_handler() {
     let _only = SIGTERM.write().await;
     let mut term =

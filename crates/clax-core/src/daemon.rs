@@ -338,6 +338,47 @@ impl DaemonLock {
     }
 }
 
+/// Exclusive advisory lock on `serve.lock`, held by the one daemon serving
+/// a home from before it opens the database (the copy before a migration,
+/// the migrations, the journal) until it exits. A second daemon on the
+/// home, whoever started it, refuses to start rather than open the
+/// database beside the first. Not the start lock ([`DaemonLock`]): a client
+/// holds that while the daemon it started comes up.
+pub struct ServeLock(#[allow(dead_code)] FileLock);
+
+impl ServeLock {
+    /// Takes the lock, waiting up to `wait` while another daemon holds it
+    /// (one that is draining may still hold it as its successor starts).
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::WouldBlock`] naming the daemon `daemon.json` names
+    /// when the lock is still held after `wait`; any other I/O error.
+    pub fn acquire_within(home: &Home, wait: std::time::Duration) -> io::Result<ServeLock> {
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            let f = File::create(home.serve_lock())?;
+            if let Some(held) = FileLock::try_exclusive(f)? {
+                return Ok(ServeLock(held));
+            }
+            if std::time::Instant::now() >= deadline {
+                let holder = read_daemon_info(home)
+                    .filter(|i| pid_alive(i.pid))
+                    .map(|i| format!(" (pid {}, port {})", i.pid, i.port))
+                    .unwrap_or_default();
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!(
+                        "another clax daemon{holder} serves {}: it holds {}, so this one exits without opening the database",
+                        home.root().display(),
+                        home.serve_lock().display()
+                    ),
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
 /// Runs `op` until it returns anything but an [`io::ErrorKind::Interrupted`]
 /// error.
 pub fn retry_interrupted<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {

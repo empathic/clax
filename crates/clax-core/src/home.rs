@@ -55,6 +55,11 @@ impl Home {
     pub fn daemon_lock(&self) -> PathBuf {
         self.root.join("daemon.lock")
     }
+    /// Held by the one daemon serving the home, from before it opens the
+    /// database until it exits ([`crate::daemon::ServeLock`]).
+    pub fn serve_lock(&self) -> PathBuf {
+        self.root.join("serve.lock")
+    }
     pub fn log_path(&self) -> PathBuf {
         self.root.join("logs").join("daemon.log")
     }

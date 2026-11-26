@@ -5,6 +5,7 @@
 use crate::core::{Core, CoreConfig};
 use clax_core::Home;
 use clax_core::daemon::DaemonInfo;
+use clax_core::daemon::ServeLock;
 use clax_core::daemon::StartingInfo;
 use clax_core::daemon::pid_alive;
 use clax_core::daemon::port_held;
@@ -34,6 +35,11 @@ pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// stops the daemon whatever is left; once [`serve`] returns, nothing is
 /// left to wait for.
 const STORE_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a starting daemon waits for the home's [`ServeLock`]: a
+/// predecessor that is stopping (its drain, then its store's stop) may
+/// hold it a few seconds after daemon.json is gone. A daemon still holding
+/// it after that is serving the home, and this one exits.
+const SERVE_LOCK_WAIT: Duration = Duration::from_secs(10);
 
 /// Publishes this daemon's start in `starting.json` until dropped: the
 /// phase and backfill progress it is given, and a heartbeat every second
@@ -384,6 +390,14 @@ pub async fn serve(
     ready: Option<oneshot::Sender<DaemonInfo>>,
 ) -> anyhow::Result<()> {
     cfg.home.ensure_dirs()?;
+    // One daemon per home, decided before anything opens the database or
+    // the journal: a second one (a client's, beside a supervisor's) exits
+    // here rather than copy and migrate the database beside the first.
+    // Held until this returns, after daemon.json is gone.
+    let lock_home = cfg.home.clone();
+    let _serve_lock =
+        tokio::task::spawn_blocking(move || ServeLock::acquire_within(&lock_home, SERVE_LOCK_WAIT))
+            .await??;
     // Until it serves, whoever started this daemon follows it in
     // starting.json: a first start after an upgrade may record the audit
     // backfill first.

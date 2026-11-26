@@ -336,6 +336,18 @@ fn http() -> reqwest::blocking::Client {
         .expect("client")
 }
 
+/// How long a client waits for a supervised daemon (`[serve] autostart =
+/// false`) to answer before it gives up: a restart under its supervisor,
+/// a pre-migration copy and the migrations included.
+const SUPERVISED_WAIT: Duration = Duration::from_secs(30);
+
+/// `[serve] autostart` of `home`: whether a client may start (or replace)
+/// its daemon. A config that cannot be read, or a value that is not a
+/// boolean, is an error, so no daemon is started on it.
+fn autostart(home: &Home) -> anyhow::Result<bool> {
+    Ok(clax_core::config::HomeConfig::load(home.root())?.serve_autostart()?)
+}
+
 /// True when the daemon described by `info` is older than version `ours`. A
 /// newer daemon is kept (it serves older clients), as is one whose version does
 /// not parse.
@@ -1179,10 +1191,28 @@ impl Client {
     ///
     /// The start lock is held from the re-check until the spawned daemon answers
     /// `/healthz` (or the deadline passes), so concurrent callers start one daemon.
+    ///
+    /// With `[serve] autostart = false` (a supervisor runs the home's
+    /// daemon) nothing is started: the client waits up to 30 s for the
+    /// supervised daemon to answer, then fails saying so.
     pub fn connect_with_bind(home: &Home, port: u16, bind: IpAddr) -> anyhow::Result<Client> {
+        Client::connect_within(home, port, bind, SUPERVISED_WAIT)
+    }
+
+    /// [`Client::connect_with_bind`], waiting up to `supervised` for a
+    /// supervised daemon.
+    fn connect_within(
+        home: &Home,
+        port: u16,
+        bind: IpAddr,
+        supervised: Duration,
+    ) -> anyhow::Result<Client> {
         let probe = probe_client().context("building probe client")?;
         if let Some(c) = Client::discover_with(home, &probe) {
             return Ok(c);
+        }
+        if !autostart(home)? {
+            return Client::await_supervised(home, &probe, supervised);
         }
         home.ensure_dirs()?;
         let _lock =
@@ -1191,6 +1221,30 @@ impl Client {
             return Ok(c);
         }
         Client::spawn_locked(home, &std::env::current_exe()?, port, bind)
+    }
+
+    /// The daemon a supervisor starts for `home`, once it answers within
+    /// `wait`; an error saying why no daemon was started otherwise.
+    fn await_supervised(
+        home: &Home,
+        probe: &reqwest::blocking::Client,
+        wait: Duration,
+    ) -> anyhow::Result<Client> {
+        let deadline = Instant::now() + wait;
+        loop {
+            if let Some(c) = Client::discover_with(home, probe) {
+                return Ok(c);
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "no clax daemon answers for {} after {} s, and `[serve] autostart = false` in {} says a supervisor runs it, so this client starts none; check the supervisor's clax job, or run `clax doctor`",
+                    home.root().display(),
+                    wait.as_secs(),
+                    home.root().join("config.toml").display()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
 
     /// Starts `exe serve --foreground` for `home` on `port` and `bind` and
@@ -1323,6 +1377,18 @@ impl Client {
         exe: &std::path::Path,
     ) -> anyhow::Result<Client> {
         let c = Client::connect_with_bind(home, port, bind)?;
+        if needs_replacing(&c.info, ours) && !autostart(home)? {
+            // Its supervisor upgrades it: replacing it would start a
+            // daemon of this binary's beside the supervisor's.
+            static WARNED_SUPERVISED: std::sync::Once = std::sync::Once::new();
+            WARNED_SUPERVISED.call_once(|| {
+                tracing::warn!(
+                    "clax daemon v{} is older than this binary (v{ours}); keeping it, since `[serve] autostart = false` leaves it to its supervisor",
+                    c.info.version
+                )
+            });
+            return Ok(c);
+        }
         if !needs_replacing(&c.info, ours) {
             if c.info.version != ours {
                 static WARNED: std::sync::Once = std::sync::Once::new();
@@ -2430,6 +2496,94 @@ srv.serve_forever()
 
     fn replacements(home: &Home) -> usize {
         log(home).matches("replacing clax daemon").count()
+    }
+
+    fn supervised(home: &Home) {
+        home.ensure_dirs().unwrap();
+        std::fs::write(
+            home.root().join("config.toml"),
+            "[serve]\nautostart = false\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_supervised_home_starts_no_daemon_and_says_why() {
+        let dir = Scratch::new();
+        let home = Home::at(dir.path().join("ax"));
+        supervised(&home);
+        let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let e = format!(
+            "{:#}",
+            Client::connect_within(&home, 0, lo, Duration::from_millis(300))
+                .err()
+                .expect("no daemon is started")
+        );
+        assert!(e.contains("autostart = false"), "{e}");
+        assert!(read_daemon_info(&home).is_none(), "no daemon.json");
+        assert!(!home.log_path().exists(), "no daemon was spawned: {e}");
+    }
+
+    #[test]
+    fn a_supervised_home_waits_for_its_daemon() {
+        let dir = Scratch::new();
+        let exe = fake_exe(dir.path(), "supervised", "0.0.1", false, None);
+        let home = Home::at(dir.path().join("ax"));
+        supervised(&home);
+        // The supervisor's daemon comes up while the client waits.
+        let (h, e) = (home.clone(), exe.clone());
+        let supervisor = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            let _lock = DaemonLock::acquire(&h).unwrap();
+            Client::spawn_locked(&h, &e, 0, IpAddr::V4(Ipv4Addr::LOCALHOST))
+                .unwrap()
+                .info
+                .pid
+        });
+        let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let c = Client::connect_within(&home, 0, lo, Duration::from_secs(20)).unwrap();
+        assert_eq!(c.info.pid, supervisor.join().unwrap());
+        stop(&home);
+    }
+
+    #[test]
+    fn a_supervised_daemon_is_not_replaced_by_a_newer_client() {
+        let dir = Scratch::new();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        std::fs::write(
+            home.root().join("config.toml"),
+            "[serve]\nautostart = false\n",
+        )
+        .unwrap();
+        let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
+        let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let c = Client::connect_matching(&home, 0, lo, "0.0.2", &new_exe).unwrap();
+        assert_eq!(c.info.pid, old.info.pid, "the supervisor's daemon is kept");
+        assert_eq!(c.info.version, "0.0.1");
+        assert_eq!(replacements(&home), 0);
+        stop(&home);
+    }
+
+    #[test]
+    fn a_bad_autostart_value_starts_no_daemon() {
+        let dir = Scratch::new();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        std::fs::write(
+            home.root().join("config.toml"),
+            "[serve]\nautostart = \"no\"\n",
+        )
+        .unwrap();
+        let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let e = format!(
+            "{:#}",
+            Client::connect_within(&home, 0, lo, Duration::from_millis(300))
+                .err()
+                .expect("an error")
+        );
+        assert!(e.contains("autostart"), "{e}");
+        assert!(!home.log_path().exists(), "no daemon was spawned: {e}");
     }
 
     #[test]

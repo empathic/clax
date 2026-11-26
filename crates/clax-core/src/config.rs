@@ -35,7 +35,9 @@
 //! ([`HomeConfig::serve_trusted_host_frames`]), and `[serve]
 //! routed_artifacts` names the artifacts whose comments another daemon
 //! carries, which Clax sends to no agent session
-//! ([`HomeConfig::serve_routed_artifacts`]). Any other key in `[serve]`
+//! ([`HomeConfig::serve_routed_artifacts`]), and `[serve] autostart =
+//! false` keeps clients from starting a daemon for a home a supervisor
+//! runs one for ([`HomeConfig::serve_autostart`]). Any other key in `[serve]`
 //! is logged and ignored. `[sample]`
 //! configures the
 //! `sample` capability ([`HomeConfig::sample`]); a daemon whose `[sample]` is
@@ -808,6 +810,38 @@ impl HomeConfig {
         Ok(on)
     }
 
+    /// `[serve] autostart`: whether a client that finds no daemon for the
+    /// home starts one itself (`true` when absent). A home whose daemon a
+    /// supervisor runs (launchd, a process supervisor) sets it to `false`:
+    /// a client then waits for the supervised daemon and never starts a
+    /// second one beside it, nor replaces it with its own build.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file (or the variable)
+    /// and the key when `[serve]` is not a table or the key is not a
+    /// boolean. A client then starts no daemon.
+    pub fn serve_autostart(&self) -> Result<bool> {
+        if let Some(serve) = self.value("serve")
+            && serve.as_dict().is_none()
+        {
+            return Err(self.bad(
+                "serve",
+                "[serve]",
+                format!("must be a table, not {}", kind_of(&serve)),
+            ));
+        }
+        let Some(v) = self.value("serve.autostart") else {
+            return Ok(true);
+        };
+        v.to_bool().ok_or_else(|| {
+            self.bad(
+                "serve.autostart",
+                "[serve]",
+                format!("autostart must be true or false, not {}", shown(&v)),
+            )
+        })
+    }
+
     /// `[serve] apps_file`: the apps home declares (`crate::apps`), read
     /// from that file (an absolute path, or `~/…`); none when the key is
     /// absent or the file does not exist.
@@ -1505,6 +1539,7 @@ const SERVE_KEYS: &[&str] = &[
     "trusted_host_frames",
     "routed_artifacts",
     "apps_file",
+    "autostart",
 ];
 
 /// The owner's tailnet devices (`[serve] owner_tailscale_nodes`) and the
@@ -3636,6 +3671,22 @@ mod tests {
                 e.contains("config.toml") && e.contains("[serve]"),
                 "{t}: {e}"
             );
+        }
+    }
+
+    #[test]
+    fn autostart_is_on_by_default_and_must_be_a_boolean() {
+        for t in ["", "[serve]\nport = 7481\n", "[serve]\nautostart = true\n"] {
+            assert!(with(t).serve_autostart().unwrap(), "{t}");
+        }
+        assert!(
+            !with("[serve]\nautostart = false\n")
+                .serve_autostart()
+                .unwrap()
+        );
+        for t in ["[serve]\nautostart = \"no\"\n", "serve = 1\n"] {
+            let e = with(t).serve_autostart().unwrap_err().to_string();
+            assert!(e.contains("config.toml") && e.contains("serve"), "{t}: {e}");
         }
     }
 
