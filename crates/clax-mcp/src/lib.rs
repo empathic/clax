@@ -4,13 +4,16 @@
 //! The tool set and its client build for wasm32 too, for a Durable Object
 //! to serve over `http` (MCP's Streamable HTTP answered without rmcp's
 //! transport) with a client that reaches its daemon in-process
-//! (`client::InProcess`); the stdio shim and its transports (`shim`, `probe`,
-//! `standdown`) run on tokio's runtime and are native only, and not built
+//! (`client::InProcess`); the stdio shim and its transports (`shim`,
+//! `conversations`, `probe`, `standdown`) run on tokio's runtime and are
+//! native only, and not built
 //! for iOS, where no agent runs beside the app to start them.
 
 pub mod calls;
 pub mod channel;
 pub mod client;
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+pub mod conversations;
 pub mod git;
 pub mod http;
 pub mod plugin;

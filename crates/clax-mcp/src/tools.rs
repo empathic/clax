@@ -1431,6 +1431,9 @@ pub struct ClaxTools {
     /// Where a tool reads the time to keep within its wait (the system
     /// clock unless [`ClaxTools::with_clock`] gives another).
     clock: std::sync::Arc<dyn clax_core::working::Clock>,
+    /// Feedback is appended to results and `wait_for_feedback` waits; false
+    /// for a subagent's tools ([`ClaxTools::without_feedback`]).
+    feedback: bool,
     tool_router: std::sync::Arc<ToolRouter<Self>>,
 }
 
@@ -1500,6 +1503,7 @@ impl ClaxTools {
             git: None,
             reports: Default::default(),
             clock: std::sync::Arc::new(clax_core::working::SystemClock),
+            feedback: true,
             tool_router: std::sync::Arc::new(Self::tool_router()),
         }
     }
@@ -1645,6 +1649,29 @@ impl ClaxTools {
         ClaxTools {
             client: self.client.in_session(session.clone(), secret),
             session: Some(session),
+            ..self.clone()
+        }
+    }
+
+    /// These tools on `client`, with their own per-session state: no
+    /// session but the client's, and their own open questions, connection
+    /// requests and tool-call reports.
+    pub fn for_client(&self, client: DaemonClient) -> ClaxTools {
+        ClaxTools {
+            client,
+            session: None,
+            ask_surface: Default::default(),
+            connect_pages: Default::default(),
+            reports: Default::default(),
+            ..self.clone()
+        }
+    }
+
+    /// These tools for a subagent: no feedback is appended to results and
+    /// `wait_for_feedback` is refused.
+    pub fn without_feedback(&self) -> ClaxTools {
+        ClaxTools {
+            feedback: false,
             ..self.clone()
         }
     }
@@ -2799,10 +2826,10 @@ impl ClaxTools {
 
     /// Tier 1: the session's undelivered and resend-eligible feedback and
     /// late answers, handed over by the daemon (and so acknowledged). Empty
-    /// without a session or when the fetch fails; a failed fetch never fails
-    /// the tool.
+    /// without a session, for a subagent, or when the fetch fails; a failed
+    /// fetch never fails the tool.
     async fn piggyback(&self) -> render::Handover {
-        if self.session().is_none() {
+        if !self.feedback || self.session().is_none() {
             return render::Handover::default();
         }
         match self.client.feedback("piggyback", 0, None).await {
@@ -4225,7 +4252,15 @@ impl ClaxTools {
     }
 
     /// Tier 4. Its own result carries the feedback, so no piggyback follows.
+    /// A subagent's wait is refused.
     async fn do_wait(&self, a: WaitArgs) -> CallToolResult {
+        if !self.feedback {
+            return render::error(
+                "subagent",
+                "wait_for_feedback is for the main conversation: call it there, not from a subagent.",
+                json!({}),
+            );
+        }
         let artifact = match &a.url_or_id {
             Some(r) => match self.resolve_wait_id(r).await {
                 Ok(id) => Some(id),
