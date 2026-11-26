@@ -13,6 +13,7 @@
 //! Every command reaches the daemon through the clients that carry the
 //! agent-channel marker (`clippy.toml`).
 
+mod antigravity_permissions;
 mod channel;
 mod cli;
 mod client;

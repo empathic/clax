@@ -103,6 +103,8 @@ pub struct Dirs {
     pub pi_dir: PathBuf,
     /// `$GROK_HOME`, else `~/.grok`.
     pub grok_home: PathBuf,
+    /// The directory holding Antigravity's `.gemini`: `$HOME`.
+    pub antigravity_root: PathBuf,
 }
 
 impl Dirs {
@@ -131,6 +133,7 @@ impl Dirs {
             claude_dir: var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
             pi_dir: var("PI_CODING_AGENT_DIR").unwrap_or_else(|| home.join(".pi/agent")),
             grok_home: var("GROK_HOME").unwrap_or_else(|| home.join(".grok")),
+            antigravity_root: home.clone(),
             home,
         })
     }
@@ -1355,6 +1358,7 @@ mod tests {
         assert_eq!(d.claude_dir, PathBuf::from("/h/.claude"));
         assert_eq!(d.pi_dir, PathBuf::from("/h/.pi/agent"));
         assert_eq!(d.grok_home, PathBuf::from("/h/.grok"));
+        assert_eq!(d.antigravity_root, PathBuf::from("/h"));
         assert!(Dirs::from_env(|_| None).is_none());
     }
 

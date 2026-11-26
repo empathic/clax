@@ -12,8 +12,11 @@
 //! registrations are removed by name (`clax`, `clax@clax`, and the previous
 //! name's). A Grok registration is removed by the name `clax-grok` only: in Grok,
 //! `clax` names the Claude Code plugin that Grok discovers in
-//! `~/.claude/plugins`, and no `grok` command here ever names it. A Pi package, which Pi names by its directory, is removed only
-//! when `registrations.json` records it, or its `package.json` names the
+//! `~/.claude/plugins`, and no `grok` command here ever names it. An
+//! Antigravity registration is removed by the name `clax-antigravity` only:
+//! in Antigravity, `clax` names the Claude Code plugin that `agy plugin
+//! import claude` installs. A Pi package, which Pi names by its directory,
+//! is removed only when `registrations.json` records it, or its `package.json` names the
 //! Clax Pi package or the previous name's. A Pi package whose directory is
 //! missing or unreadable is left registered and named in the output, with
 //! the command that removes it.
@@ -47,11 +50,20 @@
 //! them only when the person confirms, or with `--yes`. Without a terminal
 //! and without `--yes` it adds nothing and says how to.
 //!
+//! For Antigravity, after a successful install, `init` offers in the same
+//! way the one permission rule that keeps Antigravity from asking before,
+//! or in a headless run refusing, every Clax tool call
+//! ([`crate::antigravity_permissions`]). It adds nothing beside an `ask` or
+//! `deny` rule that names Clax's server, and never rewrites a settings file
+//! it cannot parse. `uninit` leaves the rule and says so.
+//!
 //! Each harness is one entry in [`HARNESSES`].
 
 use super::doctor_agent::{self, Dirs, PiSource};
+use crate::antigravity_permissions::{self, State};
 use crate::codex_approvals;
 use clax_core::Home;
+use clax_core::antigravity::{PERMISSION_RULE, PLUGIN as ANTIGRAVITY_PLUGIN};
 use clax_mcp::tools::ClaxTools;
 use serde_json::{Map, Value, json};
 use std::path::{Component, Path, PathBuf};
@@ -75,8 +87,10 @@ struct Ctx {
 
 /// A harness Clax registers its plugin with.
 struct Harness {
-    /// The `--agent` value, which is also the name of the harness's CLI.
+    /// The `--agent` value.
     name: &'static str,
+    /// The harness's CLI.
+    cli: &'static str,
     /// The commands that remove Clax's registration and any under the
     /// previous name, with notes on what was left and why.
     removals: fn(&Ctx) -> Actions,
@@ -96,6 +110,7 @@ struct Harness {
 const HARNESSES: &[Harness] = &[
     Harness {
         name: "claude",
+        cli: "claude",
         removals: claude_removals,
         additions: |_, root| Actions::steps(claude_additions(root)),
         record: name_record,
@@ -106,6 +121,7 @@ const HARNESSES: &[Harness] = &[
     },
     Harness {
         name: "codex",
+        cli: "codex",
         removals: codex_removals,
         additions: |_, root| Actions::steps(codex_additions(root)),
         record: name_record,
@@ -114,6 +130,7 @@ const HARNESSES: &[Harness] = &[
     },
     Harness {
         name: "grok",
+        cli: "grok",
         removals: grok_removals,
         additions: |_, root| Actions::steps(grok_additions(root)),
         record: |root| json!({"plugin": GROK_PLUGIN, "source": grok_plugin_dir(root)}),
@@ -121,7 +138,25 @@ const HARNESSES: &[Harness] = &[
         by_hand: |_| format!("grok plugin uninstall {GROK_PLUGIN} --confirm"),
     },
     Harness {
+        name: "antigravity",
+        cli: "agy",
+        removals: |_| {
+            Actions::steps(vec![step(
+                false,
+                &["plugin", "uninstall", ANTIGRAVITY_PLUGIN],
+            )])
+        },
+        additions: |_, root| {
+            let dir = antigravity_plugin_dir(root).display().to_string();
+            Actions::steps(vec![step(true, &["plugin", "install", dir.as_str()])])
+        },
+        record: |root| json!({"plugin": ANTIGRAVITY_PLUGIN, "source": antigravity_plugin_dir(root)}),
+        uses: antigravity_uses,
+        by_hand: |_| format!("agy plugin uninstall {ANTIGRAVITY_PLUGIN}"),
+    },
+    Harness {
         name: "pi",
+        cli: "pi",
         removals: pi_removals,
         additions: pi_additions,
         record: |root| json!({"packages": [pi_package_dir(root)]}),
@@ -138,8 +173,9 @@ pub struct Args {
         value_parser = clap::builder::PossibleValuesParser::new(HARNESSES.iter().map(|h| h.name))
     )]
     pub agents: Vec<String>,
-    /// Add the Codex approval settings `init` offers without asking first.
-    /// Without it, `init` asks on a terminal and otherwise adds nothing.
+    /// Add the Codex approval settings and the Antigravity permission rule
+    /// `init` offers without asking first. Without it, `init` asks on a
+    /// terminal and otherwise adds nothing.
     #[arg(long)]
     pub yes: bool,
 }
@@ -413,13 +449,28 @@ fn grok_additions(root: &Path) -> Vec<Step> {
 /// since Grok's own files are not read.
 fn grok_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
     if on_path("grok").is_none() {
-        return Ok(ctx.recorded.get("grok").is_some_and(|r| {
-            r["source"]
-                .as_str()
-                .is_some_and(|s| Path::new(s).starts_with(root))
-        }));
+        return Ok(recorded_under(ctx, "grok", root));
     }
-    let mut cmd = std::process::Command::new("grok");
+    let out = plugin_list(ctx, "grok")?;
+    let v: Value = serde_json::from_slice(&out)
+        .map_err(|e| format!("could not parse `grok plugin list --json` ({e})"))?;
+    Ok(json_mentions(&v, root, &ctx.home, &ctx.home))
+}
+
+/// Whether `registrations.json` records a registration for `harness` whose
+/// source is under `root`.
+fn recorded_under(ctx: &Ctx, harness: &str, root: &Path) -> bool {
+    ctx.recorded.get(harness).is_some_and(|r| {
+        r["source"]
+            .as_str()
+            .is_some_and(|s| Path::new(s).starts_with(root))
+    })
+}
+
+/// The output of `<cli> plugin list --json`, run in the home directory; an
+/// error when it cannot run or fails.
+fn plugin_list(ctx: &Ctx, cli: &str) -> Result<Vec<u8>, String> {
+    let mut cmd = std::process::Command::new(cli);
     cmd.args(["plugin", "list", "--json"])
         .stdin(std::process::Stdio::null());
     if ctx.home.is_dir() {
@@ -427,19 +478,38 @@ fn grok_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
     }
     let out = cmd
         .output()
-        .map_err(|e| format!("could not run `grok plugin list --json`: {e}"))?;
+        .map_err(|e| format!("could not run `{cli} plugin list --json`: {e}"))?;
     if !out.status.success() {
         return Err(format!(
-            "`grok plugin list --json` failed: {}",
+            "`{cli} plugin list --json` failed: {}",
             String::from_utf8_lossy(&out.stderr)
                 .lines()
                 .next()
                 .unwrap_or_default()
         ));
     }
-    let v: Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| format!("could not parse `grok plugin list --json` ({e})"))?;
-    Ok(json_mentions(&v, root, &ctx.home, &ctx.home))
+    Ok(out.stdout)
+}
+
+/// The Antigravity plugin's directory inside the marketplace at `root`.
+fn antigravity_plugin_dir(root: &Path) -> PathBuf {
+    lexical(&root.join("plugins").join(ANTIGRAVITY_PLUGIN))
+}
+
+/// Whether `agy plugin list --json` lists a plugin named
+/// `clax-antigravity`. The listing gives the installed copy under
+/// `~/.gemini/config/plugins`, not the directory it was installed from, so
+/// the name decides; output that is not JSON lists none. Without `agy` on
+/// PATH, as [`grok_uses`].
+fn antigravity_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
+    if on_path("agy").is_none() {
+        return Ok(recorded_under(ctx, "antigravity", root));
+    }
+    let out = plugin_list(ctx, "agy")?;
+    Ok(serde_json::from_slice::<Value>(&out).is_ok_and(|v| {
+        v.as_array()
+            .is_some_and(|a| a.iter().any(|p| p["name"] == ANTIGRAVITY_PLUGIN))
+    }))
 }
 
 /// The Pi package directory inside the marketplace at `root`.
@@ -623,9 +693,9 @@ fn run_steps(h: &Harness, ctx: &Ctx, actions: Actions, done: &str) -> Value {
     let mut notes = actions.notes;
     let mut failed = false;
     for s in actions.steps {
-        let line = format!("{} {}", h.name, s.args.join(" "));
+        let line = format!("{} {}", h.cli, s.args.join(" "));
         commands.push(line.clone());
-        let mut cmd = std::process::Command::new(h.name);
+        let mut cmd = std::process::Command::new(h.cli);
         cmd.args(&s.args).stdin(std::process::Stdio::null());
         if ctx.home.is_dir() {
             cmd.current_dir(&ctx.home);
@@ -953,6 +1023,136 @@ fn approvals_lines(a: &Value) -> Vec<String> {
     out
 }
 
+/// Asks on the terminal whether to add the Antigravity permission rule to
+/// the settings at `path`.
+fn confirm_rule(path: &Path) -> bool {
+    use std::io::Write;
+    let mut err = std::io::stderr();
+    let _ = write!(
+        err,
+        "\nAntigravity asks before every call of a Clax tool, and a headless run refuses them. So that it does not, `clax init` can add this rule to permissions.allow in {}:\n\n  \"{PERMISSION_RULE}\"\n\nThe rule approves every Clax tool, including `delete`, which removes an artifact and all its versions. Antigravity then runs them without asking, including when it acts on comments people leave on a page.\nAdd it? [y/N] ",
+        path.display()
+    );
+    let _ = err.flush();
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).is_ok() && is_yes(&answer)
+}
+
+/// The Antigravity settings at `path`: their text (empty when the file does
+/// not exist) and what they say of the rule; an error naming the file when
+/// it cannot be read or parsed.
+fn antigravity_state(path: &Path) -> Result<(String, State), String> {
+    let text = codex_approvals::read_config(path)?.unwrap_or_default();
+    let state = antigravity_permissions::assess(&text).map_err(|e| {
+        format!(
+            "could not parse {} ({e}); it was left as it is",
+            path.display()
+        )
+    })?;
+    Ok((text, state))
+}
+
+/// After `agy plugin install`: offers [`PERMISSION_RULE`] for the
+/// Antigravity settings at `path`, unless they already allow Clax's tools
+/// or an `ask` or `deny` rule there names them. `ask` says whether to add
+/// it: `Some(true)` yes, `Some(false)` declined, `None` no way to ask. On a
+/// yes the rule is added to the file as it is after the answer, and only
+/// when that parses. The outcome as JSON; a failure is reported there,
+/// never fatal.
+fn antigravity_permission(path: &Path, ask: impl FnOnce() -> Option<bool>) -> Value {
+    let shown = path.display();
+    let out = |status: &str, detail: String| json!({"status": status, "settings": path, "rule": PERMISSION_RULE, "detail": detail});
+    let settled = |state: &State| match state {
+        State::Allowed => Some(out(
+            "unchanged",
+            format!("{shown} already allows every Clax tool"),
+        )),
+        State::Blocked(rules) => {
+            let list: Vec<String> = rules.iter().map(|r| format!("`{r}`")).collect();
+            let (the, names) = if rules.len() == 1 {
+                ("the rule", "names")
+            } else {
+                ("the rules", "name")
+            };
+            Some(out(
+                "blocked",
+                format!(
+                    "{the} {} in {shown} {names} Clax's tools, and Antigravity applies ask and deny rules before allow rules, so \"{PERMISSION_RULE}\" was not added; Antigravity goes on asking or refusing as your settings say",
+                    list.join(", ")
+                ),
+            ))
+        }
+        State::Missing => None,
+    };
+    let state = match antigravity_state(path) {
+        Ok((_, s)) => s,
+        Err(e) => return out("failed", e),
+    };
+    if let Some(v) = settled(&state) {
+        return v;
+    }
+    let answer = ask();
+    if answer != Some(true) {
+        return out(
+            if answer.is_some() {
+                "declined"
+            } else {
+                "not_added"
+            },
+            format!(
+                "Antigravity will ask before every call of a Clax tool, and a headless run refuses them; to approve every Clax tool, including `delete`, run `{} --yes`, or add \"{PERMISSION_RULE}\" to permissions.allow in {shown}",
+                antigravity_permissions::SETUP_COMMAND
+            ),
+        );
+    }
+    let (text, state) = match antigravity_state(path) {
+        Ok(s) => s,
+        Err(e) => return out("failed", e),
+    };
+    if let Some(v) = settled(&state) {
+        return v;
+    }
+    let next = match antigravity_permissions::with_rule(&text) {
+        Ok(t) => t,
+        Err(e) => return out("failed", format!("could not parse {shown} ({e})")),
+    };
+    if let Err(e) = codex_approvals::write_config(path, &next) {
+        return out("failed", format!("could not write {shown}: {e}"));
+    }
+    out(
+        "added",
+        format!(
+            "added \"{PERMISSION_RULE}\" to permissions.allow in {shown}; it approves every Clax tool, including `delete`"
+        ),
+    )
+}
+
+/// After `uninit` removed the Antigravity plugin: a note that the rule is
+/// left in the settings at `path`, when it is there.
+fn antigravity_rule_left(path: &Path) -> Option<Value> {
+    let text = codex_approvals::read_config(path).ok()??;
+    antigravity_permissions::has_rule(&text).then(|| {
+        json!({
+            "status": "kept",
+            "settings": path,
+            "rule": PERMISSION_RULE,
+            "detail": format!(
+                "\"{PERMISSION_RULE}\" is left in permissions.allow in {}; remove it there if Antigravity should ask before Clax's tools when the plugin is installed again",
+                path.display()
+            ),
+        })
+    })
+}
+
+/// The text line for an Antigravity harness's `permissions` result.
+fn permissions_line(p: &Value) -> Option<String> {
+    let mut l = format!("antigravity permissions: {}", p["status"].as_str()?);
+    if let Some(d) = p["detail"].as_str().filter(|d| !d.is_empty()) {
+        l.push_str(&format!(" ({d})"));
+    }
+    Some(l)
+}
+
 /// `init`: sets the `bin` setting to this executable. `uninit`: removes it
 /// when it names this executable. The outcome as JSON; a failure is
 /// reported there, never fatal.
@@ -1047,7 +1247,7 @@ fn remove_marketplace_unless_used(ctx: &Ctx, root: &Path) -> anyhow::Result<Stri
             Ok(true) => reasons.push(format!(
                 "{} still registers it (with {} on PATH, run `clax uninit --agent {}`; otherwise run `{}`)",
                 h.name,
-                h.name,
+                h.cli,
                 h.name,
                 (h.by_hand)(root)
             )),
@@ -1096,8 +1296,8 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
     let mut results = Vec::new();
     let mut recorded = ctx.recorded.clone();
     for h in chosen {
-        if on_path(h.name).is_none() {
-            results.push(json!({"agent": h.name, "status": "skipped", "detail": format!("{} is not on PATH", h.name), "commands": []}));
+        if on_path(h.cli).is_none() {
+            results.push(json!({"agent": h.name, "status": "skipped", "detail": format!("{} is not on PATH", h.cli), "commands": []}));
             continue;
         }
         let mut actions = (h.removals)(&ctx);
@@ -1149,6 +1349,27 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
             );
             if let Some(v) = approvals {
                 r["approvals"] = v;
+            }
+        }
+        if h.name == "antigravity" {
+            let path = antigravity_permissions::settings_path(&ctx.dirs.antigravity_root);
+            if install && r["status"] == "registered" {
+                let yes = a.yes;
+                r["permissions"] = antigravity_permission(&path, || {
+                    use std::io::IsTerminal;
+                    if yes {
+                        Some(true)
+                    } else if std::io::stdin().is_terminal() {
+                        Some(confirm_rule(&path))
+                    } else {
+                        None
+                    }
+                });
+            } else if !install
+                && r["status"] == "removed"
+                && let Some(v) = antigravity_rule_left(&path)
+            {
+                r["permissions"] = v;
             }
         }
         match r["status"].as_str() {
@@ -1217,6 +1438,7 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
             }
             lines.push(l);
             lines.extend(approvals_lines(&r["approvals"]));
+            lines.extend(permissions_line(&r["permissions"]));
         }
         lines.push(format!(
             "bin setting: {} ({})",
@@ -1576,6 +1798,51 @@ mod tests {
     }
 
     #[test]
+    fn a_declined_antigravity_rule_writes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let path = antigravity_permissions::settings_path(d.path());
+        let v = antigravity_permission(&path, || Some(false));
+        assert_eq!(v["status"], "declined", "{v}");
+        assert!(
+            v["detail"].as_str().unwrap().contains(PERMISSION_RULE),
+            "{v}"
+        );
+        assert!(!path.exists());
+    }
+
+    /// What Antigravity writes while the person reads the prompt survives:
+    /// the rule is added to the settings as they are after the answer.
+    #[test]
+    fn the_antigravity_rule_is_added_to_the_settings_as_they_are_after_the_answer() {
+        let d = tempfile::tempdir().unwrap();
+        let path = antigravity_permissions::settings_path(d.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"model":"m"}"#).unwrap();
+        let v = antigravity_permission(&path, || {
+            std::fs::write(&path, r#"{"model":"m","trustedWorkspaces":["/w"]}"#).unwrap();
+            Some(true)
+        });
+        assert_eq!(v["status"], "added", "{v}");
+        let settings: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            settings,
+            json!({"model": "m", "trustedWorkspaces": ["/w"], "permissions": {"allow": [PERMISSION_RULE]}})
+        );
+
+        // An ask rule written meanwhile wins: nothing is added beside it.
+        std::fs::write(&path, "{}").unwrap();
+        let v = antigravity_permission(&path, || {
+            std::fs::write(&path, r#"{"permissions":{"ask":["mcp(*)"]}}"#).unwrap();
+            Some(true)
+        });
+        assert_eq!(v["status"], "blocked", "{v}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"permissions":{"ask":["mcp(*)"]}}"#
+        );
+    }
+
+    #[test]
     fn only_y_or_yes_is_consent() {
         for a in ["y\n", "Y", " yes \n", "YES"] {
             assert!(is_yes(a), "{a:?}");
@@ -1596,6 +1863,7 @@ mod tests {
                 claude_dir: d.path().join("claude"),
                 pi_dir: d.path().join("pi"),
                 grok_home: d.path().join("grok"),
+                antigravity_root: d.path().to_path_buf(),
             },
             home: d.path().to_path_buf(),
             recorded: Map::new(),
