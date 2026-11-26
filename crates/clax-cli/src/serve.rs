@@ -57,6 +57,8 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
             .map(|c| c.gallery_quickstart())
             .unwrap_or(true),
         inherited,
+        auto_started: std::env::var_os(clax_core::daemon::AUTO_STARTED_ENV)
+            .is_some_and(|v| v == "1"),
         stop: clax_server::serve::StopOn::Signals,
         owner_tailscale_login: owner_tailscale_login(home)?,
         trusted_host_frames: trusted_host_frames(home)?,

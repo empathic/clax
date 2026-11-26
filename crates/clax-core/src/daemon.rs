@@ -180,10 +180,7 @@ pub fn stop_old_daemon(home: &Home, wait: Duration) -> OldDaemon {
     let Some(pid) = read_daemon_info(home).map(|i| i.pid) else {
         return OldDaemon::Absent;
     };
-    if pid == std::process::id()
-        || !pid_alive(pid)
-        || !process_args(pid).is_some_and(|a| is_clax_serve(&a))
-    {
+    if !is_other_clax_serve(pid) {
         return OldDaemon::Absent;
     }
     match kill(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGTERM) {
@@ -201,6 +198,15 @@ pub fn stop_old_daemon(home: &Home, wait: Duration) -> OldDaemon {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Whether `pid` is a running `clax serve` other than this process, by its
+/// command line ([`is_clax_serve`]), so a PID another program has taken
+/// since is never signalled.
+pub fn is_other_clax_serve(pid: u32) -> bool {
+    pid != std::process::id()
+        && pid_alive(pid)
+        && process_args(pid).is_some_and(|a| is_clax_serve(&a))
 }
 
 /// Whether command line `args` runs `clax serve`: the program, or a
@@ -344,38 +350,127 @@ impl DaemonLock {
 /// home, whoever started it, refuses to start rather than open the
 /// database beside the first. Not the start lock ([`DaemonLock`]): a client
 /// holds that while the daemon it started comes up.
-pub struct ServeLock(#[allow(dead_code)] FileLock);
+///
+/// The holder writes who it is into the file ([`ServeLockHolder`]), so a
+/// daemon that cannot take the lock can tell a supervised holder from one a
+/// client started.
+pub struct ServeLock {
+    held: FileLock,
+    holder: ServeLockHolder,
+}
+
+/// How a daemon came to run, as its [`ServeLockHolder`] records it.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServeRole {
+    /// Handed its listening socket by a supervisor (`--listen-stdin`):
+    /// launchd holds that socket, and no other daemon serves it.
+    Supervised,
+    /// Started by a client that found no daemon ([`AUTO_STARTED_ENV`]).
+    AutoStarted,
+    /// Started any other way: a person's `clax serve`, a test.
+    Explicit,
+}
+
+/// Set to `1` in the environment of a daemon a client starts because it
+/// found none, so the daemon records itself [`ServeRole::AutoStarted`].
+pub const AUTO_STARTED_ENV: &str = "CLAX_AUTO_STARTED";
+
+/// What `serve.lock` says of the daemon holding it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ServeLockHolder {
+    pub pid: u32,
+    pub role: ServeRole,
+    /// The port it serves, once it has its listener; with `pid`, what tells
+    /// its `daemon.json` from another's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+}
 
 impl ServeLock {
-    /// Takes the lock, waiting up to `wait` while another daemon holds it
-    /// (one that is draining may still hold it as its successor starts).
+    /// Takes the lock without waiting and records `role` as its holder:
+    /// `Ok(None)` while another daemon holds it. Opening the file does not
+    /// truncate it, so a daemon that only tries leaves the holder's record.
     ///
     /// # Errors
-    /// [`io::ErrorKind::WouldBlock`] naming the daemon `daemon.json` names
-    /// when the lock is still held after `wait`; any other I/O error.
-    pub fn acquire_within(home: &Home, wait: std::time::Duration) -> io::Result<ServeLock> {
-        let deadline = std::time::Instant::now() + wait;
-        loop {
-            let f = File::create(home.serve_lock())?;
-            if let Some(held) = FileLock::try_exclusive(f)? {
-                return Ok(ServeLock(held));
+    /// Any I/O error opening, locking or writing the file.
+    pub fn try_acquire(home: &Home, role: ServeRole) -> io::Result<Option<ServeLock>> {
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(home.serve_lock())?;
+        let Some(held) = FileLock::try_exclusive(f)? else {
+            return Ok(None);
+        };
+        let mut lock = ServeLock {
+            held,
+            holder: ServeLockHolder {
+                pid: std::process::id(),
+                role,
+                port: None,
+            },
+        };
+        lock.record()?;
+        Ok(Some(lock))
+    }
+
+    /// Records the port this daemon serves beside its pid and role.
+    ///
+    /// # Errors
+    /// Any I/O error writing the file.
+    pub fn set_port(&mut self, port: u16) -> io::Result<()> {
+        self.holder.port = Some(port);
+        self.record()
+    }
+
+    fn record(&mut self) -> io::Result<()> {
+        use io::{Seek, Write};
+        let text = serde_json::to_vec(&self.holder).map_err(io::Error::other)?;
+        let mut f: &File = &self.held.0;
+        f.set_len(0)?;
+        f.seek(io::SeekFrom::Start(0))?;
+        f.write_all(&text)?;
+        Ok(())
+    }
+
+    /// The record of the daemon holding the home's lock; `None` when the
+    /// file is missing, empty (its holder is writing it) or not a record.
+    /// Read without the lock: the caller decides whether it still holds.
+    pub fn holder(home: &Home) -> Option<ServeLockHolder> {
+        let text = std::fs::read(home.serve_lock()).ok()?;
+        serde_json::from_slice(&text).ok()
+    }
+
+    /// The error a daemon that could not take the lock exits with, naming
+    /// the holder by its record or `daemon.json`.
+    pub fn held_error(home: &Home) -> io::Error {
+        let holder = match ServeLock::holder(home).filter(|h| pid_alive(h.pid)) {
+            Some(h) => {
+                let role = match h.role {
+                    ServeRole::Supervised => "supervised",
+                    ServeRole::AutoStarted => "auto-started",
+                    ServeRole::Explicit => "explicit",
+                };
+                match h.port {
+                    Some(p) => format!(" ({role}, pid {}, port {p})", h.pid),
+                    None => format!(" ({role}, pid {})", h.pid),
+                }
             }
-            if std::time::Instant::now() >= deadline {
-                let holder = read_daemon_info(home)
-                    .filter(|i| pid_alive(i.pid))
-                    .map(|i| format!(" (pid {}, port {})", i.pid, i.port))
-                    .unwrap_or_default();
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    format!(
-                        "another clax daemon{holder} serves {}: it holds {}, so this one exits without opening the database",
-                        home.root().display(),
-                        home.serve_lock().display()
-                    ),
-                ));
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
+            None => read_daemon_info(home)
+                .filter(|i| pid_alive(i.pid))
+                .map(|i| format!(" (pid {}, port {})", i.pid, i.port))
+                .unwrap_or_default(),
+        };
+        io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "another clax daemon{holder} serves {}: it holds {}, so this one exits without opening the database",
+                home.root().display(),
+                home.serve_lock().display()
+            ),
+        )
     }
 }
 

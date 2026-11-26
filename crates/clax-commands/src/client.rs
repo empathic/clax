@@ -1292,6 +1292,9 @@ impl Client {
             &bind.to_string(),
         ])
         .env("CLAX_HOME", home.root())
+        // It records itself auto-started, so a supervised daemon may
+        // take the home from it.
+        .env(clax_core::daemon::AUTO_STARTED_ENV, "1")
         .current_dir(home.root())
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))

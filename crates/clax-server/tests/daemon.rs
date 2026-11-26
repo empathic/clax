@@ -1,7 +1,7 @@
 use clax_core::Home;
 use clax_core::daemon::{
-    DaemonInfo, DaemonLock, pid_alive, port_held, read_daemon_info, retry_interrupted,
-    write_daemon_info,
+    DaemonInfo, DaemonLock, FileLock, ServeLock, ServeRole, pid_alive, port_held, read_daemon_info,
+    retry_interrupted, write_daemon_info,
 };
 use clax_server::serve::{EmbeddedControl, ServeConfig, StopOn, serve};
 use clax_testkit::{recv_within, until, within};
@@ -127,6 +127,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         tailscale_identity: false,
         require_credential: false,
         inherited: None,
+        auto_started: false,
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
@@ -174,6 +175,7 @@ fn config_on(home: &Home, port: u16) -> ServeConfig {
         tailscale_identity: false,
         require_credential: false,
         inherited: None,
+        auto_started: false,
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
@@ -331,6 +333,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         tailscale_identity: false,
         require_credential: false,
         inherited: None,
+        auto_started: false,
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
@@ -384,6 +387,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         tailscale_identity: false,
         require_credential: false,
         inherited: None,
+        auto_started: false,
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
@@ -421,6 +425,7 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         tailscale_identity: false,
         require_credential: false,
         inherited: None,
+        auto_started: false,
         stop: StopOn::Signals,
         embed: None,
         quickstart: false,
@@ -529,25 +534,43 @@ struct Embedded {
 }
 
 async fn embedded(home: &Home) -> Embedded {
+    let (d, ready) = start_embedded(config_on(home, 0));
+    d.served(ready.await.unwrap())
+}
+
+/// An [`Embedded`] daemon that has not answered yet.
+struct Pending {
+    stop: tokio::sync::watch::Sender<bool>,
+    trim: tokio::sync::mpsc::Sender<std::sync::mpsc::Sender<clax_store::TrimReport>>,
+    handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+impl Pending {
+    fn served(self, info: DaemonInfo) -> Embedded {
+        Embedded {
+            stop: self.stop,
+            trim: self.trim,
+            info,
+            handle: self.handle,
+        }
+    }
+}
+
+/// Starts the daemon `cfg` describes, stopped by its control in place of
+/// `cfg.stop`; the receiver gets its record once it serves.
+fn start_embedded(cfg: ServeConfig) -> (Pending, tokio::sync::oneshot::Receiver<DaemonInfo>) {
     let (stop, stop_rx) = tokio::sync::watch::channel(false);
     let (trim, trim_rx) = tokio::sync::mpsc::channel(1);
     let cfg = ServeConfig {
-        inherited: None,
         stop: StopOn::Embedded(EmbeddedControl {
             stop: stop_rx,
             trim: trim_rx,
         }),
-        ..config_on(home, 0)
+        ..cfg
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
     let handle = tokio::spawn(serve(cfg, Some(tx)));
-    let info = rx.await.unwrap();
-    Embedded {
-        stop,
-        trim,
-        info,
-        handle,
-    }
+    (Pending { stop, trim, handle }, rx)
 }
 
 async fn healthz(port: u16) -> reqwest::StatusCode {
@@ -628,6 +651,169 @@ async fn a_daemon_starts_once_the_one_before_it_has_stopped() {
         .unwrap();
     assert_eq!(read_daemon_info(&home).unwrap().port, next.info.port);
     stop_embedded(next).await;
+}
+
+/// `fut`'s output within `secs` seconds of real time, or a panic naming
+/// `what`: for a bound a test asserts (how soon one daemon hands the home
+/// to another), not a hang guard ([`within`]).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the bound on a handover between two daemons is what the test checks"
+)]
+async fn by<F: std::future::IntoFuture>(secs: u64, what: &str, fut: F) -> F::Output {
+    let bound = std::time::Duration::from_secs(secs);
+    tokio::time::timeout(bound, fut)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: not within {bound:?}"))
+}
+
+/// The config of a daemon handed `held` as launchd's socket.
+fn supervised_on(home: &Home, held: &std::net::TcpListener) -> ServeConfig {
+    ServeConfig {
+        inherited: Some(held.try_clone().unwrap()),
+        ..config_on(home, 0)
+    }
+}
+
+#[tokio::test]
+async fn a_supervised_daemon_takes_the_home_from_an_auto_started_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    // A client's stray holds the home first, as when it won the lock while
+    // the supervised daemon restarted.
+    let (stray, ready) = start_embedded(ServeConfig {
+        auto_started: true,
+        ..config_on(&home, 0)
+    });
+    let stray_info = ready.await.unwrap();
+    assert_eq!(
+        ServeLock::holder(&home).map(|h| (h.role, h.port)),
+        Some((ServeRole::AutoStarted, Some(stray_info.port)))
+    );
+    let Pending {
+        stop: _stray_stop,
+        trim: _stray_trim,
+        handle: stray_handle,
+    } = stray;
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let (supervised, ready) = start_embedded(supervised_on(&home, &held));
+    let info = by(15, "the supervised daemon serves", ready).await.unwrap();
+    assert_eq!(info.port, port);
+    by(5, "the stray exits", stray_handle)
+        .await
+        .unwrap()
+        .expect("the stray stopped cleanly");
+    assert_eq!(healthz(port).await, 200);
+    assert_eq!(read_daemon_info(&home).unwrap().port, port);
+    assert_eq!(
+        ServeLock::holder(&home).map(|h| (h.role, h.port)),
+        Some((ServeRole::Supervised, Some(port)))
+    );
+    stop_embedded(supervised.served(info)).await;
+}
+
+#[tokio::test]
+async fn a_supervised_daemon_does_not_take_the_home_from_another() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let (first, ready) = start_embedded(supervised_on(&home, &held));
+    let first = first.served(ready.await.unwrap());
+    let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let (second, _ready) = start_embedded(supervised_on(&home, &other));
+    let e = within("the second supervised daemon gives up", second.handle)
+        .await
+        .unwrap()
+        .expect_err("the second supervised daemon refuses the home");
+    let e = format!("{e:#}");
+    assert!(e.contains("another clax daemon (supervised"), "{e}");
+    assert_eq!(healthz(port).await, 200);
+    assert_eq!(read_daemon_info(&home).unwrap().port, port);
+    stop_embedded(first).await;
+}
+
+#[tokio::test]
+async fn an_auto_started_daemon_gives_up_at_once_to_a_supervised_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let (first, ready) = start_embedded(supervised_on(&home, &held));
+    let first = first.served(ready.await.unwrap());
+    let (stray, _ready) = start_embedded(ServeConfig {
+        auto_started: true,
+        ..config_on(&home, 0)
+    });
+    // Well inside the 10 s a daemon waits out a holder that is draining.
+    let e = by(
+        5,
+        "the stray gives up without waiting out the lock",
+        stray.handle,
+    )
+    .await
+    .unwrap()
+    .expect_err("the stray refuses the home");
+    assert!(format!("{e:#}").contains("supervised"), "{e:#}");
+    assert_eq!(healthz(port).await, 200);
+    stop_embedded(first).await;
+}
+
+#[tokio::test]
+async fn a_supervised_daemon_ends_a_stray_whose_lock_has_no_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    home.ensure_dirs().unwrap();
+    // A stray of a build that wrote no record in serve.lock: a `clax
+    // serve` by its command line (a script named clax), which daemon.json
+    // names on a port where nothing answers, so only SIGTERM ends it. The
+    // test holds the empty lock for it and lets go once it has exited.
+    let script = dir.path().join("clax");
+    std::fs::write(&script, "trap 'exit 0' TERM\nwhile :; do sleep 0.1; done\n").unwrap();
+    let mut stray = std::process::Command::new("/bin/sh")
+        .arg(&script)
+        .args(["serve", "--foreground", "--port", "7480"])
+        .spawn()
+        .unwrap();
+    let dead_port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    write_daemon_info(
+        &home,
+        &DaemonInfo {
+            port: dead_port,
+            pid: stray.id(),
+            token: "t".into(),
+            started_at: "now".into(),
+            bind: "127.0.0.1".into(),
+            version: "0.0.1".into(),
+            exe: None,
+            commit: None,
+        },
+    )
+    .unwrap();
+    let lock = FileLock::try_exclusive(std::fs::File::create(home.serve_lock()).unwrap())
+        .unwrap()
+        .expect("the stray's lock");
+    assert_eq!(ServeLock::holder(&home), None, "no record");
+    let exited = tokio::task::spawn_blocking(move || {
+        let status = stray.wait().unwrap();
+        drop(lock);
+        status
+    });
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let (supervised, ready) = start_embedded(supervised_on(&home, &held));
+    let info = by(15, "the supervised daemon serves", ready).await.unwrap();
+    assert_eq!(info.port, port);
+    assert!(
+        exited.await.unwrap().success(),
+        "the stray ended on SIGTERM"
+    );
+    assert_eq!(read_daemon_info(&home).unwrap().port, port);
+    stop_embedded(supervised.served(info)).await;
 }
 
 #[tokio::test]

@@ -5,7 +5,6 @@
 use crate::core::{Core, CoreConfig};
 use clax_core::Home;
 use clax_core::daemon::DaemonInfo;
-use clax_core::daemon::ServeLock;
 use clax_core::daemon::StartingInfo;
 use clax_core::daemon::pid_alive;
 use clax_core::daemon::port_held;
@@ -14,6 +13,7 @@ use clax_core::daemon::read_daemon_info;
 use clax_core::daemon::remove_daemon_info;
 use clax_core::daemon::write_daemon_info;
 use clax_core::daemon::write_starting_info;
+use clax_core::daemon::{ServeLock, ServeLockHolder, ServeRole};
 use clax_store::{Store, TrimReport};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -40,6 +40,20 @@ const STORE_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// hold it a few seconds after daemon.json is gone. A daemon still holding
 /// it after that is serving the home, and this one exits.
 const SERVE_LOCK_WAIT: Duration = Duration::from_secs(10);
+/// How long a supervised daemon waits, from asking a holder that is not
+/// supervised to stop, for the lock: the holder's drain and store stop.
+const EVICT_WAIT: Duration = Duration::from_secs(20);
+/// How long a supervised daemon waits for a holder that is not supervised
+/// and does not take the shutdown request (or has no daemon.json to take
+/// it through yet) before it sends that holder SIGTERM.
+const EVICT_SIGTERM_AFTER: Duration = Duration::from_secs(5);
+/// How long a holder that took the shutdown request has to stop (its drain
+/// and store stop) before it is sent SIGTERM, as a client's replacement
+/// gives it.
+const EVICT_DRAIN_WAIT: Duration = Duration::from_secs(7);
+/// The longest a supervised daemon goes on evicting holders (a client may
+/// start another daemon as the last one stops) before it exits.
+const EVICT_LIMIT: Duration = Duration::from_secs(60);
 
 /// Publishes this daemon's start in `starting.json` until dropped: the
 /// phase and backfill progress it is given, and a heartbeat every second
@@ -249,6 +263,11 @@ pub struct ServeConfig {
     /// binding `bind` and `port` (`clax serve --listen-stdin`: the socket
     /// launchd holds across the daemon's restarts); it must be on `bind`.
     pub inherited: Option<std::net::TcpListener>,
+    /// Whether a client started this daemon because it found none (`clax
+    /// serve` reads [`clax_core::daemon::AUTO_STARTED_ENV`], which the
+    /// client's spawn sets). Such a daemon gives the home up to a
+    /// supervised one ([`ServeConfig::inherited`]); see [`serve`].
+    pub auto_started: bool,
     /// How the daemon is asked to stop. `Signals` is `clax serve`'s: SIGTERM,
     /// Ctrl-C and the shutdown route. `Embedded` is a daemon inside another
     /// app's process: only its control and the shutdown route, and no signal
@@ -393,11 +412,16 @@ pub async fn serve(
     // One daemon per home, decided before anything opens the database or
     // the journal: a second one (a client's, beside a supervisor's) exits
     // here rather than copy and migrate the database beside the first.
-    // Held until this returns, after daemon.json is gone.
-    let lock_home = cfg.home.clone();
-    let _serve_lock =
-        tokio::task::spawn_blocking(move || ServeLock::acquire_within(&lock_home, SERVE_LOCK_WAIT))
-            .await??;
+    // Held until this returns, after daemon.json is gone. A supervised
+    // daemon asks a holder a client started to stop and takes the home.
+    let role = if cfg.inherited.is_some() {
+        ServeRole::Supervised
+    } else if cfg.auto_started {
+        ServeRole::AutoStarted
+    } else {
+        ServeRole::Explicit
+    };
+    let mut serve_lock = take_serve_lock(&cfg.home, role).await?;
     // Until it serves, whoever started this daemon follows it in
     // starting.json: a first start after an upgrade may record the audit
     // backfill first.
@@ -411,6 +435,7 @@ pub async fn serve(
         None => bind_first_free(cfg.bind, cfg.port).await?,
     };
     let port = listener.local_addr()?.port();
+    serve_lock.set_port(port)?;
     let core = Core::start(
         CoreConfig {
             home: cfg.home.clone(),
@@ -474,7 +499,165 @@ pub async fn serve(
         remove_daemon_info(&home);
     }
     drop(signals);
+    drop(serve_lock);
     served
+}
+
+/// The home's [`ServeLock`] for a daemon of `role`, waiting while another
+/// daemon holds it:
+///
+/// - a [`ServeRole::Supervised`] daemon (handed the socket its supervisor
+///   holds, which no other daemon serves) asks a holder that is not
+///   supervised to stop, through `POST /api/admin/shutdown` with the token
+///   of the `daemon.json` its pid and port name, then with SIGTERM
+///   ([`EVICT_SIGTERM_AFTER`] after it was seen when it took no request,
+///   [`EVICT_DRAIN_WAIT`] after it took one), and waits up to
+///   [`EVICT_WAIT`] for each such holder (at most [`EVICT_LIMIT`] in all).
+///   A lock with no record is taken as held by the `clax serve` that
+///   `daemon.json` names when its command line has no `--listen-stdin`
+///   ([`unrecorded_holder`]);
+/// - a [`ServeRole::AutoStarted`] daemon gives up at once to a supervised
+///   holder;
+/// - otherwise (two supervised daemons included) it waits up to
+///   [`SERVE_LOCK_WAIT`] for a holder that is draining, then fails.
+async fn take_serve_lock(home: &Home, role: ServeRole) -> anyhow::Result<ServeLock> {
+    /// The holder a supervised daemon is evicting, and how far it got.
+    struct Evicting {
+        holder: ServeLockHolder,
+        since: Instant,
+        /// When it took the shutdown request.
+        asked: Option<Instant>,
+        signalled: bool,
+    }
+    let started = Instant::now();
+    let mut deadline = started + SERVE_LOCK_WAIT;
+    let mut evicting: Option<Evicting> = None;
+    loop {
+        let h = home.clone();
+        if let Some(lock) =
+            tokio::task::spawn_blocking(move || ServeLock::try_acquire(&h, role)).await??
+        {
+            return Ok(lock);
+        }
+        let now = Instant::now();
+        let holder = match ServeLock::holder(home) {
+            None if role == ServeRole::Supervised => unrecorded_holder(home),
+            recorded => recorded,
+        };
+        match holder {
+            Some(holder)
+                if role == ServeRole::AutoStarted && holder.role == ServeRole::Supervised =>
+            {
+                tracing::info!(
+                    pid = holder.pid,
+                    "a supervised daemon serves the home; this auto-started one exits"
+                );
+                return Err(ServeLock::held_error(home).into());
+            }
+            Some(holder)
+                if role == ServeRole::Supervised && holder.role != ServeRole::Supervised =>
+            {
+                if evicting.as_ref().is_none_or(|e| e.holder.pid != holder.pid)
+                    && now < started + EVICT_LIMIT
+                {
+                    tracing::warn!(
+                        pid = holder.pid,
+                        role = ?holder.role,
+                        "a daemon that is not supervised holds the home; asking it to stop"
+                    );
+                    deadline = deadline.max(now + EVICT_WAIT);
+                    evicting = Some(Evicting {
+                        holder: holder.clone(),
+                        since: now,
+                        asked: None,
+                        signalled: false,
+                    });
+                }
+                if let Some(e) = evicting.as_mut().filter(|e| e.holder.pid == holder.pid) {
+                    // The port is recorded once the holder has its listener.
+                    e.holder.port = holder.port;
+                    if e.asked.is_none() && ask_to_stop(home, &e.holder).await {
+                        e.asked = Some(now);
+                    }
+                    // One that took the request is draining (its SSE
+                    // clients, its journal, its store): a signal now would
+                    // end it mid-drain, so it gets as long as a client's
+                    // replacement gives it.
+                    let signal_at = match e.asked {
+                        Some(at) => at + EVICT_DRAIN_WAIT,
+                        None => e.since + EVICT_SIGTERM_AFTER,
+                    };
+                    if !e.signalled && now >= signal_at {
+                        e.signalled = true;
+                        if clax_core::daemon::is_other_clax_serve(e.holder.pid) {
+                            tracing::warn!(
+                                pid = e.holder.pid,
+                                "it has not stopped; sending SIGTERM"
+                            );
+                            let _ = nix::sys::signal::kill(
+                                nix::unistd::Pid::from_raw(e.holder.pid as i32),
+                                nix::sys::signal::Signal::SIGTERM,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        if now >= deadline {
+            return Err(ServeLock::held_error(home).into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The holder of a lock whose file holds no record (a build from before
+/// the record, which also empties the file when it only tries the lock),
+/// as `daemon.json` names it: a running `clax serve` of another process
+/// whose command line has no `--listen-stdin`, taken as not supervised.
+fn unrecorded_holder(home: &Home) -> Option<ServeLockHolder> {
+    let info = read_daemon_info(home)?;
+    let args = clax_core::daemon::process_args(info.pid)?;
+    let supervised = args.iter().any(|a| a == "--listen-stdin");
+    (clax_core::daemon::is_other_clax_serve(info.pid) && !supervised).then_some(ServeLockHolder {
+        pid: info.pid,
+        role: ServeRole::Explicit,
+        port: Some(info.port),
+    })
+}
+
+/// Posts `/api/admin/shutdown` to the daemon `holder` names, with the token
+/// of the home's `daemon.json` when that record is the holder's (its pid
+/// and port): true once the daemon has taken the request.
+async fn ask_to_stop(home: &Home, holder: &ServeLockHolder) -> bool {
+    let Some(info) =
+        read_daemon_info(home).filter(|i| i.pid == holder.pid && Some(i.port) == holder.port)
+    else {
+        return false;
+    };
+    let url = format!(
+        "http://{}:{}/api/admin/shutdown",
+        clax_core::daemon::probe_host(&info.bind),
+        info.port
+    );
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .no_proxy()
+        .build()
+    else {
+        return false;
+    };
+    match client.post(url).bearer_auth(&info.token).send().await {
+        Ok(r) if r.status().is_success() => true,
+        Ok(r) => {
+            tracing::warn!(status = %r.status(), "the holder refused the shutdown request");
+            false
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "the holder did not take the shutdown request");
+            false
+        }
+    }
 }
 
 /// What [`serve_core`] takes of a [`ServeConfig`] the core did not.
@@ -699,6 +882,7 @@ mod tests {
             embed: None,
             quickstart: false,
             inherited: None,
+            auto_started: false,
             stop: StopOn::Embedded(EmbeddedControl {
                 stop: stop_rx,
                 trim: trim_rx,
