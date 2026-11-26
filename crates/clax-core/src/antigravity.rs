@@ -25,8 +25,9 @@ pub fn is_agy(argv: &[String]) -> bool {
 
 /// Whether an `agy` command line is a headless run. Scans the words after
 /// `agy` left to right: `-p`, `--print`, `--prompt` (or `--print=…`,
-/// `--prompt=…`) first means headless; `-i` or `--prompt-interactive` first
-/// means interactive; neither means interactive.
+/// `--prompt=…`) first means headless; `-i` or `--prompt-interactive` (or
+/// `--prompt-interactive=…`) first means interactive; neither means
+/// interactive.
 pub fn headless(argv: &[String]) -> bool {
     let Some(args) = agy_args(argv) else {
         return false;
@@ -35,6 +36,7 @@ pub fn headless(argv: &[String]) -> bool {
         match word.as_str() {
             "-p" | "--print" | "--prompt" => return true,
             "-i" | "--prompt-interactive" => return false,
+            w if w.starts_with("--prompt-interactive=") => return false,
             w if w.starts_with("--print=") || w.starts_with("--prompt=") => return true,
             _ => {}
         }
@@ -91,6 +93,7 @@ mod tests {
             "agy --print hi",
             "agy --prompt hi",
             "agy --print=hi",
+            "agy --prompt=hi",
             "agy --model m -p hi",
             "/bin/bash /t/agy -p hi",
         ] {
@@ -105,6 +108,7 @@ mod tests {
         ] {
             assert!(!headless(&argv(c)), "{c}");
         }
+        assert!(!headless(&argv("zsh")));
     }
 
     #[test]
@@ -113,6 +117,7 @@ mod tests {
         assert!(!headless(&argv(
             "agy --prompt-interactive use --print here"
         )));
+        assert!(!headless(&argv("agy --prompt-interactive=x -p")));
         assert!(headless(&argv("agy -p explain the -i flag")));
     }
 
