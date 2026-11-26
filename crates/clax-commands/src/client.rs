@@ -382,6 +382,28 @@ fn log_line(home: &Home, msg: &str) {
     }
 }
 
+/// This process, for a line about a wait it is in: `pid <pid> parent pid
+/// <ppid> parent "<command line>"`.
+fn caller() -> String {
+    let ppid = std::os::unix::process::parent_id();
+    caller_line(
+        std::process::id(),
+        ppid,
+        clax_core::daemon::process_args(ppid).as_deref(),
+    )
+}
+
+/// [`caller`]'s line for `pid`, whose parent `ppid` runs `parent_args`
+/// (`None`: it could not be read), the command line on one line and cut to
+/// 200 characters.
+fn caller_line(pid: u32, ppid: u32, parent_args: Option<&[String]>) -> String {
+    let cmd = parent_args.map_or_else(
+        || "(unreadable)".to_string(),
+        |a| crate::hooklog::one_line(&a.join(" ")),
+    );
+    format!("pid {pid} parent pid {ppid} parent \"{cmd}\"")
+}
+
 /// True when `e` is a failure to connect at all (nothing listens on the port).
 fn is_connect_error(e: &anyhow::Error) -> bool {
     e.downcast_ref::<reqwest::Error>()
@@ -1225,19 +1247,36 @@ impl Client {
 
     /// The daemon a supervisor starts for `home`, once it answers within
     /// `wait`; an error saying why no daemon was started otherwise.
+    ///
+    /// The wait is recorded as it starts, naming the caller ([`caller`]),
+    /// in the daemon log and at WARN, so a caller that waits and then finds
+    /// its daemon is on record too; the error names the caller as well.
     fn await_supervised(
         home: &Home,
         probe: &reqwest::blocking::Client,
         wait: Duration,
     ) -> anyhow::Result<Client> {
         let deadline = Instant::now() + wait;
+        let who = caller();
+        tracing::warn!(
+            "waiting up to {} s for the supervised clax daemon: {who}",
+            wait.as_secs()
+        );
+        let _ = home.ensure_dirs();
+        log_line(
+            home,
+            &format!(
+                "WARN waiting up to {} s for the supervised daemon ([serve] autostart = false): {who}",
+                wait.as_secs()
+            ),
+        );
         loop {
             if let Some(c) = Client::discover_with(home, probe) {
                 return Ok(c);
             }
             if Instant::now() >= deadline {
                 bail!(
-                    "no clax daemon answers for {} after {} s, and `[serve] autostart = false` in {} says a supervisor runs it, so this client starts none; check the supervisor's clax job, or run `clax doctor`",
+                    "no clax daemon answers for {} after {} s, and `[serve] autostart = false` in {} says a supervisor runs it, so this client starts none; check the supervisor's clax job, or run `clax doctor` (the caller: {who})",
                     home.root().display(),
                     wait.as_secs(),
                     home.root().join("config.toml").display()
@@ -2524,7 +2563,37 @@ srv.serve_forever()
         );
         assert!(e.contains("autostart = false"), "{e}");
         assert!(read_daemon_info(&home).is_none(), "no daemon.json");
-        assert!(!home.log_path().exists(), "no daemon was spawned: {e}");
+        // The error and the line written as the wait began name this
+        // process and its parent; the log holds nothing else, so no daemon
+        // was spawned.
+        let ppid = std::os::unix::process::parent_id();
+        let who = format!("pid {} parent pid {ppid} parent \"", std::process::id());
+        assert!(e.contains(&who), "{e}");
+        let log = log(&home);
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 1, "{log}");
+        assert!(
+            lines[0].contains(" clax client: WARN waiting up to 0 s") && lines[0].contains(&who),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn the_caller_line_names_the_parent_and_cuts_its_command_line() {
+        let args = ["/bin/zsh".to_string(), "-c".into(), "clax \"list\"".into()];
+        assert_eq!(
+            caller_line(10, 7, Some(&args)),
+            r#"pid 10 parent pid 7 parent "/bin/zsh -c clax \"list\"""#
+        );
+        assert_eq!(
+            caller_line(10, 7, None),
+            r#"pid 10 parent pid 7 parent "(unreadable)""#
+        );
+        let long = ["x".repeat(500)];
+        assert_eq!(
+            caller_line(10, 7, Some(&long)),
+            format!("pid 10 parent pid 7 parent \"{}\"", "x".repeat(200))
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ pub const MAX_BYTES: u64 = 1 << 20;
 const STDERR_CHARS: usize = 200;
 
 /// `text` on one line, quotes and backslashes escaped, cut to [`STDERR_CHARS`].
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     let cut: String = text.chars().take(STDERR_CHARS).collect();
     cut.replace('\\', "\\\\")
         .replace('"', "\\\"")
