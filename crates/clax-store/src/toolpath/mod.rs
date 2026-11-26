@@ -248,6 +248,7 @@ fn harness_name(harness: &str) -> &str {
         "codex" => "Codex",
         "pi" => "Pi",
         "grok" => "Grok",
+        "antigravity" => "Antigravity",
         "gemini" => "Gemini CLI",
         "app" => "Clax app",
         "unknown" => "Agent",
@@ -261,6 +262,7 @@ fn company_for(harness: &str) -> Option<&'static str> {
         "claude" | "app" => Some("anthropic"),
         "codex" => Some("openai"),
         "grok" => Some("xai"),
+        "antigravity" => Some("google"),
         "gemini" => Some("google"),
         _ => None,
     }

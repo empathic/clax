@@ -20,7 +20,7 @@ async fn unknown_harness_message_lists_app() {
     let v: Value = res.json().await.unwrap();
     assert_eq!(
         v["error"]["message"],
-        "harness must be one of claude, codex, grok, pi, app"
+        "harness must be one of claude, codex, grok, antigravity, pi, app"
     );
 }
 

@@ -358,10 +358,10 @@ async fn register_accepts_only_known_harnesses() {
         assert_eq!(body["error"]["code"], "invalid_args", "{harness:?}");
         assert_eq!(
             body["error"]["message"],
-            "harness must be one of claude, codex, grok, pi, app"
+            "harness must be one of claude, codex, grok, antigravity, pi, app"
         );
     }
-    for harness in ["claude", "codex", "grok", "pi", "app"] {
+    for harness in ["claude", "codex", "grok", "antigravity", "pi", "app"] {
         register(&ts, json!({"harness": harness, "cwd": "/"})).await;
     }
 }

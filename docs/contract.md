@@ -1952,11 +1952,12 @@ The shim takes `harness_session_id` from `CLAUDE_CODE_SESSION_ID` under Claude
 Code and from `GROK_SESSION_ID` under Grok Build, else from `CLAX_SESSION_ID`
 for any harness, else sends none.
 
-A session row has `harness` (`claude`, `codex`, `grok`, `pi`, `app`),
-`harness_session_id` (the harness's own ID, when known), `cwd`, `pid` (the
-shim, Pi or Clax app process), `parent_pid`, and timestamps. Registration and
-join accept only those five harness names (anything else is 400
-`invalid_args` `harness must be one of claude, codex, grok, pi, app`); an
+A session row has `harness` (`claude`, `codex`, `grok`, `antigravity`, `pi`,
+`app`), `harness_session_id` (the harness's own ID, when known), `cwd`, `pid`
+(the shim, Pi or Clax app process), `parent_pid`, and timestamps. Registration
+and join accept only those six harness names (anything else is 400
+`invalid_args`
+`harness must be one of claude, codex, grok, antigravity, pi, app`); an
 empty `harness_session_id` on registration counts as none. The daemon matches registrations to existing
 live rows so that a shim and a hook for the same conversation share one row:
 

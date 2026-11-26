@@ -551,6 +551,51 @@ async fn a_grok_turn_a_stop_handed_a_thread_to_is_not_a_terminal_turn() {
     );
 }
 
+async fn terminal_at(ts: &TestServer, sid: &str) -> Value {
+    where_to_ask_reply(ts, sid).await["signals"]["terminal_at"].clone()
+}
+
+#[tokio::test]
+async fn an_antigravity_turn_start_is_the_persons_unless_its_wait_handed_something_over() {
+    let (c, ts) = clocked().await;
+    let sid = ts.register_session("antigravity", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let a = ts
+        .publish_as(&sid, "Board", "<main><h2>Goals</h2></main>")
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let _stream = ts.stream_as_owner(&["questions"]).await;
+    poll(&ts, &sid, "tier=stop_hook").await;
+    // The next turn's first model call, with nothing from Clax since the
+    // Stop: the person typed it.
+    c.advance(30);
+    poll(&ts, &sid, "tier=prompt_hook").await;
+    assert_eq!(terminal_at(&ts, &sid).await, "2026-10-16T10:00:30.000Z");
+    c.advance(30);
+    poll(&ts, &sid, "tier=stop_hook").await;
+    assert_eq!(terminal_at(&ts, &sid).await, "2026-10-16T10:01:00.000Z");
+    // The open wait polls from outside a turn: it starts none.
+    c.advance(30);
+    poll(&ts, &sid, "tier=wait").await;
+    assert_eq!(terminal_at(&ts, &sid).await, "2026-10-16T10:01:00.000Z");
+    c.advance(30);
+    poll(&ts, &sid, "tier=prompt_hook").await;
+    assert_eq!(terminal_at(&ts, &sid).await, "2026-10-16T10:02:00.000Z");
+    c.advance(30);
+    poll(&ts, &sid, "tier=stop_hook").await;
+    assert_eq!(terminal_at(&ts, &sid).await, "2026-10-16T10:02:30.000Z");
+    // The wait hands a thread over: the turn it starts is Clax's.
+    ts.thread_as_owner(&aid, "Bigger?").await;
+    c.advance(30);
+    let v = poll(&ts, &sid, "tier=wait").await;
+    assert_eq!(v["feedback"].as_array().unwrap().len(), 1, "{v}");
+    c.advance(30);
+    poll(&ts, &sid, "tier=prompt_hook").await;
+    assert_eq!(terminal_at(&ts, &sid).await, "2026-10-16T10:02:30.000Z");
+}
+
 #[tokio::test]
 async fn a_late_answer_and_a_pull_are_deliveries_from_clax_at_their_thread() {
     let (c, ts) = clocked().await;

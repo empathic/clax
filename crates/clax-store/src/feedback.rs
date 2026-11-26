@@ -892,7 +892,7 @@ fn waiting_on(harness: &str, has_hsid: bool, armed: bool, codex_push: bool) -> T
         ("app", _) => Tier::Wait,
         ("codex", true) if has_hsid && codex_push => Tier::Queue,
         ("pi", true) => Tier::Inject,
-        ("claude" | "codex" | "grok", true) => Tier::StopHook,
+        ("claude" | "codex" | "grok" | "antigravity", true) => Tier::StopHook,
         _ => Tier::Piggyback,
     }
 }
@@ -2960,6 +2960,15 @@ mod tests {
         )
         .unwrap()
         .id
+    }
+
+    #[test]
+    fn antigravity_waits_on_its_stop_hook_when_armed() {
+        assert_eq!(waiting_on("antigravity", true, true, false), Tier::StopHook);
+        assert_eq!(
+            waiting_on("antigravity", true, false, false),
+            Tier::Piggyback
+        );
     }
 
     #[test]

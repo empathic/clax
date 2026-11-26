@@ -300,10 +300,11 @@ pub struct FeedbackQuery {
 /// Where the person is (spec 2026-10-16-ask-where-attention-is-design §1):
 /// `prompt=true` (Claude Code's prompt hook) records a typed prompt first,
 /// withdrawing the session's open hook in-terminal questions; a `stop_hook`
-/// poll of a Codex or Grok session records the turn, which stands for a
-/// prompt when nothing came from Clax since the last, and its other polls
-/// but `queue` come from within a turn, the first after such a Stop
-/// starting one the person typed ([`clax_http::surface::note_poll`]).
+/// poll of a Codex, Grok or Antigravity session records the turn, which
+/// stands for a prompt when nothing came from Clax since the last, and its
+/// other polls but `queue` (and Antigravity's `wait`) come from within a
+/// turn, the first after such a Stop starting one the person typed
+/// ([`clax_http::surface::note_poll`]).
 /// Each is recorded once per poll,
 /// before its first take. A poll that hands anything over, or a
 /// `prompt=true` poll of a session with a page, carries the session's
