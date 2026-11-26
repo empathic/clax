@@ -609,4 +609,22 @@ mod tests {
         );
         assert_eq!(r.cwd, "");
     }
+
+    #[test]
+    fn hook_files_are_removed_only_for_a_plain_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let run = home.root().join("run");
+        for d in ["tool-hook/antigravity-a", "wake-nudge/antigravity-a"] {
+            std::fs::create_dir_all(run.join(d)).unwrap();
+        }
+        let planted = [run.join("x"), run.join("x.json")];
+        for f in &planted {
+            std::fs::write(f, "").unwrap();
+        }
+        remove_hook_files(&home, "a/../../x");
+        for f in &planted {
+            assert!(f.exists(), "{} was removed", f.display());
+        }
+    }
 }

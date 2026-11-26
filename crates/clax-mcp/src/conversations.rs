@@ -45,8 +45,15 @@ pub struct Conversations {
     base: RegisterSession,
     connect: Arc<dyn Fn(RegisterSession) -> DaemonClient + Send + Sync>,
     heartbeat: Duration,
+    held: Mutex<Held>,
+}
+
+#[derive(Default)]
+struct Held {
     /// By root conversation ID; `None` holds the calls that name none.
-    held: Mutex<BTreeMap<Option<String>, Conversation>>,
+    by_root: BTreeMap<Option<String>, Conversation>,
+    /// Set by [`Conversations::end_all`]: no conversation is made after it.
+    closed: bool,
 }
 
 struct Conversation {
@@ -74,10 +81,16 @@ impl Conversations {
     }
 
     /// The tools of `root`'s session (of the session with no harness
-    /// session ID for `None`), made and heartbeated on first use.
-    pub fn tools_for(&self, root: Option<&str>) -> ClaxTools {
+    /// session ID for `None`), made and heartbeated on first use; `None`
+    /// once [`Conversations::end_all`] has run.
+    pub fn tools_for(&self, root: Option<&str>) -> Option<ClaxTools> {
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
-        held.entry(root.map(str::to_string))
+        if held.closed {
+            return None;
+        }
+        let tools = held
+            .by_root
+            .entry(root.map(str::to_string))
             .or_insert_with(|| {
                 let client = (self.connect)(RegisterSession {
                     harness_session_id: root.map(str::to_string),
@@ -90,13 +103,19 @@ impl Conversations {
                 }
             })
             .tools
-            .clone()
+            .clone();
+        Some(tools)
     }
 
     /// Settles reports and ends every session, each within `within`;
-    /// returns the root conversation IDs it held.
+    /// returns the root conversation IDs it held. No conversation is made
+    /// after it starts.
     pub async fn end_all(&self, within: Duration) -> Vec<String> {
-        let held = std::mem::take(&mut *self.held.lock().unwrap_or_else(|e| e.into_inner()));
+        let held = {
+            let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+            held.closed = true;
+            std::mem::take(&mut held.by_root)
+        };
         let mut ending = tokio::task::JoinSet::new();
         let mut roots = Vec::new();
         for (root, c) in held {
@@ -111,14 +130,23 @@ impl Conversations {
 
 impl ServerHandler for Conversations {
     /// Runs the call with its caller's tools: its root conversation's,
-    /// without feedback for a subagent.
+    /// without feedback for a subagent. Once the server is shutting down
+    /// ([`Conversations::end_all`]) a call is an error result,
+    /// `shutting_down`.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let who = caller(&context.meta).or_else(|| request.meta.as_ref().and_then(caller));
-        let tools = self.tools_for(who.as_ref().map(|c| c.root.as_str()));
+        let Some(tools) = self.tools_for(who.as_ref().map(|c| c.root.as_str())) else {
+            return Ok(crate::render::error(
+                "shutting_down",
+                "the Clax MCP server is shutting down",
+                serde_json::json!({}),
+            )
+            .into());
+        };
         let tools = match who {
             Some(c) if c.subagent => tools.without_feedback(),
             _ => tools,
@@ -187,6 +215,35 @@ mod tests {
         assert_eq!(
             of(json!({META_CONVERSATION: "c1"})),
             Some(("c1".into(), false))
+        );
+    }
+
+    #[tokio::test]
+    async fn no_conversation_is_made_once_all_have_ended() {
+        let made = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = || DaemonClient::new("http://127.0.0.1:9".into(), "t".into(), None);
+        let connect = {
+            let made = made.clone();
+            Arc::new(move |_: RegisterSession| {
+                made.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                client()
+            })
+        };
+        let template = ClaxTools::new(client(), String::new(), None, Default::default());
+        let conversations = Conversations::new(
+            template,
+            RegisterSession::default(),
+            connect,
+            Duration::from_secs(3600),
+        );
+        assert!(conversations.tools_for(Some("r1")).is_some());
+        assert_eq!(conversations.end_all(Duration::from_secs(5)).await, ["r1"]);
+
+        assert!(conversations.tools_for(Some("r2")).is_none());
+        assert_eq!(made.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            conversations.end_all(Duration::from_secs(5)).await,
+            Vec::<String>::new()
         );
     }
 
