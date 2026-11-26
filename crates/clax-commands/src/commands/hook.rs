@@ -109,6 +109,7 @@ pub enum Agent {
     Claude,
     Codex,
     Grok,
+    Antigravity,
 }
 
 /// The deadline for the whole invocation and for each daemon request.
@@ -164,6 +165,7 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
             Agent::Grok => "grok",
+            Agent::Antigravity => clax_core::antigravity::HARNESS,
         }
     }
 }
@@ -176,7 +178,9 @@ pub enum Event {
     SessionEnd,
     /// The agent is about to stop; hand it pending feedback by blocking the stop.
     Stop,
-    /// The person submitted a prompt; add pending feedback as context.
+    /// A turn starts (the person submitted a prompt, or, under
+    /// Antigravity, the turn's first model call); add pending feedback as
+    /// context.
     Prompt,
     /// A tool call finished; renew the session's working records.
     Tool,
@@ -729,7 +733,8 @@ pub fn log_run(
 /// start's approval notice ([`codex_notice`]), which is printed either way.
 /// Never starts a daemon. Each run is
 /// logged to hooks.log. A Claude Code hook that Grok Build runs stands down:
-/// it prints nothing and logs one standdown line.
+/// it prints nothing and logs one standdown line. An Antigravity run prints
+/// in Antigravity's shapes ([`HookOutput::for_antigravity`]).
 pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let started = Instant::now();
     let parent_pid = std::os::unix::process::parent_id();
@@ -781,6 +786,11 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let out = match &notice {
         Some(n) => out.with_system_message(&n.text),
         None => out,
+    };
+    let out = if matches!(agent, Agent::Antigravity) {
+        out.for_antigravity()
+    } else {
+        out
     };
     if let Some(line) = out.to_line()
         && writeln!(std::io::stdout(), "{line}").is_ok()
@@ -999,6 +1009,17 @@ fn channel_flag(parent_pid: u32) -> Option<bool> {
     read.then_some(false)
 }
 
+/// Whether the hook runs under a headless `agy` run
+/// ([`clax_core::antigravity::run_is_headless`] over the command lines of
+/// its parent and ancestors).
+fn antigravity_headless(parent_pid: u32) -> bool {
+    let lines: Vec<Option<Vec<String>>> = std::iter::once(parent_pid)
+        .chain(ancestors(parent_pid))
+        .map(process_args)
+        .collect();
+    clax_core::antigravity::run_is_headless(&lines)
+}
+
 /// Where the Stop hook remembers what it said about waking harness session
 /// `input.session_id` (`run/wake-nudge/<harness>-<ID>.json`); `None` for a
 /// session ID that is not a plain file name.
@@ -1038,6 +1059,17 @@ fn handle(
     // prompt_hook request marks comments delivered, so Grok's prompt hook
     // does nothing (the plugin does not wire it).
     if matches!((agent, event), (Agent::Grok, Event::Prompt)) {
+        return Ok(Some(HookOutput::none()));
+    }
+    // Antigravity has no session-end event, and a conversation has no
+    // session to join until its first Clax call; nor does it ask through
+    // these hooks.
+    if matches!(agent, Agent::Antigravity)
+        && matches!(
+            event,
+            Event::SessionStart | Event::SessionEnd | Event::CallId | Event::Ask | Event::Asked
+        )
+    {
         return Ok(Some(HookOutput::none()));
     }
     let client = Client::discover(home)
@@ -1098,6 +1130,11 @@ fn handle(
         }
         Event::Stop => {
             let ledger = wake_ledger(home, agent, &input).map(events::FileLedger);
+            // A headless `agy -p` run waits for an open wait_for_feedback
+            // call before it exits: it is never told to open one.
+            let ledger = ledger.filter(|_| {
+                !matches!(agent, Agent::Antigravity) || !antigravity_headless(parent_pid)
+            });
             let wake = ledger.as_ref().map(|l| events::StopWake {
                 bin: follow_bin(),
                 ledger: l,
@@ -1107,7 +1144,14 @@ fn handle(
             });
             events::stop_with(agent.harness(), &input, &client, wake.as_ref())
         }
-        Event::Prompt => events::prompt(agent.harness(), &input, &client),
+        // Antigravity's turn starts with a background result too, not only
+        // with what the person typed.
+        Event::Prompt => events::prompt_with(
+            agent.harness(),
+            &input,
+            &client,
+            !matches!(agent, Agent::Antigravity),
+        ),
         Event::Tool => events::tool(agent.harness(), &input, &client),
         Event::CallId if matches!(agent, Agent::Claude) => {
             events::tool_call_id(agent.harness(), &input, &client)

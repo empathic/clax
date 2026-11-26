@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -38,7 +39,12 @@ const HARNESS_ENV: [&str; 9] = [
 ];
 
 fn clax(home: &Path) -> Command {
-    let mut c = Command::new(clax_bin(None));
+    in_test_env(Command::new(clax_bin(None)), home)
+}
+
+/// `c` with the environment every `clax` run here has: none of the
+/// harness's, and `home` as `CLAX_HOME`.
+fn in_test_env(mut c: Command, home: &Path) -> Command {
     for var in HARNESS_ENV {
         c.env_remove(var);
     }
@@ -68,17 +74,22 @@ fn hook(home: &Path, agent: &str, event: &str, stdin: &[u8]) -> Ran {
 /// there when it starts: its deadline never runs while this test waits to
 /// be scheduled to write it.
 fn hook_env(home: &Path, agent: &str, event: &str, stdin: &[u8], env: &[(&str, &str)]) -> Ran {
-    let mut input = tempfile::tempfile().unwrap();
-    input.write_all(stdin).unwrap();
-    std::io::Seek::rewind(&mut input).unwrap();
     let mut cmd = clax(home);
-    cmd.args(["hook", "--agent", agent, event])
-        .stdin(Stdio::from(input))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    cmd.args(["hook", "--agent", agent, event]);
     for (k, v) in env {
         cmd.env(k, v);
     }
+    run_with_stdin(cmd, stdin)
+}
+
+/// Runs `cmd` with `stdin` read from a file ([`hook_env`]).
+fn run_with_stdin(mut cmd: Command, stdin: &[u8]) -> Ran {
+    let mut input = tempfile::tempfile().unwrap();
+    input.write_all(stdin).unwrap();
+    std::io::Seek::rewind(&mut input).unwrap();
+    cmd.stdin(Stdio::from(input))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     let out = cmd.spawn().unwrap().wait_with_output().unwrap();
     Ran {
         stdout: String::from_utf8(out.stdout).unwrap(),
@@ -336,38 +347,43 @@ fn unusable_stdin_prints_nothing() {
 
 #[test]
 fn no_daemon_prints_nothing_and_starts_none() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("ax");
-    for event in ["session-start", "session-end", "stop", "prompt", "tool"] {
-        let r = hook(
-            &home,
-            "claude",
-            event,
-            &fixture("claude-session-start.json"),
-        );
-        assert_eq!(r.code, Some(0));
-        assert_eq!(r.stdout, "");
+    const EVENTS: [&str; 5] = ["session-start", "session-end", "stop", "prompt", "tool"];
+    for (agent, input) in [
+        ("claude", "claude-session-start.json"),
+        ("antigravity", "antigravity-stop.json"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("ax");
+        for event in EVENTS {
+            let r = hook(&home, agent, event, &fixture(input));
+            assert_eq!(
+                (r.code, r.stdout.as_str()),
+                (Some(0), ""),
+                "{agent} {event}"
+            );
+        }
+        // Each run gave up at once on finding no daemon, rather than
+        // waiting out its deadline: its log line names that reason, not a
+        // timeout. Antigravity's session-start and session-end are not
+        // wired and look for no daemon.
+        let log = std::fs::read_to_string(home.join("logs/hooks.log")).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 5, "{log}");
+        for (line, event) in lines.iter().zip(EVENTS) {
+            assert!(line.contains(&format!("event={event} ")), "{line}");
+            let unwired = agent == "antigravity" && event.starts_with("session-");
+            let said = if unwired {
+                "stderr=\"\""
+            } else {
+                "stderr=\"no clax daemon is running\""
+            };
+            assert!(line.ends_with(said), "{line}");
+        }
+        // Starting a daemon takes the home's start lock before it spawns
+        // one, so a run that tried would have left daemon.lock behind it.
+        assert!(!home.join("daemon.lock").exists());
+        assert!(!home.join("daemon.json").exists());
     }
-    // Each run gave up at once on finding no daemon, rather than waiting
-    // out its deadline: its log line names that reason, not a timeout.
-    let log = std::fs::read_to_string(home.join("logs/hooks.log")).unwrap();
-    let lines: Vec<&str> = log.lines().collect();
-    assert_eq!(lines.len(), 5, "{log}");
-    for (line, event) in
-        lines
-            .iter()
-            .zip(["session-start", "session-end", "stop", "prompt", "tool"])
-    {
-        assert!(line.contains(&format!("event={event} ")), "{line}");
-        assert!(
-            line.ends_with("stderr=\"no clax daemon is running\""),
-            "{line}"
-        );
-    }
-    // Starting a daemon takes the home's start lock before it spawns one,
-    // so a run that tried would have left daemon.lock behind it.
-    assert!(!home.join("daemon.lock").exists());
-    assert!(!home.join("daemon.json").exists());
 }
 
 #[test]
@@ -454,6 +470,11 @@ fn stalled_daemon() -> tempfile::TempDir {
             });
         }
     });
+    home_naming(port)
+}
+
+/// A home whose daemon.json names a daemon on `port`.
+fn home_naming(port: u16) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("ax");
     std::fs::create_dir_all(&home).unwrap();
@@ -1005,6 +1026,254 @@ fn grok_working_through_a_turn() {
     let r = hook(&d.home(), "grok", "stop", &fixture("grok-stop-active.json"));
     assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
     assert!(d.working(&aid).is_empty(), "the turn ended");
+}
+
+/// The conversation ID of every `antigravity-*.json` fixture.
+const AGY_CONVERSATION: &str = "c0ffee00-0000-4000-8000-000000000001";
+
+/// A stand-in `agy`: runs `clax hook --agent antigravity <its first
+/// argument>` as its child, which reads the hook's input from the stdin it
+/// inherits. Its further arguments only show on its command line.
+const FAKE_AGY: &str = "#!/bin/bash\n\"$CLAX_TEST_BIN\" hook --agent antigravity \"$1\"\n";
+
+/// Runs Antigravity's `event` hook under [`FAKE_AGY`] started as `agy
+/// <event> <flags>`, so the hook's parent is an `agy` with that command
+/// line.
+fn hook_under_agy(home: &Path, event: &str, flags: &[&str], stdin: &[u8]) -> Ran {
+    let dir = tempfile::tempdir().unwrap();
+    let agy = clax_fake_exe::install(&dir.path().join("agy"), FAKE_AGY);
+    let mut cmd = in_test_env(Command::new(agy), home);
+    cmd.arg(event)
+        .args(flags)
+        .env("CLAX_TEST_BIN", clax_bin(None));
+    run_with_stdin(cmd, stdin)
+}
+
+/// An Antigravity session as its shim registers it for [`AGY_CONVERSATION`],
+/// watching a page it published with replies armed.
+fn agy_session_with_artifact(d: &Daemon) -> (String, String) {
+    d.session_with_artifact("antigravity", AGY_CONVERSATION)
+}
+
+#[test]
+fn antigravity_prompt_injects_pending_feedback_as_a_system_message() {
+    let d = Daemon::start();
+    let (sid, aid) = agy_session_with_artifact(&d);
+    d.sent_thread(&aid, "tighten the spacing");
+    let pre = fixture("antigravity-pre-invocation.json");
+    let r = hook(&d.home(), "antigravity", "prompt", &pre);
+    assert_eq!(r.code, Some(0));
+    let v = one_line_json(&r.stdout);
+    let text = v["injectSteps"][0]["systemMessage"]["systemMessage"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{v}"));
+    assert!(text.contains("tighten the spacing"), "{text}");
+    assert_eq!(
+        v,
+        serde_json::json!({"injectSteps": [{"systemMessage": {"systemMessage": text}}]})
+    );
+    // Not reported as a prompt the person typed: a turn a background result
+    // starts runs this hook too.
+    let asked = d.get_authed(&format!("/api/sessions/{sid}/where-to-ask"));
+    assert_eq!(asked["signals"]["terminal_at"], Value::Null, "{asked}");
+    let r = hook(&d.home(), "antigravity", "prompt", &pre);
+    assert_eq!(
+        (r.code, r.stdout.as_str()),
+        (Some(0), ""),
+        "delivered once, and no where-to-ask line without a typed prompt"
+    );
+}
+
+#[test]
+fn antigravity_stop_continues_the_turn_with_feedback() {
+    let d = Daemon::start();
+    let (_sid, aid) = agy_session_with_artifact(&d);
+    d.sent_thread(&aid, "make it two columns");
+    let r = hook(
+        &d.home(),
+        "antigravity",
+        "stop",
+        &fixture("antigravity-stop.json"),
+    );
+    assert_eq!(r.code, Some(0));
+    let v = one_line_json(&r.stdout);
+    let reason = v["reason"].as_str().unwrap_or_else(|| panic!("{v}"));
+    assert!(
+        reason.starts_with("[clax] 1 comment sent to you:\n")
+            && reason.contains("make it two columns"),
+        "{reason}"
+    );
+    assert_eq!(
+        v,
+        serde_json::json!({"decision": "continue", "reason": reason})
+    );
+    never_timed_out(&d.hooks_log());
+}
+
+/// A home whose daemon.json names a server that answers as a daemon with
+/// one live Antigravity session, `S`, for [`AGY_CONVERSATION`] and nothing
+/// pending, and the `<method> <path>` of each request it answered.
+fn recording_daemon() -> (tempfile::TempDir, Arc<Mutex<Vec<String>>>) {
+    use std::io::{BufRead, Read};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let kept = seen.clone();
+    std::thread::spawn(move || {
+        for sock in listener.incoming() {
+            let Ok(mut sock) = sock else { continue };
+            let mut reader = std::io::BufReader::new(sock.try_clone().unwrap());
+            let mut request = String::new();
+            let _ = reader.read_line(&mut request);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some((k, v)) = line.split_once(':')
+                    && k.eq_ignore_ascii_case("content-length")
+                {
+                    length = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let _ = reader.read_exact(&mut vec![0; length]);
+            let mut words = request.split_whitespace();
+            let line = format!(
+                "{} {}",
+                words.next().unwrap_or_default(),
+                words.next().unwrap_or_default()
+            );
+            let body = match line.as_str() {
+                "GET /healthz" => {
+                    serde_json::json!({"version": "0.0.0", "pid": 1, "started_at": "x"})
+                }
+                "GET /api/sessions?live=true" => serde_json::json!({"sessions": [
+                    {"id": "S", "harness": "antigravity", "harness_session_id": AGY_CONVERSATION},
+                ]}),
+                _ => serde_json::json!({"feedback": [], "answers": [], "text": null}),
+            }
+            .to_string();
+            kept.lock().unwrap().push(line);
+            let _ = sock.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (home_naming(port), seen)
+}
+
+#[test]
+fn antigravity_stop_after_a_continue_takes_no_resends() {
+    for (input, take) in [
+        (
+            "antigravity-stop-continued.json",
+            "GET /api/sessions/S/feedback?tier=stop_hook&resends=false",
+        ),
+        (
+            "antigravity-stop.json",
+            "GET /api/sessions/S/feedback?tier=stop_hook&resends=true",
+        ),
+    ] {
+        let (dir, seen) = recording_daemon();
+        let r = hook(
+            &dir.path().join("ax"),
+            "antigravity",
+            "stop",
+            &fixture(input),
+        );
+        assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "{input}");
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().any(|l| l == take), "{input}: {seen:?}");
+    }
+}
+
+#[test]
+fn antigravity_stop_on_another_termination_does_nothing() {
+    let d = Daemon::start();
+    let (sid, aid) = agy_session_with_artifact(&d);
+    d.sent_thread(&aid, "make it two columns");
+    let canceled = fixture("antigravity-stop-canceled.json");
+    let r = hook(&d.home(), "antigravity", "stop", &canceled);
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    let r = hook_under_agy(&d.home(), "stop", &[], &canceled);
+    assert_eq!(
+        (r.code, r.stdout.as_str()),
+        (Some(0), ""),
+        "no reminder either"
+    );
+    assert_eq!(d.pending(&sid).len(), 1, "still undelivered");
+}
+
+#[test]
+fn antigravity_stop_reminds_once_to_open_a_wait() {
+    let d = Daemon::start();
+    agy_session_with_artifact(&d);
+    let stop = fixture("antigravity-stop.json");
+    let r = hook_under_agy(&d.home(), "stop", &[], &stop);
+    assert_eq!(r.code, Some(0));
+    let v = one_line_json(&r.stdout);
+    assert_eq!(v["decision"], "continue", "{v}");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("[clax] You watch 1 artifact or page for comments sent to you. ")
+            && reason.contains("Call wait_for_feedback with no timeout_s now"),
+        "{reason}"
+    );
+    let r = hook_under_agy(&d.home(), "stop", &[], &stop);
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "said once");
+}
+
+#[test]
+fn antigravity_stop_gives_no_reminder_in_a_headless_run() {
+    let d = Daemon::start();
+    agy_session_with_artifact(&d);
+    let stop = fixture("antigravity-stop.json");
+    let r = hook(&d.home(), "antigravity", "stop", &stop);
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "no agy parent");
+    let r = hook_under_agy(&d.home(), "stop", &["-p", "x"], &stop);
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "agy -p");
+}
+
+#[test]
+fn antigravity_hooks_do_nothing_for_an_unknown_conversation() {
+    let d = Daemon::start();
+    for (event, input) in [
+        ("stop", "antigravity-stop.json"),
+        ("prompt", "antigravity-pre-invocation.json"),
+        ("tool", "antigravity-post-tool-use.json"),
+    ] {
+        let r = hook(&d.home(), "antigravity", event, &fixture(input));
+        assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "{event}");
+    }
+    let log = d.hooks_log();
+    assert_eq!(log.lines().count(), 3, "{log}");
+    assert!(log.lines().all(|l| l.ends_with("stderr=\"\"")), "{log}");
+    assert!(d.sessions(false).is_empty());
+}
+
+#[test]
+fn antigravity_session_start_and_end_do_nothing() {
+    let d = Daemon::start();
+    let (sid, aid) = agy_session_with_artifact(&d);
+    d.sent_thread(&aid, "make it two columns");
+    let input = fixture("antigravity-pre-invocation.json");
+    for event in ["session-start", "session-end"] {
+        let r = hook(&d.home(), "antigravity", event, &input);
+        assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "{event}");
+    }
+    let live = d.sessions(true);
+    assert_eq!(
+        live.len(),
+        1,
+        "neither joined nor ended a session: {live:?}"
+    );
+    assert_eq!(live[0]["id"], sid.as_str());
+    assert_eq!(d.pending(&sid).len(), 1, "nothing delivered");
 }
 
 #[test]

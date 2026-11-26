@@ -372,7 +372,8 @@ fn rendered_text(res: &Value) -> Option<String> {
 /// count. While `stop_hook_active` is set, only never-delivered rows can block,
 /// so a stop is blocked at most once per new comment. When it allows the
 /// stop, it ends the session's working records (the turn is over). For Grok
-/// Build, a Stop whose reason is not `end_turn` allows the stop without asking
+/// Build, a Stop whose reason is not `end_turn`, and for Antigravity one whose
+/// `terminationReason` is not `NO_TOOL_CALL`, allows the stop without asking
 /// the daemon.
 ///
 /// # Errors
@@ -435,12 +436,13 @@ pub struct StopWake<'a> {
 
 /// [`stop`], which, when `wake` is given and nothing is pending, also
 /// blocks the stop once when the session watches with replies armed but
-/// nothing can wake it while idle (no channel, follower, queue or
-/// extension): its reason is the `wake` block's `do`
-/// ([`clax_core::wake::block`]) with the follower's commands. It blocks at
-/// most once per watch arming, and once more after a session that could be
-/// woken at an earlier stop no longer can (its follower stopped). Any
-/// failure of that check allows the stop.
+/// nothing can wake it while idle (no channel, follower, queue, extension
+/// or, under Antigravity, open `wait_for_feedback` call): its reason is the
+/// `wake` block's `do` ([`clax_core::wake::block`]) with the follower's
+/// commands. It blocks at most once per watch arming, and once more after a
+/// session that could be woken at an earlier stop no longer can (its
+/// follower stopped, or its wait ended). Any failure of that check allows
+/// the stop.
 ///
 /// # Errors
 /// When the input has no `session_id` or a daemon request fails.
@@ -454,6 +456,15 @@ pub fn stop_with(
     // `shutdown`) and ignores that run's output; only `end_turn` (or an
     // input without a reason) is the end of a turn.
     if harness == "grok" && input.stop_reason().is_some_and(|r| r != "end_turn") {
+        return Ok(HookOutput::none());
+    }
+    // Antigravity fires Stop also when a turn is cancelled or fails; only
+    // `NO_TOOL_CALL` (or an input without a reason) is a turn's normal end.
+    if harness == "antigravity"
+        && input
+            .termination_reason()
+            .is_some_and(|r| r != "NO_TOOL_CALL")
+    {
         return Ok(HookOutput::none());
     }
     let Some(sid) = live_session(harness, input, daemon)? else {
@@ -487,7 +498,7 @@ fn unwoken(
     w: &StopWake<'_>,
 ) -> anyhow::Result<Option<String>> {
     // Pi has no Stop hook, and its extension wakes it.
-    if !matches!(harness, "claude" | "codex" | "grok") {
+    if !matches!(harness, "claude" | "codex" | "grok" | "antigravity") {
         return Ok(None);
     }
     let info = daemon.get(&format!("/api/sessions/{sid}"))?;
@@ -535,10 +546,10 @@ fn unwoken(
     let n = armings.len();
     let mut text = format!(
         "[clax] {}You watch {} for comments sent to you. {}",
-        if lost {
-            "The follower that woke this session has stopped. "
-        } else {
-            ""
+        match (lost, harness) {
+            (false, _) => "",
+            (true, "antigravity") => "Your earlier wait_for_feedback call has ended. ",
+            (true, _) => "The follower that woke this session has stopped. ",
         },
         if n == 1 {
             "1 artifact or page".to_string()
@@ -618,10 +629,31 @@ pub fn tool_call_id(
 /// # Errors
 /// When the input has no `session_id` or a daemon request fails.
 pub fn prompt(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Result<HookOutput> {
+    prompt_with(harness, input, daemon, true)
+}
+
+/// [`prompt`], reporting the prompt as the person's only when `typed`: a
+/// turn-start hook that also runs for a turn no person started (Antigravity's
+/// first model call of a turn) passes false, and the daemon then infers
+/// whether the person typed.
+///
+/// # Errors
+/// When the input has no `session_id` or a daemon request fails.
+pub fn prompt_with(
+    harness: &str,
+    input: &HookInput,
+    daemon: &dyn Daemon,
+    typed: bool,
+) -> anyhow::Result<HookOutput> {
     let Some(sid) = live_session(harness, input, daemon)? else {
         return Ok(HookOutput::none());
     };
-    let text = feedback_text(daemon, &sid, "tier=prompt_hook&prompt=true")?;
+    let query = if typed {
+        "tier=prompt_hook&prompt=true"
+    } else {
+        "tier=prompt_hook"
+    };
+    let text = feedback_text(daemon, &sid, query)?;
     Ok(match text {
         Some(Some(text)) => HookOutput::additional_context("UserPromptSubmit", &text),
         Some(None) | None => HookOutput::none(),
@@ -1267,6 +1299,17 @@ mod tests {
     }
 
     #[test]
+    fn an_untyped_prompt_takes_feedback_without_reporting_the_prompt() {
+        let d = fake(Some("P"));
+        let i = HookInput::parse(r#"{"session_id":"s1"}"#);
+        assert_eq!(
+            prompt_with("claude", &i, &d, false).unwrap(),
+            HookOutput::additional_context("UserPromptSubmit", "P")
+        );
+        assert_eq!(takes(&d), ["/api/sessions/S/feedback?tier=prompt_hook"]);
+    }
+
+    #[test]
     fn session_start_appends_pending_feedback() {
         let d = fake(Some("PENDING"));
         let out = session_start("claude", 1, &[], &input("s1"), None, &d).unwrap();
@@ -1469,6 +1512,22 @@ mod tests {
             stop_once(&d, &MemLedger::default(), false),
             HookOutput::none()
         );
+    }
+
+    #[test]
+    fn an_antigravity_session_whose_wait_ended_is_told_so_once() {
+        let d = wake_fake("antigravity", true, json!([armed("a1", "t1")]));
+        let l = MemLedger::default();
+        assert_eq!(stop_once(&d, &l, false), HookOutput::none());
+        d.available.replace(false);
+        let r = reason(&stop_once(&d, &l, false));
+        assert!(
+            r.starts_with(
+                "[clax] Your earlier wait_for_feedback call has ended. You watch 1 artifact or page"
+            ),
+            "{r}"
+        );
+        assert_eq!(stop_once(&d, &l, true), HookOutput::none());
     }
 
     #[test]
