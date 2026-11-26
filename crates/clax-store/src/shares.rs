@@ -860,7 +860,11 @@ mod tests {
                 Some("u_x"),
             )
             .unwrap();
-        assert_eq!(s.github_login.as_deref(), Some("Octo-Cat"), "as GitHub spells it");
+        assert_eq!(
+            s.github_login.as_deref(),
+            Some("Octo-Cat"),
+            "as GitHub spells it"
+        );
         assert_eq!(
             (s.person.as_deref(), s.created_by.as_deref(), s.legacy),
             (None, Some("u_x"), false)
@@ -920,7 +924,11 @@ mod tests {
         let (other, _) = st.github_sign_in(DAEMON, &gh(2, "alice"), false).unwrap();
         let other = other.who.viewer.public_id;
         assert!(!may(&st, &other, RightType::Artifacts, "read", a));
-        assert_eq!(st.artifact_shares(a).unwrap()[0].person, None, "still waiting");
+        assert_eq!(
+            st.artifact_shares(a).unwrap()[0].person,
+            None,
+            "still waiting"
+        );
         // Account 1 signs in as alice2: the share is theirs.
         let (alice, _) = st.github_sign_in(DAEMON, &gh(1, "alice2"), false).unwrap();
         let alice = alice.who.viewer.public_id;
@@ -950,8 +958,15 @@ mod tests {
         let s = st
             .set_share_access(DAEMON, a, "s_l", ShareAccess::Editor)
             .unwrap();
-        assert_eq!((s.access, s.person, s.legacy), (ShareAccess::Editor, None, true));
-        assert_eq!(st.artifact_shares(a).unwrap().len(), 1, "the one row, changed");
+        assert_eq!(
+            (s.access, s.person, s.legacy),
+            (ShareAccess::Editor, None, true)
+        );
+        assert_eq!(
+            st.artifact_shares(a).unwrap().len(),
+            1,
+            "the one row, changed"
+        );
         assert_eq!(
             code_of(st.set_share_access(DAEMON, a, "s_none", ShareAccess::Viewer)),
             "not_found"
@@ -975,11 +990,23 @@ mod tests {
         assert_eq!(s.person, None);
         assert!(!may(&st, &old, RightType::Artifacts, "read", a));
         let (new, _) = st.github_sign_in(DAEMON, &gh(2, "alice"), false).unwrap();
-        assert!(may(&st, &new.who.viewer.public_id, RightType::Artifacts, "read", a));
+        assert!(may(
+            &st,
+            &new.who.viewer.public_id,
+            RightType::Artifacts,
+            "read",
+            a
+        ));
         // A share to account 1 by its new login names its person at once.
         let b = artifact(&st, None);
         let s = st
-            .share_artifact(DAEMON, b.as_str(), &to(1, "alice2"), ShareAccess::Viewer, None)
+            .share_artifact(
+                DAEMON,
+                b.as_str(),
+                &to(1, "alice2"),
+                ShareAccess::Viewer,
+                None,
+            )
             .unwrap();
         assert_eq!(s.person.as_deref(), Some(old.as_str()));
     }

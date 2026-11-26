@@ -390,25 +390,39 @@ async fn a_share_by_login_binds_to_the_account_that_held_it_not_its_next_holder(
     let site = Site::new(5).await;
     site.account(1, "theowner", None);
     let owner = site.sign_in(1).await.unwrap();
-    let page = site.ts.publish("Plan", &[("index.html", "<h1>p</h1>")]).await;
+    let page = site
+        .ts
+        .publish("Plan", &[("index.html", "<h1>p</h1>")])
+        .await;
     let page = page["artifact"]["id"].as_str().unwrap().to_string();
     let shares = format!("/api/hosted/artifacts/{page}/shares");
     let reads = |list: Vec<Value>| list.iter().any(|a| a["id"] == json!(page));
 
     site.account(10, "Alice", None);
     let (s, v) = site
-        .put(&owner, &shares, json!({"github_login": "@alice", "access": "viewer"}))
+        .put(
+            &owner,
+            &shares,
+            json!({"github_login": "@alice", "access": "viewer"}),
+        )
         .await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(
-        (&v["share"]["github_login"], &v["share"]["pending"], &v["share"]["legacy"]),
+        (
+            &v["share"]["github_login"],
+            &v["share"]["pending"],
+            &v["share"]["legacy"]
+        ),
         (&json!("Alice"), &json!(true), &json!(false))
     );
 
     site.account(10, "alice2", None);
     site.account(11, "alice", None);
     let other = site.sign_in(11).await.unwrap();
-    assert!(!reads(site.listing(&other).await), "the next holder reads nothing");
+    assert!(
+        !reads(site.listing(&other).await),
+        "the next holder reads nothing"
+    );
     // The dialog changes the waiting share's access by its ID: it stays
     // account 10's, and the login's new holder still reads nothing.
     let sid = v["share"]["id"].as_str().unwrap().to_string();
@@ -417,7 +431,11 @@ async fn a_share_by_login_binds_to_the_account_that_held_it_not_its_next_holder(
         .await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(
-        (&v["share"]["id"], &v["share"]["access"], &v["share"]["pending"]),
+        (
+            &v["share"]["id"],
+            &v["share"]["access"],
+            &v["share"]["pending"]
+        ),
         (&json!(sid), &json!("editor"), &json!(true))
     );
     assert!(!reads(site.listing(&other).await));
@@ -426,22 +444,36 @@ async fn a_share_by_login_binds_to_the_account_that_held_it_not_its_next_holder(
         .await;
     assert_eq!(s, 404, "{v}");
     let alice = site.sign_in(10).await.unwrap();
-    assert!(reads(site.listing(&alice).await), "the account it was given to");
+    assert!(
+        reads(site.listing(&alice).await),
+        "the account it was given to"
+    );
 
     // Account 10 under its new login: its person at once.
     let alice_pid = pid_of(&site, &alice).await;
-    let second = site.ts.publish("Notes", &[("index.html", "<h1>n</h1>")]).await;
+    let second = site
+        .ts
+        .publish("Notes", &[("index.html", "<h1>n</h1>")])
+        .await;
     let second = second["artifact"]["id"].as_str().unwrap().to_string();
     let shares2 = format!("/api/hosted/artifacts/{second}/shares");
     let (s, v) = site
-        .put(&owner, &shares2, json!({"github_login": "alice2", "access": "viewer"}))
+        .put(
+            &owner,
+            &shares2,
+            json!({"github_login": "alice2", "access": "viewer"}),
+        )
         .await;
     assert_eq!((s, &v["share"]["person"]), (200, &json!(alice_pid)), "{v}");
     // "alice" is account 11's now: account 10's person, whose row once
     // said "alice", is not matched, and account 11 is.
     let other_pid = pid_of(&site, &other).await;
     let (s, v) = site
-        .put(&owner, &shares2, json!({"github_login": "alice", "access": "commenter"}))
+        .put(
+            &owner,
+            &shares2,
+            json!({"github_login": "alice", "access": "commenter"}),
+        )
         .await;
     assert_eq!((s, &v["share"]["person"]), (200, &json!(other_pid)), "{v}");
 }
@@ -453,16 +485,27 @@ async fn a_share_to_a_login_github_does_not_answer_for_keeps_nothing_and_lookups
     let site = Site::new(5).await;
     site.account(1, "theowner", None);
     let owner = site.sign_in(1).await.unwrap();
-    let page = site.ts.publish("Plan", &[("index.html", "<h1>p</h1>")]).await;
+    let page = site
+        .ts
+        .publish("Plan", &[("index.html", "<h1>p</h1>")])
+        .await;
     let page = page["artifact"]["id"].as_str().unwrap().to_string();
     let shares = format!("/api/hosted/artifacts/{page}/shares");
     let body = |l: &str| json!({"github_login": l, "access": "viewer"});
     let (s, v) = site.put(&owner, &shares, body("nobody-here")).await;
-    assert_eq!((s, v["error"]["code"].as_str()), (400, Some("unknown_github_login")), "{v}");
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (400, Some("unknown_github_login")),
+        "{v}"
+    );
     site.account(5, "mona", None);
     site.fake.set_unavailable(true);
     let (s, v) = site.put(&owner, &shares, body("mona")).await;
-    assert_eq!((s, v["error"]["code"].as_str()), (503, Some("github_unavailable")), "{v}");
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (503, Some("github_unavailable")),
+        "{v}"
+    );
     site.fake.set_unavailable(false);
     assert!(
         site.ts.store.artifact_shares(&page).unwrap().is_empty(),
@@ -474,12 +517,20 @@ async fn a_share_to_a_login_github_does_not_answer_for_keeps_nothing_and_lookups
         assert_eq!(s, 400, "{v}");
     }
     let (s, v) = site.put(&owner, &shares, body("mona")).await;
-    assert_eq!((s, v["error"]["code"].as_str()), (429, Some("rate_limited")), "{v}");
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (429, Some("rate_limited")),
+        "{v}"
+    );
     let asked = site.fake.lookups().len();
     site.clock.advance(30);
     let (s, v) = site.put(&owner, &shares, body("mona")).await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(site.fake.lookups().len(), asked + 1, "the refused one asked nothing");
+    assert_eq!(
+        site.fake.lookups().len(),
+        asked + 1,
+        "the refused one asked nothing"
+    );
 }
 
 #[tokio::test]

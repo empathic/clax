@@ -87,8 +87,7 @@ pub struct GitHubAccount {
 /// lowercased login `?2` at its sign-in: one given to the account's ID,
 /// or one given by login alone before migration 77 (`github_id` NULL,
 /// legacy) to the login it signs in with.
-pub(super) const BINDS_TO: &str =
-    "(github_id = ?1 OR (github_id IS NULL AND github_login = ?2))";
+pub(super) const BINDS_TO: &str = "(github_id = ?1 OR (github_id IS NULL AND github_login = ?2))";
 
 /// The GitHub account linked to a viewer row, as People shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

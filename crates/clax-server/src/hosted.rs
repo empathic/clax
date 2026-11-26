@@ -1093,13 +1093,9 @@ async fn put_share(
             sharer(st, &who, &aid)?;
             let ctx = audit.resolve(st)?;
             match &to {
-                Ok(to) => st.share_artifact(
-                    &ctx,
-                    aid.as_str(),
-                    to,
-                    access,
-                    Some(&who.viewer.public_id),
-                ),
+                Ok(to) => {
+                    st.share_artifact(&ctx, aid.as_str(), to, access, Some(&who.viewer.public_id))
+                }
                 Err(id) => st.set_share_access(&ctx, aid.as_str(), id, access),
             }
         })

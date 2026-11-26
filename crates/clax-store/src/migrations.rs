@@ -6338,8 +6338,10 @@ mod tests {
             super::GITHUB_ID_MIGRATION,
             super::QUEUE_ACCESS_MIGRATION + 1
         );
-        assert!(MIGRATIONS[first + 35]
-            .contains("ALTER TABLE queue_member_invites ADD COLUMN github_id INTEGER"));
+        assert!(
+            MIGRATIONS[first + 35]
+                .contains("ALTER TABLE queue_member_invites ADD COLUMN github_id INTEGER")
+        );
         assert_eq!(MIGRATIONS.len() as u32, super::GITHUB_ID_MIGRATION);
     }
 
@@ -6813,7 +6815,9 @@ mod tests {
         );
         let rows = |c: &Connection| -> Rows {
             let shares = c
-                .prepare("SELECT id, viewer_id, github_login, access FROM artifact_shares ORDER BY id")
+                .prepare(
+                    "SELECT id, viewer_id, github_login, access FROM artifact_shares ORDER BY id",
+                )
                 .unwrap()
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
                 .unwrap()

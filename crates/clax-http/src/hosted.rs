@@ -639,9 +639,7 @@ impl Hosted {
             .take_for(Attempt::GitHubLookup, Counted::Person(person.to_string()))
             .map_err(|after| {
                 let mut e = rate_limited(after);
-                e.message = format!(
-                    "too many GitHub logins looked up: try again in {after} s"
-                );
+                e.message = format!("too many GitHub logins looked up: try again in {after} s");
                 e
             })
     }

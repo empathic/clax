@@ -157,7 +157,10 @@ async fn an_added_login_signs_in_with_github_and_becomes_that_member_and_no_more
     assert_eq!(fake.lookups(), ["octo-cat"], "asked once, lowercased");
     let (_, v) = owner(&ts, Method::GET, &members, None).await;
     assert_eq!(v["github_logins"], true, "{v}");
-    assert_eq!(v["pending"][0]["github_login"], "octo-cat", "as GitHub spells it: {v}");
+    assert_eq!(
+        v["pending"][0]["github_login"], "octo-cat",
+        "as GitHub spells it: {v}"
+    );
     assert_eq!(v["pending"][0]["legacy"], false, "{v}");
 
     let cat = sign_in(&ts, &fake, 7).await.unwrap();
@@ -302,7 +305,10 @@ async fn an_invite_binds_to_the_account_that_held_the_login_not_its_next_holder(
     )
     .await;
     assert_eq!(s, 201, "{v}");
-    assert_eq!(v["invite"]["github_login"], "Alice", "as GitHub spells it: {v}");
+    assert_eq!(
+        v["invite"]["github_login"], "Alice",
+        "as GitHub spells it: {v}"
+    );
 
     fake.account(1, "alice2", Some("Alice A"));
     fake.account(2, "alice", Some("Not Alice"));
@@ -311,7 +317,11 @@ async fn an_invite_binds_to_the_account_that_held_the_login_not_its_next_holder(
     assert!(page.contains("Nobody here has added"), "{page}");
     assert!(ts.store.github_links().unwrap().is_empty(), "no one made");
     let (_, v) = owner(&ts, Method::GET, &members, None).await;
-    assert_eq!(v["pending"].as_array().unwrap().len(), 1, "still waiting: {v}");
+    assert_eq!(
+        v["pending"].as_array().unwrap().len(),
+        1,
+        "still waiting: {v}"
+    );
 
     let alice = sign_in(&ts, &fake, 1).await.unwrap();
     let (s, v) = as_cookie(&ts, &alice, Method::GET, "/api/queues").await;
@@ -345,7 +355,11 @@ async fn a_login_github_does_not_answer_for_adds_nothing() {
     }
     let (s, v) = owner(&ts, Method::PUT, &members, Some(add("../user"))).await;
     assert_eq!((s, code(&v)), (400, "invalid_login"), "{v}");
-    assert_eq!(fake.lookups(), ["no-such-person", "acme"], "nothing else asked");
+    assert_eq!(
+        fake.lookups(),
+        ["no-such-person", "acme"],
+        "nothing else asked"
+    );
     fake.account(7, "octo-cat", None);
     fake.set_unavailable(true);
     let (s, v) = owner(&ts, Method::PUT, &members, Some(add("octo-cat"))).await;
