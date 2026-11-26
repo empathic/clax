@@ -62,7 +62,7 @@ for var, target in targets.items():
         sys.exit(f"pin-release: SHA256SUMS of v{version} does not list {name}; nothing was changed")
     values[f"SHA256_{var}"] = listed[name]
 
-files = ["scripts/ensure-clax.sh"] + [f"plugins/{p}/scripts/ensure-clax.sh" for p in ("claude-code", "clax", "clax-grok", "pi")]
+files = ["scripts/ensure-clax.sh"] + [f"plugins/{p}/scripts/ensure-clax.sh" for p in ("claude-code", "clax", "clax-grok", "clax-antigravity", "pi")]
 pending = {}
 for f in files:
     text = pathlib.Path(f).read_text()

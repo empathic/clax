@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "clax": {
+      "command": "bash",
+      "args": ["${PLUGIN_ROOT}/scripts/ensure-clax.sh", "exec", "mcp", "--agent", "antigravity"],
+      "timeoutSeconds": -1,
+      "tools": {
+        "wait_for_feedback": {"background": "always", "eager": true},
+        "publish": {"eager": true},
+        "read": {"eager": true},
+        "list": {"eager": true},
+        "open": {"eager": true},
+        "status": {"eager": true},
+        "watch": {"eager": true},
+        "working": {"eager": true},
+        "comments_read": {"eager": true},
+        "comments_reply": {"eager": true},
+        "comments_resolve": {"eager": true}
+      }
+    }
+  }
+}

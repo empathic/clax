@@ -35,6 +35,8 @@ SKILLS = [
      "from the Clax Pi extension, named `clax_<tool>`"),
     ("plugins/clax-grok/skills/clax/SKILL.md", "plugins/clax-grok/.grok-plugin/plugin.json", "",
      "as the `clax_grok` MCP server"),
+    ("plugins/clax-antigravity/skills/clax/SKILL.md", "plugins/clax-antigravity/.antigravity-plugin/plugin.json", "",
+     "as the `clax-antigravity_clax` MCP server"),
 ]
 
 
@@ -54,6 +56,7 @@ DOC_LISTS = [
     ("plugins/clax/README.md", r"^- The `clax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
     ("plugins/pi/README.md", r"^- ([A-Z][a-z-]+) tools: ", "clax_"),
     ("plugins/clax-grok/README.md", r"^- The `clax_grok` MCP server [^\n]*?: ([a-z-]+) tools", ""),
+    ("plugins/clax-antigravity/README.md", r"^- The `clax-antigravity_clax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
 ]
 ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen "
         "fourteen fifteen sixteen seventeen eighteen nineteen").split()
@@ -69,8 +72,9 @@ def number(word):
 
 
 def names(text, prefix=""):
-    # Server names, and Grok's `use_tool`, which a list may name beside the tools.
-    found = set(re.findall(r"`([a-z_]+)`", text)) - {"clax", "clax_grok", "use_tool"}
+    # Server names, and Grok's `use_tool` and Antigravity's `call_mcp_tool`,
+    # which a list may name beside the tools.
+    found = set(re.findall(r"`([a-z_]+)`", text)) - {"clax", "clax_grok", "use_tool", "call_mcp_tool"}
     return {n[len(prefix):] for n in found if n.startswith(prefix)}
 
 

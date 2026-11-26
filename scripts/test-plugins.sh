@@ -28,7 +28,10 @@ for f in plugins/claude-code/.claude-plugin/plugin.json plugins/claude-code/.mcp
     plugins/clax/.codex-plugin/plugin.json plugins/clax/.mcp.json plugins/clax/hooks/hooks.json \
     plugins/clax/skills/clax/SKILL.md plugins/clax/README.md \
     plugins/clax-grok/.grok-plugin/plugin.json plugins/clax-grok/.mcp.json plugins/clax-grok/hooks/hooks.json \
-    plugins/clax-grok/skills/clax/SKILL.md plugins/clax-grok/README.md; do
+    plugins/clax-grok/skills/clax/SKILL.md plugins/clax-grok/README.md \
+    plugins/clax-antigravity/.antigravity-plugin/plugin.json plugins/clax-antigravity/mcp_config.json \
+    plugins/clax-antigravity/hooks.json plugins/clax-antigravity/rules/AGENTS.md \
+    plugins/clax-antigravity/skills/clax/SKILL.md plugins/clax-antigravity/README.md; do
     [ -f "$f" ] || fail "$f is missing"
 done
 
@@ -99,6 +102,55 @@ sys.exit(0 if ok else 1)
 PY
 then pass "plugins/clax-grok: name clax-grok, server clax_grok as --agent grok, three hooks"
 else fail "plugins/clax-grok's manifest, .mcp.json or hooks.json is not as specified (spec §13, Grok Build)"; fi
+
+# The Antigravity plugin: its own name (an imported Claude Code copy installs
+# as clax), one server clax run as the antigravity agent with no call limit,
+# the eleven eager tools, wait_for_feedback in the background, and the
+# PreInvocation, Stop and PostToolUse hooks in one group, each run from the
+# plugin directory, which is a hook's working directory.
+if out="$(python3 - plugins/clax-antigravity "$(scripts/check-version.sh --print)" plugins/pi/test/fixtures/contract.json 2>&1 <<'PY'
+import json, os, sys
+root, version, fixture = sys.argv[1:4]
+bad = []
+m = json.load(open(os.path.join(root, ".antigravity-plugin/plugin.json")))
+if m.get("name") != "clax-antigravity" or m.get("version") != version:
+    bad.append(f"the manifest's name and version are {m.get('name')!r} and {m.get('version')!r}")
+servers = json.load(open(os.path.join(root, "mcp_config.json"))).get("mcpServers", {})
+s = servers.get("clax", {})
+if list(servers) != ["clax"]:
+    bad.append(f"mcp_config.json's servers are {list(servers)}, not [\"clax\"]")
+if s.get("command") != "bash" or s.get("args") != ["${PLUGIN_ROOT}/scripts/ensure-clax.sh", "exec", "mcp", "--agent", "antigravity"]:
+    bad.append(f"the server runs {s.get('command')!r} {s.get('args')!r}")
+if s.get("timeoutSeconds") != -1:
+    bad.append(f"timeoutSeconds is {s.get('timeoutSeconds')!r}, not -1")
+tools = s.get("tools", {})
+eager = {"wait_for_feedback", "publish", "read", "list", "open", "status", "watch", "working",
+         "comments_read", "comments_reply", "comments_resolve"}
+known = {t["name"] for t in json.load(open(fixture))["tools"]}
+if set(tools) != eager or any(v.get("eager") is not True for v in tools.values()):
+    bad.append(f"the eager tools are {sorted(n for n, v in tools.items() if v.get('eager') is True)}")
+if eager - known:
+    bad.append(f"not tools of the fixture: {sorted(eager - known)}")
+backgrounded = sorted(n for n, v in tools.items() if "background" in v)
+if backgrounded != ["wait_for_feedback"] or tools.get("wait_for_feedback", {}).get("background") != "always":
+    bad.append(f"the background tools are {backgrounded}")
+hooks = json.load(open(os.path.join(root, "hooks.json")))
+want = {
+    "PreInvocation": [{"type": "command", "command": "./scripts/tool-hook.sh antigravity prompt", "timeout": 5}],
+    "Stop": [{"type": "command", "command": "./scripts/ensure-clax.sh exec hook --agent antigravity stop", "timeout": 10}],
+    "PostToolUse": [{"matcher": "*", "hooks": [
+        {"type": "command", "command": "./scripts/tool-hook.sh antigravity", "timeout": 5}]}],
+}
+if list(hooks) != ["clax"] or hooks["clax"] != want:
+    bad.append(f"hooks.json is {json.dumps(hooks)}")
+rules = open(os.path.join(root, "rules/AGENTS.md"), "rb").read()
+if rules.startswith(b"---") or len(rules) >= 1500:
+    bad.append(f"rules/AGENTS.md has frontmatter or is {len(rules)} bytes, not under 1500")
+print("; ".join(bad))
+sys.exit(1 if bad else 0)
+PY
+)"; then pass "plugins/clax-antigravity: name clax-antigravity, server clax as --agent antigravity, eleven eager tools, three hooks"
+else fail "plugins/clax-antigravity is not as specified (antigravity design §6.1): $out"; fi
 
 # No two plugins that Grok can load share an MCP server name: Grok keeps the
 # first definition of a name and drops the rest, so a shared name would let
@@ -293,7 +345,7 @@ else
     pass "no permission relay"
 fi
 
-for wrapper in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh; do
+for wrapper in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh plugins/clax-antigravity/scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh; do
     if cmp -s scripts/ensure-clax.sh "$wrapper"; then
         pass "$wrapper matches scripts/ensure-clax.sh"
     else
@@ -358,7 +410,7 @@ PY
 )"; then pass 'plugins/pi is ready for npm: public, pi-package, optional "*" peers, no .qual, LICENSE'
 else fail "plugins/pi is not ready for npm: $out"; fi
 
-for gate in plugins/claude-code/scripts/tool-hook.sh plugins/clax/scripts/tool-hook.sh; do
+for gate in plugins/claude-code/scripts/tool-hook.sh plugins/clax/scripts/tool-hook.sh plugins/clax-antigravity/scripts/tool-hook.sh; do
     if cmp -s scripts/tool-hook.sh "$gate"; then
         pass "$gate matches scripts/tool-hook.sh"
     else
@@ -384,19 +436,57 @@ for f in "${skills[@]}"; do
     done
 done
 
-# The four skill copies (Claude Code, Codex, Pi, Grok Build) share the page
-# contract word for word (docs/contract.md carries the same section), and
-# "Comment loop" and "What is not yet available" are the same in all four.
-skill_copies=(plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md plugins/clax-grok/skills/clax/SKILL.md)
+# Antigravity loads only the first 24,000 bytes of a skill's body, so its
+# skill keeps a core of at most 20,000 in SKILL.md and the rest in
+# references/, each file under 24,000, and SKILL.md names every one.
+agy_dir=plugins/clax-antigravity/skills/clax
+agy_refs=("$agy_dir"/references/*.md)
+if [ -f "$agy_dir/SKILL.md" ]; then
+    if out="$(python3 - "$agy_dir/SKILL.md" "${agy_refs[@]}" 2>&1 <<'PY2'
+import os, sys
+skill, refs = sys.argv[1], [r for r in sys.argv[2:] if os.path.isfile(r)]
+text = open(skill, encoding="utf-8").read()
+bad = []
+body = len(text[text.index("\n---\n", 4) + 5:].strip().encode())
+if body > 20000:
+    bad.append(f"{skill}'s body is {body} bytes, over 20000")
+if not refs:
+    bad.append(f"{os.path.dirname(skill)}/references has no .md file")
+for r in refs:
+    if os.path.getsize(r) >= 24000:
+        bad.append(f"{r} is {os.path.getsize(r)} bytes, not under 24000")
+    name = "references/" + os.path.basename(r)
+    if "`" + name + "`" not in text:
+        bad.append(f"{skill} does not name `{name}`")
+print("; ".join(bad))
+sys.exit(1 if bad else 0)
+PY2
+)"; then pass "$agy_dir: SKILL.md's body is at most 20000 bytes, each reference file under 24000, and SKILL.md names each"
+    else fail "$agy_dir is not split to fit Antigravity's skill limit: $out"; fi
+fi
+# The Antigravity skill as one text, for the shared sections: SKILL.md, then
+# each reference file from its first "## " heading.
+agy_whole="$(mktemp -d)/clax-antigravity-SKILL.md+references.md"
+trap 'rm -rf "$(dirname "$agy_whole")"' EXIT
+if [ -f "$agy_dir/SKILL.md" ]; then
+    awk 'FNR == 1 { body = (NR == 1) } !body && /^## / { body = 1; print "" } body' "$agy_dir/SKILL.md" "${agy_refs[@]}" > "$agy_whole"
+fi
+# The five skill copies (Claude Code, Codex, Pi, Grok Build, Antigravity)
+# share the page contract word for word (docs/contract.md carries the same
+# section), and "Comment loop" and "What is not yet available" are the same
+# in all five.
+skill_copies=(plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md plugins/clax-grok/skills/clax/SKILL.md "$agy_whole")
 # Pipelines below end in `grep ... >/dev/null`, not `grep -q`: under
 # pipefail, `grep -q` exits at its first match and the writer before it can
 # die of SIGPIPE, failing a check whose text was found.
-# The lines from "## <heading>" up to, not including, the next "## " heading.
+# The lines from "## <heading>" up to, not including, the next "## " heading,
+# without the blank lines that end it (a section that ends a file has none).
 section() {
     awk -v h="## $2" '
         $0 == h { on = 1; print; next }
         on && /^## / { exit }
-        on { print }
+        on && $0 == "" { blank++; next }
+        on { while (blank > 0) { print ""; blank-- } print }
     ' "$1"
 }
 # The Grok skill tells the agent to start one persistent monitor on the
@@ -408,6 +498,14 @@ if [ -n "$live" ] && echo "$live" | grep -F 'push.follow_command' >/dev/null \
     && echo "$live" | grep -F 'clax_grok__comments_read' >/dev/null; then
     pass "$grok_skill has the Live feedback in Grok section"
 else fail "$grok_skill needs a '## Live feedback in Grok' section naming the monitor command, persistent: true, push.available and clax_grok__comments_read"; fi
+# The Antigravity skill tells the agent to keep one wait_for_feedback with no
+# timeout_s open, under the eager tool's name.
+agy_skill=plugins/clax-antigravity/skills/clax/SKILL.md
+live="$(section "$agy_skill" "Live feedback in Antigravity")"
+if [ -n "$live" ] && echo "$live" | grep -F 'mcp_clax-antigravity_clax_wait_for_feedback' >/dev/null \
+    && echo "$live" | grep -F 'timeout_s' >/dev/null && echo "$live" | grep -F 'watch' >/dev/null; then
+    pass "$agy_skill has the Live feedback in Antigravity section"
+else fail "$agy_skill needs a '## Live feedback in Antigravity' section naming mcp_clax-antigravity_clax_wait_for_feedback, timeout_s and watch"; fi
 for f in "${skill_copies[@]}"; do
     if [ ! -f "$f" ]; then fail "$f is missing"; continue; fi
     if [ "$(frontmatter "$f" name)" = "clax" ]; then pass "$f is named clax"; else fail "$f frontmatter name is not clax"; fi
@@ -449,7 +547,7 @@ for f in "${skill_copies[@]}"; do
     if section "$f" "Asking the person" | grep -F 'Prefer `ask`' >/dev/null; then fail "$f still says 'Prefer \`ask\`'"; else pass "$f no longer prefers ask"; fi
 done
 same_section "Where to ask" "${skill_copies[@]}"
-# The runtime capabilities section is the same in the four skills and in
+# The runtime capabilities section is the same in the five skills and in
 # docs/contract.md, and it points at the contract files the daemon serves
 # (built in from web/contract/0.3.0/, which must hold all of them).
 for f in "${skill_copies[@]}" docs/contract.md; do
@@ -476,7 +574,7 @@ for f in "${skill_copies[@]}"; do
 done
 same_section "Data (db)" "${skill_copies[@]}"
 # What an agent may and must not do beside other agents and people (spec
-# 2026-10-08 §16) is the same in the four skills, and names the rules
+# 2026-10-08 §16) is the same in the five skills, and names the rules
 # agents most need.
 for f in "${skill_copies[@]}"; do
     if [ -n "$(section "$f" "Working beside other agents and people")" ]; then pass "$f has a Working beside other agents and people section"
@@ -512,6 +610,17 @@ if [ -f "$validator" ]; then
     fi
 else
     echo "SKIP: $validator not found; the Codex plugin validator was not run"
+fi
+
+# Antigravity's own validator only reads the directory.
+if command -v agy >/dev/null 2>&1; then
+    if out="$(agy plugin validate --strict plugins/clax-antigravity 2>&1)"; then
+        pass "agy plugin validate --strict accepts plugins/clax-antigravity"
+    else
+        fail "agy plugin validate --strict rejects plugins/clax-antigravity: $out"
+    fi
+else
+    echo "SKIP: agy not on PATH; the Antigravity plugin validator was not run"
 fi
 
 if [ "$FAILED" -ne 0 ]; then echo "plugin checks failed"; exit 1; fi

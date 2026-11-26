@@ -1,0 +1,15 @@
+{
+  "clax": {
+    "PreInvocation": [
+      {"type": "command", "command": "./scripts/tool-hook.sh antigravity prompt", "timeout": 5}
+    ],
+    "Stop": [
+      {"type": "command", "command": "./scripts/ensure-clax.sh exec hook --agent antigravity stop", "timeout": 10}
+    ],
+    "PostToolUse": [
+      {"matcher": "*", "hooks": [
+        {"type": "command", "command": "./scripts/tool-hook.sh antigravity", "timeout": 5}
+      ]}
+    ]
+  }
+}

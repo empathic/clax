@@ -19,6 +19,7 @@ const PLUGIN_DIRS: &[&str] = &[
     "claude-code",
     "clax",
     "clax-grok",
+    "clax-antigravity",
     "pi/src",
     "pi/skills",
     "pi/scripts",

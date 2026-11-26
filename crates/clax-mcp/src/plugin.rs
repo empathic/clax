@@ -4,11 +4,12 @@
 use std::path::{Path, PathBuf};
 
 /// The manifests that carry a plugin's version, relative to its root: Codex,
-/// Claude Code, Grok Build, and the Pi package.
-pub const MANIFESTS: [&str; 4] = [
+/// Claude Code, Grok Build, Antigravity, and last the Pi package.
+pub const MANIFESTS: [&str; 5] = [
     ".codex-plugin/plugin.json",
     ".claude-plugin/plugin.json",
     ".grok-plugin/plugin.json",
+    ".antigravity-plugin/plugin.json",
     "package.json",
 ];
 
@@ -32,7 +33,10 @@ pub fn root_from_env(
     ["CLAUDE_PLUGIN_ROOT", "GROK_PLUGIN_ROOT", "PLUGIN_ROOT"]
         .iter()
         .find_map(|k| env(k).filter(|v| !v.is_empty()).map(PathBuf::from))
-        .or_else(|| cwd.filter(|d| MANIFESTS[..3].iter().any(|m| d.join(m).is_file())))
+        .or_else(|| {
+            let harness = &MANIFESTS[..MANIFESTS.len() - 1];
+            cwd.filter(|d| harness.iter().any(|m| d.join(m).is_file()))
+        })
 }
 
 /// The plugin version and tool count stated by a skill's generated tools
@@ -67,6 +71,23 @@ mod tests {
             root_from_env(|_| None, Some(dir.path().to_path_buf())),
             Some(dir.path().to_path_buf()),
             "a working directory holding a Grok manifest is a plugin root"
+        );
+    }
+
+    #[test]
+    fn an_antigravity_plugin_root_and_manifest_are_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".antigravity-plugin")).unwrap();
+        std::fs::write(
+            dir.path().join(".antigravity-plugin/plugin.json"),
+            r#"{"name": "clax-antigravity", "version": "0.3.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(manifest_version(dir.path()).as_deref(), Some("0.3.0"));
+        assert_eq!(
+            root_from_env(|_| None, Some(dir.path().to_path_buf())),
+            Some(dir.path().to_path_buf()),
+            "a working directory holding an Antigravity manifest is a plugin root"
         );
     }
 

@@ -1,0 +1,10 @@
+{
+  "name": "clax-antigravity",
+  "version": "0.7.1",
+  "description": "Local artifacts with comment-driven development for Antigravity: publish HTML pages, view them, and get feedback back",
+  "author": {
+    "name": "Empathic"
+  },
+  "keywords": ["artifacts", "html", "preview", "comments"],
+  "logo": "assets/logo.svg"
+}

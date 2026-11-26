@@ -9,6 +9,7 @@ filegroup(
             "claude-code/**",
             "clax/**",
             "clax-grok/**",
+            "clax-antigravity/**",
         ],
         exclude = [
             "**/node_modules/**",
@@ -36,6 +37,7 @@ exports_files(
             "claude-code/**",
             "clax/**",
             "clax-grok/**",
+            "clax-antigravity/**",
         ],
         exclude = ["**/.qual"],
     ),
