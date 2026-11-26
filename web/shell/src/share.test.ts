@@ -54,7 +54,7 @@ describe("share model", () => {
   it("names a share by its person, else its login, and says when it waits", () => {
     expect([shareName(sam), shareDetail(sam)]).toEqual(["Sam Lee", "@sam-lee"]);
     expect(shareName(octo)).toBe("@octo");
-    expect(shareDetail(octo)).toMatch(/once they sign in with GitHub/);
+    expect(shareDetail(octo)).toMatch(/once that GitHub account signs in/);
   });
 
   it("suggests people not shared with yet, by a word of their name or login", () => {
