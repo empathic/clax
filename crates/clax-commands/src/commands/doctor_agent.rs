@@ -1175,11 +1175,16 @@ pub fn grok_version_check(version_line: Option<&str>) -> Value {
     }
 }
 
+/// [`MIN_AGY`] as a version.
+fn min_agy() -> semver::Version {
+    semver::Version::new(MIN_AGY.0, MIN_AGY.1, MIN_AGY.2)
+}
+
 /// `antigravity`: `agy --version`'s first line names an `X.Y.Z` of at least
 /// [`MIN_AGY`]; failed when `agy` did not answer, its line names no
 /// version, or the version is older.
 pub fn antigravity_version_check(version_line: Option<&str>) -> Value {
-    let min = semver::Version::new(MIN_AGY.0, MIN_AGY.1, MIN_AGY.2);
+    let min = min_agy();
     let Some(line) = version_line else {
         return check(
             "antigravity",
@@ -1250,10 +1255,11 @@ pub fn antigravity_permissions_check(root: &Path) -> Value {
     }
 }
 
-/// `antigravity_sessions`: failed when a live session has a `pid` (a shim
-/// registered it) and no harness session ID, which means Antigravity sent
-/// that shim's tool calls without the conversation's ID. Not failed when
-/// the sessions could not be listed: `mcp` reports that.
+/// `antigravity_sessions`: a warning naming each live session that has a
+/// `pid` (a shim registered it) and no harness session ID, which means
+/// Antigravity sent that shim's tool calls without the conversation's ID;
+/// the tools still work, with one session for the whole `agy` process.
+/// Ok when the sessions could not be listed: `mcp` reports that.
 pub fn antigravity_sessions_check(sessions: &Result<Vec<Value>, String>) -> Value {
     let s = match sessions {
         Err(e) => {
@@ -1272,12 +1278,10 @@ pub fn antigravity_sessions_check(sessions: &Result<Vec<Value>, String>) -> Valu
         })
         .map(|s| {
             format!(
-                "session {} (pid {}) has no conversation ID: Antigravity sent its tool calls without one, so every conversation of that agy process shares this session; check that `agy --version` is {}.{}.{} or later",
+                "session {} (pid {}) has no conversation ID: Antigravity sent its tool calls without one, so every conversation of that agy process shares this session; check that `agy --version` is {} or later",
                 s["id"].as_str().unwrap_or("?"),
                 s["pid"],
-                MIN_AGY.0,
-                MIN_AGY.1,
-                MIN_AGY.2
+                min_agy()
             )
         })
         .collect();
@@ -1288,7 +1292,7 @@ pub fn antigravity_sessions_check(sessions: &Result<Vec<Value>, String>) -> Valu
             "every live Antigravity session has its conversation ID",
         )
     } else {
-        check("antigravity_sessions", false, lines.join("\n"))
+        warn("antigravity_sessions", lines.join("\n"))
     }
 }
 
@@ -2453,7 +2457,7 @@ mod tests {
     }
 
     #[test]
-    fn the_agy_version_check_warns_below_the_minimum_naming_both_versions() {
+    fn an_agy_older_than_the_minimum_fails_naming_both_versions() {
         let c = antigravity_version_check(Some("1.5.17"));
         assert_eq!(c["ok"], false, "{c}");
         assert_eq!(
@@ -2576,6 +2580,7 @@ mod tests {
         let c = antigravity_sessions_check(&sessions);
         assert_eq!(c["name"], "antigravity_sessions");
         assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(c.get("warn"), None, "{c}");
         assert_eq!(
             c["detail"],
             "every live Antigravity session has its conversation ID"
@@ -2589,14 +2594,15 @@ mod tests {
     }
 
     #[test]
-    fn an_antigravity_session_without_its_conversation_id_is_named() {
+    fn an_antigravity_session_without_its_conversation_id_is_a_warning_naming_it() {
         let sessions = Ok(vec![
             json!({"id": "s1", "harness": "antigravity", "pid": 10, "harness_session_id": "c1"}),
             json!({"id": "s3", "harness": "antigravity", "pid": 11, "harness_session_id": null}),
             json!({"id": "s4", "harness": "antigravity", "pid": 12}),
         ]);
         let c = antigravity_sessions_check(&sessions);
-        assert_eq!(c["ok"], false, "{c}");
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(c["warn"], true, "{c}");
         let line = |id: &str, pid: u32| {
             format!(
                 "session {id} (pid {pid}) has no conversation ID: Antigravity sent its tool calls without one, so every conversation of that agy process shares this session; check that `agy --version` is 1.5.18 or later"

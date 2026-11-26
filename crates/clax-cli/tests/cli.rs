@@ -1636,7 +1636,8 @@ fn doctor_agent_checks_an_antigravity_install() {
     let mcp = by_name(&all, "mcp");
     assert_eq!(mcp["ok"], true, "{mcp}");
     let sessions = by_name(&all, "antigravity_sessions");
-    assert_eq!(sessions["ok"], false, "{sessions}");
+    assert_eq!(sessions["ok"], true, "{sessions}");
+    assert_eq!(sessions["warn"], true, "{sessions}");
     let detail = sessions["detail"].as_str().unwrap();
     assert!(
         detail.starts_with(&format!(
