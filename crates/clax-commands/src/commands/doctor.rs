@@ -557,6 +557,79 @@ fn journal_check(daemon: bool, status: Option<&serde_json::Value>) -> serde_json
     }
 }
 
+/// `journal_segments`: the journal's files in `dir`, read here, daemon or
+/// not ([`journal_damage`](clax_store::toolpath::segment::journal_damage):
+/// every `.damaged` name, and forks among the newest 64 segments, from
+/// their first lines). It warns naming the damaged segments (how many, the
+/// newest and its day) and each fork's segments; neither loses an event,
+/// so neither fails. The JSON adds `segments`, `read`, `damaged` (`count`,
+/// `newest`, `day`) and `forks` (`first_seq`, `segments`).
+fn journal_segments_check(dir: &Path) -> serde_json::Value {
+    use clax_store::toolpath::segment::{StdFs, journal_damage};
+    let d = match journal_damage(&mut StdFs::new(), dir) {
+        Ok(d) => d,
+        Err(e) => return warn("journal_segments", format!("{}: {e}", dir.display())),
+    };
+    let newest = d.damaged.last();
+    let fields = serde_json::json!({
+        "segments": d.segments,
+        "read": d.read,
+        "damaged": {
+            "count": d.damaged.len(),
+            "newest": newest.map(|s| &s.name),
+            "day": newest.map(|s| &s.day),
+        },
+        "forks": d.forks.iter().map(|f| serde_json::json!({
+            "first_seq": f.first_seq,
+            "segments": f.segments,
+        })).collect::<Vec<_>>(),
+    });
+    let mut problems = vec![];
+    if let Some(n) = newest {
+        problems.push(format!(
+            "{} damaged segment{}, the newest {} ({})",
+            d.damaged.len(),
+            if d.damaged.len() == 1 { "" } else { "s" },
+            n.name,
+            n.day
+        ));
+    }
+    for f in &d.forks {
+        problems.push(match f.first_seq {
+            Some(s) => format!(
+                "forked: {} all begin at event {s}",
+                f.segments.join(" and ")
+            ),
+            None => format!(
+                "forked: {} all continue the same segment",
+                f.segments.join(" and ")
+            ),
+        });
+    }
+    let mut c = if problems.is_empty() {
+        check(
+            "journal_segments",
+            true,
+            format!(
+                "{} segments, none damaged or forked ({} newest read)",
+                d.segments, d.read
+            ),
+        )
+    } else {
+        warn(
+            "journal_segments",
+            format!(
+                "{}. No event is lost: the database's audit table is the record, and the journal continues from its highest step. Two daemons wrote the journal at once; serve.lock now prevents it.",
+                problems.join("; ")
+            ),
+        )
+    };
+    if let (Some(c), Some(f)) = (c.as_object_mut(), fields.as_object()) {
+        c.extend(f.clone());
+    }
+    c
+}
+
 /// `config`: the home's `config.toml` reads and parses, its `[serve] port`,
 /// when present, is a port, and so is `CLAX_PORT` (`env`), when set; its
 /// `[serve] trusted_hosts`, when present, are host names (a bad one keeps the
@@ -886,6 +959,9 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
             .and_then(|c| c.get("/api/toolpath/status").ok())
             .as_ref(),
     ));
+    checks.push(journal_segments_check(
+        &home.root().join("toolpath").join("journal"),
+    ));
     if let Some(agent) = args.agent {
         checks.extend(doctor_agent::checks(agent, home, client.as_ref()));
     }
@@ -941,7 +1017,7 @@ fn report(
 mod tests {
     use super::{
         codex_approvals_check, codex_push_check, config_check, config_check_with,
-        config_tables_check, extension_check, journal_check,
+        config_tables_check, extension_check, journal_check, journal_segments_check,
     };
     use serde_json::{Value, json};
 
@@ -1337,5 +1413,98 @@ mod tests {
         v["warning"] = json!("journal_retain_days: removing x: Permission denied (os error 13)");
         let (ok, warned, detail) = line(Some(&v));
         assert!(ok && warned && detail.contains("os error 13"), "{detail}");
+    }
+
+    /// Writes segment `day`-`nnn` (with `suffix`) under the temp home's
+    /// journal, its first line a `PathOpen` beginning at `first_seq` and
+    /// continuing `prev`, then one step.
+    fn segment(
+        journal: &std::path::Path,
+        day: &str,
+        nnn: u32,
+        suffix: &str,
+        first_seq: i64,
+        prev: Option<&str>,
+    ) -> String {
+        let name = format!("clax-6a1f0c3e-{day}-{nnn:03}.path.jsonl{suffix}");
+        let month = journal.join(&day[..4]).join(&day[4..6]);
+        std::fs::create_dir_all(&month).unwrap();
+        let mut meta = json!({"clax": {"projection": "journal", "first_seq": first_seq}});
+        if let Some(p) = prev {
+            meta["refs"] = json!([{"rel": "continues", "href": p}]);
+        }
+        let open = json!({"PathOpen": {"version": "1", "meta": meta}});
+        let step = json!({"Step": {"meta": {"clax": {"seq": first_seq}}}});
+        std::fs::write(month.join(&name), format!("{open}\n{step}\n")).unwrap();
+        name
+    }
+
+    #[test]
+    fn the_journal_segments_line_names_damaged_and_forked_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("toolpath").join("journal");
+        let missing = journal_segments_check(&journal);
+        assert_eq!(
+            (missing["ok"].clone(), missing.get("warn")),
+            (json!(true), None)
+        );
+
+        // A clean chain: each segment continues the one before.
+        let a = segment(&journal, "20261125", 5, "", 290_700, None);
+        let b = segment(&journal, "20261125", 6, "", 290_811, Some(&a));
+        let c = segment(&journal, "20261126", 1, "", 293_000, Some(&b));
+        let clean = journal_segments_check(&journal);
+        assert_eq!(
+            (clean["ok"].clone(), clean.get("warn")),
+            (json!(true), None),
+            "{clean}"
+        );
+        assert_eq!(
+            clean["detail"],
+            "3 segments, none damaged or forked (3 newest read)"
+        );
+
+        // One damaged segment: a warning naming it and its day.
+        let damaged = segment(&journal, "20261126", 2, ".damaged", 293_413, Some(&c));
+        let one = journal_segments_check(&journal);
+        assert_eq!(
+            (one["ok"].clone(), one["warn"].clone()),
+            (json!(true), json!(true)),
+            "{one}"
+        );
+        let detail = one["detail"].as_str().unwrap();
+        assert!(
+            detail.starts_with(&format!(
+                "1 damaged segment, the newest {damaged} (2026-11-26)."
+            )),
+            "{detail}"
+        );
+        assert!(detail.contains("serve.lock now prevents it"), "{detail}");
+        assert_eq!(
+            one["damaged"],
+            json!({"count": 1, "newest": damaged, "day": "2026-11-26"})
+        );
+        assert_eq!(one["forks"], json!([]));
+
+        // A fork: two segments that begin at one event, continuing one
+        // segment. The segment replacing the damaged one is no fork.
+        let d = segment(&journal, "20261126", 3, "", 293_413, Some(&damaged));
+        let e = segment(&journal, "20261126", 4, "", 293_413, Some(&damaged));
+        let forked = journal_segments_check(&journal);
+        assert_eq!(forked["warn"], true, "{forked}");
+        let detail = forked["detail"].as_str().unwrap();
+        assert!(
+            detail.contains(&format!("forked: {d} and {e} all begin at event 293413")),
+            "{detail}"
+        );
+        assert!(!detail.contains("continue the same segment"), "{detail}");
+        assert_eq!(
+            forked["forks"],
+            json!([{"first_seq": 293_413, "segments": [d, e]}])
+        );
+        assert_eq!(
+            (forked["segments"].clone(), forked["read"].clone()),
+            (json!(6), json!(5))
+        );
     }
 }

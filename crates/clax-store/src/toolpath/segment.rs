@@ -292,25 +292,8 @@ impl SegmentWriter {
 
     /// `name` as one of this install's segments (or a `.damaged` one).
     fn parse_name(&self, name: &str) -> Option<(SegId, bool)> {
-        let (stem, damaged) = match name.find(".path.jsonl") {
-            Some(i) if name[i..] == *".path.jsonl" => (&name[..i], false),
-            Some(i) if name[i..].starts_with(".path.jsonl.damaged") => (&name[..i], true),
-            _ => return None,
-        };
-        let rest = stem.strip_prefix("clax-")?.strip_prefix(self.install8())?;
-        let rest = rest.strip_prefix('-')?;
-        let (day, nnn) = rest.split_once('-')?;
-        let digits = |s: &str, n: usize| s.len() >= n && s.bytes().all(|b| b.is_ascii_digit());
-        if !(day.len() == 8 && digits(day, 8) && digits(nnn, 3)) {
-            return None;
-        }
-        Some((
-            SegId {
-                day: day.parse().ok()?,
-                nnn: nnn.parse().ok()?,
-            },
-            damaged,
-        ))
+        let (install8, id, damaged) = split_name(name)?;
+        (install8 == self.install8()).then_some((id, damaged))
     }
 
     /// Every segment of this install in the directory, oldest first.
@@ -993,6 +976,184 @@ fn redaction_of(v: &Value) -> Option<Redaction> {
         }
     }
     Some(r)
+}
+
+/// `name` as a segment of any install (or a `.damaged` one): its install's
+/// first eight characters, its place and whether it is damaged.
+fn split_name(name: &str) -> Option<(&str, SegId, bool)> {
+    let (stem, damaged) = match name.find(".path.jsonl") {
+        Some(i) if name[i..] == *".path.jsonl" => (&name[..i], false),
+        Some(i) if name[i..].starts_with(".path.jsonl.damaged") => (&name[..i], true),
+        _ => return None,
+    };
+    let mut parts = stem.strip_prefix("clax-")?.rsplitn(3, '-');
+    let (nnn, day, install8) = (parts.next()?, parts.next()?, parts.next()?);
+    let digits = |s: &str, n: usize| s.len() >= n && s.bytes().all(|b| b.is_ascii_digit());
+    if !(day.len() == 8 && digits(day, 8) && digits(nnn, 3)) {
+        return None;
+    }
+    let id = SegId {
+        day: day.parse().ok()?,
+        nnn: nnn.parse().ok()?,
+    };
+    Some((install8, id, damaged))
+}
+
+/// How many of the newest segments [`journal_damage`] reads the first line
+/// of, looking for forks.
+pub const FORK_SCAN_SEGMENTS: usize = 64;
+
+/// The longest first line [`journal_damage`] reads: a `PathOpen` is well
+/// under a kilobyte.
+const HEADER_CAP: usize = 64 << 10;
+
+/// A segment in [`JournalDamage`]: its file name and the UTC day
+/// (`YYYY-MM-DD`) of its first event, from the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegmentName {
+    pub name: String,
+    pub day: String,
+}
+
+/// Segments that begin the same stretch of the chain: the same first step,
+/// or the same segment they continue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fork {
+    /// The first step's `seq` they share, when they share one.
+    pub first_seq: Option<i64>,
+    /// Their file names, oldest first.
+    pub segments: Vec<String>,
+}
+
+/// What [`journal_damage`] found in a journal directory.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JournalDamage {
+    /// Every segment file, damaged or not.
+    pub segments: usize,
+    /// The segments whose first line was read for forks: the newest
+    /// [`FORK_SCAN_SEGMENTS`] that are not damaged.
+    pub read: usize,
+    /// Every `.damaged` file, oldest first.
+    pub damaged: Vec<SegmentName>,
+    /// Forks among the segments read, oldest first.
+    pub forks: Vec<Fork>,
+}
+
+/// The journal damage in `dir` (the journal directory, its `YYYY/MM/`
+/// months below it), of every install: each `.damaged` segment (names
+/// only, every month), and forks among the newest [`FORK_SCAN_SEGMENTS`]
+/// segments that are not damaged, read from their first line (the
+/// `PathOpen`, at most [`HEADER_CAP`] bytes): two segments whose first step
+/// is the same, or that continue the same segment. A `.damaged` file is
+/// left out of the forks: the segment that replaces it continues it by
+/// name. A first line that does not parse is skipped (recovery renames
+/// such a file). A directory that does not exist holds no damage.
+///
+/// # Errors
+/// A directory or file that cannot be read.
+pub fn journal_damage(fs: &mut dyn JournalFs, dir: &Path) -> io::Result<JournalDamage> {
+    let num = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    let mut found: Vec<(SegId, String, PathBuf, bool)> = Vec::new();
+    for y in fs.list(dir)? {
+        if !num(&y, 4) {
+            continue;
+        }
+        for m in fs.list(&dir.join(&y))? {
+            if !num(&m, 2) {
+                continue;
+            }
+            let month = dir.join(&y).join(&m);
+            for name in fs.list(&month)? {
+                if let Some((_, id, damaged)) = split_name(&name) {
+                    found.push((id, name.clone(), month.join(&name), damaged));
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    let day = |id: SegId| {
+        format!(
+            "{:04}-{:02}-{:02}",
+            id.day / 10000,
+            id.day / 100 % 100,
+            id.day % 100
+        )
+    };
+    let mut out = JournalDamage {
+        segments: found.len(),
+        damaged: found
+            .iter()
+            .filter(|f| f.3)
+            .map(|f| SegmentName {
+                name: f.1.clone(),
+                day: day(f.0),
+            })
+            .collect(),
+        ..JournalDamage::default()
+    };
+    let whole: Vec<&(SegId, String, PathBuf, bool)> = found.iter().filter(|f| !f.3).collect();
+    let newest = &whole[whole.len().saturating_sub(FORK_SCAN_SEGMENTS)..];
+    let mut by_first: BTreeMap<i64, Vec<String>> = BTreeMap::new();
+    let mut by_prev: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (_, name, path, _) in newest {
+        // A segment the running daemon renamed or removed since the
+        // listing is skipped.
+        let open = match first_line(fs, path) {
+            Ok(Some(open)) => open,
+            Ok(None) => continue,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        out.read += 1;
+        let meta = &open["PathOpen"]["meta"];
+        if let Some(s) = meta["clax"]["first_seq"].as_i64() {
+            by_first.entry(s).or_default().push(name.clone());
+        }
+        let prev = meta["refs"].as_array().and_then(|refs| {
+            refs.iter()
+                .find(|r| r["rel"] == "continues")
+                .and_then(|r| r["href"].as_str())
+        });
+        if let Some(p) = prev {
+            by_prev.entry(p.to_string()).or_default().push(name.clone());
+        }
+    }
+    for (s, segments) in by_first {
+        if segments.len() > 1 {
+            out.forks.push(Fork {
+                first_seq: Some(s),
+                segments,
+            });
+        }
+    }
+    for (_, segments) in by_prev {
+        if segments.len() > 1 && !out.forks.iter().any(|f| f.segments == segments) {
+            out.forks.push(Fork {
+                first_seq: None,
+                segments,
+            });
+        }
+    }
+    out.forks.sort_by(|a, b| a.segments.cmp(&b.segments));
+    Ok(out)
+}
+
+/// The first line of the file at `path` as JSON: `None` when it has no
+/// whole line within [`HEADER_CAP`] bytes or the line does not parse.
+fn first_line(fs: &mut dyn JournalFs, path: &Path) -> io::Result<Option<Value>> {
+    let mut buf = vec![0u8; READ_CHUNK.min(HEADER_CAP)];
+    let mut have = Vec::new();
+    while have.len() < HEADER_CAP {
+        let n = fs.read_at(path, have.len() as u64, &mut buf)?;
+        if n == 0 {
+            return Ok(None);
+        }
+        have.extend_from_slice(&buf[..n]);
+        if let Some(end) = have.iter().position(|b| *b == b'\n') {
+            return Ok(serde_json::from_slice(&have[..end]).ok());
+        }
+    }
+    Ok(None)
 }
 
 /// The real file system (unix only). Holds the segment last appended to open, so an

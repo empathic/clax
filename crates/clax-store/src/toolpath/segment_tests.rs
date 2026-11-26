@@ -394,6 +394,51 @@ fn damaged_segment_is_renamed_not_deleted() {
 }
 
 #[test]
+fn journal_damage_names_damaged_files_and_forks_from_the_written_headers() {
+    let h = history();
+    let fs = MemFs::new();
+    let rows = rows_over_days(&h, 20, 21);
+    let mut w = writer(&fs, cfg(&h), clock());
+    append_all(&mut w, &rows, 9);
+    drop(w);
+    let mut probe = fs.clone();
+    let clean = journal_damage(&mut probe, Path::new(DIR)).unwrap();
+    assert_eq!(
+        (clean.damaged.len(), clean.forks.len(), clean.segments),
+        (0, 0, clean.read)
+    );
+    assert!(clean.segments >= 3, "{clean:?}");
+
+    // A second daemon's copy of the second segment, under the next name of
+    // its day, and a damaged file.
+    let second = seg_path("20261007", 1);
+    let bytes = fs.state().files[&second].clone();
+    fs.state()
+        .files
+        .insert(seg_path("20261007", 2), bytes.clone());
+    let damaged = seg_path("20261006", 9).with_extension("jsonl.damaged");
+    fs.state().files.insert(damaged, b"x\n".to_vec());
+    let d = journal_damage(&mut probe, Path::new(DIR)).unwrap();
+    assert_eq!(
+        d.damaged,
+        vec![SegmentName {
+            name: "clax-6a1f0c3e-20261006-009.path.jsonl.damaged".into(),
+            day: "2026-10-06".into(),
+        }]
+    );
+    assert_eq!(
+        d.forks,
+        vec![Fork {
+            first_seq: Some(rows[20].seq),
+            segments: vec![
+                "clax-6a1f0c3e-20261007-001.path.jsonl".into(),
+                "clax-6a1f0c3e-20261007-002.path.jsonl".into(),
+            ],
+        }]
+    );
+}
+
+#[test]
 fn eio_on_append_rewrites_the_same_batch() {
     let h = history();
     let fs = MemFs::new();

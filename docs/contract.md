@@ -10231,7 +10231,12 @@ the next start truncates before appending every row past the file's last
 `clax toolpath status [--json]` and owner-only `GET /api/toolpath/status`
 report `{journal, dir, segment, cursor, newest_seq, lag_ms, last_error,
 warning}`. `clax doctor`'s `journal` line warns on an error, a warning, or a
-lag over 10 s.
+lag over 10 s. Its `journal_segments` line, read from the files with or
+without a daemon, warns naming the `.damaged` segments (how many, the newest
+and its day) and any fork among the newest 64 segments (two that begin at the
+same event or continue the same segment, from their first lines): left by two
+daemons writing one journal, which `serve.lock` now prevents. Neither loses an
+event, so neither fails the check.
 
 ### Export
 
