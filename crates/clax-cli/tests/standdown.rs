@@ -53,17 +53,28 @@ struct Mcp {
 /// with stdin and stdout passed through, so the server's parent is an `agy`.
 const FAKE_AGY: &str = "#!/bin/bash\n\"$CLAX_TEST_BIN\" --port 0 mcp --agent claude\n";
 
+/// [`FAKE_AGY`] that sets `CLAUDE_PID` to its own PID, as Claude Code does:
+/// a Claude Code whose command line has `agy` for a word that names the
+/// program (`claude agy`, a one-word prompt).
+const FAKE_CLAUDE_NAMED_AGY: &str =
+    "#!/bin/bash\nexport CLAUDE_PID=$$\n\"$CLAX_TEST_BIN\" --port 0 mcp --agent claude\n";
+
 impl Mcp {
     fn start(home: &std::path::Path, agent: &str, env: &[(&str, String)]) -> Mcp {
         let mut cmd = clax(home, env);
         cmd.args(["--port", "0", "mcp", "--agent", agent]);
         Mcp::spawn(cmd)
     }
-    /// The Claude Code copy's server, started by [`FAKE_AGY`] installed in
-    /// `bin`.
-    fn under_agy(home: &std::path::Path, bin: &std::path::Path) -> Mcp {
-        let agy = clax_fake_exe::install(&bin.join("agy"), FAKE_AGY);
-        let mut cmd = in_test_env(Command::new(agy), home, &[]);
+    /// The Claude Code copy's server, started by `fake` (a stand-in such as
+    /// [`FAKE_AGY`]) installed as `bin/agy` and run with `env`.
+    fn under_agy(
+        home: &std::path::Path,
+        bin: &std::path::Path,
+        fake: &str,
+        env: &[(&str, String)],
+    ) -> Mcp {
+        let agy = clax_fake_exe::install(&bin.join("agy"), fake);
+        let mut cmd = in_test_env(Command::new(agy), home, env);
         cmd.env("CLAX_TEST_BIN", crate::common::clax());
         Mcp::spawn(cmd)
     }
@@ -266,7 +277,7 @@ fn a_claude_hook_outside_grok_acts() {
 fn the_claude_code_copy_antigravity_starts_serves_only_status() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("ax");
-    let mut m = Mcp::under_agy(&home, dir.path());
+    let mut m = Mcp::under_agy(&home, dir.path(), FAKE_AGY, &[]);
     assert_eq!(m.tool_names(), ["status"]);
     let call = m.request(2, "tools/call", json!({"name": "status", "arguments": {}}));
     assert_ne!(call["result"]["isError"], json!(true), "{call}");
@@ -297,7 +308,10 @@ fn a_claude_code_hook_antigravity_runs_does_nothing_and_logs_its_host() {
     let home = dir.path().join("ax");
     let (out, err) = claude_stop(
         &home,
-        &[("ANTIGRAVITY_CONVERSATION_ID", "c0ffee00".into())],
+        &[
+            ("ANTIGRAVITY_CONVERSATION_ID", "c0ffee00".into()),
+            ("PLUGIN_ROOT", dir.path().display().to_string()),
+        ],
         AGY_STOP,
     );
     assert_eq!((out.as_str(), err.as_str()), ("", ""));
@@ -337,11 +351,8 @@ fn claude_code_itself_still_acts_with_antigravitys_variables_inherited() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("ax");
     // Claude Code started from an Antigravity shell: Claude Code's own
-    // envelope and plugin root, Antigravity's conversation ID inherited.
-    let inherited = [
-        ("ANTIGRAVITY_CONVERSATION_ID", "c0ffee00".to_string()),
-        ("CLAUDE_PLUGIN_ROOT", dir.path().display().to_string()),
-    ];
+    // envelope, Antigravity's conversation ID inherited.
+    let inherited = [("ANTIGRAVITY_CONVERSATION_ID", "c0ffee00".to_string())];
     let (_, err) = claude_stop(&home, &inherited, r#"{"session_id":"s1"}"#);
     assert!(err.contains("no clax daemon is running"), "{err}");
     let log = hooks_log(&home);
@@ -352,4 +363,51 @@ fn claude_code_itself_still_acts_with_antigravitys_variables_inherited() {
     assert_eq!(m.tool_names().len(), 43);
     drop(m);
     let _ = clax(&home, &[]).arg("stop").output();
+}
+
+#[test]
+fn claude_code_as_the_parent_acts_whatever_its_command_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    let mut m = Mcp::under_agy(&home, dir.path(), FAKE_CLAUDE_NAMED_AGY, &[]);
+    assert_eq!(m.tool_names().len(), 43);
+    drop(m);
+    let _ = clax(&home, &[]).arg("stop").output();
+    assert!(!hooks_log(&home).contains("standdown"));
+}
+
+#[test]
+fn an_agy_started_from_a_claude_code_shell_stands_the_copy_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    // The inherited CLAUDE_PID is the test process, not the server's parent.
+    let mut m = Mcp::under_agy(
+        &home,
+        dir.path(),
+        FAKE_AGY,
+        &[("CLAUDE_PID", std::process::id().to_string())],
+    );
+    assert_eq!(m.tool_names(), ["status"]);
+    assert!(hooks_log(&home).contains(" standdown mode=mcp agent=claude host=antigravity"));
+}
+
+#[test]
+fn an_agy_parent_names_antigravity_even_with_a_grok_session_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    let mut m = Mcp::under_agy(
+        &home,
+        dir.path(),
+        FAKE_AGY,
+        &[("GROK_SESSION_ID", "019a-g".into())],
+    );
+    let call = m.request(2, "tools/call", json!({"name": "status", "arguments": {}}));
+    let text = call["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("clax init --agent antigravity"), "{text}");
+    let log = hooks_log(&home);
+    assert!(
+        log.contains(" standdown mode=mcp agent=claude host=antigravity"),
+        "{log}"
+    );
+    assert!(!log.contains("host=grok"), "{log}");
 }

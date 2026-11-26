@@ -66,9 +66,10 @@
 # started stands down before any clax is looked for: a hook reads its input
 # and exits 0 silently; the MCP server answers with a minimal server whose
 # one tool, status, says so. Grok: a hook with GROK_HOOK_EVENT set, the
-# MCP server with GROK_SESSION_ID set and CLAUDE_PID not this script's
-# parent. Antigravity: a hook with ANTIGRAVITY_CONVERSATION_ID set and
-# CLAUDE_PLUGIN_ROOT unset, the MCP server whose parent runs `agy`.
+# MCP server with GROK_SESSION_ID set. Antigravity: a hook with both
+# ANTIGRAVITY_CONVERSATION_ID and PLUGIN_ROOT set, the MCP server whose
+# parent runs `agy`. An MCP server whose parent is CLAUDE_PID (Claude Code)
+# never stands down.
 #
 # Every failure, every install, and every MCP start, appends one line to
 # $CLAX_HOME/logs/hooks.log (rotated to hooks.log.1 past 1 MiB).
@@ -655,27 +656,21 @@ status_text() {
 }
 
 # True when Grok Build or Antigravity started this Claude Code copy's hook
-# or MCP server; STANDDOWN_HOST is then grok or antigravity. Claude Code
-# sets CLAUDE_PID to its own PID and starts MCP servers directly, so under
-# Claude Code CLAUDE_PID is this script's parent, even when Claude Code was
-# started from a Grok shell that passed on GROK_SESSION_ID. Grok sets
-# GROK_HOOK_EVENT on every hook it runs. Antigravity sets
-# ANTIGRAVITY_CONVERSATION_ID for its hooks and is the parent of its MCP
-# servers; Claude Code sets CLAUDE_PLUGIN_ROOT for its own plugins' hooks,
-# so a Claude Code hook in a session started from an Antigravity shell acts.
-# A hook's input is never read here: it goes to clax untouched.
+# or MCP server; STANDDOWN_HOST is then grok or antigravity.
 standdown_host() {
     STANDDOWN_HOST=""
     [ "$AGENT" = claude ] || return 1
     case "$MODE" in
         hook)
             if [ -n "${GROK_HOOK_EVENT:-}" ]; then STANDDOWN_HOST=grok
-            elif [ -n "${ANTIGRAVITY_CONVERSATION_ID:-}" ] && [ -z "${CLAUDE_PLUGIN_ROOT:-}" ]; then STANDDOWN_HOST=antigravity
+            elif [ -n "${ANTIGRAVITY_CONVERSATION_ID:-}" ] && [ -n "${PLUGIN_ROOT:-}" ]; then STANDDOWN_HOST=antigravity
             fi
             ;;
         mcp)
-            if parent_is_agy; then STANDDOWN_HOST=antigravity
-            elif [ -n "${GROK_SESSION_ID:-}" ] && [ "${CLAUDE_PID:-}" != "$PPID" ]; then STANDDOWN_HOST=grok
+            # Claude Code sets CLAUDE_PID to its own PID and is its servers' parent.
+            if [ "${CLAUDE_PID:-}" = "$PPID" ]; then return 1
+            elif parent_is_agy; then STANDDOWN_HOST=antigravity
+            elif [ -n "${GROK_SESSION_ID:-}" ]; then STANDDOWN_HOST=grok
             fi
             ;;
     esac

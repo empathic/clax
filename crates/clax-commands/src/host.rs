@@ -11,15 +11,19 @@ fn var(env: &impl Fn(&str) -> Option<String>, k: &str) -> Option<String> {
     env(k).filter(|v| !v.is_empty())
 }
 
+/// True when Claude Code started this MCP server: `CLAUDE_PID` is
+/// `parent_pid`. Claude Code sets `CLAUDE_PID` to its own PID and is the
+/// parent of the servers it starts; a Grok or `agy` started from a Claude
+/// Code shell inherits a `CLAUDE_PID` that is not its server's parent.
+pub fn claude_code_runs_mcp(env: impl Fn(&str) -> Option<String>, parent_pid: u32) -> bool {
+    var(&env, "CLAUDE_PID").and_then(|p| p.trim().parse::<u32>().ok()) == Some(parent_pid)
+}
+
 /// True when Grok started this MCP server: `GROK_SESSION_ID` is set and
-/// `CLAUDE_PID` is not `parent_pid`. Claude Code sets `CLAUDE_PID` to its
-/// own PID and is the parent of the servers it starts, so a Claude Code
-/// session started from a Grok shell, which inherits `GROK_SESSION_ID`,
-/// still acts; a Grok started from a Claude Code shell inherits a
-/// `CLAUDE_PID` that is not its server's parent.
+/// Claude Code did not ([`claude_code_runs_mcp`]), so a Claude Code session
+/// started from a Grok shell, which inherits `GROK_SESSION_ID`, still acts.
 pub fn grok_runs_mcp(env: impl Fn(&str) -> Option<String>, parent_pid: u32) -> bool {
-    var(&env, "GROK_SESSION_ID").is_some()
-        && var(&env, "CLAUDE_PID").and_then(|p| p.trim().parse::<u32>().ok()) != Some(parent_pid)
+    var(&env, "GROK_SESSION_ID").is_some() && !claude_code_runs_mcp(env, parent_pid)
 }
 
 /// True when Grok runs this hook: `GROK_HOOK_EVENT` is set (Grok sets it
@@ -93,6 +97,14 @@ mod tests {
             !grok_runs_hook(env(&[("GROK_SESSION_ID", "g")]), &claude),
             "a Claude Code hook in a session started from a Grok shell acts"
         );
+    }
+
+    #[test]
+    fn claude_code_runs_an_mcp_server_whose_parent_is_claude_pid() {
+        assert!(claude_code_runs_mcp(env(&[("CLAUDE_PID", "500")]), 500));
+        assert!(!claude_code_runs_mcp(env(&[("CLAUDE_PID", "77")]), 500));
+        assert!(!claude_code_runs_mcp(env(&[("CLAUDE_PID", "")]), 500));
+        assert!(!claude_code_runs_mcp(env(&[]), 500));
     }
 
     #[test]

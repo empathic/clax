@@ -159,15 +159,16 @@ impl std::io::Write for QuietStderr {
 /// runs this Claude Code copy's server: Antigravity when the parent is
 /// `agy`, Grok Build by its variables ([`crate::host`]). Under either only
 /// that harness's own plugin acts. `None` for every other agent, and for a
-/// server Claude Code runs.
+/// server Claude Code runs, whose parent's command line is not read.
 fn standdown_host(agent: Agent, parent_pid: u32) -> Option<(&'static str, &'static str)> {
-    if !matches!(agent, Agent::Claude) {
+    let env = |k: &str| std::env::var(k).ok();
+    if !matches!(agent, Agent::Claude) || crate::host::claude_code_runs_mcp(env, parent_pid) {
         return None;
     }
     let parent_argv = clax_mcp::channel::process_argv(parent_pid).ok();
     if crate::host::antigravity_runs_mcp(parent_argv.as_deref()) {
         Some(("antigravity", clax_mcp::standdown::ANTIGRAVITY_STANDDOWN))
-    } else if crate::host::grok_runs_mcp(|k| std::env::var(k).ok(), parent_pid) {
+    } else if crate::host::grok_runs_mcp(env, parent_pid) {
         Some(("grok", clax_mcp::standdown::GROK_STANDDOWN))
     } else {
         None
