@@ -38,8 +38,8 @@ Arguments:
   characters ("Two columns; third bullet dropped"). Shown as this version's
   changelog.
 - `addresses` (array of thread IDs, optional): the comment threads this
-  version addresses. Threads you were marked working on are added for you.
-  Listing a thread does not resolve it.
+  version addresses. Threads you were marked working on, background threads
+  aside, are added for you. Listing a thread does not resolve it.
 - `capabilities` (object, optional): the page's runtime capabilities
   declaration, as a full set, written as the version's `clax.json` (see
   "Runtime capabilities").

@@ -38,6 +38,8 @@ export class FakePi {
   readonly commands = new Map<string, Command>();
   /** Messages passed to `pi.sendUserMessage`. */
   readonly sent: { content: unknown; options: unknown }[] = [];
+  /** Handlers on `pi.events`, by channel. */
+  readonly bus = new Map<string, ((data: unknown) => void)[]>();
 
   get api(): ExtensionAPI {
     const api = {
@@ -47,6 +49,13 @@ export class FakePi {
       registerTool: (tool: ToolDefinition) => { this.tools.set(tool.name, tool); },
       registerCommand: (name: string, options: Command) => { this.commands.set(name, options); },
       sendUserMessage: (content: unknown, options?: unknown) => { this.sent.push({ content, options }); },
+      events: {
+        on: (channel: string, handler: (data: unknown) => void) => {
+          this.bus.set(channel, [...(this.bus.get(channel) ?? []), handler]);
+          return () => undefined;
+        },
+        emit: (channel: string, data: unknown) => { for (const h of this.bus.get(channel) ?? []) h(data); },
+      },
     };
     return api as unknown as ExtensionAPI;
   }

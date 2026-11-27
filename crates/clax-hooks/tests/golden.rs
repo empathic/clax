@@ -764,6 +764,45 @@ fn codex_working_through_a_turn() {
 }
 
 #[test]
+fn a_claude_turn_end_keeps_a_handed_off_thread_while_background_work_runs() {
+    let d = Daemon::start();
+    let (sid, aid) = d.session_with_artifact("claude", "cc-handoff");
+    let mut stop_in: Value = serde_json::from_slice(&fixture("claude-stop.json")).unwrap();
+    stop_in["session_id"] = "cc-handoff".into();
+    said_unwoken(&d, "claude", stop_in.to_string().as_bytes());
+    d.sent_thread(&aid, "two columns");
+    let r = hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes());
+    assert_eq!(one_line_json(&r.stdout)["decision"], "block");
+    let tid = d.working(&aid)[0]["thread_ids"][0].clone();
+    let res = d
+        .http()
+        .put(format!("{}/api/sessions/{sid}/working/{aid}", d.base()))
+        .bearer_auth(d.token())
+        .json(&serde_json::json!({"thread_ids": [tid], "background": true}))
+        .send()
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    stop_in["stop_hook_active"] = true.into();
+    stop_in["background_tasks"] = serde_json::json!([
+        {"id": "a1", "type": "subagent", "status": "running", "agent_type": "general-purpose"}
+    ]);
+    let r = hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes());
+    assert_eq!(r.stdout, "");
+    assert_eq!(
+        d.working(&aid)[0]["background_thread_ids"],
+        serde_json::json!([tid]),
+        "kept while the subagent runs"
+    );
+    stop_in["background_tasks"] = serde_json::json!([]);
+    let r = hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes());
+    assert_eq!(r.stdout, "");
+    assert!(
+        d.working(&aid).is_empty(),
+        "ended at the turn end with nothing running in the background"
+    );
+}
+
+#[test]
 fn a_batch_blocks_the_stop_once_with_every_thread() {
     let d = Daemon::start();
     let (_sid, aid) = d.session_with_artifact("claude", "cc-batch");
@@ -1139,6 +1178,88 @@ fn recording_daemon() -> (tempfile::TempDir, Arc<Mutex<Vec<String>>>) {
         }
     });
     (home_naming(port), seen)
+}
+
+#[test]
+fn an_antigravity_subagent_is_marked_while_it_runs_and_an_idle_turn_end_ends_a_hand_off() {
+    let d = Daemon::start();
+    let (sid, aid) = d.registered_with_artifact(&serde_json::json!({
+        "harness": "antigravity", "harness_session_id": AGY_CONVERSATION,
+        "cwd": "/tmp/project", "parent_pid": std::process::id(),
+    }));
+    let mut stop_in: Value = serde_json::from_slice(&fixture("antigravity-stop.json")).unwrap();
+    d.sent_thread(&aid, "two columns");
+    // The comment, then the one reminder that nothing wakes the conversation.
+    for said in ["two columns", "wait_for_feedback"] {
+        let r = hook(
+            &d.home(),
+            "antigravity",
+            "stop",
+            stop_in.to_string().as_bytes(),
+        );
+        let v = one_line_json(&r.stdout);
+        assert!(v["reason"].as_str().unwrap().contains(said), "{v}");
+        stop_in["executionNum"] = 1.into();
+    }
+    let tid = d.working(&aid)[0]["thread_ids"][0].clone();
+    let res = d
+        .http()
+        .put(format!("{}/api/sessions/{sid}/working/{aid}", d.base()))
+        .bearer_auth(d.token())
+        .json(&serde_json::json!({"thread_ids": [tid], "background": true}))
+        .send()
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let subagent = "5ub00000-0000-4000-8000-000000000002";
+    let marker = d
+        .home()
+        .join("run/agy-subagents")
+        .join(std::process::id().to_string())
+        .join(subagent);
+    let mut pre: Value =
+        serde_json::from_slice(&fixture("antigravity-pre-invocation.json")).unwrap();
+    pre["conversationId"] = subagent.into();
+    let r = hook(
+        &d.home(),
+        "antigravity",
+        "prompt",
+        pre.to_string().as_bytes(),
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert!(marker.exists(), "the subagent's first model call marks it");
+
+    let r = hook(
+        &d.home(),
+        "antigravity",
+        "stop",
+        stop_in.to_string().as_bytes(),
+    );
+    assert_eq!(r.stdout, "");
+    assert_eq!(d.working(&aid).len(), 1, "kept while the subagent runs");
+
+    let mut sub_stop = stop_in.clone();
+    sub_stop["conversationId"] = subagent.into();
+    sub_stop["fullyIdle"] = true.into();
+    let r = hook(
+        &d.home(),
+        "antigravity",
+        "stop",
+        sub_stop.to_string().as_bytes(),
+    );
+    assert_eq!(r.stdout, "");
+    assert!(!marker.exists(), "its stop takes the mark away");
+    assert_eq!(d.working(&aid).len(), 1, "a subagent's stop ends nothing");
+
+    stop_in["fullyIdle"] = true.into();
+    let r = hook(
+        &d.home(),
+        "antigravity",
+        "stop",
+        stop_in.to_string().as_bytes(),
+    );
+    assert_eq!(r.stdout, "");
+    assert!(d.working(&aid).is_empty(), "ended with nothing running");
 }
 
 #[test]

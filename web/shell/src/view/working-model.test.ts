@@ -80,6 +80,9 @@ describe("working-model", () => {
     const names = agentNames(list, agents);
     expect(threadMarker(list, "t1", names)).toEqual({ text: "claude is working on it", since: "2026-09-30T10:00:00.000Z" });
     expect(threadMarker(list, "t2", names)).toBeNull();
+    const handed = [w({ thread_ids: ["t1", "t3"], background_thread_ids: ["t3"] })];
+    expect(threadMarker(handed, "t1", names)?.text).toBe("claude is working on it");
+    expect(threadMarker(handed, "t3", names)?.text).toBe("claude is working on it in the background");
     expect(stripText(list[0], names, new Map([["t1", 1], ["t3", 3]]), new Set(["t1"]))).toBe("claude is working on #1 (yours) and #3");
     expect(stripText(w({ thread_ids: ["x", "y", "z", "q"] }), names, new Map(), new Set())).toBe("claude is working on 4 threads");
   });

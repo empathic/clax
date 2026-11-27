@@ -2015,7 +2015,12 @@ hook that gives up, or finds no daemon, exits 0 with no output. The `stop` and
 do nothing when there is none.
 
 The hooks also keep working records current: the `stop` hook, when it allows
-the stop, ends the turn (`POST /api/sessions/<id>/working/end`), and the
+the stop, ends the turn (`POST /api/sessions/<id>/working/end`, with
+`background_work`: whether work is still running in the background. Claude
+Code's `background_tasks` and Grok Build's `backgroundTasks` say so, by any
+running entry but Clax's own listeners; Antigravity's `fullyIdle` does,
+with the subagents its own hooks mark as running; Pi's extension counts
+the subagents its subagent packages report), and the
 `PostToolUse` hook renews them (`POST /api/sessions/<id>/working/renew`) at
 most once a minute per session. The hook command is `scripts/tool-hook.sh`,
 a POSIX shell gate. It reads the hook input, takes the `session_id`, and
@@ -4504,7 +4509,7 @@ the copy's remote, the link holds the copy's address alone.
 | `comments_handoff` | `url_or_id`, `thread_id`; optional `to` (a live agent's name) | `{artifact_id, url, released, thread, note}`: with `to`, the thread is sent to that agent, which owns it (`thread.owner`); without, the owner releases it. `thread_taken` when another live agent owns it. |
 | `watch` | `url_or_id` (an artifact, or a page URL); optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}`; for a page URL `{artifact_id, url, page_url, scope, watching: true, replies_armed}`, or `{page_url, watching: false, replies_armed: false}` with `on: false` (`page_url` without its route) |
 | `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50; under Antigravity, no limit when omitted) | `{feedback: [...], waited_s, call_again}`; under Antigravity, `{already_waiting: true, call_again: false}` for a call with no limit made while one is open |
-| `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
+| `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads, and at most 20 on the record), `message` (at most 140 characters), `done`, `background` (with `thread_ids`, not with `done`) | `{artifact_id, url, working: true, message, thread_ids, background_thread_ids (when any), started_at, expires_in_s (3600 while the record names background threads, else 120), message_truncated}` or `{artifact_id, url, working: false, cleared}` |
 | `draft` | `url_or_id`; `html` or `file_path` (the page) and/or `files` (as `publish` takes them, `null` removing a path); optional `if_version`, `note` (at most 140 characters), `done` | `{artifact_id, url, drafting: true, base_version, paths, note, note_truncated, expires_in_s}` or `{artifact_id, url, drafting: false, ended}` |
 | `git_remote` | `url_or_id`, `scope` (`read` or `write`) | `{artifact_id, url, scope, remote, token, expires_at, clone_command, jj_clone_command, existing_checkout}` (see "Git remotes") |
 | `queue_list` | optional `queue`; with it, optional `state` (`active`, the default; `open`, `claimed`, `fix_proposed`, `verified`, `resolved`, or `all`, which sends the route no filter), `cursor` | without `queue`, `{queues}` (`GET /api/queues`); with it, `{reports, next}` (`GET /api/queues/<queue>/reports`), each report's `context` replaced by `context_summary` (`{release, captured_at, mode}`, or `null` for a report filed without context) |
@@ -5106,23 +5111,49 @@ revoked on People, whichever comes first.
 
 `working` tells the person you are acting on an artifact. The top bar
 shows `<agent> working on N` (or `<agent>: <message>`), its gallery card a
-chip, and each thread named in `thread_ids` `<agent> is working on it`,
+chip, and each thread named in `thread_ids` `<agent> is working on it`
+(`… in the background` for a background thread),
 where `<agent>` is your agent name (your harness, such as `claude`, when
 you have none), followed by the first four hex digits of your agent handle
 when another agent taking part in the artifact shows the same
 (`clax-claude 1f3a`). Comments sent to you
 mark you working automatically; call `working` for work that did not start
 from a comment, or to add a message. `thread_ids` and `message` replace the
-stored ones when given; `done: true` clears the record, or with `thread_ids`
-only those threads. Errors: `invalid_id`, `invalid_args` (a thread ID that is
-not a ULID, more than 20), `not_found` (no such artifact), `unknown_thread`
+stored ones when given, except that `thread_ids` replace only the threads
+that are not background: a background thread stays, and stays background
+when named again. `done: true` clears the record, or with `thread_ids`
+only those threads. With `background: true`, the threads in `thread_ids`
+(required) join the stored ones instead of replacing them and are flagged
+background: work on them goes on after your turn, in subagents. The result
+lists them as `background_thread_ids`. A `message` given with
+`background: true` belongs to the background threads; any other, to the
+rest of the work. A record names at most 20 threads: a call that would
+make it name more changes nothing and fails. Errors: `invalid_id`,
+`invalid_args` (a thread ID that is not a ULID, more than 20 given or on
+the record, `background` without `thread_ids` or with `done`),
+`not_found` (no such artifact), `unknown_thread`
 (not a thread of the artifact), `thread_not_open`, `no_session` (the
 daemon's `/mcp`), `unknown_session`, `daemon_unreachable`.
 
 Replying to or resolving a thread it names takes that thread out of it. It
 clears when you reply to or resolve the last thread it names, publish the
 artifact, end your turn, or go 120 s without renewing it, and when your
-session ends. Renewal is automatic:
+session ends. Background threads are the exception. The end of your turn
+and a publish end the rest of the record's work (its other threads, and
+its message unless that came with `background: true`): the record ends
+as it would without background threads (`working.stop`, and at a turn
+end a `finished` item for that work), and the background threads go on
+in a fresh record (a new `key`, `working.start`). A record with nothing
+but background work is left as it is. A publish addresses only the other
+threads unasked, so the publish that carries a background thread's
+change names it in `addresses`. At the end of a turn the harness says
+whether work is still running in the background: with nothing running the
+background threads end too, as finished work; with work running they
+stay. Codex does not say, and does not wake you when a subagent finishes,
+so there you keep the turn going and listen for comments while your
+subagents work. A record naming background threads lapses 3600 s after its
+last renewal, as a backstop, and 120 s after the moment it loses the last
+of them. Renewal is automatic:
 
 | Harness | Renewed by | Not automatic |
 |---|---|---|
@@ -5542,7 +5573,8 @@ An open thread a working record names shows "<agent> is working on it"
 (the agent's name, or its harness when it has none, such as "clax-claude
 is working on it", with the first four hex digits of its handle when two
 agents show the same) instead of its
-waiting indicator. A new version puts nothing over the page:
+waiting indicator; a thread among the record's `background_thread_ids`
+shows "<agent> is working on it in the background". A new version puts nothing over the page:
 the version button gets a dot, the top bar's summary reads "v5 addressed 3",
 the sidebar's "Addressed in v5" group lists the threads it addressed that
 the viewer is in, with your reply shown as "<agent> · addressed in v5", and
@@ -6036,7 +6068,11 @@ An item is made in the same transaction as its source:
 - **`finished`**: a working record its agent ended, for the agent's
   person. Either the agent cleared it (`DELETE …/working/<aid>`), or its
   turn ended (`POST …/working/end`). A lapsed record makes no item, and
-  neither does one cleared by a publish, a reply or the session's end.
+  neither does one cleared by a publish, a reply or the session's end. A
+  turn end on a record with background threads makes an item for the
+  work it ends (the record's other threads and message); the background
+  threads go on in a record of their own, which makes its own item when
+  the agent clears it.
 - **`connection`**: for the owner, a connection request waiting for them,
   or a machine that connected with an invite. It is read once the owner
   approves or denies the request.
@@ -9981,8 +10017,8 @@ the body below.
 | `live.join_answer` | `origin, with, answer (never\|later), until` | the owner's answer to a suggested join |
 | `watch.start`, `watch.stop` | `target (artifact\|page\|scope), replies_armed, source (direct\|scope), origin?, path?` (start: `cause? (scope\|move), move_id?`) | a new watch, a removal |
 | `watch.update` | `target, origin?, path?, fields{replies_armed?, source?}, cause?` | a change of a watch's arming, or a scope-made watch becoming direct |
-| `working.start` | `key, message, thread_ids[]` | a working record starting |
-| `working.stop` | `key, reason (explicit\|ttl\|session_end\|resolved\|deleted), duration_ms` | its end (a TTL lapse as `system:ttl`, timed to last heartbeat + 120 s) |
+| `working.start` | `key, message, thread_ids[]` | a working record starting, among them the record a turn end or a publish moves background threads to |
+| `working.stop` | `key, reason (explicit\|ttl\|session_end\|resolved\|deleted), duration_ms` | its end (a TTL lapse as `system:ttl`, timed to last heartbeat + 120 s, or + 3600 s for a record naming background threads) |
 | `question.ask` | `source (ask\|hook), tool_use_id, questions` | a new question |
 | `question.answer` | `answers, answered_via` | an answer (the owner) |
 | `question.decline` | none | a decline (the owner) |

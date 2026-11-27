@@ -379,7 +379,7 @@ fn rendered_text(res: &Value) -> Option<String> {
 /// # Errors
 /// When the input has no `session_id` or a daemon request fails.
 pub fn stop(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Result<HookOutput> {
-    stop_with(harness, input, daemon, None)
+    stop_with(harness, input, daemon, None, input.background_work(harness))
 }
 
 /// What the Stop hook remembers of one harness session between stops:
@@ -442,7 +442,8 @@ pub struct StopWake<'a> {
 /// commands. It blocks at most once per watch arming, and once more after a
 /// session that could be woken at an earlier stop no longer can (its
 /// follower stopped, or its wait ended). Any failure of that check allows
-/// the stop.
+/// the stop. `background_work` is what the turn end reports
+/// ([`HookInput::background_work`]).
 ///
 /// # Errors
 /// When the input has no `session_id` or a daemon request fails.
@@ -451,6 +452,7 @@ pub fn stop_with(
     input: &HookInput,
     daemon: &dyn Daemon,
     wake: Option<&StopWake<'_>>,
+    background_work: Option<bool>,
 ) -> anyhow::Result<HookOutput> {
     // Grok Build fires Stop again at session end (`channel_closed`,
     // `shutdown`) and ignores that run's output; only `end_turn` (or an
@@ -482,8 +484,13 @@ pub fn stop_with(
             {
                 return Ok(HookOutput::block(&reason));
             }
-            // The turn really ends: its working records end with it.
-            daemon.post(&format!("/api/sessions/{sid}/working/end"), &json!({}))?;
+            // The turn really ends: its working records end with it, but
+            // for threads handed to work the harness says is still running.
+            let body = match background_work {
+                Some(running) => json!({"background_work": running}),
+                None => json!({}),
+            };
+            daemon.post(&format!("/api/sessions/{sid}/working/end"), &body)?;
             Ok(HookOutput::none())
         }
     }
@@ -1451,7 +1458,7 @@ mod tests {
         let i = HookInput::parse(&format!(
             r#"{{"session_id":"s1","stop_hook_active":{active}}}"#
         ));
-        stop_with(d.harness, &i, d, Some(&w)).unwrap()
+        stop_with(d.harness, &i, d, Some(&w), i.background_work(d.harness)).unwrap()
     }
     fn reason(o: &HookOutput) -> String {
         let v = o.value().expect("blocked");
@@ -1566,7 +1573,7 @@ mod tests {
         };
         let i = HookInput::parse(r#"{"session_id":"s1","stop_hook_active":false}"#);
         assert_eq!(
-            stop_with("claude", &i, &d, Some(&w)).unwrap(),
+            stop_with("claude", &i, &d, Some(&w), i.background_work("claude")).unwrap(),
             HookOutput::none()
         );
         assert_eq!(
