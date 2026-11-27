@@ -228,7 +228,9 @@ fn parse_lsof_cwd(out: &str) -> Option<PathBuf> {
 /// in an interactive run a wait with no `timeout_s` has none. On exit every
 /// one is ended, and the files Antigravity's hooks keep for it
 /// (`run/tool-hook/antigravity-<ID>`, `run/wake-nudge/antigravity-<ID>.json`)
-/// are removed for an ID made of `[A-Za-z0-9._-]`.
+/// are removed for an ID made of `[A-Za-z0-9._-]`. At start and at exit the
+/// shim also removes every `run/tool-hook/antigravity-*` stamp older than
+/// [`STAMP_AGE`] ([`sweep_stamps`]), whichever conversation it belongs to.
 pub async fn run(
     harness: Harness,
     home: &Home,
@@ -321,6 +323,7 @@ pub async fn run(
     }
 
     if harness == Harness::Antigravity {
+        sweep_stamps(home, std::time::SystemTime::now());
         let headless = tokio::task::spawn_blocking(move || {
             let parent = crate::channel::process_argv(parent_pid).ok();
             clax_core::antigravity::run_is_headless(&[parent], |_| stdin_is_terminal(parent_pid))
@@ -333,6 +336,7 @@ pub async fn run(
         for root in conversations.end_all(END_TIMEOUT).await {
             remove_hook_files(home, &root);
         }
+        sweep_stamps(home, std::time::SystemTime::now());
         return served;
     }
     let beating = tokio::spawn(beat(client.clone(), heartbeat));
@@ -399,6 +403,43 @@ fn remove_hook_files(home: &Home, id: &str) {
         match std::fs::remove_file(&f) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                 tracing::warn!("removing {} failed: {e}", f.display())
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The age past which [`sweep_stamps`] removes a stamp: the `tool` hook's
+/// own interval (`scripts/tool-hook.sh`), so a missing stamp acts as one
+/// this old.
+const STAMP_AGE: Duration = Duration::from_secs(60);
+
+/// Removes the regular files named `antigravity-*` directly in `home`'s
+/// `run/tool-hook` whose modification time is more than [`STAMP_AGE`]
+/// before `now`. Links, directories, other harnesses' stamps and a
+/// `run/tool-hook` that is not a directory are left alone.
+fn sweep_stamps(home: &Home, now: std::time::SystemTime) {
+    let dir = home.root().join("run").join("tool-hook");
+    if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let prefix = format!("{}-", clax_core::antigravity::HARNESS);
+    for entry in entries.flatten() {
+        let stale = entry.file_name().to_string_lossy().starts_with(&prefix)
+            && entry.metadata().is_ok_and(|m| {
+                m.is_file()
+                    && m.modified()
+                        .is_ok_and(|t| now.duration_since(t).is_ok_and(|age| age > STAMP_AGE))
+            });
+        if !stale {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!("removing {} failed: {e}", entry.path().display())
             }
             _ => {}
         }
@@ -685,6 +726,67 @@ mod tests {
             9,
         );
         assert_eq!(r.cwd, "");
+    }
+
+    #[test]
+    fn only_stale_antigravity_stamps_are_swept() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let stamps = home.root().join("run/tool-hook");
+        std::fs::create_dir_all(stamps.join("antigravity-d")).unwrap();
+        let then = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let stamp = |name: &str, at: SystemTime| {
+            let f = std::fs::File::create(stamps.join(name)).unwrap();
+            f.set_modified(at).unwrap();
+        };
+        stamp("antigravity-old", then - Duration::from_secs(61));
+        stamp("antigravity-fresh", then - Duration::from_secs(59));
+        stamp("claude-old", then - Duration::from_secs(3600));
+        stamp("codex-old", then - Duration::from_secs(3600));
+        let outside = dir.path().join("outside");
+        std::fs::File::create(&outside)
+            .unwrap()
+            .set_modified(then - Duration::from_secs(3600))
+            .unwrap();
+        std::os::unix::fs::symlink(&outside, stamps.join("antigravity-x")).unwrap();
+
+        sweep_stamps(&home, then);
+        let mut left: Vec<String> = std::fs::read_dir(&stamps)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "antigravity-d",
+                "antigravity-fresh",
+                "antigravity-x",
+                "claude-old",
+                "codex-old"
+            ]
+        );
+        assert!(outside.exists(), "the link's target was removed");
+        sweep_stamps(&Home::at(dir.path().join("none")), then);
+    }
+
+    #[test]
+    fn a_linked_stamp_directory_is_not_swept() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let then = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        std::fs::File::create(elsewhere.join("antigravity-old"))
+            .unwrap()
+            .set_modified(then - Duration::from_secs(3600))
+            .unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        std::fs::create_dir_all(home.root().join("run")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.root().join("run/tool-hook")).unwrap();
+        sweep_stamps(&home, then);
+        assert!(elsewhere.join("antigravity-old").exists());
     }
 
     #[test]

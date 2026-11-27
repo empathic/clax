@@ -2134,9 +2134,14 @@ keeps a session per root conversation instead of one per process:
   hooks keep for each conversation (`run/tool-hook/antigravity-<ID>` and
   `run/wake-nudge/antigravity-<ID>.json`, for an ID of
   `[A-Za-z0-9._-]`). When the exit cuts off an open `wait_for_feedback`,
-  Antigravity then runs the `tool` hook for that call, which leaves an
-  empty `run/tool-hook/antigravity-<ID>` behind. A conversation left with
-  `/new` stays a live session until then.
+  Antigravity then runs the `tool` hook for that call, which stamps
+  `run/tool-hook/antigravity-<ID>` again. Antigravity has no session-end
+  event, so the shim, when it starts and when it exits, also removes every
+  `run/tool-hook/antigravity-*` stamp more than 60 s old (a regular file
+  directly in that directory), whichever `agy` process stamped it: a
+  missing stamp lets the next `tool` hook run as a 60-second-old one does.
+  A conversation left with `/new` stays a live session until the shim
+  exits.
 - A conversation resumed with `agy --conversation <ID>` keeps its ID and has
   a new shim, so its first Clax call registers it again. After a normal
   exit the earlier session has ended, and its watches with it, so the new
