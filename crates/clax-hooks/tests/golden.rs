@@ -41,12 +41,7 @@ const HARNESS_ENV: [&str; 11] = [
 ];
 
 fn clax(home: &Path) -> Command {
-    in_test_env(Command::new(clax_bin(None)), home)
-}
-
-/// `c` with the environment every `clax` run here has: none of the
-/// harness's, and `home` as `CLAX_HOME`.
-fn in_test_env(mut c: Command, home: &Path) -> Command {
+    let mut c = Command::new(clax_bin(None));
     for var in HARNESS_ENV {
         c.env_remove(var);
     }
@@ -76,22 +71,17 @@ fn hook(home: &Path, agent: &str, event: &str, stdin: &[u8]) -> Ran {
 /// there when it starts: its deadline never runs while this test waits to
 /// be scheduled to write it.
 fn hook_env(home: &Path, agent: &str, event: &str, stdin: &[u8], env: &[(&str, &str)]) -> Ran {
-    let mut cmd = clax(home);
-    cmd.args(["hook", "--agent", agent, event]);
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    run_with_stdin(cmd, stdin)
-}
-
-/// Runs `cmd` with `stdin` read from a file ([`hook_env`]).
-fn run_with_stdin(mut cmd: Command, stdin: &[u8]) -> Ran {
     let mut input = tempfile::tempfile().unwrap();
     input.write_all(stdin).unwrap();
     std::io::Seek::rewind(&mut input).unwrap();
-    cmd.stdin(Stdio::from(input))
+    let mut cmd = clax(home);
+    cmd.args(["hook", "--agent", agent, event])
+        .stdin(Stdio::from(input))
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     let out = cmd.spawn().unwrap().wait_with_output().unwrap();
     Ran {
         stdout: String::from_utf8(out.stdout).unwrap(),
@@ -1033,41 +1023,6 @@ fn grok_working_through_a_turn() {
 /// The conversation ID of every `antigravity-*.json` fixture.
 const AGY_CONVERSATION: &str = "c0ffee00-0000-4000-8000-000000000001";
 
-/// A stand-in `agy`, run by [`clax_fake_exe::stdin_runner`]: runs `clax
-/// hook --agent antigravity <its first argument>` as its child on the
-/// runner's stdin, stdout and stderr, so the hook reads its input from the
-/// test. Its further arguments only show on its command line.
-const FAKE_AGY: &str =
-    "#!/bin/bash\n\"$CLAX_TEST_BIN\" hook --agent antigravity \"$1\" <&3 >&4 2>&5 3<&- 4>&- 5>&-\n";
-
-/// Runs Antigravity's `event` hook under [`FAKE_AGY`] started as `agy
-/// <event> <flags>` with a terminal on its standard input, so the hook's
-/// parent is an interactive `agy` unless `flags` ask it to print.
-fn hook_under_agy(home: &Path, event: &str, flags: &[&str], stdin: &[u8]) -> Ran {
-    hook_under_agy_on("terminal", home, event, flags, stdin)
-}
-
-/// [`hook_under_agy`] with `agy_stdin` as the `agy`'s standard input:
-/// `terminal`, or `inherit` for the hook's input file
-/// ([`clax_fake_exe::stdin_runner`]).
-fn hook_under_agy_on(
-    agy_stdin: &str,
-    home: &Path,
-    event: &str,
-    flags: &[&str],
-    stdin: &[u8],
-) -> Ran {
-    let dir = tempfile::tempdir().unwrap();
-    let agy = clax_fake_exe::install(&dir.path().join("agy"), FAKE_AGY);
-    let mut cmd = in_test_env(Command::new(clax_fake_exe::stdin_runner()), home);
-    cmd.arg(agy_stdin)
-        .arg(agy)
-        .arg(event)
-        .args(flags)
-        .env("CLAX_TEST_BIN", clax_bin(None));
-    run_with_stdin(cmd, stdin)
-}
-
 /// An Antigravity session as its shim registers it for [`AGY_CONVERSATION`],
 /// watching a page it published with replies armed.
 fn agy_session_with_artifact(d: &Daemon) -> (String, String) {
@@ -1218,8 +1173,6 @@ fn antigravity_stop_on_another_termination_does_nothing() {
     d.sent_thread(&aid, "make it two columns");
     let canceled = fixture("antigravity-stop-canceled.json");
     let r = hook(&d.home(), "antigravity", "stop", &canceled);
-    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
-    let r = hook_under_agy(&d.home(), "stop", &[], &canceled);
     assert_eq!(
         (r.code, r.stdout.as_str()),
         (Some(0), ""),
@@ -1233,7 +1186,7 @@ fn antigravity_stop_reminds_once_to_open_a_wait() {
     let d = Daemon::start();
     agy_session_with_artifact(&d);
     let stop = fixture("antigravity-stop.json");
-    let r = hook_under_agy(&d.home(), "stop", &[], &stop);
+    let r = hook(&d.home(), "antigravity", "stop", &stop);
     assert_eq!(r.code, Some(0));
     let v = one_line_json(&r.stdout);
     assert_eq!(v["decision"], "continue", "{v}");
@@ -1243,25 +1196,8 @@ fn antigravity_stop_reminds_once_to_open_a_wait() {
             && reason.contains("Call wait_for_feedback with no timeout_s now"),
         "{reason}"
     );
-    let r = hook_under_agy(&d.home(), "stop", &[], &stop);
-    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "said once");
-}
-
-#[test]
-fn antigravity_stop_gives_no_reminder_in_a_headless_run() {
-    let d = Daemon::start();
-    agy_session_with_artifact(&d);
-    let stop = fixture("antigravity-stop.json");
     let r = hook(&d.home(), "antigravity", "stop", &stop);
-    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "no agy parent");
-    let r = hook_under_agy(&d.home(), "stop", &["-p", "x"], &stop);
-    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "agy -p");
-    let r = hook_under_agy_on("inherit", &d.home(), "stop", &[], &stop);
-    assert_eq!(
-        (r.code, r.stdout.as_str()),
-        (Some(0), ""),
-        "a prompt piped to agy"
-    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "said once");
 }
 
 #[test]

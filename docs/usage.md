@@ -559,9 +559,9 @@ arrives once, through the next clax tool call, the end of the turn, or
 `wait_for_feedback`. `status` and `clax doctor --agent claude` show which
 path a session uses. An idle Antigravity conversation wakes while it has a
 `wait_for_feedback` call open: Antigravity runs that tool in the
-background, and in an interactive run the skill keeps one open after a
-publish or watch, so a comment finishes it and starts a turn. A headless
-`agy -p` run is not woken.
+background, and the skill keeps one open after a publish or watch, so a
+comment finishes it and starts a turn. A one-shot `agy -p` run that opens
+such a wait does not exit until the wait ends.
 
 ## Documentation
 

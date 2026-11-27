@@ -274,7 +274,7 @@ Tools:
   it, and `do`, the one thing to do next. `replies_armed: true` alone does
   not mean you will be woken: always do what `wake.do` says.
 - `wait_for_feedback` (optional `url_or_id`; `timeout_s` default 50, at most
-  600; in an interactive Antigravity run, no limit when omitted):
+  600; under Antigravity, no limit when omitted):
   `{"feedback": [...], "waited_s": n, "call_again": true|false}`.
 
 **Live pages.** When you run a web app's dev server (or any page the person
@@ -317,8 +317,8 @@ comments on it"), loop: call `wait_for_feedback`, handle whatever arrives, and
 call it again after handling the result, whatever `call_again` says, while the
 person wants live feedback; stop when the person says to stop. Each
 call returns within `timeout_s` because most harnesses cap a single tool
-call (Codex at 60 seconds); in an interactive Antigravity run a call with no
-`timeout_s` waits until a comment arrives.
+call (Codex at 60 seconds); under Antigravity a call with no `timeout_s`
+waits until a comment arrives.
 
 ## Live feedback in Antigravity
 
@@ -329,8 +329,8 @@ turn can end while it is open, and when a comment is sent to you it
 finishes and starts a new turn with the comments. If you are busy then, its
 result reaches you at your next step instead.
 
-A `watch` result's `wake.do` says what to do in this run: follow it. In an
-interactive run it comes to these steps; a headless run is below.
+A `watch` result's `wake.do` says what to do in this run: follow it. It
+comes to these steps.
 
 1. After your first publish or `watch` in a conversation (publishing
    watches the artifact with replies on), call
@@ -354,7 +354,7 @@ After a conversation is resumed (`agy --conversation <ID>`), the earlier
 wait and its watches are gone: `watch` the pages still in play, then call
 `wait_for_feedback` again.
 
-In a headless run (`agy -p`, or a prompt piped on standard input) nothing
-wakes you: do not wait unless the person asked you to. A wait there is bounded as `timeout_s` says (50
-seconds by default, at most 600), and the run does not exit until it
-finishes. Comments reach you on your next Clax tool call.
+A one-shot run (`agy -p`, or a prompt piped on standard input) that opens
+a wait does not exit until the wait ends. In a script, give
+`wait_for_feedback` a `timeout_s`, or do not ask the agent to listen for
+comments.

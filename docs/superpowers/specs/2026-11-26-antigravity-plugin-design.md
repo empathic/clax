@@ -22,7 +22,7 @@ down on purpose and say so.
 ## 2. How Antigravity works (verified on agy 1.5.18)
 
 Each fact was observed with a throwaway plugin whose MCP server and hooks
-logged what they received, in headless (`agy -p`) and interactive runs.
+logged what they received, in one-shot (`agy -p`) and interactive runs.
 "Documented" means the fact comes from https://antigravity.google/docs or
 the docs bundled with the CLI and was not run.
 
@@ -94,7 +94,7 @@ the docs bundled with the CLI and was not run.
   180 s) and the connect limit (default 300 s); a negative value turns both
   off (a 200 s call completed under `-1`). When a call passes the limit the
   client sends `notifications/cancelled` and the call fails.
-- A headless run waits for the server to connect before its first model
+- A one-shot run waits for the server to connect before its first model
   call (observed with an 8 s delay).
 
 ### 2.3 Background tool calls
@@ -112,8 +112,8 @@ the docs bundled with the CLI and was not run.
   background. `/exit` sends the server SIGTERM.
 - While a background call is open the interactive footer shows a running
   task.
-- Headless: `agy -p` without `--print-timeout` waits for every background
-  task before it exits. No environment variable tells a headless run from
+- One-shot: `agy -p` without `--print-timeout` waits for every background
+  task before it exits. No environment variable tells a one-shot run from
   an interactive one; the `agy` process's command line does (`-p`,
   `--print`, `--prompt`).
 
@@ -259,10 +259,8 @@ Goals
 - G3. Comments reach a conversation on the next Clax tool result, at the
   start of its next turn, at the end of a turn, and, when it is idle,
   through a background wait that wakes it with the comments.
-- G4. A headless run never hangs because of Clax, and waits for comments
-  only when its model chose a wait with a timeout.
-- G5. `clax doctor --agent antigravity` names what is wrong at each layer.
-- G6. A Claude Code copy of Clax that someone imported into Antigravity
+- G4. `clax doctor --agent antigravity` names what is wrong at each layer.
+- G5. A Claude Code copy of Clax that someone imported into Antigravity
   does nothing and says so.
 
 Non-goals
@@ -286,7 +284,6 @@ Anti-goals: it fails, even working, if
 
 - a comment is marked delivered to a conversation that never showed it to
   the model (a subagent's context, or a hook output Antigravity ignored);
-- an armed wait makes `agy -p` hang;
 - a hook failure breaks a tool call or a turn;
 - the person is asked to approve each of forty-odd tools one at a time
   with no way offered to approve them together.
@@ -480,9 +477,8 @@ conversation ID is never a session's.
 
 The wake is `wait_for_feedback`, marked as a background tool.
 
-- **Unbounded in an interactive run.** Under `--agent antigravity`, when
-  the `agy` process is interactive and the call gives no `timeout_s`, the
-  shim keeps polling the daemon (`tier=wait`, the server's 600 s cap per
+- **Unbounded.** Under `--agent antigravity`, when the call gives no
+  `timeout_s`, the shim keeps polling the daemon (`tier=wait`, the server's 600 s cap per
   poll) until there is feedback, an answer or a withheld notice to hand
   over, or the client cancels the call. It then returns the handover as
   today, which the daemon counts as acknowledged.
@@ -521,24 +517,14 @@ The wake is `wait_for_feedback`, marked as a background tool.
   wait is open; an open wait takes the comment at once, so the label would
   show for an instant only.
 
-### 6.5 Headless runs
+### 6.5 One-shot runs
 
-`agy -p` waits for open background calls before it exits, so an unbounded
-wait would hang it.
-
-- The shim and the `stop` hook decide from the `agy` process (for the hook,
-  the nearest of the ancestors it already collects): a run is interactive
-  only when its command line has no `-p`, `--print` or `--prompt` and its
-  standard input is a terminal, so a prompt piped in is headless too; when
-  either cannot be read the run counts as headless.
-- In a headless run `wait_for_feedback` keeps today's bounds (default
-  50 s, at most 600 s). The run waits for the call, the result starts one
-  more turn (observed), and the run exits when that turn ends unless the
-  model waits again.
-- In a headless run `stop` gives no turn-end reminder, and the wake block
-  says: "Nothing wakes a headless run. Comments reach you on your next
-  Clax tool call. End your turn when you are done." It does not tell the
-  model to wait in a loop.
+The plugin does not detect one-shot runs (`agy -p`, or a prompt piped on
+standard input). `agy -p` waits for open background calls before it exits
+(section 2.3), so a one-shot run that opens a wait does not exit until the
+wait ends, like any open-ended command in a script. Bounding it is the
+caller's: give `wait_for_feedback` a `timeout_s`, or do not ask the agent
+to listen. The README and the skill say so once each.
 
 ### 6.6 What the model sees
 
@@ -685,8 +671,7 @@ README follows the Grok plugin's.
 | 4, waiting | `wait_for_feedback` with a `timeout_s` |
 | 5, idle | the open `wait_for_feedback` finishes with the comments and starts a turn |
 
-Tiers 4 and 5 are the same call; tier 5 is the form with no `timeout_s` in
-an interactive run. A headless run has tiers 1 to 4.
+Tiers 4 and 5 are the same call; tier 5 is the form with no `timeout_s`.
 
 ## 8. Tests
 
@@ -696,18 +681,16 @@ Fast, no sleeps, injected clocks, helpers from `clax-testkit`.
   Appendix A for `PreInvocation` (0 and 1), `Stop` (normal, continued,
   other termination reasons) and `PostToolUse` (lazy and eager names).
   Cases: output shapes; a conversation with no session prints nothing;
-  the reminder is given once and not when `executionNum` is above 0, and
-  not in a headless run; no daemon prints nothing.
+  the reminder is given once and not when `executionNum` is above 0; no
+  daemon prints nothing.
 - **Shim** (`crates/clax-mcp/tests/shim.rs`): no session registered before
   the first call; two root conversations get two sessions; a subagent's
   call acts in the root's session, gets no feedback appended and cannot
   wait; a call with no `_meta` registers with no harness session ID; every
   session is heartbeated and all are ended on exit; `wait_for_feedback`
   with no `timeout_s` outlasts one server poll and returns on feedback and
-  on cancel; in a headless run it is bounded. The shim's tests run the
+  on cancel; with a `timeout_s` it is bounded. The shim's tests run the
   2026-07-28 handshake, which is what Antigravity uses with it.
-- **Headless detection:** command lines for `agy`, `agy -p …`, `agy
-  --print …`, `agy -i …`, an unreadable parent.
 - **Daemon:** `push_info` and `wakes_when_idle` for an `antigravity`
   session with and without an open wait; `waiting_on`; and where the
   person is: a turn the person started records terminal activity, a turn
@@ -737,12 +720,14 @@ None open; section 10 lists what the owner settled.
 Settled by the owner (2026-11-26):
 - `clax init` offers to write the permission rule (section 6.7), rather
   than only printing it as the Grok plugin does.
-- `wait_for_feedback` is the wake tool, unbounded under Antigravity in an
-  interactive run (section 6.4), instead of a new forty-fourth tool; one
+- `wait_for_feedback` is the wake tool, unbounded under Antigravity
+  (section 6.4), instead of a new forty-fourth tool; one
   tool's default differs by harness, as `ask`'s timeout does for Codex.
 - CLI only. The Antigravity app and IDE are out of scope until tested.
 - Names: agent and harness `antigravity`; plugin `clax-antigravity`;
   server key `clax`.
+- The plugin does not detect one-shot runs; bounding a one-shot run's wait
+  is the caller's (section 6.5).
 
 Settled by the designer (calls to check):
 - Sessions are keyed by the root conversation, and subagents act in it
@@ -758,14 +743,12 @@ Settled by the designer (calls to check):
   2026-07-28 with it.
 - Eleven tools are eager (section 6.1); the rest are lazy.
 - `timeoutSeconds: -1`, which also removes the connect limit.
-- A run whose command line cannot be read counts as headless.
 - The turn-end reminder is what re-arms the wait.
 - The minimum supported `agy` is 1.5.18.
 - `clax uninit` leaves the permission rule.
 
 ## 11. Left to the builder
 
-- Where the headless check lives, within the crate layering.
 - How the shim holds its sessions and how `call_tool` passes the session
   to `invoke`.
 - How the shim tracks that a conversation's unbounded wait is open.
@@ -784,7 +767,7 @@ Settled by the designer (calls to check):
   exit code 3).
 - Seen on MCP 2025-11-25 only, with the probe plugin: the wake of an idle
   interactive conversation, `notifications/cancelled` at a timeout, and a
-  subagent's `_meta`. On 2026-07-28, with the real shim, a headless
+  subagent's `_meta`. On 2026-07-28, with the real shim, a one-shot
   background `wait_for_feedback` and the root conversation's `_meta` were
   seen. The unbounded wait must end when the client cancels on either.
 - A turn started by something other than a person or Clax (a background
@@ -840,6 +823,10 @@ Settled by the designer (calls to check):
 - **Restoring watches after a normal exit and resume.** Not taken here:
   it is the same on every harness. `revisit:` people resume conversations
   and expect their pages' comments to follow.
+- **Detecting one-shot runs** (from the `agy` command line and whether its
+  standard input is a terminal) to bound their waits and drop the
+  reminder. Rejected by the owner: a one-shot run that opens a wait is the
+  caller's to bound (section 6.5).
 - **Holding the shim to MCP 2025-11-25 for Antigravity.** Rejected: the
   real shim was run under `agy` on 2026-07-28 and worked. `revisit:` a
   behaviour section 12 lists as unseen on 2026-07-28 fails there.

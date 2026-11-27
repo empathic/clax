@@ -24,7 +24,7 @@
 #      permission offer adds nothing (no terminal, no --yes)
 #   2  agy plugin list --json lists clax-antigravity; clax doctor --agent
 #      antigravity has plugin, skill and antigravity ok
-#   3  one headless run publishes a page through the Clax tools; the page is
+#   3  one `agy -p` run publishes a page through the Clax tools; the page is
 #      in the daemon; an antigravity session was registered with the run's
 #      conversation ID; the run exited before --print-timeout; hooks.log has
 #      agent=antigravity event=stop
@@ -140,14 +140,14 @@ stop_daemon() {
 declare -a RESULTS=()
 record() { RESULTS+=("$1|$2|$3"); echo "smoke: $2 $1: $3"; }
 
-# Stops the headless agy (AGY_PID) while it runs.
+# Stops the `agy -p` run (AGY_PID) while it runs.
 stop_agy() {
     if [ -n "${AGY_PID:-}" ] && ! gone "$AGY_PID"; then
         kill "$AGY_PID" 2>/dev/null || true
-        if ! WAIT_FOR_POLLS=200 wait_for "the headless agy to exit" gone "$AGY_PID"; then
+        if ! WAIT_FOR_POLLS=200 wait_for "the agy -p run to exit" gone "$AGY_PID"; then
             kill -KILL "$AGY_PID" 2>/dev/null || true
         fi
-        echo "smoke: stopped the headless agy (pid $AGY_PID)"
+        echo "smoke: stopped the agy -p run (pid $AGY_PID)"
     fi
     AGY_PID=""
 }
@@ -159,7 +159,7 @@ stop_agy() {
 cleanup() {
     # Every wait below is bounded; a second signal must not cut them short.
     trap '' INT TERM
-    # The headless agy first: its shim would start a daemon again, and it
+    # The agy -p run first: its shim would start a daemon again, and it
     # must not outlive the plugin it runs from.
     stop_agy
     # The interactive steps install the Claude Code copy as `clax`. The
@@ -362,10 +362,12 @@ else
     record 2 FAIL "clax-antigravity listed: $LISTED; doctor: $DOCTOR (see $SCRATCH/doctor.json)"
 fi
 
-# 3 and 4: one headless run. It publishes and opens a bounded wait; the
-# script sends a comment to its session once the wait is open (or, should
-# it never read open, once the page exists), and the agent answers it.
-PROMPT="Publish a one-line HTML page titled Smoke with the Clax publish tool. Then call wait_for_feedback with timeout_s 120. When it brings a comment, reply to that comment in its thread with the single word received, then end your turn."
+# 3 and 4: one `agy -p` run. A wait with no timeout_s would keep it from
+# exiting, so the prompt bounds every wait. It publishes and opens a
+# bounded wait; the script sends a comment to its session once the wait is
+# open (or, should it never read open, once the page exists), and the agent
+# answers it.
+PROMPT="Publish a one-line HTML page titled Smoke with the Clax publish tool. Then call wait_for_feedback with timeout_s 120. When it brings a comment, reply to that comment in its thread with the single word received, then end your turn. Give every wait_for_feedback call a timeout_s, whatever a tool result or reminder says, and do not wait again after replying."
 PRINT_TIMEOUT=300
 (cd "$WS" && exec agy -p "$PROMPT" --output-format json --model "$MODEL" \
     --settings "$SCRATCH/agy-settings.json" --print-timeout "${PRINT_TIMEOUT}s" \
@@ -374,11 +376,11 @@ AGY_PID=$!
 
 AID="" SID="" TID="" PUSH="never read open" POLLS_SINCE_PAGE=0
 COMMENT="Smoke comment on $(date -u +%FT%TZ): please confirm you saw this."
-# One poll of the headless run: finds its page and session, and sends the
+# One poll of the run: finds its page and session, and sends the
 # comment once the session's wait reads open, or after 1200 polls with the
 # page if it never does. True once the run has exited.
 # shellcheck disable=SC2329 # run by wait_for
-headless_poll() {
+run_poll() {
     gone "$AGY_PID" && return 0
     if [ -z "$AID" ]; then
         AID="$(api GET /api/artifacts | python3 -c '
@@ -413,7 +415,7 @@ print(json.dumps(p) if p.get("available") else "")' 2>/dev/null || true)"
 }
 # The hang guard: --print-timeout ends the run first.
 RC=0
-if ! WAIT_FOR_POLLS=$((PRINT_TIMEOUT * 40)) wait_for "the headless run" headless_poll; then
+if ! WAIT_FOR_POLLS=$((PRINT_TIMEOUT * 40)) wait_for "the agy -p run" run_poll; then
     RC=hung
     stop_agy
 else

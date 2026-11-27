@@ -368,7 +368,7 @@ Tools:
   it, and `do`, the one thing to do next. `replies_armed: true` alone does
   not mean you will be woken: always do what `wake.do` says.
 - `wait_for_feedback` (optional `url_or_id`; `timeout_s` default 50, at most
-  600; in an interactive Antigravity run, no limit when omitted):
+  600; under Antigravity, no limit when omitted):
   `{"feedback": [...], "waited_s": n, "call_again": true|false}`.
 
 **Live pages.** When you run a web app's dev server (or any page the person
@@ -411,8 +411,8 @@ comments on it"), loop: call `wait_for_feedback`, handle whatever arrives, and
 call it again after handling the result, whatever `call_again` says, while the
 person wants live feedback; stop when the person says to stop. Each
 call returns within `timeout_s` because most harnesses cap a single tool
-call (Codex at 60 seconds); in an interactive Antigravity run a call with no
-`timeout_s` waits until a comment arrives.
+call (Codex at 60 seconds); under Antigravity a call with no `timeout_s`
+waits until a comment arrives.
 
 ## Where to ask
 

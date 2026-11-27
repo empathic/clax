@@ -129,12 +129,6 @@ with Grok's monitor tool (persistent: true), exactly as given: each line it prin
 notice that wakes you. Keep exactly one running."
             );
         }
-        ("antigravity", _) if push["headless"] == true => {
-            out["do"] = json!(
-                "Nothing wakes a headless run. Comments reach you on your next Clax tool call. End \
-your turn when you are done."
-            );
-        }
         ("antigravity", _) => {
             out["do"] = json!(
                 "A comment will not wake this conversation while it is idle. Call wait_for_feedback \
@@ -335,23 +329,6 @@ wait_for_feedback call. End your turn when you are done."
             w["do"],
             "A comment will not wake this conversation while it is idle. Call wait_for_feedback \
 with no timeout_s now; it runs in the background. Keep exactly one open, then end your turn."
-        );
-        assert!(w.get("follow_command").is_none(), "{w}");
-    }
-
-    #[test]
-    fn a_headless_antigravity_run_is_told_nothing_wakes_it() {
-        let w = block(
-            "antigravity",
-            &json!({"tier": "wait", "available": false, "reason": "r", "headless": true}),
-            "/b",
-            Some("a"),
-        );
-        assert_eq!(w["when_idle"], false);
-        assert_eq!(
-            w["do"],
-            "Nothing wakes a headless run. Comments reach you on your next Clax tool call. End \
-your turn when you are done."
         );
         assert!(w.get("follow_command").is_none(), "{w}");
     }

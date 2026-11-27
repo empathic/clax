@@ -1009,17 +1009,6 @@ fn channel_flag(parent_pid: u32) -> Option<bool> {
     read.then_some(false)
 }
 
-/// Whether the hook runs under a headless `agy` run
-/// ([`clax_core::antigravity::run_is_headless`] over the command lines of
-/// its parent and ancestors, and the standard input of the nearest `agy`).
-fn antigravity_headless(parent_pid: u32) -> bool {
-    let pids: Vec<u32> = std::iter::once(parent_pid)
-        .chain(ancestors(parent_pid))
-        .collect();
-    let lines: Vec<Option<Vec<String>>> = pids.iter().map(|&p| process_args(p)).collect();
-    clax_core::antigravity::run_is_headless(&lines, |i| clax_mcp::shim::stdin_is_terminal(pids[i]))
-}
-
 /// Where the Stop hook remembers what it said about waking harness session
 /// `input.session_id` (`run/wake-nudge/<harness>-<ID>.json`); `None` for a
 /// session ID that is not a plain file name.
@@ -1141,11 +1130,6 @@ fn handle(
         }
         Event::Stop => {
             let ledger = wake_ledger(home, agent, &input).map(events::FileLedger);
-            // A headless `agy` run waits for an open wait_for_feedback call
-            // before it exits: it is never told to open one.
-            let ledger = ledger.filter(|_| {
-                !matches!(agent, Agent::Antigravity) || !antigravity_headless(parent_pid)
-            });
             let wake = ledger.as_ref().map(|l| events::StopWake {
                 bin: follow_bin(),
                 ledger: l,

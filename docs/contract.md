@@ -896,8 +896,7 @@ successful run clears both, and a failure leaves `available` true. Under Codex `
 daemon's reason for having no `codex` (see "Delivery tiers per harness");
 under Pi it is `{"tier": "inject", "available": true, "reason": null}`; under
 Antigravity `tier` is `"wait"`, available while a `wait_for_feedback` call
-of the session is open, with `"headless": true` in a headless run ("Antigravity"
-under "Sessions"); under Claude Code it is as shown above. `push` is `null` without a session, or when
+of the session is open ("Antigravity" under "Sessions"); under Claude Code it is as shown above. `push` is `null` without a session, or when
 the daemon could not be asked.
 
 Under Claude Code, `push.tier` is `"channel"` (`available: true`) when the
@@ -2177,8 +2176,8 @@ every subagent and not on resume.
 call time limit (`"timeoutSeconds": -1`). Antigravity returns a background
 call to the model at once as a task, lets the turn end while it is open,
 and when it finishes starts a turn with its result (or, while the
-conversation is busy, adds the result at its next model call). In an
-interactive run, `wait_for_feedback` with no `timeout_s` has no limit: the
+conversation is busy, adds the result at its next model call).
+`wait_for_feedback` with no `timeout_s` has no limit: the
 shim polls the daemon (`tier=wait`, at most 600 s a poll; after a poll that
 came back empty in under a second it waits out that second) until a poll
 hands something over (feedback, an answer, a withheld thread or a note), or
@@ -2205,20 +2204,13 @@ ended." when a wait was open at an earlier stop. A thread sent to an `antigravit
 the watch is armed, else on its next tool result, as for Claude Code, Codex
 and Grok Build.
 
-**Headless runs.** A headless run (`agy -p`, or a prompt piped to `agy` on
-standard input) waits for every open background call before it exits. The
-shim decides from its parent, and the `stop` hook from its parent and
-ancestors, by the nearest `agy`: the run is interactive only when that
-`agy`'s command line has no `-p`, `--print` or `--prompt` (or `--print=…`,
-`--prompt=…`) before any `-i` or `--prompt-interactive`, and its standard
-input is a terminal. Otherwise it is headless, as it is when whether that
-standard input is a terminal cannot be told, when no command line can be
-read, or when none that can is `agy`'s. In a headless run `wait_for_feedback` keeps its
-bounds, the shim adds `"headless": true` to `push`, `wake.do` says "Nothing
-wakes a headless run. Comments reach you on your next Clax tool call. End
-your turn when you are done.", and `stop` gives no turn-end reminder. A
-headless run also refuses every Clax tool call that the permission rule
-(`clax init`) does not allow.
+**One-shot runs.** The plugin does not tell a one-shot run (`agy -p`, or a
+prompt piped to `agy` on standard input) from an interactive one. Such a
+run waits for every open background call before it exits, so one that
+opens a wait with no `timeout_s` does not exit until the wait ends; a
+caller that needs it to exit gives `wait_for_feedback` a `timeout_s`. A
+one-shot run cannot ask, so it refuses every Clax tool call that the
+permission rule (`clax init`) does not allow.
 
 `agy plugin import claude` installs the Clax Claude Code plugin in
 Antigravity as `clax`. That copy stands down: see "The wrapper". Exactly
@@ -4511,7 +4503,7 @@ the copy's remote, the link holds the copy's address alone.
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}`; a thread no version lists yet is listed as addressed in the current version |
 | `comments_handoff` | `url_or_id`, `thread_id`; optional `to` (a live agent's name) | `{artifact_id, url, released, thread, note}`: with `to`, the thread is sent to that agent, which owns it (`thread.owner`); without, the owner releases it. `thread_taken` when another live agent owns it. |
 | `watch` | `url_or_id` (an artifact, or a page URL); optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}`; for a page URL `{artifact_id, url, page_url, scope, watching: true, replies_armed}`, or `{page_url, watching: false, replies_armed: false}` with `on: false` (`page_url` without its route) |
-| `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50; in an interactive Antigravity run, no limit when omitted) | `{feedback: [...], waited_s, call_again}`; under Antigravity, `{already_waiting: true, call_again: false}` for a call with no limit made while one is open |
+| `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50; under Antigravity, no limit when omitted) | `{feedback: [...], waited_s, call_again}`; under Antigravity, `{already_waiting: true, call_again: false}` for a call with no limit made while one is open |
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
 | `draft` | `url_or_id`; `html` or `file_path` (the page) and/or `files` (as `publish` takes them, `null` removing a path); optional `if_version`, `note` (at most 140 characters), `done` | `{artifact_id, url, drafting: true, base_version, paths, note, note_truncated, expires_in_s}` or `{artifact_id, url, drafting: false, ended}` |
 | `git_remote` | `url_or_id`, `scope` (`read` or `write`) | `{artifact_id, url, scope, remote, token, expires_at, clone_command, jj_clone_command, existing_checkout}` (see "Git remotes") |
@@ -5051,8 +5043,8 @@ taking `url_or_id`.
 `wait_for_feedback` returns as soon as comments sent to this session arrive
 (only those on `url_or_id` when given), or after `timeout_s` seconds with
 `feedback: []` and `call_again: true`. `timeout_s` is raised to 1 and capped
-at 600. `waited_s` is whole seconds. Under Antigravity, in an interactive
-run, a call with no `timeout_s` has no limit, and a subagent's call is the
+at 600. `waited_s` is whole seconds. Under Antigravity a call with no
+`timeout_s` has no limit, and a subagent's call is the
 error `subagent` ("Antigravity" under "Sessions").
 
 Error codes besides the common ones: `invalid_id` (`url_or_id` names no
@@ -5326,8 +5318,8 @@ Measured on 2026-09-29 with Codex CLI 0.158.0 and Claude Code 2.1.284; Pi
 `scripts/smoke-grok.sh` records the measured version); Antigravity's `agy`
 1.5.18 run live through the clax-antigravity plugin on 2026-11-26
 (`scripts/smoke-antigravity.sh` and the interactive steps it prints, with
-Gemini 3.8 Flash): tier 4 in a headless run, and tier 5 in an interactive
-one, including a wake after the wait had been open eleven minutes and a
+Gemini 3.8 Flash): tier 4 in a one-shot `agy -p` run, and tier 5 in an
+interactive one, including a wake after the wait had been open eleven minutes and a
 wake of a conversation left with `/new`; tiers 1 to 3 were not exercised
 with a comment, nor were a subagent's calls, a client cancelling an open
 wait, or a wait across machine sleep.
@@ -5338,7 +5330,7 @@ wait, or a wait across machine sleep.
 | 2, Stop hook | end of the turn: `{"decision":"block","reason":...}` continues the turn with the payload | same shape and behaviour, measured with `codex exec` | end of the turn: the same shape continues the turn; the hook acts only on `reason` `end_turn` | end of the turn: `{"decision":"continue","reason":...}` continues the turn with the payload as a system message; the hook acts only on `terminationReason` `NO_TOOL_CALL` | none |
 | 3, prompt hook | the person's next message (`UserPromptSubmit` `additionalContext`); also at session start (`SessionStart` `additionalContext`) | only at session start: the `SessionStart` hook adds waiting comments to its `additionalContext`; no `UserPromptSubmit` hook is wired | none: an allowing `UserPromptSubmit` hook's output is discarded and `SessionStart` output is ignored | the first model call of each turn, whether the person or a finished background call started it (`PreInvocation` `injectSteps`, as a system message) | none |
 | 4, `wait_for_feedback` | immediate while waiting | immediate while waiting; one call stays under Codex's 60 s tool limit | immediate while waiting; Grok's tool timeout defaults to 6000 s | immediate while waiting; the call runs in the background, and the plugin sets no tool time limit | immediate while waiting |
-| 5, native push | channel (opt-in launch flag, research preview) or follow fallback: a notice, never the payload. Launched with `--dangerously-load-development-channels plugin:clax@clax`, the shim sends a `notifications/claude/channel` event per comment, which starts a turn when idle and joins the next turn when busy. Otherwise the skill runs `clax feedback follow --once` in the background, and its exit wakes the session. Either way the comment is then delivered by tier 1, 2 or 4 | `codex queue`: an idle attached TUI starts a turn in about 0.2 s; a busy one runs it as its next turn; with no client attached (an exited TUI, a `codex exec` thread) it is held until `codex resume`, and `codex queue` still exits 0 | once the agent has started the monitor (`clax feedback follow`): a notice line wakes an idle session at once and a busy one after its turn; it points at the comment, which then arrives through tier 1, 2 or 4 (from source; not run live) | the open `wait_for_feedback` call with no `timeout_s` (interactive runs only): it finishes with the payload, which starts a turn when idle and arrives at the next model call when busy | the extension long-polls and calls `sendUserMessage(..., {deliverAs: "followUp"})`: a turn starts at once when idle, after the current work when busy (from source; not run live) |
+| 5, native push | channel (opt-in launch flag, research preview) or follow fallback: a notice, never the payload. Launched with `--dangerously-load-development-channels plugin:clax@clax`, the shim sends a `notifications/claude/channel` event per comment, which starts a turn when idle and joins the next turn when busy. Otherwise the skill runs `clax feedback follow --once` in the background, and its exit wakes the session. Either way the comment is then delivered by tier 1, 2 or 4 | `codex queue`: an idle attached TUI starts a turn in about 0.2 s; a busy one runs it as its next turn; with no client attached (an exited TUI, a `codex exec` thread) it is held until `codex resume`, and `codex queue` still exits 0 | once the agent has started the monitor (`clax feedback follow`): a notice line wakes an idle session at once and a busy one after its turn; it points at the comment, which then arrives through tier 1, 2 or 4 (from source; not run live) | the open `wait_for_feedback` call with no `timeout_s`: it finishes with the payload, which starts a turn when idle and arrives at the next model call when busy | the extension long-polls and calls `sendUserMessage(..., {deliverAs: "followUp"})`: a turn starts at once when idle, after the current work when busy (from source; not run live) |
 
 Tier 1 applies to every successful tool result of a session-bound shim or Pi
 extension, except `wait_for_feedback`, whose result is tier 4. Tiers 2 and 5

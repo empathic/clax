@@ -1442,8 +1442,6 @@ pub struct ClaxTools {
     /// An unbounded `wait_for_feedback` is open; shared by clones, fresh in
     /// [`ClaxTools::for_client`].
     waiting: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// [`ClaxTools::headless`].
-    headless: bool,
     tool_router: std::sync::Arc<ToolRouter<Self>>,
 }
 
@@ -1536,23 +1534,16 @@ impl ClaxTools {
             feedback: true,
             unbounded_wait: false,
             waiting: Default::default(),
-            headless: false,
             tool_router: std::sync::Arc::new(Self::tool_router()),
         }
     }
 
     /// `wait_for_feedback` with no `timeout_s` waits until there is
-    /// something to hand over (an interactive Antigravity run). One such
+    /// something to hand over (under Antigravity). One such
     /// wait is open at a time; another call meanwhile returns at once with
     /// `already_waiting: true`.
     pub fn with_unbounded_wait(mut self, on: bool) -> ClaxTools {
         self.unbounded_wait = on;
-        self
-    }
-
-    /// `status` and `watch` say nothing wakes this run.
-    pub fn headless(mut self, on: bool) -> ClaxTools {
-        self.headless = on;
         self
     }
 
@@ -2824,8 +2815,7 @@ impl ClaxTools {
     }
 
     /// `status.push`: the daemon's `push` for `session`, refined by the
-    /// channel under Claude Code, with the monitor command under Grok, and
-    /// with `headless: true` in a headless Antigravity run.
+    /// channel under Claude Code, and with the monitor command under Grok.
     fn refined_push(&self, push: Value, session: Option<&Session>) -> Value {
         let bin = self.follow_bin();
         let hs = session.and_then(|s| s.harness_session_id.as_deref());
@@ -2840,12 +2830,6 @@ impl ClaxTools {
             && let Some(hs) = hs
         {
             push["follow_command"] = json!(crate::channel::grok_follow_command(&bin, hs));
-        }
-        if self.headless
-            && push.is_object()
-            && session.is_some_and(|s| s.harness == clax_core::antigravity::HARNESS)
-        {
-            push["headless"] = json!(true);
         }
         push
     }

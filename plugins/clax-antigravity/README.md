@@ -143,8 +143,7 @@ conversation:
 | 5, idle | the open `wait_for_feedback` finishes with the comments and starts a turn |
 
 Tiers 4 and 5 are the same tool. A `wait_for_feedback` call with no
-`timeout_s` in an interactive run stays open until a comment is sent to the
-session. Antigravity runs it in the background, so the turn can end while
+`timeout_s` stays open until a comment is sent to the session. Antigravity runs it in the background, so the turn can end while
 it is open, and when it finishes it starts a turn holding the comments. The
 skill tells the agent to call it after its first publish or watch and again
 after each wake, keeping exactly one open; a second call while one is open
@@ -155,23 +154,12 @@ A conversation resumed with `agy --conversation <ID>` gets a new session at
 its first Clax call. Its earlier wait is gone, and so are its watches, so
 the agent watches the pages still in play and waits again.
 
-## Headless runs
+## One-shot runs
 
-A headless run (`agy -p`, or a prompt piped to `agy` on standard input)
-waits for every open background call before it exits, so a wait with no
-upper bound would hang it. The run counts as interactive only when the
-`agy` process's command line has no `-p`, `--print` or `--prompt` and its
-standard input is a terminal; otherwise (also when either cannot be read)
-it counts as headless:
-
-- `wait_for_feedback` keeps the bounds it has on other harnesses (50 s by
-  default, at most 600 s). The run waits for the call, and its result
-  reaches the agent before the run exits.
-- The `Stop` hook does not remind the agent to wait, and the `watch`
-  result's `wake` says that nothing wakes a headless run.
-
-A headless run has tiers 1 to 4, and needs the permission rule above to
-call any Clax tool.
+A one-shot run (`agy -p`, or a prompt piped on standard input) that opens a
+wait does not exit until the wait ends. In a script, give
+`wait_for_feedback` a `timeout_s`, or do not ask the agent to listen for
+comments.
 
 ## The Claude Code plugin in Antigravity
 

@@ -98,7 +98,7 @@ pub fn registration(
     }
 }
 
-/// How long [`process_cwd`] and [`stdin_is_terminal`] wait for `lsof`.
+/// How long [`process_cwd`] waits for `lsof`.
 #[cfg(not(target_os = "linux"))]
 const LSOF_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -118,45 +118,6 @@ fn process_cwd(pid: u32) -> Option<PathBuf> {
         LSOF_TIMEOUT,
     )?;
     parse_lsof_cwd(&out)
-}
-
-/// Whether process `pid`'s standard input is a terminal, if that can be
-/// determined: where `/proc/<pid>/fd/0` links to names one
-/// ([`names_a_terminal`]).
-#[cfg(target_os = "linux")]
-pub fn stdin_is_terminal(pid: u32) -> Option<bool> {
-    std::fs::read_link(format!("/proc/{pid}/fd/0"))
-        .ok()
-        .map(|p| names_a_terminal(&p.to_string_lossy()))
-}
-
-/// Whether process `pid`'s standard input is a terminal, if that can be
-/// determined within [`LSOF_TIMEOUT`]; read from `lsof -a -p <pid> -d 0
-/// -Fn` ([`parse_lsof_stdin`]).
-#[cfg(not(target_os = "linux"))]
-pub fn stdin_is_terminal(pid: u32) -> Option<bool> {
-    let out = run_with_timeout(
-        std::process::Command::new("lsof").args(["-a", "-p", &pid.to_string(), "-d", "0", "-Fn"]),
-        LSOF_TIMEOUT,
-    )?;
-    parse_lsof_stdin(&out)
-}
-
-/// Whether the file named by the first `n` line of `lsof -Fn` output is a
-/// terminal ([`names_a_terminal`]); `None` with no `n` line. A pipe's `n`
-/// line names nothing.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
-fn parse_lsof_stdin(out: &str) -> Option<bool> {
-    out.lines()
-        .find_map(|l| l.strip_prefix('n'))
-        .map(names_a_terminal)
-}
-
-/// Whether `path` names a terminal device: `/dev/tty…` (macOS's
-/// pseudo-terminals are `/dev/ttys…`), `/dev/pts/…` (Linux's) or
-/// `/dev/console`.
-fn names_a_terminal(path: &str) -> bool {
-    path.starts_with("/dev/tty") || path.starts_with("/dev/pts/") || path == "/dev/console"
 }
 
 /// Runs `cmd` with no stdin and no stderr and returns its stdout, or `None`
@@ -221,12 +182,8 @@ fn parse_lsof_cwd(out: &str) -> Option<PathBuf> {
 ///
 /// Under Antigravity nothing is registered before a call: each root
 /// conversation gets its own session on its first call, heartbeated from
-/// then on ([`Conversations`]). Unless the parent is an `agy` whose command
-/// line does not ask to print and whose standard input is a terminal
-/// ([`clax_core::antigravity::run_is_headless`]), the run is headless:
-/// `wait_for_feedback` keeps its bounds and `status` says nothing wakes it;
-/// in an interactive run a wait with no `timeout_s` has none. On exit every
-/// one is ended, and the files Antigravity's hooks keep for it
+/// then on ([`Conversations`]), and a `wait_for_feedback` with no
+/// `timeout_s` has no time cap. On exit every one is ended, and the files Antigravity's hooks keep for it
 /// (`run/tool-hook/antigravity-<ID>`, `run/wake-nudge/antigravity-<ID>.json`)
 /// are removed for an ID made of `[A-Za-z0-9._-]`. At start and at exit the
 /// shim also removes every `run/tool-hook/antigravity-*` stamp older than
@@ -324,13 +281,7 @@ pub async fn run(
 
     if harness == Harness::Antigravity {
         sweep_stamps(home, std::time::SystemTime::now());
-        let headless = tokio::task::spawn_blocking(move || {
-            let parent = crate::channel::process_argv(parent_pid).ok();
-            clax_core::antigravity::run_is_headless(&[parent], |_| stdin_is_terminal(parent_pid))
-        })
-        .await
-        .unwrap_or(true);
-        let tools = tools.with_unbounded_wait(!headless).headless(headless);
+        let tools = tools.with_unbounded_wait(true);
         let conversations = Arc::new(Conversations::new(tools, reg, connect, heartbeat));
         let served = serve(conversations.clone(), None).await;
         for root in conversations.end_all(END_TIMEOUT).await {
@@ -678,33 +629,6 @@ mod tests {
             Some(PathBuf::from("/work dir"))
         );
         assert_eq!(parse_lsof_cwd("p123\n"), None);
-    }
-
-    #[test]
-    fn lsof_output_says_whether_stdin_is_a_terminal() {
-        assert_eq!(parse_lsof_stdin("p123\nf0\nn/dev/ttys003\n"), Some(true));
-        assert_eq!(parse_lsof_stdin("p123\nf0\nn/dev/pts/4\n"), Some(true));
-        assert_eq!(parse_lsof_stdin("p123\nf0\nn\n"), Some(false), "a pipe");
-        assert_eq!(parse_lsof_stdin("p123\nf0\nn/dev/null\n"), Some(false));
-        assert_eq!(
-            parse_lsof_stdin("p123\nf0\nn/work/prompt.txt\n"),
-            Some(false)
-        );
-        assert_eq!(parse_lsof_stdin("p123\n"), None, "no standard input");
-        assert_eq!(parse_lsof_stdin(""), None);
-    }
-
-    #[test]
-    fn a_child_reading_a_pipe_has_no_terminal_on_stdin() {
-        let mut child = std::process::Command::new("cat")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let seen = stdin_is_terminal(child.id());
-        drop(child.stdin.take());
-        child.wait().unwrap();
-        assert_eq!(seen, Some(false));
     }
 
     #[test]

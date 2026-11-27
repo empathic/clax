@@ -15,12 +15,6 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// A stand-in for `agy`, run by [`clax_fake_exe::stdin_runner`]: runs the
-/// shim as its child on the runner's stdin, stdout and stderr, so the shim's
-/// parent is an `agy` with this command line and the runner's choice of
-/// standard input.
-const FAKE_AGY: &str = "#!/bin/bash\n\"$CLAX_TEST_BIN\" --port 0 mcp --agent antigravity <&3 >&4 2>&5 3<&- 4>&- 5>&-\n";
-
 /// A running shim with its own `CLAX_HOME`; dropping it stops the daemon the
 /// shim started. The shim logs its warnings to `<dir>/shim.log`
 /// ([`Shim::log`]), shown when a test fails.
@@ -58,30 +52,10 @@ impl Shim {
 
     /// Starts an Antigravity shim, with `CLAX_SESSION_ID` set (it must not
     /// be used), against a daemon already serving its home, so the daemon
-    /// can be asked about sessions before any call. Its parent is no `agy`,
-    /// so the run counts as headless.
+    /// can be asked about sessions before any call.
     async fn start_antigravity() -> Shim {
         let dir = Shim::serving_daemon();
         Shim::spawn(dir, None, "antigravity", ("CLAX_SESSION_ID", "from-env")).await
-    }
-
-    /// [`Shim::start_antigravity`] run by a fake `agy` given `flags`, with a
-    /// terminal on its standard input: an interactive run with no flags, a
-    /// headless one with `-p x`.
-    async fn start_agy(flags: &[&str]) -> Shim {
-        Shim::start_agy_on("terminal", flags).await
-    }
-
-    /// [`Shim::start_agy`] with `stdin` as the `agy`'s standard input:
-    /// `terminal`, or `inherit` for the test's pipe
-    /// ([`clax_fake_exe::stdin_runner`]).
-    async fn start_agy_on(stdin: &str, flags: &[&str]) -> Shim {
-        let dir = Shim::serving_daemon();
-        let agy = clax_fake_exe::install(&dir.path().join("agy"), FAKE_AGY);
-        let mut args = vec![stdin.to_string(), agy.display().to_string()];
-        args.extend(flags.iter().map(|f| f.to_string()));
-        let runner = clax_fake_exe::stdin_runner();
-        Shim::launch(dir, runner, args, ("CLAX_SESSION_ID", "from-env")).await
     }
 
     /// A directory whose home `<dir>/ax` a daemon serves.
@@ -106,27 +80,10 @@ impl Shim {
         agent: &str,
         session_var: (&str, &str),
     ) -> Shim {
-        let mut args: Vec<String> = ["--port", "0", "mcp", "--agent", agent]
-            .map(str::to_string)
-            .into();
-        if let Some(ms) = heartbeat_ms {
-            args.extend(["--heartbeat-interval-ms".to_string(), ms.to_string()]);
-        }
-        Shim::launch(dir, clax_bin(None), args, session_var).await
-    }
-
-    /// Runs `program` with `args`, the inherited harness environment
-    /// cleared and only `session_var` set, as the shim or its parent.
-    async fn launch(
-        dir: tempfile::TempDir,
-        program: PathBuf,
-        args: Vec<String>,
-        session_var: (&str, &str),
-    ) -> Shim {
         std::fs::create_dir_all(dir.path().join("work")).unwrap();
         let home = dir.path().join("ax");
         let work = dir.path().join("work");
-        let cmd = tokio::process::Command::new(program).configure(|c| {
+        let cmd = tokio::process::Command::new(clax_bin(None)).configure(|c| {
             for var in [
                 "GROK_SESSION_ID",
                 "GROK_HOOK_EVENT",
@@ -142,8 +99,7 @@ impl Shim {
             ] {
                 c.env_remove(var);
             }
-            c.args(&args)
-                .env("CLAX_TEST_BIN", clax_bin(None))
+            c.args(["--port", "0", "mcp", "--agent", agent])
                 .env("CLAX_HOME", &home)
                 .env("CLAX_CODEX_BIN", "")
                 .env("HOME", dir.path())
@@ -153,6 +109,9 @@ impl Shim {
                 .env(clax_mcp::git::DEADLINE_VAR, "20000")
                 .env("RUST_LOG", "warn")
                 .current_dir(&work);
+            if let Some(ms) = heartbeat_ms {
+                c.args(["--heartbeat-interval-ms", &ms.to_string()]);
+            }
         });
         let log = std::fs::File::create(dir.path().join("shim.log")).unwrap();
         let (transport, _) = TokioChildProcess::builder(cmd)
@@ -1027,7 +986,7 @@ async fn cancel_wait(shim: &Shim, sid: &str, handle: RequestHandle<RoleClient>) 
 
 #[tokio::test]
 async fn an_unbounded_wait_outlasts_a_server_poll() {
-    let shim = Shim::start_agy(&[]).await;
+    let shim = Shim::start_antigravity().await;
     let sid = session_of(&shim, "r1").await;
     let mut wait = shim.start_wait("r1", json!({})).await;
     shim.until_waiters(&sid, "parked=wait", 1).await;
@@ -1046,7 +1005,7 @@ async fn an_unbounded_wait_outlasts_a_server_poll() {
 
 #[tokio::test]
 async fn an_unbounded_wait_returns_the_comment() {
-    let shim = Shim::start_agy(&[]).await;
+    let shim = Shim::start_antigravity().await;
     let p = ok(&shim
         .call_with_meta(
             from_conversation("r1", "r1"),
@@ -1072,7 +1031,7 @@ async fn an_unbounded_wait_returns_the_comment() {
 
 #[tokio::test]
 async fn a_second_wait_while_one_is_open_returns_at_once() {
-    let shim = Shim::start_agy(&[]).await;
+    let shim = Shim::start_antigravity().await;
     let sid = session_of(&shim, "r1").await;
     let wait = shim.start_wait("r1", json!({})).await;
     shim.until_waiters(&sid, "", 1).await;
@@ -1095,7 +1054,7 @@ async fn a_second_wait_while_one_is_open_returns_at_once() {
 
 #[tokio::test]
 async fn a_cancelled_wait_can_be_opened_again() {
-    let shim = Shim::start_agy(&[]).await;
+    let shim = Shim::start_antigravity().await;
     let sid = session_of(&shim, "r1").await;
     let first = shim.start_wait("r1", json!({})).await;
     shim.until_waiters(&sid, "", 1).await;
@@ -1112,63 +1071,12 @@ async fn a_cancelled_wait_can_be_opened_again() {
 
 #[tokio::test]
 async fn a_wait_with_a_timeout_is_bounded() {
-    let shim = Shim::start_agy(&[]).await;
+    let shim = Shim::start_antigravity().await;
     let sid = session_of(&shim, "r1").await;
     let wait = shim.start_wait("r1", json!({"timeout_s": 5})).await;
     shim.until_waiters(&sid, "", 1).await;
     assert_eq!(shim.expire(&sid).await, 1);
     let v = ok(&wait_result(wait).await);
     assert_eq!(v["call_again"], true, "{v}");
-    let status = ok(&shim
-        .call_with_meta(from_conversation("r1", "r1"), "status", json!({}))
-        .await);
-    assert_eq!(status["push"]["headless"], Value::Null, "{status}");
-    shim.finish().await;
-}
-
-#[tokio::test]
-async fn a_headless_run_waits_with_bounds_and_says_nothing_wakes_it() {
-    is_headless(Shim::start_agy(&["-p", "x"]).await).await;
-}
-
-#[tokio::test]
-async fn a_prompt_piped_to_agy_is_a_headless_run() {
-    is_headless(Shim::start_agy_on("inherit", &[]).await).await;
-}
-
-/// That `shim` runs as a headless run: a wait with no `timeout_s` is
-/// bounded, `push` says headless, and `watch` says nothing wakes the run.
-async fn is_headless(shim: Shim) {
-    let sid = session_of(&shim, "r1").await;
-    let wait = shim.start_wait("r1", json!({})).await;
-    shim.until_waiters(&sid, "", 1).await;
-    assert_eq!(shim.expire(&sid).await, 1);
-    let v = ok(&wait_result(wait).await);
-    assert_eq!(v["call_again"], true, "{v}");
-
-    let status = ok(&shim
-        .call_with_meta(from_conversation("r1", "r1"), "status", json!({}))
-        .await);
-    assert_eq!(status["push"]["headless"], true, "{status}");
-    let p = ok(&shim
-        .call_with_meta(
-            from_conversation("r1", "r1"),
-            "publish",
-            json!({"html": "<main><h2>Goals</h2></main>", "title": "Loop"}),
-        )
-        .await);
-    let watched = ok(&shim
-        .call_with_meta(
-            from_conversation("r1", "r1"),
-            "watch",
-            json!({"url_or_id": p["artifact_id"]}),
-        )
-        .await);
-    assert_eq!(
-        watched["wake"]["do"],
-        "Nothing wakes a headless run. Comments reach you on your next Clax tool call. End \
-your turn when you are done.",
-        "{watched}"
-    );
     shim.finish().await;
 }

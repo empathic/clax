@@ -89,7 +89,7 @@ A few things differ by harness:
   refuses them. `clax init` offers to add the one rule that approves every
   Clax tool, `mcp(clax-antigravity_clax/*)`.
 - **Pi** and **Codex** start a new turn when you send them a comment, even
-  when the session is idle. So does an interactive **Antigravity**
+  when the session is idle. So does an **Antigravity**
   conversation once its agent has published or watched a page: the agent
   keeps a wait for comments open in the background.
 
