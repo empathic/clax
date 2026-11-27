@@ -7,6 +7,9 @@ cargo_package(
     test_data = [
         "//plugins/pi:test_fixtures",
         "//web:dist",
+        # webmcp_schema's test: the browser-side WebMCP tools' committed
+        # input schemas, checked against the schemars-derived types here.
+        "//web:shell/src/webmcp.schemas.json",
     ],
     tests_use_clax = [
         "clax_mcp_lib_test",
