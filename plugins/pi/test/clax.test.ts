@@ -1657,7 +1657,7 @@ describe("comments", () => {
     expect(JSON.parse(fg.content[0].text!)).toMatchObject({ working: true, thread_ids: [quick], expires_in_s: 120 });
     const set = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, thread_ids: [tid], background: true }, ctx);
     expect(set.isError).toBe(false);
-    expect(JSON.parse(set.content[0].text!)).toMatchObject({ working: true, thread_ids: [quick, tid], background_thread_ids: [tid], expires_in_s: 600 });
+    expect(JSON.parse(set.content[0].text!)).toMatchObject({ working: true, thread_ids: [quick, tid], background_thread_ids: [tid], expires_in_s: 3600 });
     await pi.emit("agent_end", { type: "agent_end", messages: [] }, ctx);
     const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`, { headers: { cookie: await browserCookie() } })).json();
     expect(seen.working).toHaveLength(1);
@@ -1667,6 +1667,26 @@ describe("comments", () => {
       expect(bad.isError).toBe(true);
       expect(JSON.parse(bad.content[0].text!).error.code).toBe("invalid_args");
     }
+  });
+
+  it("agent_end reports the subagents a subagent package says are running", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-working-subagents");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const pub = JSON.parse((await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "S" }, ctx)).content[0].text!);
+    const tid = await browserThread(pub.artifact_id, "@agent two columns");
+    await pi.callTool("clax_working", { url_or_id: pub.artifact_id, thread_ids: [tid], background: true }, ctx);
+    const working = async () => (await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`, { headers: { cookie: await browserCookie() } })).json()).working;
+    const agentEnd = () => pi.emit("agent_end", { type: "agent_end", messages: [] }, ctx);
+    pi.api.events.emit("subagent:async-started", { id: "r1" });
+    pi.api.events.emit("subagents:started", { id: "a1" });
+    await agentEnd();
+    expect(await working()).toHaveLength(1);
+    pi.api.events.emit("subagent:async-complete", { runId: "r1" });
+    await agentEnd();
+    expect(await working()).toHaveLength(1);
+    pi.api.events.emit("subagents:failed", { id: "a1" });
+    await agentEnd();
+    expect(await working()).toHaveLength(0);
   });
 
   it("clax_draft shows people a draft over the current version and done drops it, as the MCP tool does", async () => {

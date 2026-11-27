@@ -871,9 +871,12 @@ export class DaemonClient {
     return this.json(() => `${this.sessionPath()}/working/renew`, this.jsonBody("POST", {}), this.discoverFn);
   }
 
-  /** `POST /api/sessions/<sid>/working/end`: `{cleared}`. Never starts a daemon. */
-  endWorking(): Promise<any> {
-    return this.json(() => `${this.sessionPath()}/working/end`, this.jsonBody("POST", {}), this.discoverFn);
+  /** `POST /api/sessions/<sid>/working/end`: `{cleared}`. `backgroundWork` is
+   * whether work is still running in the background, when known. Never starts
+   * a daemon. */
+  endWorking(backgroundWork?: boolean): Promise<any> {
+    const body = backgroundWork === undefined ? {} : { background_work: backgroundWork };
+    return this.json(() => `${this.sessionPath()}/working/end`, this.jsonBody("POST", body), this.discoverFn);
   }
 
   /** `GET /api/sessions/<sid>/watches`: `{watches}`. */

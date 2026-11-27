@@ -112,12 +112,9 @@ Evidence:
    resolves or deletes it, when its session ends, or when the record
    lapses. A record that loses its last background thread and goes on is
    renewed then, so its 120 s lapse counts from that moment.
-4. **A record naming background threads lapses after 600 s**
-   (`BACKGROUND_TTL_SECS`) without renewal, not 120 s. In Claude Code and
-   Codex a subagent's tool calls renew it (their `PostToolUse` carries the
-   parent's `session_id`); in Grok Build and Pi's subagent packages,
-   subagents are sessions of their own and nothing renews it until the
-   owner acts again, so the longer lapse is what keeps it.
+4. **A record naming background threads lapses after 3600 s**
+   (`BACKGROUND_TTL_SECS`) without renewal, not 120 s. It is a backstop:
+   the owner's reply, or the harness's report at a turn end (7), ends them.
 5. **The owner names the threads in every harness.** No hook decides
    which threads are background; that is the daemon, the `working` tool
    (Rust MCP server and Pi extension) and the skills. The `stop` hook only
@@ -128,15 +125,27 @@ Evidence:
    subagents (`wait_agent`, present in multi-agent v1 and, by default, v2)
    before ending a turn that has a thread in progress.
 
-7. **The harness says whether work is still running.** Where the turn-end
-   hook's input says so, the `stop` hook passes it on as `background_work`
-   (`POST …/working/end`): Claude Code's `background_tasks` (any running
-   entry but Clax's own listeners, `clax feedback follow` and `clax queue
-   … follow`) and Antigravity's `fullyIdle`. `false` ends the background
-   threads with the turn (`End::TurnEndIdle`), as finished work. `true`
-   keeps them and renews them, and from then they lapse 3600 s after a
-   renewal (`REPORTED_BACKGROUND_TTL_SECS`), not 600 s. A harness that
-   does not say (Codex, Grok Build, Pi) is as before.
+7. **The harness says whether work is still running.** The turn end
+   carries `background_work` (`POST …/working/end`): `false` ends the
+   background threads with the turn (`End::TurnEndIdle`), as finished work;
+   `true` keeps and renews them. Each harness says it its own way:
+   - Claude Code's `background_tasks` and Grok Build's `backgroundTasks`
+     (its `stop_gate.rs`, read at `xai-org/grok-build@2bdd1d6a`): any
+     running entry but Clax's own listeners (`clax feedback follow`,
+     `clax queue … follow`).
+   - Antigravity's `fullyIdle`, which is also false while Clax's own
+     `wait_for_feedback` is open. A subagent is a conversation of its own
+     whose hooks name no session: its first model call of a turn leaves a
+     marker under the `agy` process it shares with a live session
+     (`run/agy-subagents/<pid>/<conversation>`), and its stop removes it.
+     A session's turn end reports work running when a marker is left, or
+     when `fullyIdle` is false and Clax's wait is not what is open.
+   - Pi's extension counts the subagents its subagent packages report
+     (`subagent:async-started`/`subagent:async-complete` of `pi-subagents`
+     0.90.0; `subagents:started`/`subagents:completed`/`subagents:failed`
+     of `@tintinweb/pi-subagents` 0.26.3) and reports at `agent_end`, once
+     one has started.
+   - Codex says nothing; its owner waits for its subagents (6).
 8. **The page says so.** A thread among a record's `background_thread_ids`
    reads "<agent> is working on it in the background". The record that
    carries background threads on keeps the time their work began as its
@@ -149,12 +158,11 @@ Evidence:
   running: the harness's report names no thread, so every background
   thread stays until the owner replies or nothing is left running.
 - Leaving out background work that is not a hand-off's. Under Claude Code
-  a long-running command of the session (a dev server) counts as work
-  running, so it keeps a hand-off its owner never answers marked; under
-  Antigravity so does Clax's own open `wait_for_feedback`.
-- Grok Build's `backgroundTasks` and the Pi subagent packages' finish
-  events as the same report: not read yet.
-
+  and Grok Build a long-running command of the session (a dev server)
+  counts as work running, so it keeps a hand-off its owner never answers
+  marked.
+- A Pi subagent package other than the two named: nothing is reported, so
+  its hand-offs end with the owner's reply or the lapse.
 - Deciding which threads to keep from the harness's list alone (Claude
   Code's `background_tasks`, Grok Build's `backgroundTasks`): session-wide,
   so it keeps threads the agent already answered.

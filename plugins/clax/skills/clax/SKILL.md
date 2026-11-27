@@ -500,9 +500,7 @@ thread in `thread_ids` and `background: true`: it stays marked through the
 end of your turn, a publish and later `working` calls, while the work you
 finished ends as usual. It ends when you reply to or resolve it, call
 `working` with `done: true` and the thread, or end a turn with nothing
-left running in the background (Claude Code and Antigravity report that;
-elsewhere, after 10 minutes in which nothing in your session calls a
-tool). A publish lists only the other
+left running in the background. A publish lists only the other
 threads as addressed unasked: the publish that carries the thread's change
 names it in `addresses` (tell a subagent that publishes to do so). Your
 subagents do not call `working`, `comments_reply`, `comments_resolve` or

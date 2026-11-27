@@ -2081,7 +2081,7 @@ class Tools {
     const background = r.working.background_thread_ids;
     return {
       artifact_id: id, url, working: true, message: r.working.message, thread_ids: r.working.thread_ids,
-      started_at: r.working.started_at, expires_in_s: background ? 600 : 120, message_truncated: r.message_truncated,
+      started_at: r.working.started_at, expires_in_s: background ? 3600 : 120, message_truncated: r.message_truncated,
       ...(background ? { background_thread_ids: background } : {}),
     };
   }
@@ -2843,11 +2843,37 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       lastRenew = Date.now();
       void c.renewWorking().catch(() => undefined);
     });
+    // The subagents a subagent package (pi-subagents, @tintinweb/pi-subagents)
+    // says are running: the turn end's report of background work. Nothing is
+    // reported until one of them has started a subagent.
+    const subagents = new Set<string>();
+    let subagentsSeen = false;
+    const runId = (data: unknown, ...keys: string[]) => {
+      for (const k of keys) {
+        const v = (data as Record<string, unknown> | null)?.[k];
+        if (typeof v === "string" && v) return v;
+      }
+      return undefined;
+    };
+    for (const channel of ["subagent:async-started", "subagents:started"]) {
+      pi.events.on(channel, data => {
+        const id = runId(data, "id");
+        if (!id) return;
+        subagentsSeen = true;
+        subagents.add(id);
+      });
+    }
+    for (const channel of ["subagent:async-complete", "subagents:completed", "subagents:failed"]) {
+      pi.events.on(channel, data => {
+        const id = runId(data, "runId", "id");
+        if (id) subagents.delete(id);
+      });
+    }
     pi.on("agent_end", async () => {
       const c = tools.existingClient();
       if (!c?.session()) return;
       lastRenew = 0;
-      await c.endWorking().catch(() => undefined);
+      await c.endWorking(subagentsSeen ? subagents.size > 0 : undefined).catch(() => undefined);
     });
 
     // Terminal activity (spec 2026-10-16-ask-where-attention-is-design §1):
@@ -2966,7 +2992,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Watch a Clax artifact for comments sent to you, or stop watching it",
       WatchArgs, (ctx, a) => tools.watch(ctx, a));
     define("working", "Clax working",
-      "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now. Threads you hand to subagents that work on after your turn take `background: true`: they join the others and stay marked through the end of your turn, a publish and later calls, until you reply to or resolve them, clear them with `done: true`, or end a turn with nothing left running in the background (10 minutes without a tool call where your harness does not report that); the publish that carries a handed-off thread's change names it in `addresses`.",
+      "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now. Threads you hand to subagents that work on after your turn take `background: true`: they join the others and stay marked through the end of your turn, a publish and later calls, until you reply to or resolve them, clear them with `done: true`, or end a turn with nothing left running in the background; the publish that carries a handed-off thread's change names it in `addresses`.",
       "Show the person you are working on a Clax artifact, or clear it",
       WorkingArgs, (ctx, a) => tools.working(ctx, a));
     define("draft", "Clax draft",

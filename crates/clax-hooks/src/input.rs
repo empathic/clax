@@ -67,20 +67,43 @@ impl HookInput {
 
     /// What the harness's Stop input says of work still running in the
     /// background as the turn ends; `None` when it does not say. Claude
-    /// Code lists `background_tasks`: any running one counts but Clax's own
-    /// listeners, since a subagent waiting on a command it started is not
-    /// listed itself, only that command. Antigravity sends `fullyIdle`.
+    /// Code lists `background_tasks` and Grok Build `backgroundTasks`: any
+    /// running one counts but Clax's own listeners, since a subagent
+    /// waiting on a command it started is not listed itself, only that
+    /// command. Antigravity sends `fullyIdle`
+    /// ([`HookInput::antigravity_background_work`]).
     pub fn background_work(&self, harness: &str) -> Option<bool> {
-        match harness {
-            "claude" => {
-                let tasks = self.rest.get("background_tasks")?.as_array()?;
-                Some(tasks.iter().any(|t| {
-                    t["status"] == "running" && !t["command"].as_str().is_some_and(is_clax_listener)
-                }))
-            }
-            "antigravity" => Some(!self.rest.get("fullyIdle")?.as_bool()?),
-            _ => None,
-        }
+        let key = match harness {
+            "claude" => "background_tasks",
+            "grok" => "backgroundTasks",
+            "antigravity" => return self.antigravity_background_work(false, false),
+            _ => return None,
+        };
+        let tasks = self.rest.get(key)?.as_array()?;
+        // Grok carries a monitor's command in `description`.
+        let listener = |t: &Value| {
+            ["command", "description"]
+                .iter()
+                .any(|k| t[*k].as_str().is_some_and(is_clax_listener))
+        };
+        Some(
+            tasks
+                .iter()
+                .any(|t| t["status"] == "running" && !listener(t)),
+        )
+    }
+
+    /// [`HookInput::background_work`] for Antigravity, whose `fullyIdle` is
+    /// false for any open background call, Clax's own `wait_for_feedback`
+    /// among them: with that wait open and no subagent running, nothing of
+    /// a hand-off's is left.
+    pub fn antigravity_background_work(
+        &self,
+        subagents_running: bool,
+        wait_open: bool,
+    ) -> Option<bool> {
+        let idle = self.rest.get("fullyIdle")?.as_bool()?;
+        Some(!idle && (subagents_running || !wait_open))
     }
 
     /// Whether this is Antigravity's envelope, which carries
@@ -154,7 +177,28 @@ mod tests {
         assert_eq!(says("antigravity", r#"{"fullyIdle":true}"#), Some(false));
         assert_eq!(says("antigravity", r#"{"fullyIdle":false}"#), Some(true));
         assert_eq!(says("antigravity", r#"{"conversationId":"c"}"#), None);
-        for harness in ["codex", "grok", "pi"] {
+        let agy = |j: &str, subagents, wait| {
+            HookInput::parse(j).antigravity_background_work(subagents, wait)
+        };
+        assert_eq!(agy(r#"{"fullyIdle":false}"#, false, true), Some(false));
+        assert_eq!(agy(r#"{"fullyIdle":false}"#, true, true), Some(true));
+        assert_eq!(agy(r#"{"fullyIdle":true}"#, true, false), Some(false));
+        assert_eq!(
+            says(
+                "grok",
+                r#"{"backgroundTasks":[{"id":"s","type":"subagent","status":"running","agentType":"explore"}]}"#
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            says(
+                "grok",
+                r#"{"backgroundTasks":[{"id":"m","type":"monitor","status":"running","description":"clax feedback follow --agent grok --harness-session h"}]}"#
+            ),
+            Some(false)
+        );
+        assert_eq!(says("grok", r#"{"sessionId":"s"}"#), None);
+        for harness in ["codex", "pi"] {
             assert_eq!(
                 says(harness, r#"{"background_tasks":[],"fullyIdle":true}"#),
                 None,

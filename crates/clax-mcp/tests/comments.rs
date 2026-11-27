@@ -887,7 +887,7 @@ async fn working_in_the_background_keeps_threads_past_the_turn_end() {
     );
     assert_eq!(v["thread_ids"], json!([quick, tid]));
     assert_eq!(v["background_thread_ids"], json!([tid]));
-    assert_eq!(v["expires_in_s"], 600);
+    assert_eq!(v["expires_in_s"], 3600);
     let res = ts
         .post_json(&format!("/api/sessions/{sid}/working/end"), json!({}))
         .await;

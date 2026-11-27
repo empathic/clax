@@ -1,9 +1,8 @@
 //! The working signal (spec §10 "Working"): which harness session is acting
 //! on which artifact, and on which of its threads, now. Records live in
 //! memory only. Each lapses [`WORKING_TTL_SECS`] after its last renewal
-//! ([`BACKGROUND_TTL_SECS`] while it names background threads,
-//! [`REPORTED_BACKGROUND_TTL_SECS`] once its harness reports them running),
-//! so a daemon restart starts with none and never shows stale work.
+//! ([`BACKGROUND_TTL_SECS`] while it names background threads), so a daemon
+//! restart starts with none and never shows stale work.
 //!
 //! A thread the agent hands to work that goes on after its turn (subagents
 //! running in the background) is flagged background. A turn end or a
@@ -24,13 +23,9 @@ use std::sync::{Arc, Mutex};
 /// Seconds after its last renewal that a record lapses.
 pub const WORKING_TTL_SECS: i64 = 120;
 /// Seconds after its last renewal that a record naming background threads
-/// lapses: work in the background may renew it only through its own tool
-/// calls, or not at all where the harness runs it as another session.
-pub const BACKGROUND_TTL_SECS: i64 = 600;
-/// Seconds after its last renewal that such a record lapses once its
-/// harness has said, at a turn end, that work is still running in the
-/// background ([`Working::turn_end`]).
-pub const REPORTED_BACKGROUND_TTL_SECS: i64 = 3600;
+/// lapses. A backstop only: the agent's reply, or its harness's report at a
+/// turn end ([`Working::turn_end`]), is what ends them.
+pub const BACKGROUND_TTL_SECS: i64 = 3600;
 /// Longest message, in characters, after [`clean_message`].
 pub const MAX_MESSAGE_CHARS: usize = 140;
 /// Most threads one record names.
@@ -287,9 +282,6 @@ struct Record {
     /// `message` was given with background threads: it goes on with them
     /// when the rest of the work ends.
     message_background: bool,
-    /// Its harness said at the last turn end that work was still running
-    /// in the background.
-    reported: bool,
     /// The record has named a thread at some point: losing its last one clears it.
     had_threads: bool,
     started_at: DateTime<Utc>,
@@ -339,8 +331,6 @@ impl Record {
     fn ttl(&self) -> Duration {
         Duration::seconds(if self.background.is_empty() {
             WORKING_TTL_SECS
-        } else if self.reported {
-            REPORTED_BACKGROUND_TTL_SECS
         } else {
             BACKGROUND_TTL_SECS
         })
@@ -378,7 +368,6 @@ impl Record {
             message,
             threads: self.background.clone(),
             background: std::mem::take(&mut self.background),
-            reported: false,
             had_threads: true,
             started_at: now,
             since: self.since,
@@ -467,7 +456,6 @@ impl Working {
                     threads: Vec::new(),
                     background: Vec::new(),
                     message_background: false,
-                    reported: false,
                     had_threads: false,
                     started_at: now,
                     since: now,
@@ -681,9 +669,6 @@ impl Working {
         }
         let had_background = !r.background.is_empty();
         r.background.retain(|t| !ts.contains(t));
-        if r.background.is_empty() {
-            r.reported = false;
-        }
         if live && had_background && r.background.is_empty() {
             r.heartbeat = now;
         }
@@ -812,9 +797,8 @@ impl Working {
     /// The end of `sid`'s turn, as [`Working::end_session`]. `background_work`
     /// is what its harness says of work still running in the background:
     /// `Some(false)` ends the background threads too ([`End::TurnEndIdle`]);
-    /// `Some(true)` keeps them and renews them, to lapse
-    /// [`REPORTED_BACKGROUND_TTL_SECS`] after a renewal from now on; `None`
-    /// (it cannot say) is [`End::TurnEnd`].
+    /// `Some(true)` keeps them and renews them; `None` (it does not say)
+    /// keeps them as [`End::TurnEnd`] does.
     pub fn turn_end(&self, sid: &str, background_work: Option<bool>) -> (Changed, Vec<Ended>) {
         let why = if background_work == Some(false) {
             End::TurnEndIdle
@@ -827,7 +811,6 @@ impl Working {
         if background_work == Some(true) {
             for ((s, _), r) in map.iter_mut() {
                 if s == sid && !r.background.is_empty() {
-                    r.reported = true;
                     r.heartbeat = now;
                 }
             }
@@ -1534,7 +1517,7 @@ mod tests {
         w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
         c.advance(BACKGROUND_TTL_SECS);
         let (changed, _) = w.clear("s1", "a1", None, End::Publish);
-        assert_eq!(stops(&changed), [(StopReason::Ttl, 600_000)]);
+        assert_eq!(stops(&changed), [(StopReason::Ttl, 3_600_000)]);
         assert!(started_keys(&changed).is_empty());
         assert_eq!(w.next_lapse(), None);
     }
@@ -1563,7 +1546,7 @@ mod tests {
         c.advance(BACKGROUND_TTL_SECS - WORKING_TTL_SECS - 1);
         let changed = w.sweep();
         assert!(w.for_artifact("a1").is_empty());
-        assert_eq!(stops(&changed), [(StopReason::Ttl, 600_000)]);
+        assert_eq!(stops(&changed), [(StopReason::Ttl, 3_600_000)]);
     }
 
     #[test]
@@ -1675,54 +1658,34 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_end_with_work_running_keeps_the_background_threads_for_the_long_lapse() {
+    fn a_turn_end_with_work_running_keeps_and_renews_the_background_threads() {
         let (c, w) = fixture();
         w.mark(&claude("s1"), "a1", &ids(&["t2"]));
         w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
         c.advance(30);
         let (_, ended) = w.turn_end("s1", Some(true));
         assert_eq!(ended[0].thread_ids, ids(&["t2"]));
+        c.advance(BACKGROUND_TTL_SECS - 1);
+        // A record with nothing but background work is renewed by the report.
+        let (changed, _) = w.turn_end("s1", Some(true));
+        assert!(changed.is_empty());
         let s = w.for_session("s1");
         assert_eq!(s[0].view.thread_ids, ids(&["t1"]));
         assert_eq!(
             s[0].expires_at,
-            stamp(c.now() + Duration::seconds(REPORTED_BACKGROUND_TTL_SECS))
-        );
-        c.advance(BACKGROUND_TTL_SECS + 1);
-        assert_eq!(w.for_artifact("a1").len(), 1, "past the unreported lapse");
-        // A record with nothing but background work is renewed by the report.
-        let (changed, _) = w.turn_end("s1", Some(true));
-        assert!(changed.is_empty());
-        c.advance(REPORTED_BACKGROUND_TTL_SECS - 1);
-        assert_eq!(w.for_artifact("a1").len(), 1);
-        c.advance(1);
-        assert!(w.for_artifact("a1").is_empty());
-    }
-
-    #[test]
-    fn a_harness_that_cannot_say_leaves_the_background_threads_on_the_shorter_lapse() {
-        let (c, w) = fixture();
-        w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
-        let (changed, _) = w.turn_end("s1", None);
-        assert!(changed.is_empty());
-        c.advance(BACKGROUND_TTL_SECS);
-        assert!(w.for_artifact("a1").is_empty());
-    }
-
-    #[test]
-    fn a_report_does_not_outlast_the_background_threads_it_was_of() {
-        let (c, w) = fixture();
-        w.mark(&claude("s1"), "a1", &ids(&["t2"]));
-        w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
-        w.turn_end("s1", Some(true));
-        w.mark(&claude("s1"), "a1", &ids(&["t3"]));
-        w.thread_done("s1", "a1", "t1", StopReason::Explicit);
-        w.set(&claude("s1"), "a1", background(&["t4"])).unwrap();
-        let s = w.for_session("s1");
-        assert_eq!(
-            s[0].expires_at,
             stamp(c.now() + Duration::seconds(BACKGROUND_TTL_SECS))
         );
+    }
+
+    #[test]
+    fn a_harness_that_does_not_say_leaves_the_background_threads_as_they_are() {
+        let (c, w) = fixture();
+        w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
+        c.advance(60);
+        let (changed, _) = w.turn_end("s1", None);
+        assert!(changed.is_empty());
+        c.advance(BACKGROUND_TTL_SECS - 60);
+        assert!(w.for_artifact("a1").is_empty(), "not renewed");
     }
 
     #[test]

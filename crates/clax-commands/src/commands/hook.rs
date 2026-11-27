@@ -1012,6 +1012,89 @@ fn channel_flag(parent_pid: u32) -> Option<bool> {
 /// Where the Stop hook remembers what it said about waking harness session
 /// `input.session_id` (`run/wake-nudge/<harness>-<ID>.json`); `None` for a
 /// session ID that is not a plain file name.
+/// The `agy` process an Antigravity hook runs under, when it has a live
+/// session. A subagent there is a conversation of its own, whose hooks name
+/// no session: each leaves a marker file in `subagents` while it runs.
+struct AgyProcess {
+    subagents: std::path::PathBuf,
+    conversation: String,
+    /// The Clax session of this hook's conversation; `None` for a subagent's.
+    session: Option<String>,
+}
+
+impl AgyProcess {
+    fn of(
+        home: &Home,
+        daemon: &dyn events::Daemon,
+        input: &HookInput,
+        parent_pid: u32,
+    ) -> Option<AgyProcess> {
+        let conversation = input.session_id.as_deref().filter(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        })?;
+        let listed = daemon.get("/api/sessions?live=true").ok()?;
+        let sessions: Vec<&serde_json::Value> = listed["sessions"]
+            .as_array()?
+            .iter()
+            .filter(|s| s["harness"] == "antigravity")
+            .collect();
+        let pid = std::iter::once(parent_pid)
+            .chain(ancestors(parent_pid))
+            .find(|p| sessions.iter().any(|s| s["parent_pid"] == *p))?;
+        Some(AgyProcess {
+            subagents: home.root().join("run/agy-subagents").join(pid.to_string()),
+            conversation: conversation.to_string(),
+            session: sessions
+                .iter()
+                .find(|s| s["harness_session_id"] == conversation)
+                .and_then(|s| s["id"].as_str())
+                .map(str::to_string),
+        })
+    }
+
+    fn mark_subagent(&self, running: bool) {
+        let marker = self.subagents.join(&self.conversation);
+        let _ = if running {
+            std::fs::create_dir_all(&self.subagents).and_then(|()| std::fs::write(marker, b""))
+        } else {
+            std::fs::remove_file(marker)
+        };
+    }
+}
+
+/// What an Antigravity turn end reports of background work: a subagent's
+/// stop reports nothing and takes its marker away; a session's counts the
+/// subagents still marked, and whether Clax's own wait is what is open.
+fn agy_background_work(
+    home: &Home,
+    daemon: &dyn events::Daemon,
+    input: &HookInput,
+    parent_pid: u32,
+) -> Option<bool> {
+    let Some(a) = AgyProcess::of(home, daemon, input, parent_pid) else {
+        return input.background_work("antigravity");
+    };
+    let Some(sid) = &a.session else {
+        a.mark_subagent(false);
+        return None;
+    };
+    if input
+        .rest
+        .get("fullyIdle")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        let _ = std::fs::remove_dir_all(&a.subagents);
+    }
+    let running = std::fs::read_dir(&a.subagents).is_ok_and(|mut d| d.next().is_some());
+    let wait_open = daemon
+        .get(&format!("/api/sessions/{sid}"))
+        .is_ok_and(|info| info["push"]["available"] == true);
+    input.antigravity_background_work(running, wait_open)
+}
+
 fn wake_ledger(home: &Home, agent: Agent, input: &HookInput) -> Option<std::path::PathBuf> {
     let sid = input.session_id.as_deref().filter(|s| {
         !s.is_empty()
@@ -1137,16 +1220,34 @@ fn handle(
                     .then(|| channel_flag(parent_pid))
                     .flatten(),
             });
-            events::stop_with(agent.harness(), &input, &client, wake.as_ref())
+            let background_work = match agent {
+                Agent::Antigravity => agy_background_work(home, &client, &input, parent_pid),
+                _ => input.background_work(agent.harness()),
+            };
+            events::stop_with(
+                agent.harness(),
+                &input,
+                &client,
+                wake.as_ref(),
+                background_work,
+            )
         }
         // Antigravity's turn starts with a background result too, not only
         // with what the person typed.
-        Event::Prompt => events::prompt_with(
-            agent.harness(),
-            &input,
-            &client,
-            !matches!(agent, Agent::Antigravity),
-        ),
+        Event::Prompt => {
+            if matches!(agent, Agent::Antigravity)
+                && let Some(a) = AgyProcess::of(home, &client, &input, parent_pid)
+                && a.session.is_none()
+            {
+                a.mark_subagent(true);
+            }
+            events::prompt_with(
+                agent.harness(),
+                &input,
+                &client,
+                !matches!(agent, Agent::Antigravity),
+            )
+        }
         Event::Tool => events::tool(agent.harness(), &input, &client),
         Event::CallId if matches!(agent, Agent::Claude) => {
             events::tool_call_id(agent.harness(), &input, &client)
