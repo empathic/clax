@@ -65,6 +65,24 @@ impl HookInput {
         self.rest.get("terminationReason").and_then(Value::as_str)
     }
 
+    /// What the harness's Stop input says of work still running in the
+    /// background as the turn ends; `None` when it does not say. Claude
+    /// Code lists `background_tasks`: any running one counts but Clax's own
+    /// listeners, since a subagent waiting on a command it started is not
+    /// listed itself, only that command. Antigravity sends `fullyIdle`.
+    pub fn background_work(&self, harness: &str) -> Option<bool> {
+        match harness {
+            "claude" => {
+                let tasks = self.rest.get("background_tasks")?.as_array()?;
+                Some(tasks.iter().any(|t| {
+                    t["status"] == "running" && !t["command"].as_str().is_some_and(is_clax_listener)
+                }))
+            }
+            "antigravity" => Some(!self.rest.get("fullyIdle")?.as_bool()?),
+            _ => None,
+        }
+    }
+
     /// Whether this is Antigravity's envelope, which carries
     /// `conversationId`.
     pub fn is_antigravity_envelope(&self) -> bool {
@@ -80,10 +98,70 @@ impl HookInput {
     }
 }
 
+/// Whether a background task's `command` is one of Clax's own listeners
+/// (`clax feedback follow`, `clax queue … follow`).
+fn is_clax_listener(command: &str) -> bool {
+    let mut words = command.split_whitespace().skip(1);
+    match words.next() {
+        Some("feedback") => words.next() == Some("follow"),
+        Some("queue") => words.any(|w| w == "follow"),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_work_is_what_the_harness_lists_as_running_but_for_clax_listeners() {
+        let says = |harness: &str, j: &str| HookInput::parse(j).background_work(harness);
+        assert_eq!(says("claude", r#"{"background_tasks":[]}"#), Some(false));
+        assert_eq!(
+            says(
+                "claude",
+                r#"{"background_tasks":[{"id":"a","type":"subagent","status":"running","agent_type":"general-purpose"}]}"#
+            ),
+            Some(true)
+        );
+        // A subagent waiting on a command it started is not listed; the command is.
+        assert_eq!(
+            says(
+                "claude",
+                r#"{"background_tasks":[{"id":"b","type":"shell","status":"running","command":"sleep 25"},{"id":"m","type":"monitor","status":"running","command":"until ! pgrep -q x; do sleep 1; done"}]}"#
+            ),
+            Some(true)
+        );
+        for listener in [
+            "/Users/b/.cargo/bin/clax feedback follow --agent claude --harness-session h",
+            "'/tmp/x/clax' feedback follow --once --agent claude --harness-session h",
+            "clax queue --queue q1 follow --agent claude --harness-session h",
+        ] {
+            let j = serde_json::json!({"background_tasks": [
+                {"id": "f", "type": "monitor", "status": "running", "command": listener}]});
+            assert_eq!(says("claude", &j.to_string()), Some(false), "{listener}");
+        }
+        assert_eq!(
+            says(
+                "claude",
+                r#"{"background_tasks":[{"id":"a","type":"subagent","status":"completed"}]}"#
+            ),
+            Some(false)
+        );
+        assert_eq!(says("claude", r#"{"session_id":"s"}"#), None);
+        assert_eq!(says("claude", r#"{"background_tasks":"x"}"#), None);
+        assert_eq!(says("antigravity", r#"{"fullyIdle":true}"#), Some(false));
+        assert_eq!(says("antigravity", r#"{"fullyIdle":false}"#), Some(true));
+        assert_eq!(says("antigravity", r#"{"conversationId":"c"}"#), None);
+        for harness in ["codex", "grok", "pi"] {
+            assert_eq!(
+                says(harness, r#"{"background_tasks":[],"fullyIdle":true}"#),
+                None,
+                "{harness}"
+            );
+        }
+    }
 
     #[test]
     fn parses_known_and_extra_fields() {

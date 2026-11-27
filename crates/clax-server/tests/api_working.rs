@@ -528,3 +528,40 @@ async fn background_names_the_threads_it_applies_to() {
         assert_eq!(v["error"]["code"], "invalid_args", "{body}");
     }
 }
+
+#[tokio::test]
+async fn a_turn_end_follows_what_the_harness_says_of_background_work() {
+    let (ts, _) = server().await;
+    let (sid, aid, _quick, handed_off) = handed_off(&ts).await;
+    let path = format!("/api/sessions/{sid}/working/end");
+    let res = ts.post_json(&path, json!({"background_work": true})).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["cleared"], 1);
+    let w = working_threads(&ts, &aid).await;
+    assert_eq!(
+        w[0]["thread_ids"],
+        json!([handed_off]),
+        "kept while work runs"
+    );
+
+    let res = ts.post_json(&path, json!({"background_work": false})).await;
+    assert_eq!(res.json::<Value>().await.unwrap()["cleared"], 1);
+    assert!(
+        working_threads(&ts, &aid).await.is_empty(),
+        "ended with nothing running"
+    );
+    let p: Value = ts
+        .get_authed("/api/inbox?kind=finished&read=all")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(p["items"].as_array().unwrap().len(), 2, "{p}");
+    assert_eq!(
+        p["items"][0]["work"]["threads"][0]["id"],
+        handed_off.as_str()
+    );
+
+    let res = ts.post_json(&path, json!({"background": true})).await;
+    assert_eq!(res.status(), 400);
+}

@@ -1,6 +1,7 @@
 # Working marks across background subagents
 
-Status: design, 2026-11-06; revised 2026-11-11 to the agent-tracked design.
+Status: design, 2026-11-06; revised 2026-11-11 to the agent-tracked design,
+and 2026-11-27 with the harness's report at the turn end (design 7).
 
 ## Problem
 
@@ -46,6 +47,18 @@ Evidence:
   `"background_tasks":[]`. `background_tasks` also lists the parent's own
   background shells and monitors, among them Clax's own comment follower
   (`clax feedback follow`).
+- Claude Code 2.1.330 (2026-11-27), a hook log of one print-mode run. A
+  background subagent that started a background command and a monitor and
+  then stopped to wait for them was absent from the parent's next `Stop`:
+  `background_tasks` held the shell and the monitor only. It ran again
+  when they finished (`SubagentStart` once more), and the last `Stop` had
+  `background_tasks: []`. So any running entry may be a hand-off's work,
+  and the lack of a `subagent` entry does not say the subagent finished.
+- Antigravity 1.5.18 (2026-11-27), a hook log of one print-mode run. The
+  root's `Stop` had `fullyIdle: false` while a subagent it had started
+  with `invoke_subagent` ran, and `true` at the turn the subagent's result
+  woke. The subagent's own hooks fire under its own `conversationId`, with
+  no field naming the root.
 - Grok Build: `stop_gate.rs:153-226` builds `backgroundTasks` from
   outstanding tasks and active subagents, each subagent as
   `{"type":"subagent","status":"running"}`; `SubagentStart` fires in the
@@ -105,21 +118,46 @@ Evidence:
    parent's `session_id`); in Grok Build and Pi's subagent packages,
    subagents are sessions of their own and nothing renews it until the
    owner acts again, so the longer lapse is what keeps it.
-5. **Every harness the same way.** No hook reads the harness's
-   background-task list; the change is the daemon, the `working` tool
-   (Rust MCP server and Pi extension) and the skills.
+5. **The owner names the threads in every harness.** No hook decides
+   which threads are background; that is the daemon, the `working` tool
+   (Rust MCP server and Pi extension) and the skills. The `stop` hook only
+   passes on whether work is still running (7).
 6. **Codex: the owner waits.** Codex does not wake the parent when a child
    finishes (only its under-development `wake_on_agent_messages`
    feature does), so the skill tells a Codex owner to wait for its
    subagents (`wait_agent`, present in multi-agent v1 and, by default, v2)
    before ending a turn that has a thread in progress.
 
+7. **The harness says whether work is still running.** Where the turn-end
+   hook's input says so, the `stop` hook passes it on as `background_work`
+   (`POST …/working/end`): Claude Code's `background_tasks` (any running
+   entry but Clax's own listeners, `clax feedback follow` and `clax queue
+   … follow`) and Antigravity's `fullyIdle`. `false` ends the background
+   threads with the turn (`End::TurnEndIdle`), as finished work. `true`
+   keeps them and renews them, and from then they lapse 3600 s after a
+   renewal (`REPORTED_BACKGROUND_TTL_SECS`), not 600 s. A harness that
+   does not say (Codex, Grok Build, Pi) is as before.
+8. **The page says so.** A thread among a record's `background_thread_ids`
+   reads "<agent> is working on it in the background". The record that
+   carries background threads on keeps the time their work began as its
+   `started_at` (`Record::since`), so the clock beside it does not restart
+   at a turn end.
+
 ## Not done
 
-- Ending at the turn end only when the harness lists no running subagent
-  (Claude Code's `background_tasks`, Grok Build's `backgroundTasks`):
-  session-wide, so it keeps threads the agent already answered, and does
-  nothing for Codex or Pi.
+- Telling which hand-off a finished subagent was for, when several are
+  running: the harness's report names no thread, so every background
+  thread stays until the owner replies or nothing is left running.
+- Leaving out background work that is not a hand-off's. Under Claude Code
+  a long-running command of the session (a dev server) counts as work
+  running, so it keeps a hand-off its owner never answers marked; under
+  Antigravity so does Clax's own open `wait_for_feedback`.
+- Grok Build's `backgroundTasks` and the Pi subagent packages' finish
+  events as the same report: not read yet.
+
+- Deciding which threads to keep from the harness's list alone (Claude
+  Code's `background_tasks`, Grok Build's `backgroundTasks`): session-wide,
+  so it keeps threads the agent already answered.
 - Per-subagent working records, keyed by harness agent IDs: needs a
   different record key and agent cooperation to name each subagent's
   threads; one owner record flagging threads is what the person needs.

@@ -1,8 +1,9 @@
 //! The working signal (spec §10 "Working"): which harness session is acting
 //! on which artifact, and on which of its threads, now. Records live in
 //! memory only. Each lapses [`WORKING_TTL_SECS`] after its last renewal
-//! ([`BACKGROUND_TTL_SECS`] while it names background threads), so a daemon
-//! restart starts with none and never shows stale work.
+//! ([`BACKGROUND_TTL_SECS`] while it names background threads,
+//! [`REPORTED_BACKGROUND_TTL_SECS`] once its harness reports them running),
+//! so a daemon restart starts with none and never shows stale work.
 //!
 //! A thread the agent hands to work that goes on after its turn (subagents
 //! running in the background) is flagged background. A turn end or a
@@ -11,7 +12,9 @@
 //! threads go on in a fresh record; a later call naming other threads
 //! replaces only the threads that are not background. A background thread
 //! ends when the agent replies to or resolves it, clears it, when it is
-//! resolved or deleted, when the session ends, or when the record lapses.
+//! resolved or deleted, at a turn end at which the harness reports nothing
+//! running in the background, when the session ends, or when the record
+//! lapses.
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::Serialize;
@@ -24,6 +27,10 @@ pub const WORKING_TTL_SECS: i64 = 120;
 /// lapses: work in the background may renew it only through its own tool
 /// calls, or not at all where the harness runs it as another session.
 pub const BACKGROUND_TTL_SECS: i64 = 600;
+/// Seconds after its last renewal that such a record lapses once its
+/// harness has said, at a turn end, that work is still running in the
+/// background ([`Working::turn_end`]).
+pub const REPORTED_BACKGROUND_TTL_SECS: i64 = 3600;
 /// Longest message, in characters, after [`clean_message`].
 pub const MAX_MESSAGE_CHARS: usize = 140;
 /// Most threads one record names.
@@ -226,6 +233,9 @@ impl Changed {
 pub enum End {
     Done,
     TurnEnd,
+    /// A turn end at which the harness reports nothing running in the
+    /// background: background threads end with the rest.
+    TurnEndIdle,
     Publish,
     Thread,
     Lapse,
@@ -234,7 +244,7 @@ pub enum End {
 
 impl End {
     fn finishes(self) -> bool {
-        matches!(self, End::Done | End::TurnEnd)
+        matches!(self, End::Done | End::TurnEnd | End::TurnEndIdle)
     }
 
     fn spares_background(self) -> bool {
@@ -247,7 +257,9 @@ impl End {
         match self {
             End::SessionEnd => StopReason::SessionEnd,
             End::Lapse => StopReason::Ttl,
-            End::Done | End::TurnEnd | End::Publish | End::Thread => StopReason::Explicit,
+            End::Done | End::TurnEnd | End::TurnEndIdle | End::Publish | End::Thread => {
+                StopReason::Explicit
+            }
         }
     }
 }
@@ -275,9 +287,15 @@ struct Record {
     /// `message` was given with background threads: it goes on with them
     /// when the rest of the work ends.
     message_background: bool,
+    /// Its harness said at the last turn end that work was still running
+    /// in the background.
+    reported: bool,
     /// The record has named a thread at some point: losing its last one clears it.
     had_threads: bool,
     started_at: DateTime<Utc>,
+    /// When the work it shows began: an earlier record's, for background
+    /// threads carried on from it.
+    since: DateTime<Utc>,
     heartbeat: DateTime<Utc>,
 }
 
@@ -295,7 +313,7 @@ impl Record {
             message: self.message.clone(),
             thread_ids: self.threads.clone(),
             background_thread_ids: self.background.clone(),
-            started_at: stamp(self.started_at),
+            started_at: stamp(self.since),
             last_heartbeat: stamp(self.heartbeat),
             session_id: sid.to_string(),
         }
@@ -321,6 +339,8 @@ impl Record {
     fn ttl(&self) -> Duration {
         Duration::seconds(if self.background.is_empty() {
             WORKING_TTL_SECS
+        } else if self.reported {
+            REPORTED_BACKGROUND_TTL_SECS
         } else {
             BACKGROUND_TTL_SECS
         })
@@ -358,8 +378,10 @@ impl Record {
             message,
             threads: self.background.clone(),
             background: std::mem::take(&mut self.background),
+            reported: false,
             had_threads: true,
             started_at: now,
+            since: self.since,
             heartbeat: now,
         })
     }
@@ -445,8 +467,10 @@ impl Working {
                     threads: Vec::new(),
                     background: Vec::new(),
                     message_background: false,
+                    reported: false,
                     had_threads: false,
                     started_at: now,
+                    since: now,
                     heartbeat: now,
                 }
             });
@@ -657,6 +681,9 @@ impl Working {
         }
         let had_background = !r.background.is_empty();
         r.background.retain(|t| !ts.contains(t));
+        if r.background.is_empty() {
+            r.reported = false;
+        }
         if live && had_background && r.background.is_empty() {
             r.heartbeat = now;
         }
@@ -761,15 +788,51 @@ impl Working {
     pub fn end_session(&self, sid: &str, why: End) -> (Changed, Vec<Ended>) {
         let now = self.now();
         let mut map = self.records.lock().unwrap();
+        self.end_session_in(&mut map, sid, why, now)
+    }
+
+    fn end_session_in(
+        &self,
+        map: &mut BTreeMap<Key, Record>,
+        sid: &str,
+        why: End,
+        now: DateTime<Utc>,
+    ) -> (Changed, Vec<Ended>) {
         let keys: Vec<Key> = map.keys().filter(|(s, _)| s == sid).cloned().collect();
         let mut changed = Changed::default();
         let mut ended = Vec::new();
         for key in keys {
-            let (c, e) = self.end_record(&mut map, &key, why, why.stop_reason(), now);
+            let (c, e) = self.end_record(map, &key, why, why.stop_reason(), now);
             changed.merge(c);
             ended.extend(e);
         }
         (changed, ended)
+    }
+
+    /// The end of `sid`'s turn, as [`Working::end_session`]. `background_work`
+    /// is what its harness says of work still running in the background:
+    /// `Some(false)` ends the background threads too ([`End::TurnEndIdle`]);
+    /// `Some(true)` keeps them and renews them, to lapse
+    /// [`REPORTED_BACKGROUND_TTL_SECS`] after a renewal from now on; `None`
+    /// (it cannot say) is [`End::TurnEnd`].
+    pub fn turn_end(&self, sid: &str, background_work: Option<bool>) -> (Changed, Vec<Ended>) {
+        let why = if background_work == Some(false) {
+            End::TurnEndIdle
+        } else {
+            End::TurnEnd
+        };
+        let now = self.now();
+        let mut map = self.records.lock().unwrap();
+        let out = self.end_session_in(&mut map, sid, why, now);
+        if background_work == Some(true) {
+            for ((s, _), r) in map.iter_mut() {
+                if s == sid && !r.background.is_empty() {
+                    r.reported = true;
+                    r.heartbeat = now;
+                }
+            }
+        }
+        out
     }
 
     /// Every record on `aid`, ended for [`StopReason::Deleted`].
@@ -814,7 +877,7 @@ impl Working {
         let mut v: Vec<_> = map
             .iter()
             .filter(|((_, a), r)| a == aid && self.live(r, now))
-            .map(|((s, _), r)| (r.started_at, r.view(s)))
+            .map(|((s, _), r)| (r.since, r.view(s)))
             .collect();
         v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.key.cmp(&a.1.key)));
         v.into_iter().map(|(_, x)| x).collect()
@@ -861,7 +924,7 @@ impl Working {
         let mut v: Vec<_> = map
             .iter()
             .filter(|(_, r)| self.live(r, now))
-            .map(|((s, a), r)| (r.started_at, Self::session_view(s, a, r)))
+            .map(|((s, a), r)| (r.since, Self::session_view(s, a, r)))
             .collect();
         v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.view.key.cmp(&a.1.view.key)));
         v.into_iter().map(|(_, x)| x).collect()
@@ -1596,5 +1659,86 @@ mod tests {
         w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
         let v = serde_json::to_value(&w.for_artifact("a1")[0]).unwrap();
         assert_eq!(v["background_thread_ids"], serde_json::json!(["t1"]));
+    }
+
+    #[test]
+    fn a_turn_end_with_nothing_running_ends_the_background_threads_too() {
+        let (_c, w) = fixture();
+        w.mark(&claude("s1"), "a1", &ids(&["t2"]));
+        w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
+        let (changed, ended) = w.turn_end("s1", Some(false));
+        assert_eq!(stops(&changed), [(StopReason::Explicit, 0)]);
+        assert!(started_keys(&changed).is_empty());
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0].thread_ids, ids(&["t2", "t1"]));
+        assert!(w.for_artifact("a1").is_empty());
+    }
+
+    #[test]
+    fn a_turn_end_with_work_running_keeps_the_background_threads_for_the_long_lapse() {
+        let (c, w) = fixture();
+        w.mark(&claude("s1"), "a1", &ids(&["t2"]));
+        w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
+        c.advance(30);
+        let (_, ended) = w.turn_end("s1", Some(true));
+        assert_eq!(ended[0].thread_ids, ids(&["t2"]));
+        let s = w.for_session("s1");
+        assert_eq!(s[0].view.thread_ids, ids(&["t1"]));
+        assert_eq!(
+            s[0].expires_at,
+            stamp(c.now() + Duration::seconds(REPORTED_BACKGROUND_TTL_SECS))
+        );
+        c.advance(BACKGROUND_TTL_SECS + 1);
+        assert_eq!(w.for_artifact("a1").len(), 1, "past the unreported lapse");
+        // A record with nothing but background work is renewed by the report.
+        let (changed, _) = w.turn_end("s1", Some(true));
+        assert!(changed.is_empty());
+        c.advance(REPORTED_BACKGROUND_TTL_SECS - 1);
+        assert_eq!(w.for_artifact("a1").len(), 1);
+        c.advance(1);
+        assert!(w.for_artifact("a1").is_empty());
+    }
+
+    #[test]
+    fn a_harness_that_cannot_say_leaves_the_background_threads_on_the_shorter_lapse() {
+        let (c, w) = fixture();
+        w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
+        let (changed, _) = w.turn_end("s1", None);
+        assert!(changed.is_empty());
+        c.advance(BACKGROUND_TTL_SECS);
+        assert!(w.for_artifact("a1").is_empty());
+    }
+
+    #[test]
+    fn a_report_does_not_outlast_the_background_threads_it_was_of() {
+        let (c, w) = fixture();
+        w.mark(&claude("s1"), "a1", &ids(&["t2"]));
+        w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
+        w.turn_end("s1", Some(true));
+        w.mark(&claude("s1"), "a1", &ids(&["t3"]));
+        w.thread_done("s1", "a1", "t1", StopReason::Explicit);
+        w.set(&claude("s1"), "a1", background(&["t4"])).unwrap();
+        let s = w.for_session("s1");
+        assert_eq!(
+            s[0].expires_at,
+            stamp(c.now() + Duration::seconds(BACKGROUND_TTL_SECS))
+        );
+    }
+
+    #[test]
+    fn background_threads_carried_on_keep_the_time_their_work_began() {
+        let (c, w) = fixture();
+        w.mark(&claude("s1"), "a1", &ids(&["t2"]));
+        w.set(&claude("s1"), "a1", background(&["t1"])).unwrap();
+        let began = w.for_artifact("a1")[0].started_at.clone();
+        c.advance(90);
+        let (changed, _) = w.turn_end("s1", Some(true));
+        assert_eq!(stops(&changed), [(StopReason::Explicit, 90_000)]);
+        let v = w.for_artifact("a1");
+        assert_eq!(v[0].started_at, began);
+        // The record they go on in is timed from its own start.
+        c.advance(10);
+        let (changed, _) = w.clear("s1", "a1", None, End::Done);
+        assert_eq!(stops(&changed), [(StopReason::Explicit, 10_000)]);
     }
 }

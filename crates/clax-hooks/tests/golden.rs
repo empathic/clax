@@ -764,6 +764,45 @@ fn codex_working_through_a_turn() {
 }
 
 #[test]
+fn a_claude_turn_end_keeps_a_handed_off_thread_while_background_work_runs() {
+    let d = Daemon::start();
+    let (sid, aid) = d.session_with_artifact("claude", "cc-handoff");
+    let mut stop_in: Value = serde_json::from_slice(&fixture("claude-stop.json")).unwrap();
+    stop_in["session_id"] = "cc-handoff".into();
+    said_unwoken(&d, "claude", stop_in.to_string().as_bytes());
+    d.sent_thread(&aid, "two columns");
+    let r = hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes());
+    assert_eq!(one_line_json(&r.stdout)["decision"], "block");
+    let tid = d.working(&aid)[0]["thread_ids"][0].clone();
+    let res = d
+        .http()
+        .put(format!("{}/api/sessions/{sid}/working/{aid}", d.base()))
+        .bearer_auth(d.token())
+        .json(&serde_json::json!({"thread_ids": [tid], "background": true}))
+        .send()
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    stop_in["stop_hook_active"] = true.into();
+    stop_in["background_tasks"] = serde_json::json!([
+        {"id": "a1", "type": "subagent", "status": "running", "agent_type": "general-purpose"}
+    ]);
+    let r = hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes());
+    assert_eq!(r.stdout, "");
+    assert_eq!(
+        d.working(&aid)[0]["background_thread_ids"],
+        serde_json::json!([tid]),
+        "kept while the subagent runs"
+    );
+    stop_in["background_tasks"] = serde_json::json!([]);
+    let r = hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes());
+    assert_eq!(r.stdout, "");
+    assert!(
+        d.working(&aid).is_empty(),
+        "ended at the turn end with nothing running in the background"
+    );
+}
+
+#[test]
 fn a_batch_blocks_the_stop_once_with_every_thread() {
     let d = Daemon::start();
     let (_sid, aid) = d.session_with_artifact("claude", "cc-batch");

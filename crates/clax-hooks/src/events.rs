@@ -482,8 +482,13 @@ pub fn stop_with(
             {
                 return Ok(HookOutput::block(&reason));
             }
-            // The turn really ends: its working records end with it.
-            daemon.post(&format!("/api/sessions/{sid}/working/end"), &json!({}))?;
+            // The turn really ends: its working records end with it, but
+            // for threads handed to work the harness says is still running.
+            let body = match input.background_work(harness) {
+                Some(running) => json!({"background_work": running}),
+                None => json!({}),
+            };
+            daemon.post(&format!("/api/sessions/{sid}/working/end"), &body)?;
             Ok(HookOutput::none())
         }
     }

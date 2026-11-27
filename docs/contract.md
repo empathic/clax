@@ -2015,7 +2015,10 @@ hook that gives up, or finds no daemon, exits 0 with no output. The `stop` and
 do nothing when there is none.
 
 The hooks also keep working records current: the `stop` hook, when it allows
-the stop, ends the turn (`POST /api/sessions/<id>/working/end`), and the
+the stop, ends the turn (`POST /api/sessions/<id>/working/end`, with
+`background_work` when the harness's Stop input says whether work is still
+running in the background: Claude Code's `background_tasks`, any running
+entry but Clax's own listeners; Antigravity's `fullyIdle`), and the
 `PostToolUse` hook renews them (`POST /api/sessions/<id>/working/renew`) at
 most once a minute per session. The hook command is `scripts/tool-hook.sh`,
 a POSIX shell gate. It reads the hook input, takes the `session_id`, and
@@ -5106,7 +5109,8 @@ revoked on People, whichever comes first.
 
 `working` tells the person you are acting on an artifact. The top bar
 shows `<agent> working on N` (or `<agent>: <message>`), its gallery card a
-chip, and each thread named in `thread_ids` `<agent> is working on it`,
+chip, and each thread named in `thread_ids` `<agent> is working on it`
+(`… in the background` for a background thread),
 where `<agent>` is your agent name (your harness, such as `claude`, when
 you have none), followed by the first four hex digits of your agent handle
 when another agent taking part in the artifact shows the same
@@ -5140,11 +5144,16 @@ end a `finished` item for that work), and the background threads go on
 in a fresh record (a new `key`, `working.start`). A record with nothing
 but background work is left as it is. A publish addresses only the other
 threads unasked, so the publish that carries a background thread's
-change names it in `addresses`. A record naming background threads
-lapses 600 s after its last renewal (and 120 s after the moment it loses
-the last of them), so work that renews it rarely, or not at all where the
-harness runs subagents as sessions of their own (Grok Build, Pi's
-subagent packages), stays marked. Renewal is automatic:
+change names it in `addresses`. Where the harness reports at the end of
+a turn whether work is still running in the background (Claude Code,
+Antigravity), a turn end with nothing running ends the background threads
+too, as finished work, and one with work running keeps them, to lapse
+3600 s after a renewal. Elsewhere a record naming background threads
+lapses 600 s after its last renewal, so work that renews it rarely, or
+not at all where the harness runs subagents as sessions of their own
+(Grok Build, Pi's subagent packages), stays marked. A record lapses 120 s
+after the moment it loses the last of its background threads. Renewal is
+automatic:
 
 | Harness | Renewed by | Not automatic |
 |---|---|---|
@@ -5564,7 +5573,8 @@ An open thread a working record names shows "<agent> is working on it"
 (the agent's name, or its harness when it has none, such as "clax-claude
 is working on it", with the first four hex digits of its handle when two
 agents show the same) instead of its
-waiting indicator. A new version puts nothing over the page:
+waiting indicator; a thread among the record's `background_thread_ids`
+shows "<agent> is working on it in the background". A new version puts nothing over the page:
 the version button gets a dot, the top bar's summary reads "v5 addressed 3",
 the sidebar's "Addressed in v5" group lists the threads it addressed that
 the viewer is in, with your reply shown as "<agent> · addressed in v5", and
@@ -10008,7 +10018,7 @@ the body below.
 | `watch.start`, `watch.stop` | `target (artifact\|page\|scope), replies_armed, source (direct\|scope), origin?, path?` (start: `cause? (scope\|move), move_id?`) | a new watch, a removal |
 | `watch.update` | `target, origin?, path?, fields{replies_armed?, source?}, cause?` | a change of a watch's arming, or a scope-made watch becoming direct |
 | `working.start` | `key, message, thread_ids[]` | a working record starting, among them the record a turn end or a publish moves background threads to |
-| `working.stop` | `key, reason (explicit\|ttl\|session_end\|resolved\|deleted), duration_ms` | its end (a TTL lapse as `system:ttl`, timed to last heartbeat + 120 s, or + 600 s for a record naming background threads) |
+| `working.stop` | `key, reason (explicit\|ttl\|session_end\|resolved\|deleted), duration_ms` | its end (a TTL lapse as `system:ttl`, timed to last heartbeat + 120 s, or for a record naming background threads + 600 s, + 3600 s once its harness reported work running) |
 | `question.ask` | `source (ask\|hook), tool_use_id, questions` | a new question |
 | `question.answer` | `answers, answered_via` | an answer (the owner) |
 | `question.decline` | none | a decline (the owner) |

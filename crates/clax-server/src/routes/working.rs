@@ -301,26 +301,38 @@ pub async fn renew(
     Ok(Json(json!({"renewed": n})))
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct EndBody {
+    #[serde(default)]
+    background_work: Option<bool>,
+}
+
 /// `POST /api/sessions/<sid>/working/end` (W; the turn ended): `{cleared}`,
 /// how many records it ended. Each record it ends is finished work: a
 /// `finished` inbox item, and records `working.stop` (reason `explicit`)
 /// as the session's agent. A record with background threads ends with its
 /// other threads and message, and its background threads go on in a fresh
 /// record (`working.start`); one with nothing but background work is kept
-/// and not counted.
+/// and not counted. `background_work` (optional) is what the harness says
+/// of work still running in the background: `false` ends the background
+/// threads too, `true` keeps them on the longer lapse
+/// ([`clax_core::working::Working::turn_end`]).
 pub async fn end(
     State(s): State<AppState>,
     _a: TokenOrAgent<clax_http::agent::WorkingEnd>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
+    req: Result<Json<EndBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(p)?;
+    let b = body(req)?;
     let (w, events) = (s.working.clone(), s.events.clone());
     let n = s
         .store_call(move |st| {
             let sess = live(st, &sid)?;
             let audit = audit.for_session(st, &sid)?;
-            let (changed, ended) = w.end_session(&sid, End::TurnEnd);
+            let (changed, ended) = w.turn_end(&sid, b.background_work);
             settle(st, &audit, &events, &w, &changed);
             finished(st, &ended, &sess.harness);
             Ok(changed.artifacts.len())

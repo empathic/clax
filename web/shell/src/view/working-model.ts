@@ -4,7 +4,7 @@
 import type { Participants } from "../api";
 import { shownName } from "./agent-display";
 
-export type Working = { key: string; agent: string; harness: string; name?: string | null; message: string | null; thread_ids: string[]; started_at: string; last_heartbeat: string };
+export type Working = { key: string; agent: string; harness: string; name?: string | null; message: string | null; thread_ids: string[]; background_thread_ids?: string[]; started_at: string; last_heartbeat: string };
 export type AgentView = Participants["agents"][number];
 export type SummaryInput = { working: Working[]; names: Map<string, string>; mine: Set<string>; open: number; idle: string[]; addressed: string | null; published: number | null; rally: boolean; now: Date; live?: boolean };
 export type Summary = { line1: string; agent: boolean; line2: string; elapsed: string | null };
@@ -65,7 +65,9 @@ export function summary(i: SummaryInput): Summary {
 
 export function threadMarker(list: Working[], threadId: string, names: Map<string, string>): { text: string; since: string } | null {
   const w = newestFirst(list).find(x => x.thread_ids.includes(threadId));
-  return w ? { text: `${names.get(w.agent) ?? harnessName(w.harness)} is working on it`, since: w.started_at } : null;
+  if (!w) return null;
+  const where = w.background_thread_ids?.includes(threadId) ? " in the background" : "";
+  return { text: `${names.get(w.agent) ?? harnessName(w.harness)} is working on it${where}`, since: w.started_at };
 }
 
 export function threadAgent(list: Working[], threadId: string, names: Map<string, string>): string | null {
