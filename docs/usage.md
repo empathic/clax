@@ -90,9 +90,8 @@ For Antigravity, `clax init` installs the clax-antigravity plugin (`agy
 plugin install <dir>`) whenever `agy` is on your `PATH`; `clax uninit`
 uninstalls it. Antigravity asks before every MCP tool call, so `clax init`
 offers to add the rule `mcp(clax-antigravity_clax/*)` to
-`~/.gemini/antigravity-cli/settings.json` (`--yes` for scripts). The rule
-approves every Clax tool, `delete` included, and `clax uninit` leaves it in
-place. `plugins/clax-antigravity/README.md` has the details.
+`~/.gemini/antigravity-cli/settings.json` (`--yes` for scripts). `clax
+uninit` leaves it in place. `plugins/clax-antigravity/README.md` has the details.
 
 `just uninstall` reverses it: `clax uninit` removes the registrations (and
 `~/.clax/marketplace/` once no harness refers to it) and the `bin` setting

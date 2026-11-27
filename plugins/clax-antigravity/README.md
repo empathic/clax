@@ -109,7 +109,7 @@ never fails a turn.
 
 Antigravity asks before every MCP tool call. One rule in
 `~/.gemini/antigravity-cli/settings.json` approves every Clax tool,
-`delete` included:
+including `delete`, which removes a page and all its versions:
 
 ```json
 {"permissions": {"allow": ["mcp(clax-antigravity_clax/*)"]}}

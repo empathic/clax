@@ -1029,7 +1029,7 @@ fn confirm_rule(path: &Path) -> bool {
     let mut err = std::io::stderr();
     let _ = write!(
         err,
-        "\nAntigravity asks before each Clax tool call. Add this rule to {} so it stops asking?\n\n  \"{PERMISSION_RULE}\"\n\nIt covers every Clax tool, including `delete`. [y/N] ",
+        "\nAntigravity asks before each Clax tool call. Add this rule to {} so it stops asking?\n\n  \"{PERMISSION_RULE}\"\n\n[y/N] ",
         path.display()
     );
     let _ = err.flush();
