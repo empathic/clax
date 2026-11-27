@@ -564,4 +564,11 @@ async fn a_turn_end_follows_what_the_harness_says_of_background_work() {
 
     let res = ts.post_json(&path, json!({"background": true})).await;
     assert_eq!(res.status(), 400);
+    // No body: a harness that does not say.
+    let res = ts
+        .authed(ts.client.post(format!("{}{path}", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
 }

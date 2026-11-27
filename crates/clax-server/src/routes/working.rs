@@ -323,10 +323,10 @@ pub async fn end(
     _a: TokenOrAgent<clax_http::agent::WorkingEnd>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
-    req: Result<Json<EndBody>, JsonRejection>,
+    req: Result<Option<Json<EndBody>>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(p)?;
-    let b = body(req)?;
+    let b = body(req.map(Option::unwrap_or_default))?;
     let (w, events) = (s.working.clone(), s.events.clone());
     let n = s
         .store_call(move |st| {
