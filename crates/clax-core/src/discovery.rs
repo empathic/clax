@@ -38,6 +38,17 @@ pub struct Discovery {
     /// What it offers beyond the core.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// The paths of its setup instructions for agents, when it has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<SetupPaths>,
+}
+
+/// The paths of a Clax's setup instructions for agents.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupPaths {
+    /// Setting up an app's in-app bug reports (`GET /setup/feedback`, Markdown).
+    #[serde(default)]
+    pub feedback: String,
 }
 
 /// The paths of a device sign-in.

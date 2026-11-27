@@ -1747,6 +1747,8 @@ pub const OWN_PAGES: &[&str] = &[
     "/.well-known/assetlinks.json",
     // What this Clax is (`GET /.well-known/clax`), for any caller.
     "/.well-known/clax",
+    // How an agent sets up an app's bug reports here, for any caller.
+    "/setup/feedback",
 ];
 
 /// The landing page's directory: the quickstart release the build carries
@@ -2158,6 +2160,7 @@ mod tests {
         for p in [
             "/api/hosted/me",
             "/setup",
+            "/setup/feedback",
             "/signin",
             "/signin/abc",
             "/join/abc",

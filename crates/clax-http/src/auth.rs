@@ -286,7 +286,8 @@ pub fn events_cookie_name(host: &str) -> String {
 }
 
 /// Paths a daemon with `require_credential` serves without a credential on
-/// its own host: `/healthz`, `/.well-known/clax` (what this Clax is), the
+/// its own host: `/healthz`, `/.well-known/clax` (what this Clax is),
+/// `/setup/feedback` (how an agent sets up an app's bug reports here), the
 /// shell's static files (`/_clax/...`, code and no data), and the old
 /// addresses of content and assets (`/c/...`, none of which answers, and
 /// `/_blob/...`, which redirect to the asset's site). A site host's requests pass the gate whatever their path: the
@@ -294,6 +295,7 @@ pub fn events_cookie_name(host: &str) -> String {
 pub fn open_without_credential(path: &str) -> bool {
     path == "/healthz"
         || path == "/.well-known/clax"
+        || path == "/setup/feedback"
         || path.starts_with("/_clax/")
         || path.starts_with("/c/")
         || path.starts_with("/_blob/")
@@ -609,7 +611,14 @@ mod tests {
 
     #[test]
     fn only_health_static_files_and_content_are_open_without_a_credential() {
-        for p in ["/healthz", "/_clax/app.js", "/c/abc/v/1/", "/_blob/x"] {
+        for p in [
+            "/healthz",
+            "/.well-known/clax",
+            "/setup/feedback",
+            "/_clax/app.js",
+            "/c/abc/v/1/",
+            "/_blob/x",
+        ] {
             assert!(open_without_credential(p), "{p}");
         }
         for p in [

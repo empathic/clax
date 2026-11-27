@@ -4,7 +4,7 @@
 // and imported, the overlay run from its own bundle, and its declarations
 // read by TypeScript as a consumer's. Run by `pnpm run test:sdk` after the
 // build (//web:sdk_package under Bazel), not by the unit tests.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -84,10 +84,12 @@ describe("the SDK package", () => {
     expect(manifest.keywords).toContain("clax");
     expect(manifest.type).toBe("module");
     expect(manifest.sideEffects).toBe(false);
-    // Its metadata and its entries, and nothing else: no dependency, script or executable.
+    // Its metadata, its entries and its one executable, and nothing else:
+    // no dependency or script.
     expect(Object.keys(manifest).sort()).toEqual([
-      "author", "bugs", "description", "exports", "homepage", "keywords", "license", "name", "publishConfig", "repository", "sideEffects", "type", "types", "typesVersions", "version",
+      "author", "bin", "bugs", "description", "exports", "homepage", "keywords", "license", "name", "publishConfig", "repository", "sideEffects", "type", "types", "typesVersions", "version",
     ]);
+    expect(manifest.bin).toEqual({ "clax-client-sdk": "cli.js" });
     expect(Object.keys(manifest.exports).sort()).toEqual([".", "./overlay", "./package.json", "./service"]);
     expect(manifest.types).toBe("./types/sdk/src/index.d.ts");
     expect(manifest.typesVersions).toEqual({ "*": { overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"] } });
@@ -114,6 +116,20 @@ describe("the SDK package", () => {
     const text = readFileSync(join(web, "sdk", "package.json"), "utf8").split("\n");
     expect(text).toContain(`  "name": "${source.name}",`);
     expect(text).toContain(`  "version": "${source.version}",`);
+  });
+
+  it("runs its executable in Node, importing nothing but Node's own", () => {
+    const cli = join(pkg, "cli.js");
+    const text = readFileSync(cli, "utf8");
+    expect(text.startsWith("#!/usr/bin/env node\n")).toBe(true);
+    for (const m of text.matchAll(/\bfrom\s+["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']/g)) expect(m[1] ?? m[2]).toMatch(/^node:/);
+    // Its usage, with no network: --help exits 0, a missing option 2.
+    const help = spawnSync(process.execPath, [cli, "setup", "--help"], { cwd: app, encoding: "utf8" });
+    expect(help.status, help.stderr).toBe(0);
+    expect(help.stderr).toContain("npx @empathic/clax-client-sdk setup --instance <origin>");
+    const bad = spawnSync(process.execPath, [cli, "setup", "--instance", "https://clax.example"], { cwd: app, encoding: "utf8" });
+    expect(bad.status).toBe(2);
+    expect(bad.stderr).toContain("--name is required");
   });
 
   it("carries its README", () => {

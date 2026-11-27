@@ -1180,7 +1180,17 @@ the same routes):
   hosted Clax that has one. A hosted Clax adds `"device"` to `sign_in` and
   `device: {code: "/api/hosted/device/code", approve: "/device", token:
   "/api/hosted/device/token"}`, the paths of this sign-in; a local daemon
-  offers neither.
+  offers neither. Every Clax adds `setup: {feedback: "/setup/feedback"}`,
+  the paths of its setup instructions for agents (below); a reader of an
+  older Clax's answer finds no `setup`, and an older reader ignores it.
+- `GET /setup/feedback` (any caller, no credential; a local daemon's
+  credential gate and a hosted one's both let it through) → 200
+  `text/markdown; charset=utf-8`, `Cache-Control: no-cache`: how a coding
+  agent sets up an app's in-app bug reports on this Clax, from finding the
+  app's origins to registering `/mcp` for a fixer, with this Clax's
+  `origin`, `kind` and `name` (as `/.well-known/clax` gives them) filled
+  in. The text is `docs/setup-feedback.md`; it holds no credential. The
+  Worker serves it as the daemon does (the instance's router answers it).
 - `DELETE /api/hosted/agent-token` (an agent token) → 204: revokes the
   calling token itself, as its person would on People.
 - A session registered by an agent token may take the harness `clax`:
@@ -6868,6 +6878,7 @@ router), and a test fails when it differs:
 | `GET /queues/{qid}/{tid}` | Denied | no |
 | `GET /settings` | Denied | no |
 | `GET /settings/{screen}` | Denied | no |
+| `GET /setup/feedback` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
 | `GET /tags` | Denied | no |
 <!-- route-table:end -->
@@ -11695,7 +11706,7 @@ was made; and a run's end, sent until it is acknowledged.
   carries no credential (the token, an owner browser session, an agent
   credential of another machine or its signed request, the extension's
   credential, or a `clax_viewer` cookie naming a viewer the daemon minted)
-  reaches only: `/healthz`, `/.well-known/clax`, the web UI's static files
+  reaches only: `/healthz`, `/.well-known/clax`, `/setup/feedback`, the web UI's static files
   (`/_clax/...`), content addressed by artifact ID (`/c/...`, `/_blob/...`,
   artifact sites, whose access decides each request), the login route
   (`GET /login`), and the invite and connect flows (`/connect/...`,

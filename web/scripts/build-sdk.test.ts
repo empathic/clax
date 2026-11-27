@@ -116,8 +116,10 @@ describe("packageJson", () => {
     });
     expect(published.exports["."]).toEqual({ types: "./types/sdk/src/index.d.ts", default: "./index.js" });
     expect(Object.keys(MANIFEST).filter(k => !MANIFEST_FIELDS.includes(k))).toEqual([]);
-    expect(Object.keys(published).sort()).toEqual([...Object.keys(MANIFEST).filter(k => k !== "private"), "sideEffects", "exports", "types", "typesVersions"].sort());
+    expect(Object.keys(published).sort()).toEqual([...Object.keys(MANIFEST).filter(k => k !== "private"), "sideEffects", "exports", "types", "typesVersions", "bin"].sort());
     expect(published.sideEffects).toBe(false);
+    // Its one executable, which the build derives: `npx @empathic/clax-client-sdk setup`.
+    expect(published.bin).toEqual({ "clax-client-sdk": "cli.js" });
   });
 
   it("refuses a manifest that sets a field outside MANIFEST_FIELDS, or is not private", () => {

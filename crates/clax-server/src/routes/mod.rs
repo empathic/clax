@@ -62,6 +62,7 @@ pub mod sample;
 pub mod sessions;
 pub mod setting_change;
 pub mod settings;
+pub mod setup;
 pub mod site;
 pub mod site_api;
 pub mod site_signin;

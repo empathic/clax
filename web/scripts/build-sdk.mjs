@@ -9,6 +9,11 @@
 //                                     /_clax/overlay.js
 //   "./service"  sdk/src/service.ts   the service client, for a backend
 //
+// and its one executable, `clax-client-sdk` (cli.js, from sdk/src/cli.ts):
+// `npx @empathic/clax-client-sdk setup`, which asks a person for a report
+// queue and writes its service grant to an env file (sdk/src/setup.ts),
+// one ES module for Node 20 with no import but Node's own.
+//
 // Each entry is an ES module; code two entries share is one chunk under
 // chunks/, so a class such as ClaxError is the same in every entry. The
 // service entry, which a backend loads and which needs no DOM, is also one
@@ -78,6 +83,9 @@ export const ENTRIES = [
   { path: "./service", name: "service", src: "sdk/src/service.ts", cjs: true },
 ];
 
+/** The package's executable: its name, the file it builds to, the source. */
+export const BIN = { name: "clax-client-sdk", file: "cli.js", src: "sdk/src/cli.ts" };
+
 const ts = createRequire(join(web, "package.json"))("typescript");
 const types = src => `types/${src.replace(/\.ts$/, ".d.ts")}`;
 /** A declaration's CommonJS twin: `a.d.ts` as `a.d.cts`. */
@@ -94,7 +102,8 @@ function conditions(e) {
 /** The fields web/sdk/package.json may set, each published as written
  * (but `private`): a manifest that sets any other is refused, so a field
  * the build derives, a dependency (the package bundles them), a lifecycle
- * script or an executable never reaches the published package unseen. */
+ * script or an executable other than `BIN` never reaches the published
+ * package unseen. */
 export const MANIFEST_FIELDS = ["name", "version", "private", "description", "keywords", "license", "author", "contributors", "homepage", "bugs", "repository", "funding", "publishConfig", "type"];
 
 /** The published package.json: `manifest` without `private`, and its
@@ -119,6 +128,8 @@ export function packageJson(manifest = MANIFEST) {
     // the main entry's declarations, and each subpath's.
     types: `./${types(ENTRIES.find(e => e.path === ".").src)}`,
     typesVersions: { "*": Object.fromEntries(ENTRIES.filter(e => e.path !== ".").map(e => [e.path.slice(2), [`./${types(e.src)}`]])) },
+    // `npx @empathic/clax-client-sdk setup` (npm's normal form of the path).
+    bin: { [BIN.name]: BIN.file },
   };
 }
 
@@ -331,4 +342,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     },
   });
   if (watch) cjs.on("event", e => { if (e.code === "ERROR") console.error(e.error); });
+  // The executable: one ES module for Node, whose `node:` imports stay
+  // Node's, under a `#!` line; the license guard holds for it too.
+  const bin = await build({
+    configFile: false, logLevel: watch ? "info" : "warn", publicDir: false, root: web,
+    plugins: [{ name: "clax-sdk-bin-licensed", apply: "build", generateBundle(_, bundle) { thirdPartyNotices(Object.values(bundle).flatMap(c => (c.type === "chunk" ? Object.keys(c.modules) : []))); } }],
+    build: {
+      outDir: out, emptyOutDir: false, minify: false, sourcemap: false, copyPublicDir: false,
+      target: "node20",
+      lib: { entry: { cli: join(web, BIN.src) }, formats: ["es"], fileName: () => BIN.file },
+      rollupOptions: { external: [/^node:/], output: { banner: "#!/usr/bin/env node" } },
+      watch: watch ? {} : null,
+    },
+  });
+  if (watch) bin.on("event", e => { if (e.code === "ERROR") console.error(e.error); });
 }

@@ -11,6 +11,14 @@ filegroup(
     ],
 )
 
+# The setup page for agents that GET /setup/feedback serves, which
+# crates/clax-server includes (src/routes/setup.rs).
+filegroup(
+    name = "setup_feedback",
+    srcs = ["setup-feedback.md"],
+    visibility = ["//crates/clax-server:__pkg__"],
+)
+
 # The ClaxBot surfaces design's example surface files of a host's, which
 # crates/clax-surface's tests read (src/tests/mod.rs), crates/clax-cli's
 # check and convert (tests/bot_surface.rs) and crates/clax-bot's render a
