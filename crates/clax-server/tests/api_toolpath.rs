@@ -1609,7 +1609,7 @@ async fn failed_publish_records_nothing() {
         ),
         (
             "/api/artifacts".to_string(),
-            json!({"title": "", "files": {"index.html": utf8("<p>")}}),
+            json!({"title": "t".repeat(201), "files": {"index.html": utf8("<p>")}}),
             400,
         ),
         (

@@ -198,6 +198,7 @@ pub async fn events(
                 | Event::JobsOwner { .. }
                 | Event::Report { .. }
                 | Event::Tags { .. }
+                | Event::ArtifactMeta { .. }
                 | Event::Comments { .. }
                 | Event::FeedbackState { .. }
                 | Event::SiteAccess { .. }

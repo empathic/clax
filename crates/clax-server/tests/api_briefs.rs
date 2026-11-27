@@ -110,11 +110,10 @@ async fn the_owner_starts_an_artifact_from_a_brief_that_waits_for_an_agent() {
 }
 
 #[tokio::test]
-async fn a_title_and_a_brief_are_required_and_bounded() {
+async fn a_brief_is_required_a_title_bounded_when_given() {
     let ts = TestServer::spawn().await;
     let owner = ts.owner_cookie();
     for (body, want) in [
-        (json!({"title": " ", "brief": "x"}), "invalid_title"),
         (json!({"title": "a\nb", "brief": "x"}), "invalid_title"),
         (
             json!({"title": "x".repeat(201), "brief": "x"}),
@@ -136,6 +135,34 @@ async fn a_title_and_a_brief_are_required_and_bounded() {
         json!([]),
         "a refused brief makes nothing"
     );
+}
+
+#[tokio::test]
+async fn a_brief_without_a_title_starts_an_untitled_artifact_its_page_names_later() {
+    let ts = TestServer::spawn().await;
+    let owner = ts.owner_cookie();
+    for body in [
+        json!({"brief": "A chart"}),
+        json!({"title": "  ", "brief": "A chart"}),
+    ] {
+        let (s, v) = call(&ts, Some(&owner), "POST", NEW, body.clone()).await;
+        assert_eq!(s, 201, "{body}: {v}");
+        assert_eq!(v["artifact"]["title"], "Untitled", "{v}");
+        assert_eq!(v["artifact"]["untitled"], true, "{v}");
+    }
+    let (_, list) = json_of(ts.get_authed("/api/artifacts").await).await;
+    let aid = list["artifacts"][0]["id"].as_str().unwrap().to_string();
+    // The agent's first page names it.
+    let res = ts
+        .post_json(
+            &format!("/api/artifacts/{aid}/versions"),
+            json!({"if_version": 1, "files": {"index.html": {"content": "<title>Q3 chart</title>"}}}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let (_, v) = json_of(ts.get_authed(&format!("/api/artifacts/{aid}")).await).await;
+    assert_eq!(v["artifact"]["title"], "Q3 chart");
+    assert_eq!(v["artifact"]["untitled"], true);
 }
 
 #[tokio::test]

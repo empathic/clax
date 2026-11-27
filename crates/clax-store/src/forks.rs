@@ -210,8 +210,9 @@ impl Store {
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at,
                     current_version, pinned, capabilities_json, contract_version, owner_session_id,
-                    person, text_authors_json, forked_from_id, forked_from_version, legacy_paths)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, 0, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    person, text_authors_json, forked_from_id, forked_from_version, legacy_paths,
+                    untitled)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, 0, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     id.as_str(),
                     src.title,
@@ -226,6 +227,7 @@ impl Store {
                     from.as_str(),
                     n,
                     src.legacy_paths,
+                    src.untitled,
                 ],
             )?;
             tx.execute(

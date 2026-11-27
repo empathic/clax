@@ -451,7 +451,7 @@ fn thread_by_text(ts: &TestServer, body: &str) -> String {
 /// `addressed` (refused on an artifact); `comments_resolve` on
 /// the lede thread; `watch` of Launch Plan off, then on; `publish` of
 /// Quarterly Review v3 (`if_version` 2, `addresses`), a stale `if_version`
-/// 1 publish (the conflict), a create without a title (refused), the
+/// 1 publish (the conflict), the
 /// create of Release Notes and its update to v2; `asset_upload`; `pin`, `unpin` and `open`; the `db_*` tools (`db_get`,
 /// `db_query`, `db_set`, `db_update`, a stale `db_update`, `db_str_replace`,
 /// `db_batch`, `db_delete`); `ask` on the answered and the declined
@@ -526,7 +526,6 @@ async fn write_script(
         publish,
         json!({"id": review, "if_version": 1, "html": REVIEW_V3, "note": "Stale"})
     );
-    call!(publish, json!({"html": "<p>No title</p>"}));
     let created = call!(
         publish,
         json!({"html": NOTES_V1, "description": "What changed in v2", "icon": "notes",
@@ -1228,15 +1227,39 @@ fn the_section_19_comparison_allows_an_ask_url_moved_to_its_place_only() {
     assert_eq!(got.other.len(), 4, "{:?}", got.other);
 }
 
+/// The golden's refused create without a title (`publish` of
+/// `<p>No title</p>`), taken out of each tier's writes. The contract no
+/// longer refuses one (docs/contract.md "Title on create": it makes an
+/// untitled artifact), so the script no longer makes it: the golden,
+/// written before, still holds it until it is next regenerated.
+fn drop_untitled_refusal(golden: &mut Value) {
+    let refused = json!({"html": "<p>No title</p>"});
+    match golden {
+        Value::Object(m) => {
+            for (k, v) in m.iter_mut() {
+                if k == "writes"
+                    && let Value::Array(w) = v
+                {
+                    w.retain(|e| !(e["tool"] == "publish" && e["args"] == refused));
+                }
+                drop_untitled_refusal(v);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(drop_untitled_refusal),
+        _ => {}
+    }
+}
+
 /// The golden check (module docs): the outputs now differ from the
 /// committed golden only as §19 lists, item 6's keys with their
 /// single-owner values, exactly [`EXPECTED_MARKS`]'s marks and none on the
 /// owner's attributed comments.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_golden_differs_only_as_section_19_lists() {
-    let committed: Value =
+    let mut committed: Value =
         serde_json::from_str(&std::fs::read_to_string(fixtures_dir().join(GOLDEN)).unwrap())
             .unwrap();
+    drop_untitled_refusal(&mut committed);
     let owner = {
         let ts = TestServer::from_fixture_with_clock(FIXTURE, FIXED_T).await;
         ts.store

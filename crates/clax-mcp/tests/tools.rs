@@ -946,22 +946,24 @@ async fn a_new_artifact_takes_its_title_from_the_page_when_none_is_given() {
 }
 
 #[tokio::test]
-async fn a_new_artifact_without_any_title_is_invalid_args_naming_both_remedies() {
+async fn a_new_artifact_without_any_title_is_published_untitled() {
     let ts = TestServer::spawn().await;
     let t = tools_for(&ts);
-    for page in ["<p>no title", "<title>  </title><p>"] {
-        let e = err(t
+    for (page, shown) in [
+        ("<p>no title", "Untitled"),
+        ("<title>  </title><p>", "Untitled"),
+        ("<title>From the page</title>", "From the page"),
+    ] {
+        let v = ok(t
             .publish(Parameters(PublishArgs {
                 html: Some(page.into()),
                 ..Default::default()
             }))
             .await);
-        assert_eq!(e["error"]["code"], "invalid_args", "{e}");
-        let msg = e["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("`title`") && msg.contains("<title>"), "{msg}");
+        assert_eq!(v["title"], shown, "{v}");
     }
     let list = ok(t.list(Parameters(ListArgs::default())).await);
-    assert!(list["artifacts"].as_array().unwrap().is_empty());
+    assert_eq!(list["artifacts"].as_array().unwrap().len(), 3);
 }
 
 /// Tools over a managed client that registers `registration` with the test

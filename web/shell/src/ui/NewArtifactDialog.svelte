@@ -172,7 +172,7 @@
       </header>
       <p class="lede">Say what you want built. The artifact starts as a placeholder page, and your description becomes its first comment thread{bot ? "" : ", for the agent you pick next"}.</p>
       <form onsubmit={create} novalidate>
-        <label for="na-name">Name</label>
+        <label for="na-name">Name (optional)</label>
         <input id="na-name" type="text" autocomplete="off" maxlength="200" placeholder="Q3 revenue chart" bind:value={title} {@attach focus} />
         <label for="na-brief">Description</label>
         <textarea id="na-brief" rows="6" placeholder="A bar chart of Q3 revenue by region, sorted high to low, with last quarter as a faint ghost bar." bind:value={brief}></textarea>

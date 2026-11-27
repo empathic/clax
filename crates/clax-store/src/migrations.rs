@@ -2621,6 +2621,18 @@ pub const MIGRATIONS: &[&str] = &[
         SELECT id, COALESCE(person, '*owner'), 'admin', created_at FROM queues WHERE true
         ON CONFLICT (queue_id, person) DO UPDATE SET role = 'admin';
     CREATE INDEX queue_members_in_order ON queue_members(queue_id, created_at, person);",
+    // 72: an artifact without a title of its own (`artifacts.untitled`):
+    // 1 when it was made without one or its title was cleared, so its
+    // `title` holds what to show in its place (its current page's
+    // `<title>`, else `Untitled`) and follows its page from version to
+    // version; 0 when `title` is its own, as every artifact made before
+    // this migration has. One `ADD COLUMN` with a constant default, which
+    // changes the schema's text alone, so its transaction writes the same
+    // few pages on the hosted Worker's VFS at any number of rows (see
+    // migration 64).
+    //
+    // `artifacts.untitled` is the migration's mark (`MARKS_AFTER_APP`).
+    "ALTER TABLE artifacts ADD COLUMN untitled INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2722,8 +2734,12 @@ pub const PREVIEW_FIXES_MIGRATION: u32 = ANALYTICS_MIGRATION + 1;
 pub const QUEUE_REQUESTS_MIGRATION: u32 = PREVIEW_FIXES_MIGRATION + 1;
 
 /// The migration that lists each queue's maker among its members and lets
-/// the owner be one, as a schema version, and this build's last.
+/// the owner be one, as a schema version.
 pub const QUEUE_MAKERS_MIGRATION: u32 = QUEUE_REQUESTS_MIGRATION + 1;
+
+/// The migration that marks an artifact without a title of its own
+/// (`artifacts.untitled`), as a schema version, and this build's last.
+pub const UNTITLED_MIGRATION: u32 = QUEUE_MAKERS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2883,11 +2899,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`QUEUE_MAKERS_MIGRATION`]. They follow the app's in every
+/// [`UNTITLED_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 22] = [
+const MARKS_AFTER_APP: [Mark<'static>; 23] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2910,6 +2926,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 22] = [
     Mark::Table("queue_fix_tickets"),
     Mark::Table("queue_requests"),
     Mark::Index("queue_members_in_order"),
+    Mark::Column("artifacts", "untitled"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5996,7 +6013,9 @@ mod tests {
             super::QUEUE_REQUESTS_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 29].contains("CREATE INDEX queue_members_in_order"));
-        assert_eq!(MIGRATIONS.len() as u32, super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(super::UNTITLED_MIGRATION, super::QUEUE_MAKERS_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 30].contains("ALTER TABLE artifacts ADD COLUMN untitled"));
+        assert_eq!(MIGRATIONS.len() as u32, super::UNTITLED_MIGRATION);
     }
 
     #[test]
@@ -6163,8 +6182,8 @@ mod tests {
         drop(Store::open(&home).unwrap());
         {
             let c = Connection::open(home.db_path()).unwrap();
-            // The schema as it was at 67 (without 68's analytics and 69's
-            // queue requests), with an artifact.
+            // The schema as it was at 67 (without 68's analytics and the
+            // migrations 69 to 73 after it), with an artifact.
             c.execute_batch(
                 "DROP INDEX queue_members_in_order;
                  ALTER TABLE queue_service_grants DROP COLUMN origins_json;
@@ -6180,6 +6199,7 @@ mod tests {
                  ALTER TABLE grants DROP COLUMN scope;
                  ALTER TABLE grants DROP COLUMN scope_expires_at;
                  ALTER TABLE device_codes DROP COLUMN scope;
+                 ALTER TABLE artifacts DROP COLUMN untitled;
                  INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
                  VALUES ('abcdefghjkmn', 'Plan', 'x', 'x', 1, '1');
                  PRAGMA user_version = 67;",
@@ -6188,7 +6208,7 @@ mod tests {
         }
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::UNTITLED_MIGRATION);
         let setting: String = c
             .query_row("SELECT analytics FROM artifacts", [], |r| r.get(0))
             .unwrap();
@@ -6235,7 +6255,8 @@ mod tests {
             // The schema as it was at 70: the owner's queue, a person's
             // with a triage member, and a row the person's maker had.
             c.execute_batch(
-                "DROP INDEX queue_members_in_order;
+                "ALTER TABLE artifacts DROP COLUMN untitled;
+                 DROP INDEX queue_members_in_order;
                  INSERT INTO queues (id, name, person, origins_json, created_at)
                  VALUES ('q_owner', 'Mine', NULL, '[]', '2026-11-01'),
                         ('q_sam', 'Sam''s', 'u_sam', '[]', '2026-11-02');
@@ -6248,7 +6269,7 @@ mod tests {
         }
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::UNTITLED_MIGRATION);
         let rows: Vec<(String, String, String, String)> = c
             .prepare(
                 "SELECT queue_id, person, role, created_at FROM queue_members
@@ -6303,7 +6324,8 @@ mod tests {
         assert_eq!(super::PREVIEW_FIXES_MIGRATION, 69);
         assert_eq!(super::QUEUE_REQUESTS_MIGRATION, 70);
         assert_eq!(super::QUEUE_MAKERS_MIGRATION, 71);
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(super::UNTITLED_MIGRATION, 72);
+        assert_eq!(user_version(&c), super::UNTITLED_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -7083,7 +7105,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::UNTITLED_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -7581,14 +7603,15 @@ mod tests {
         // the feedback loop's to 61, the price catalog's to 62, the web lines' to 63,
         // the run bindings' to 64, the surfaces' to 65, the key problem's
         // to 66, the Content Security Policy's to 67, analytics' to 68, the
-        // preview fixes' to 69, the queue requests' to 70 and the queue makers' to 71.
+        // preview fixes' to 69, the queue requests' to 70, the queue makers' to 71
+        // and the untitled flag's to 72.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+            assert_eq!(user_version(&c), super::UNTITLED_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -7596,8 +7619,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::QUEUE_MAKERS_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 71 after it are one later now"
+            super::UNTITLED_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 72 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -7616,7 +7639,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&copied), super::UNTITLED_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -7630,7 +7653,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::QUEUE_MAKERS_MIGRATION + 1, schema, rows)
+            (super::UNTITLED_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7904,7 +7927,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(last, super::UNTITLED_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -8525,7 +8548,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::UNTITLED_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             run_indexes(&c),
@@ -8801,7 +8824,7 @@ mod tests {
         );
         drop(opened_after_the_runs(&home));
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::UNTITLED_MIGRATION);
         let before = every_row(&c);
         let set = |sql: &str| {
             c.execute(
@@ -8891,7 +8914,7 @@ mod tests {
             .query_row([], |r| r.get::<_, i64>(0))
             .unwrap();
         crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::UNTITLED_MIGRATION);
         let finished: i64 = c
             .prepare_cached("SELECT count(*) FROM bot_runs WHERE status = 'finished'")
             .unwrap()
@@ -9213,7 +9236,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::UNTITLED_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             rows_in(&c, &cols),
@@ -9473,7 +9496,7 @@ mod tests {
         drop(at_64_with_runs(&home));
         drop(opened_after_the_runs(&home));
         let mut c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUE_MAKERS_MIGRATION);
+        assert_eq!(user_version(&c), super::UNTITLED_MIGRATION);
         let (schema, rows) = (schema_of(&c), every_row(&c));
         let before = super::Numbering {
             migrations: &MIGRATIONS[..super::RUN_BINDINGS_MIGRATION as usize],
@@ -9484,7 +9507,7 @@ mod tests {
             matches!(
                 refused,
                 Err(clax_core::CoreError::SchemaNewer { found, known })
-                    if found == super::QUEUE_MAKERS_MIGRATION
+                    if found == super::UNTITLED_MIGRATION
                         && known == super::RUN_BINDINGS_MIGRATION
             ),
             "{refused:?}"

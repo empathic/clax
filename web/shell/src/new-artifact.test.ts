@@ -16,8 +16,9 @@ beforeEach(() => { forget(); });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); document.body.replaceChildren(); });
 
 describe("formProblem", () => {
-  it("asks for a one-line title and a brief within the daemon's limits", () => {
-    expect(formProblem(" ", "x")).toBe("Give it a title.");
+  it("asks for a brief, and a one-line title within the daemon's limits only when one is given", () => {
+    expect(formProblem("", "x")).toBeNull();
+    expect(formProblem(" ", "x")).toBeNull();
     expect(formProblem("a\nb", "x")).toBe("A title is one line of plain text.");
     expect(formProblem("a‮b", "x")).toBe("A title is one line of plain text.");
     expect(formProblem("a\u200bb", "x")).toBe("A title is one line of plain text.");
@@ -97,6 +98,23 @@ describe("NewArtifactDialog", () => {
     await settle();
     expect(calls.at(-1)).toEqual({ url: "/api/artifacts/abc/threads/t1/send", method: "POST", body: { to: "a_mine" } });
     expect(assign).toHaveBeenCalledWith("/a/abc");
+  });
+
+  it("creates an untitled artifact from a brief alone, sending no title", async () => {
+    const calls = stubFetch({
+      "POST /api/artifacts:new": [201, { ...started, artifact: { id: "abc", title: "Untitled", untitled: true } }],
+      "GET /api/agents?artifact=abc": { agents: [] },
+    });
+    (await import("./nav")).nav.assign = vi.fn();
+    const m = mount(NewArtifactDialog, { me: { public_id: "p_owner", owner: true }, onClose: vi.fn() });
+    type(m.root.querySelector<HTMLInputElement>("#na-name")!, "   ");
+    type(m.root.querySelector<HTMLTextAreaElement>("#na-brief")!, "A bar chart by region");
+    submit(m.root);
+    await settle();
+    expect(m.root.querySelector('[role="alert"]')).toBeNull();
+    expect(calls.find(c => c.url === "/api/artifacts:new")!.body).toEqual({ brief: "A bar chart by region" });
+    expect(m.root.querySelector(".made")!.textContent).toContain("“Untitled”");
+    m.unmount();
   });
 
   it("with no live agent, shows the prompt to paste into one and opens the artifact on Close", async () => {
@@ -240,7 +258,7 @@ describe("the New dialog with ClaxBot", () => {
     (await import("./nav")).nav.assign = assign;
     const m = mount(NewArtifactDialog, { me: { owner: true }, onClose: vi.fn() });
     await settle();
-    expect([...m.root.querySelectorAll("label")].map(l => l.textContent)).toEqual(["Name", "Description"]);
+    expect([...m.root.querySelectorAll("label")].map(l => l.textContent)).toEqual(["Name (optional)", "Description"]);
     const sw = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="ClaxBot builds it now"]')!;
     expect(sw.getAttribute("aria-checked")).toBe("true");
     expect(m.root.querySelector("#na-bot-l")!.textContent).toContain("You have 1,690 credits left this week.");

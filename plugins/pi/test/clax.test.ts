@@ -436,14 +436,12 @@ describe("clax Pi extension", () => {
     expect(v2).toMatchObject({ version: 2, title: "From & the page" });
   });
 
-  it("refuses a new artifact with neither a title nor a page <title>", async () => {
+  it("publishes a new artifact with neither a title nor a page <title> as Untitled, which a later page's <title> names", async () => {
     const { pi, ctx } = load(daemon.home, "pi-untitled");
-    const res = await pi.callTool("clax_publish", { html: "<p>no title</p>" }, ctx);
-    expect(res.isError).toBe(true);
-    expect(json(res).error).toEqual({
-      code: "invalid_args",
-      message: "a new artifact needs a title: pass `title`, or give the page a non-empty <title>",
-    });
+    const p = json(await pi.callTool("clax_publish", { html: "<p>no title</p>" }, ctx));
+    expect(p).toMatchObject({ version: 1, title: "Untitled" });
+    const v2 = json(await pi.callTool("clax_publish", { id: p.artifact_id, html: "<title>Named</title><p>x</p>" }, ctx));
+    expect(v2).toMatchObject({ version: 2, title: "Named" });
   });
 
   it("registers a new session when its session was ended under it, and publishes", async () => {

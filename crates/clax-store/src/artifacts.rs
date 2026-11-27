@@ -21,6 +21,11 @@ use std::path::PathBuf;
 #[derive(Debug, Default, Clone)]
 pub struct MetaPatch {
     pub title: Option<String>,
+    /// With `title`: it is what to show in place of a title of the
+    /// artifact's own (its page's `<title>`, else `Untitled`), and the
+    /// artifact becomes untitled ([`Artifact::untitled`]); without, `title`
+    /// is its own.
+    pub untitled: bool,
     pub description: Option<String>,
     pub icon: Option<String>,
     pub pinned: Option<bool>,
@@ -157,6 +162,7 @@ pub(super) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>>
     Ok(Ok(Artifact {
         id,
         title: r.get("title")?,
+        untitled: r.get::<_, i64>("untitled")? != 0,
         description: r.get("description")?,
         icon: r.get("icon")?,
         created_at: r.get("created_at")?,
@@ -227,7 +233,7 @@ pub(super) const SELECT: &str =
     owner_session_id, pinned, capabilities_json, contract_version,
     CASE WHEN EXISTS (SELECT 1 FROM external_artifacts x WHERE x.artifact_id = artifacts.id)
          THEN 'external' ELSE kind END AS kind, person,
-    text_authors_json, forked_from_id, forked_from_version, legacy_paths,
+    text_authors_json, forked_from_id, forked_from_version, legacy_paths, untitled,
     (SELECT json_group_array(json_array(g.id, g.name, g.colour))
        FROM artifact_tags x JOIN tags g ON g.id = x.tag_id
       WHERE x.artifact_id = artifacts.id) AS tags_json
@@ -403,7 +409,8 @@ impl Store {
                     icon = COALESCE(?4, icon),
                     pinned = COALESCE(?5, pinned),
                     capabilities_json = COALESCE(?6, capabilities_json),
-                    text_authors_json = ?7
+                    text_authors_json = ?7,
+                    untitled = CASE WHEN ?2 IS NULL THEN untitled ELSE ?8 END
                  WHERE id = ?1 AND deleted_at IS NULL",
                 params![
                     id.as_str(),
@@ -412,7 +419,8 @@ impl Store {
                     patch.icon,
                     patch.pinned.map(|b| b as i64),
                     patch.capabilities.as_ref().map(|c| c.to_string()),
-                    text
+                    text,
+                    patch.untitled,
                 ],
             )?;
             if let Some(caps) = &patch.capabilities {
@@ -431,7 +439,14 @@ impl Store {
                     fields.insert(k.to_string(), v);
                 }
             };
-            set("title", patch.title.clone().map(Into::into));
+            // An untitled artifact's title is recorded as null: it has none.
+            set(
+                "title",
+                patch.title.clone().map(|t| match patch.untitled {
+                    true => serde_json::Value::Null,
+                    false => t.into(),
+                }),
+            );
             set("description", patch.description.clone().map(Into::into));
             set("icon", patch.icon.clone().map(Into::into));
             set("pinned", patch.pinned.map(Into::into));
@@ -1179,6 +1194,11 @@ fn text_authors(
     }
 }
 
+/// The title `p` gives the artifact as its own: a non-blank one.
+fn own_title(p: &ValidatedPublish) -> Option<&str> {
+    p.title.as_deref().filter(|t| !t.trim().is_empty())
+}
+
 /// The text fields `p` sets (all of them for version 1, which makes them).
 fn fields_set(p: &ValidatedPublish, first: bool) -> Vec<&'static str> {
     if first {
@@ -1359,11 +1379,12 @@ impl Store {
     ) -> Result<(Artifact, Version, T)> {
         let id = id.clone();
         let now = self.now();
-        let title = p
-            .title
-            .clone()
-            .filter(|t| !t.trim().is_empty())
-            .unwrap_or_else(|| "Untitled".to_string());
+        // Without a title of its own the artifact is untitled: version 1's
+        // write gives it its page's `<title>` to show, if the page has one
+        // ([`Store::shown_title_of`]).
+        let own = p.title.clone().filter(|t| !t.trim().is_empty());
+        let untitled = own.is_none();
+        let title = own.unwrap_or_else(|| clax_core::publish::UNTITLED.to_string());
         let caps = p.capabilities.clone().unwrap_or(serde_json::json!({}));
         // Reject before inserting, so a failed publish leaves no zero-version row.
         check_collisions(put_paths(&p))?;
@@ -1398,10 +1419,10 @@ impl Store {
             }
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
-                    pinned, capabilities_json, contract_version, owner_session_id, person)
+                    pinned, capabilities_json, contract_version, owner_session_id, person, untitled)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, 0, ?6, ?7, ?8,
-                         COALESCE(?9, (SELECT person FROM sessions WHERE id = ?8)))",
-                params![id.as_str(), title, p.description, p.icon, now, caps.to_string(), CONTRACT_VERSION, session_id, p.person],
+                         COALESCE(?9, (SELECT person FROM sessions WHERE id = ?8)), ?10)",
+                params![id.as_str(), title, p.description, p.icon, now, caps.to_string(), CONTRACT_VERSION, session_id, p.person, untitled],
             )?;
             Ok(())
         })?;
@@ -1930,6 +1951,48 @@ impl Store {
         Ok(())
     }
 
+    /// What untitled artifact `id` shows for a title once version `n`
+    /// (written from `p`, with `files`, after `prev`) is current: its
+    /// page's `<title>` ([`clax_core::html_title`]), read when the
+    /// version's `index.html` is not the previous one's. `None` keeps what
+    /// it shows: `p` gives the artifact a title of its own, the artifact
+    /// has one, its page is unchanged, or its page names no title.
+    async fn shown_title_of(
+        &self,
+        id: &ArtifactId,
+        n: u32,
+        p: &ValidatedPublish,
+        prev: &BTreeMap<String, FileMeta>,
+        files: &BTreeMap<String, FileMeta>,
+    ) -> Result<Option<String>> {
+        if own_title(p).is_some() {
+            return Ok(None);
+        }
+        let untitled = self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT untitled FROM artifacts WHERE id = ?1",
+                params![id.as_str()],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?)
+        })?;
+        if untitled.unwrap_or(0) == 0 {
+            return Ok(None);
+        }
+        let hash = |m: &BTreeMap<String, FileMeta>| m.get(INDEX).and_then(|f| f.sha256.clone());
+        if n > 1 && hash(prev).is_some() && hash(prev) == hash(files) {
+            return Ok(None);
+        }
+        let bytes = match p.files.get(INDEX) {
+            Some(FileChange::Put(f)) => Some(f.bytes.clone()),
+            _ => self.content.read_file(id, n, INDEX).await?,
+        };
+        Ok(bytes
+            .as_deref()
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .and_then(clax_core::html_title))
+    }
+
     /// The rest of [`Store::write_version_then_async`], under the content
     /// lock: `step` says how version `expected + 1`'s content comes to be,
     /// written from `p` or a pushed commit adopted as it is. An adopted
@@ -2051,6 +2114,7 @@ impl Store {
                 });
             }
         };
+        let shown = self.shown_title_of(id, n, p, prev, &files).await?;
         let now = self.now();
         let files_json = serde_json::to_string(&files).expect("serialisable map");
         let content_sha256 = content_manifest_sha256(&files);
@@ -2099,26 +2163,34 @@ impl Store {
                 params![id.as_str()],
                 row_to_artifact,
             )??;
+            // A title an untitled artifact takes from its page is that
+            // page's writers'.
+            let mut set = fields_set(p, expected == 0);
+            if shown.is_some() && !set.contains(&"title") {
+                set.push("title");
+            }
             let text = text_authors(
                 before.authors.text,
                 before.authors.creator.as_deref(),
-                &fields_set(p, expected == 0),
+                &set,
                 &written,
             );
             tx.execute(
                 "UPDATE artifacts SET current_version = ?2, updated_at = ?3,
-                    title = COALESCE(?4, title), description = COALESCE(?5, description), icon = COALESCE(?6, icon),
-                    capabilities_json = COALESCE(?7, capabilities_json), text_authors_json = ?8
+                    title = COALESCE(?4, ?9, title), description = COALESCE(?5, description), icon = COALESCE(?6, icon),
+                    capabilities_json = COALESCE(?7, capabilities_json), text_authors_json = ?8,
+                    untitled = CASE WHEN ?4 IS NULL THEN untitled ELSE 0 END
                  WHERE id = ?1",
                 params![
                     id.as_str(),
                     n,
                     now,
-                    p.title,
+                    own_title(p),
                     p.description,
                     p.icon,
                     p.capabilities.as_ref().map(|c| c.to_string()),
-                    text
+                    text,
+                    shown,
                 ],
             )?;
             if let Some(caps) = &p.capabilities {
@@ -2321,6 +2393,18 @@ impl Store {
         path: &str,
     ) -> Result<Option<(Vec<u8>, FileMeta)>> {
         self.block_on(self.read_file_async(id, n, path))
+    }
+
+    /// What artifact `id` would show for a title without one of its own:
+    /// its current version's page's `<title>`, else `Untitled`
+    /// ([`clax_core::publish::shown_title`]). `NotFound` for an unknown
+    /// artifact.
+    pub async fn page_title_async(&self, id: &ArtifactId) -> Result<String> {
+        let n = self.current_version_of(id)?.ok_or(CoreError::NotFound)?;
+        let page = self.read_file_async(id, n, INDEX).await?;
+        Ok(clax_core::publish::shown_title(
+            page.as_ref().map(|(b, _)| b.as_slice()),
+        ))
     }
 
     /// [`Store::read_file`], awaiting its content store.
@@ -2822,6 +2906,110 @@ mod tests {
         assert_eq!(store.file_meta(&id, 1, "app.js").unwrap(), Some(meta));
         assert!(store.read_file(&id, 1, "nope.js").unwrap().is_none());
         assert!(store.file_meta(&id, 1, "nope.js").unwrap().is_none());
+    }
+
+    #[test]
+    fn an_untitled_artifact_shows_its_pages_title_until_it_has_its_own() {
+        let (_d, store) = store();
+        let untitled = |files: &[(&str, Option<&str>)], v: Option<u32>| {
+            let mut p = publish(files, v);
+            p.title = None;
+            p
+        };
+        let (a, _) = store
+            .create_artifact(
+                DAEMON,
+                untitled(&[("index.html", Some("<p>none"))], None),
+                None,
+            )
+            .unwrap();
+        assert_eq!((a.title.as_str(), a.untitled), ("Untitled", true));
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        let step = |n: u32, files: &[(&str, Option<&str>)]| {
+            store
+                .publish_version(DAEMON, &id, untitled(files, Some(n)), None)
+                .unwrap()
+                .0
+        };
+        // A page that names a title names it; the same page again, or one
+        // that names none, keeps it.
+        assert_eq!(
+            step(1, &[("index.html", Some("<title>Named</title>"))]).title,
+            "Named"
+        );
+        assert_eq!(
+            step(
+                2,
+                &[
+                    ("index.html", Some("<title>Named</title>")),
+                    ("app.js", Some("1"))
+                ]
+            )
+            .title,
+            "Named"
+        );
+        assert_eq!(step(3, &[("index.html", Some("<p>bare"))]).title, "Named");
+        let a = step(4, &[("index.html", Some("<title>Again</title>"))]);
+        assert_eq!((a.title.as_str(), a.untitled), ("Again", true));
+        // Cleared and set by a metadata edit.
+        let a = store
+            .update_meta(
+                DAEMON,
+                &id,
+                MetaPatch {
+                    title: Some("Own".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!((a.title.as_str(), a.untitled), ("Own", false));
+        assert_eq!(
+            step(5, &[("index.html", Some("<title>Ignored</title>"))]).title,
+            "Own"
+        );
+        assert_eq!(
+            clax_core::content::wait(store.page_title_async(&id)).unwrap(),
+            "Ignored"
+        );
+        let a = store
+            .update_meta(
+                DAEMON,
+                &id,
+                MetaPatch {
+                    title: Some("Ignored".into()),
+                    untitled: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!((a.title.as_str(), a.untitled), ("Ignored", true));
+        assert_eq!(
+            step(6, &[("index.html", Some("<title>Followed</title>"))]).title,
+            "Followed"
+        );
+        // The edit is recorded with its title as null: it has none.
+        let fields: Vec<serde_json::Value> = store
+            .with_read(|c| {
+                let mut q = c.prepare(
+                    "SELECT json_extract(body, '$.fields') FROM audit_events
+                     WHERE kind = 'artifact.update' ORDER BY seq",
+                )?;
+                let rows = q
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .unwrap()
+            .iter()
+            .map(|t| serde_json::from_str(t).unwrap())
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                serde_json::json!({"title": "Own"}),
+                serde_json::json!({"title": null})
+            ]
+        );
     }
 
     #[test]

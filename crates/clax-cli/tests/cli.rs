@@ -883,7 +883,7 @@ fn doctor_fix_refuses_while_a_daemon_is_live() {
 }
 
 #[test]
-fn publish_takes_a_new_artifacts_title_from_the_page_or_refuses() {
+fn publish_takes_a_new_artifacts_title_from_the_page_or_leaves_it_untitled() {
     let e = Env::new();
     let titled = write(
         e.dir.path(),
@@ -914,13 +914,41 @@ fn publish_takes_a_new_artifacts_title_from_the_page_or_refuses() {
     .unwrap();
     assert_eq!(list["artifacts"][0]["title"], "From <page>");
 
+    // A page that names no title makes an untitled artifact, shown as
+    // `Untitled`.
     let bare = write(e.dir.path(), "bare.html", "<p>no title");
-    e.cmd()
-        .args(["publish"])
+    let out = e
+        .cmd()
+        .args(["publish", "--json"])
         .arg(&bare)
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("--title").and(predicate::str::contains("<title>")));
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let untitled = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let list: serde_json::Value = serde_json::from_slice(
+        &e.cmd()
+            .args(["list", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .unwrap();
+    let row = list["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == untitled.as_str())
+        .unwrap();
+    assert_eq!(
+        (&row["title"], &row["untitled"]),
+        (&"Untitled".into(), &true.into())
+    );
     // An update needs no title.
     e.cmd()
         .args(["publish", "--id", &id])

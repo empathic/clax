@@ -7,6 +7,8 @@ export type ArtifactEvent =
   /** A new version; `by_page` when the page published it (`artifact.publish`). */
   | { type: "version"; artifact_id: string; n: number; by_page?: boolean }
   | { type: "artifact_deleted"; artifact_id: string }
+  /** The artifact's title, description or icon changed: refetch it. */
+  | { type: "artifact_meta"; artifact_id: string }
   | { type: "thread"; artifact_id: string; thread: Thread }
   | { type: "comment"; artifact_id: string; thread_id: string; comment: unknown }
   | { type: "thread_resolved"; artifact_id: string; thread_id: string; resolved_by: string; resolved_at: string }

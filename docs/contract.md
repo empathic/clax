@@ -94,7 +94,7 @@ and the database from the command line". Without `--json`, `read` writes the
 file's content (no trailing newline added) and `asset upload` prints one asset
 URL per line. The other commands' JSON is their own shape, not the tool
 result shape below. `clax publish` takes a new artifact's title from
-`--title`, else the page's `<title>`, as the `publish` tool does. `clax
+`--title`; without it the artifact is untitled, as with the `publish` tool. `clax
 open` exits 1 with `could not open a browser; open <url> yourself` when the
 opener fails (see `open`); `clax open --json` only prints the URL.
 
@@ -241,7 +241,7 @@ Arguments:
 | `id` | string | no; at most one of `id`, `url` | Artifact to update. |
 | `url` | string | no; at most one of `id`, `url` | Artifact to update, as any artifact URL. |
 | `if_version` | integer ≥ 0 | no | The version the update is based on. Defaults to the artifact's current version. Ignored when creating. |
-| `title` | string | on create, unless the page has a `<title>` | Artifact title, at most 200 characters. Creating without it takes the page's `<title>` (below). Updates never need it. |
+| `title` | string | no | Artifact title, at most 200 characters. Creating without it (or with a blank one) makes an untitled artifact, which shows its page's `<title>` (below). Updates never need it; a non-blank one gives an untitled artifact a title of its own. |
 | `description` | string | no | One-line description, at most 1000 characters. |
 | `icon` | string | no | One generic word, such as `chart` or `map`, at most 40 characters. |
 | `label` | string | no | Short name for this version, at most 60 characters. |
@@ -356,19 +356,47 @@ the next call, and to what `use()` resolves in views loaded afterwards. A view
 already open keeps the declaration it loaded, including for other pages of the
 artifact reached inside it, until it is reloaded.
 
-Title on create: a new artifact needs a title. When `title` is omitted, the
-tool uses the text of the page's first `<title>` element: the tag name in any
+Title on create: a new artifact needs no title. Without a non-blank
+`title` it is **untitled**: it has no title of its own, `untitled: true`
+in its artifact JSON (absent otherwise), and its `title` is what to show
+in its place: the text of its current page's first `<title>` element,
+else `Untitled`. The page's title is read as follows: the tag name in any
 case, attributes allowed; `&amp;`, `&lt;`, `&gt;`, `&quot;` and `&apos;`
 decoded once (other entities kept as written); control characters other than
 whitespace and hidden format characters (bidi embeddings, overrides and
 isolates, zero-width spaces, U+FEFF, soft hyphens, tag characters) dropped;
-runs of whitespace collapsed to one space; trimmed; cut to 200 characters. A page sent as base64 (a
-`file_path` that is not UTF-8 or lacks a text extension), or one with no
-closed `<title>` holding non-blank text, gives none, and the call fails with
-`invalid_args`. An explicit `title` always wins; an explicit blank one on
-create reaches the daemon, which refuses it (`POST /api/artifacts` without a
-non-blank `title` is 400 `invalid_args` `title is required when creating an
-artifact`).
+runs of whitespace collapsed to one space; trimmed; cut to 200 characters. A
+page that is not UTF-8, or one with no closed `<title>` holding non-blank
+text, names none. Each later version whose `index.html` changes and names
+a title makes that the title shown; one that names none keeps the title
+shown before. The daemon reads it (`POST /api/artifacts`, every version
+publish, push and restore); the tools send no title of their own. A
+non-blank `title` on a publish, or one set with `PATCH
+/api/artifacts/<id>`, gives the artifact a title of its own, which pages
+no longer change; `PATCH` with a blank `title` makes it untitled again
+(below). Listings, notifications, the audit and every other place that
+names an artifact use `title` as it is, so an untitled one reads as its
+page's title or `Untitled` everywhere.
+
+Renaming: `PATCH /api/artifacts/<id>` with `{"title": "<name>"}` gives
+the artifact that title as its own (checked as a publish's, below), and
+`{"title": ""}` (or any blank one) makes it untitled, showing its current
+page's `<title>`, else `Untitled`. It needs the token or an agent's
+credential, as every other field of the `PATCH` does; a body with `title`
+alone may also come from a browser without the token when its viewer may
+update the artifact (`may_edit` in `GET /api/artifacts/<id>` and the
+page's bootstrap: the owner of a local daemon; on a hosted Clax whoever
+holds `clax-artifacts` `update` at it), from the shell's own origin (403
+`forbidden_origin` from another); anyone else is 401 `unauthorized`. It
+answers `{artifact, site_url}`, is recorded as `artifact.update` with
+`fields.title` (`null` when it made the artifact untitled), and a change
+to the title, description or icon sends `artifact_meta` on the
+artifact's topic and on `gallery` (see "The stream"). The shell's top bar
+offers it as Rename on the title for a viewer whose `may_edit` is true:
+the title becomes a text field (Enter or leaving it saves, Escape
+cancels; an empty one saves as untitled, and while the artifact is
+untitled the field starts empty). The page's tab reads `<title> · Clax`
+on an artifact's view, after any unread count.
 
 A file entry is an object with exactly one of:
 
@@ -413,10 +441,7 @@ Errors:
 - `invalid_args`: neither or both of `html` and `file_path`; both `id` and
   `url`; `index.html` in `files`; a file entry with neither or both of `path`
   and `content`, or with `encoding` alongside `path`; a relative path with no
-  session working directory; a new artifact with neither `title` nor a usable
-  `<title>` (message ``a new artifact needs a title: pass `title`, or give the
-  page a non-empty <title>``), or with a blank `title` (the daemon's
-  `title is required when creating an artifact`).
+  session working directory.
 - `invalid_id`: `id` or `url` names no artifact ID.
 - `file_unreadable`: a local file could not be read. Extra field `path`.
 - `conflict` (409): `if_version` is not the current version. Extra fields
@@ -450,7 +475,9 @@ Errors:
   hidden format character (a bidi embedding, override or isolate, a
   zero-width space, a tag character); the joiners ZWJ and ZWNJ and the
   direction marks LRM, RLM and ALM are allowed. `PATCH /api/artifacts/<id>`
-  checks its `title`, `description` and `icon` the same way.
+  checks its `title`, `description` and `icon` the same way. An update's
+  blank `title` is `invalid_args` (`title cannot be blank`); `PATCH`'s
+  makes the artifact untitled.
 - `unknown_session`: the session the tools registered has ended (for example
   through a `SessionEnd` hook) or no longer exists. The shim and the Pi
   extension register a new session with the same harness session ID and retry
@@ -2594,15 +2621,17 @@ artifact, by handle, as before.
 ### Starting an artifact from a brief
 
 The gallery's **New artifact** tile, first in its grid, starts an
-artifact from a brief in a person's browser, for an agent to build: `POST /api/artifacts:new {title, brief}`
+artifact from a brief in a person's browser, for an agent to build: `POST /api/artifacts:new {title?, brief}`
 answers 201 `{artifact, version, url, thread}`. Version 1 is a placeholder
-page that follows the page contract, titled `title` and saying an agent
+page that follows the page contract, titled `title` (`Untitled` without one) and saying an agent
 has not built it yet; the brief becomes the artifact's first thread, on
 the whole artifact (`anchor.kind` `artifact`), the person's own comment,
 sent to no agent (an `@` in it sends nothing). The artifact is the
 person's (the owner's has no `person`), and no session's: none owns or
-watches it. `title` is trimmed and checked as any artifact title is: 1
-to 200 characters with no control character and no hidden format
+watches it. `title` is trimmed; absent or blank, the artifact is
+untitled (see "Title on create"), and the page its agent publishes names
+it. Otherwise it is checked as any artifact title is: at most
+200 characters with no control character and no hidden format
 character (the joiners U+200C and U+200D and the direction marks U+200E,
 U+200F and U+061C are allowed), else 400 `invalid_title`; `brief` is trimmed and non-blank, at most
 the 10,000 characters a person's comment may hold (`invalid_comment`
@@ -2644,8 +2673,8 @@ Administering a queue); the shell shows Queues in its header and
 Settings only to the owner, a member of a queue, and anyone who may make
 one.
 
-The tile opens a dialog asking for a name (the title) and a description
-(the brief). Where ClaxBot is on for the person, the dialog's "ClaxBot
+The tile opens a dialog asking for a name (the title, which may be left
+empty) and a description (the brief). Where ClaxBot is on for the person, the dialog's "ClaxBot
 builds it now" switch has ClaxBot build it instead
 (docs/superpowers/specs/2026-10-21-claxbot-design.md §6.4); off, once the artifact is
 made, it lists the live agents the daemon says the brief may be sent to
@@ -7584,9 +7613,9 @@ All three routes need the token (401 `unauthorized` without it):
 Every page follows this contract so it renders well in the gallery, in light and
 dark mode, and on a phone:
 
-- A `<title>` element with a short name (two to four words). A new artifact
-  needs a title: pass `title` on the first publish or give the page a
-  non-empty `<title>`, which the tools then use.
+- A `<title>` element with a short name (two to four words). An artifact
+  published without `title` shows its page's `<title>` (else "Untitled")
+  until someone gives it a title of its own.
 - Colors and other design values are CSS custom properties (tokens) on `:root`.
 - Dark mode is provided twice, so both the system setting and the person's
   explicit choice work:
@@ -8578,8 +8607,8 @@ except as noted:
 
 | Topic | Carries |
 |---|---|
-| `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted`, `working` (summary) and `tags` for every artifact. On a hosted Clax, only for the artifacts the subscriber's `GET /api/artifacts` lists (`clax-artifacts` `read` by their rights within their reach, or by a share with them; never by a link, checked as each event is dispatched), and `artifact_deleted` for one deleted within their reach that their rights read; `tags` naming no artifact reaches every gallery. A caller with no person's scope (a guest) may not hold it (403 `forbidden`). |
-| `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state`, `tags`, `comments` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
+| `gallery` | `version`, `artifact_meta`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted`, `working` (summary) and `tags` for every artifact. On a hosted Clax, only for the artifacts the subscriber's `GET /api/artifacts` lists (`clax-artifacts` `read` by their rights within their reach, or by a share with them; never by a link, checked as each event is dispatched), and `artifact_deleted` for one deleted within their reach that their rights read; `tags` naming no artifact reaches every gallery. A caller with no person's scope (a guest) may not hold it (403 `forbidden`). |
+| `artifact:<aid>` | That artifact's `version`, `artifact_meta`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state`, `tags`, `comments` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
@@ -8599,6 +8628,10 @@ event's data names its `topic`. Events carry what changed:
   On `artifact:<aid>`, `"by_page": true` is added when the page published it
   through the `artifact` capability.
 - `artifact_deleted`: `{topic, artifact_id}`.
+- `artifact_meta`: `{type, topic, artifact_id}`: the artifact's title,
+  description or icon changed (`PATCH /api/artifacts/<id>`). It carries
+  none of them, which the visibility filter may withhold from a reader:
+  refetch the artifact. `/api/events` does not carry it.
 - `tags`: `{type, topic, artifact_id}`: the tags artifact `artifact_id`
   carries changed (on `gallery` and `artifact:<aid>`), or the list itself
   changed (a tag made, renamed, recoloured or deleted): on `gallery` with
@@ -9736,7 +9769,7 @@ the body below.
 | `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version`; `forked_from{artifact_id, n}` on a fork | first publish, a fork, or a live page's creation |
 | `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page`; `source{artifact_id, n}` on a fork's version 1; `restored_from` (the version restored) for a restore | every version write, a restore (`versions:restore`) included; for a restore, `carried` names only the files (other than `index.html`) whose bytes equal the previous version's |
 | `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended\|push_too_large\|invalid_manifest\|invalid_capabilities\|admin_only)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, its trees are too large, or its `clax.json` is not a valid manifest or changes the declaration its pusher does not administer; once per commit |
-| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, db_read_grants?, tags?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}`; `db_read_grants` is `{"grant": <source ID>}` or `{"revoke": <source ID>}`, with the source as `artifact2_id` | pin, unpin, metadata edits, the owner's cross-app read grants (see "Reading another app's documents"); a change to its tags (`tags`: the names it carries after); a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
+| `artifact.update` | `fields{title? (null: made untitled), description?, icon?, pinned?, capabilities?, db_read_grants?, tags?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}`; `db_read_grants` is `{"grant": <source ID>}` or `{"revoke": <source ID>}`, with the source as `artifact2_id` | pin, unpin, metadata edits, the owner's cross-app read grants (see "Reading another app's documents"); a change to its tags (`tags`: the names it carries after); a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
 | `artifact.delete` | `title, current_version` | delete |
 | `asset.upload` | `asset_id, path, sha256, size, content_type`; `forked_from{artifact_id, asset_id}` on a fork's copy | asset store writes, and each asset a fork copies |
 | `asset.delete` | `asset_id, path, size, content_type` | asset deletes |
