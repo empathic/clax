@@ -125,6 +125,8 @@ impl Shim {
                 "CLAUDE_PLUGIN_ROOT",
                 "CLAUDE_PROJECT_DIR",
                 "CLAX_SESSION_ID",
+                "ANTIGRAVITY_AGENT",
+                "ANTIGRAVITY_CONVERSATION_ID",
             ] {
                 c.env_remove(var);
             }

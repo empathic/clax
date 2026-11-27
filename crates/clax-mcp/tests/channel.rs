@@ -25,6 +25,8 @@ const HARNESS_VARS: &[&str] = &[
     "GROK_HOOK_EVENT",
     "GROK_PLUGIN_ROOT",
     "GROK_HOME",
+    "ANTIGRAVITY_AGENT",
+    "ANTIGRAVITY_CONVERSATION_ID",
 ];
 
 /// `cmd` with the harness environment cleared and scratch homes under `dir`.

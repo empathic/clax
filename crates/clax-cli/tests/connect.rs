@@ -20,13 +20,15 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
 
 /// The harness environment a test inherits from the agent running it.
-const HARNESS_ENV: [&str; 10] = [
+const HARNESS_ENV: [&str; 12] = [
     "CLAX_CHANNEL",
     "CLAUDECODE",
     "CODEX_THREAD_ID",
     "CODEX_SANDBOX",
     "CODEX_CI",
     "PI_CODING_AGENT",
+    "ANTIGRAVITY_AGENT",
+    "ANTIGRAVITY_CONVERSATION_ID",
     "CLAX_REMOTE",
     "CLAX_PORT",
     "CLAUDE_PLUGIN_ROOT",

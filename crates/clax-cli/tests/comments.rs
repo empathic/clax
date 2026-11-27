@@ -9,7 +9,7 @@ use std::process::{Command, Output, Stdio};
 
 /// The harness environment a test inherits from the agent running it; every
 /// `clax` run here starts without it.
-const HARNESS_ENV: [&str; 18] = [
+const HARNESS_ENV: [&str; 20] = [
     // The agent-channel marker and the harness shell variables: these
     // tests run the CLI by hand, wherever they run.
     "CLAX_CHANNEL",
@@ -18,6 +18,8 @@ const HARNESS_ENV: [&str; 18] = [
     "CODEX_SANDBOX",
     "CODEX_CI",
     "PI_CODING_AGENT",
+    "ANTIGRAVITY_AGENT",
+    "ANTIGRAVITY_CONVERSATION_ID",
     "GROK_SESSION_ID",
     "GROK_HOOK_EVENT",
     "GROK_PLUGIN_ROOT",

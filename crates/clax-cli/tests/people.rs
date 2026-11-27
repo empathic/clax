@@ -10,13 +10,15 @@ use serde_json::Value;
 use std::process::{Command, Output, Stdio};
 
 /// The harness environment a test inherits from the agent running it.
-const HARNESS_ENV: [&str; 9] = [
+const HARNESS_ENV: [&str; 11] = [
     "CLAX_CHANNEL",
     "CLAUDECODE",
     "CODEX_THREAD_ID",
     "CODEX_SANDBOX",
     "CODEX_CI",
     "PI_CODING_AGENT",
+    "ANTIGRAVITY_AGENT",
+    "ANTIGRAVITY_CONVERSATION_ID",
     "CLAX_REMOTE",
     "CLAX_PORT",
     "CLAX_SESSION_ID",

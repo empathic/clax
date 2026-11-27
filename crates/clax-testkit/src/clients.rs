@@ -38,6 +38,7 @@ pub const HARNESS_ENVS: &[(&str, &str)] = &[
     ("CODEX_CI", "1"),
     ("CODEX_SANDBOX", "seatbelt"),
     ("PI_CODING_AGENT", "true"),
+    ("ANTIGRAVITY_AGENT", "1"),
     ("CLAX_CHANNEL", "agent"),
 ];
 

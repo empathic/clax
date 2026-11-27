@@ -96,6 +96,8 @@ impl Env {
             "CODEX_SANDBOX",
             "CODEX_CI",
             "PI_CODING_AGENT",
+            "ANTIGRAVITY_AGENT",
+            "ANTIGRAVITY_CONVERSATION_ID",
         ] {
             c.env_remove(var);
         }

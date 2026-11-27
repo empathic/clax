@@ -45,6 +45,8 @@ impl Env {
             .env_remove("GROK_SESSION_ID")
             .env_remove("GROK_HOOK_EVENT")
             .env_remove("CLAUDE_PID")
+            .env_remove("ANTIGRAVITY_AGENT")
+            .env_remove("ANTIGRAVITY_CONVERSATION_ID")
             .env_remove("XDG_CONFIG_HOME")
             .env(
                 "CLAX_NATIVE_HOST_DIRS",

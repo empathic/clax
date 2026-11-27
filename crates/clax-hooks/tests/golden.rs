@@ -26,7 +26,7 @@ const HANG: Duration = Duration::from_secs(120);
 
 /// The harness environment a test inherits from the agent running it; every
 /// `clax` run here starts without it.
-const HARNESS_ENV: [&str; 9] = [
+const HARNESS_ENV: [&str; 11] = [
     "GROK_SESSION_ID",
     "GROK_HOOK_EVENT",
     "GROK_PLUGIN_ROOT",
@@ -36,6 +36,8 @@ const HARNESS_ENV: [&str; 9] = [
     "CLAUDE_PLUGIN_ROOT",
     "CLAUDE_PROJECT_DIR",
     "CLAX_SESSION_ID",
+    "ANTIGRAVITY_AGENT",
+    "ANTIGRAVITY_CONVERSATION_ID",
 ];
 
 fn clax(home: &Path) -> Command {

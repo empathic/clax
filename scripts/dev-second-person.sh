@@ -81,7 +81,7 @@ refuse_home "$home"
 [ ! -e "$home/remote.json" ] || { echo "dev-second-person: $home is connected already; use another home or --off it" >&2; exit 1; }
 
 # Not under an agent: `clax connect` is the person's to run, never an agent's.
-unset CLAX_CHANNEL CLAUDECODE CODEX_SESSION_ID
+unset CLAX_CHANNEL CLAUDECODE CODEX_SESSION_ID ANTIGRAVITY_AGENT ANTIGRAVITY_CONVERSATION_ID
 export CLAX_HOME="$home"
 unset CLAX_PORT
 

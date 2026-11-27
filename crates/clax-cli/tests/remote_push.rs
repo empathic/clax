@@ -82,6 +82,8 @@ async fn remote_add_signs_in_by_device_code_and_push_publishes_every_version() {
         "CODEX_SANDBOX",
         "CODEX_CI",
         "PI_CODING_AGENT",
+        "ANTIGRAVITY_AGENT",
+        "ANTIGRAVITY_CONVERSATION_ID",
     ] {
         add.env_remove(var);
     }
@@ -355,6 +357,7 @@ async fn an_agent_adding_a_remote_is_pointed_at_remote_request() {
             "CLAUDE_CODE_SESSION_ID",
             "GROK_SESSION_ID",
             "CODEX_THREAD_ID",
+            "ANTIGRAVITY_CONVERSATION_ID",
         ] {
             c.env_remove(v);
         }
