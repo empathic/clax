@@ -1,15 +1,14 @@
 // The tab's unread count (spec 2026-10-06-agent-questions-and-inbox §9.7):
 // the title takes the prefix `(N) ` and the icon becomes the mark with a
 // red-orange dot; at 0 both are as they were.
-
-const PREFIX = /^\(\d+\) /;
+import { COUNT } from "../view/tab-title";
 
 /** The mark with a red-orange dot, top right, served beside the mark. */
 const DOTTED = "/_clax/mark-dot.svg";
 
 /** Shows `n` unread items in `doc`'s title and icon. */
 export function setBadge(doc: Document, n: number): void {
-  const base = doc.title.replace(PREFIX, "");
+  const base = doc.title.replace(COUNT, "");
   const title = n > 0 ? `(${n}) ${base}` : base;
   if (doc.title !== title) doc.title = title;
   const link = doc.querySelector<HTMLLinkElement>('link[rel~="icon"]');

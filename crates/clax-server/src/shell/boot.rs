@@ -19,9 +19,11 @@ pub const FRAME_ALLOW: &str = "clipboard-write; fullscreen; storage-access";
 pub const BOOT_MARK: &str = "<!--clax:boot-->";
 const FRAME_MARK: &str = "<!--clax:frame-->";
 const TITLE_MARK: &str = "<h1>Clax</h1>";
+const TAB_TITLE_MARK: &str = "<title>Clax</title>";
 
 /// What goes into `artifact.html`: the bootstrap JSON (already escaped by
-/// [`script_json`]), the frame's markup when the page exists, the title.
+/// [`script_json`]), the frame's markup when the page exists, the title
+/// (the heading's, and the tab's as `<title> · Clax`).
 pub struct Injected {
     pub boot: String,
     pub frame: Option<String>,
@@ -473,12 +475,10 @@ pub fn inject(template: &str, i: Option<&Injected>) -> String {
             .replacen(BOOT_MARK, "", 1)
             .replacen(FRAME_MARK, "", 1);
     };
+    let title = html_escape(&i.title);
     template
-        .replacen(
-            TITLE_MARK,
-            &format!("<h1>{}</h1>", html_escape(&i.title)),
-            1,
-        )
+        .replacen(TAB_TITLE_MARK, &format!("<title>{title} · Clax</title>"), 1)
+        .replacen(TITLE_MARK, &format!("<h1>{title}</h1>"), 1)
         .replacen(FRAME_MARK, i.frame.as_deref().unwrap_or(""), 1)
         .replacen(BOOT_MARK, &boot_script(&i.boot), 1)
 }
@@ -606,10 +606,10 @@ mod tests {
 
     #[test]
     fn inject_without_data_only_removes_the_markers() {
-        let t = "<head><!--clax:boot--></head><div class=\"stage\"><!--clax:frame--></div><h1>Clax</h1>";
+        let t = "<head><title>Clax</title><!--clax:boot--></head><div class=\"stage\"><!--clax:frame--></div><h1>Clax</h1>";
         assert_eq!(
             inject(t, None),
-            "<head></head><div class=\"stage\"></div><h1>Clax</h1>"
+            "<head><title>Clax</title></head><div class=\"stage\"></div><h1>Clax</h1>"
         );
         let i = Injected {
             boot: "{\"v\":1}".into(),
@@ -618,7 +618,7 @@ mod tests {
         };
         assert_eq!(
             inject(t, Some(&i)),
-            "<head><script type=\"application/json\" id=\"clax-boot\">{\"v\":1}</script></head><div class=\"stage\"><iframe></iframe></div><h1>A &lt;b&gt;</h1>"
+            "<head><title>A &lt;b&gt; · Clax</title><script type=\"application/json\" id=\"clax-boot\">{\"v\":1}</script></head><div class=\"stage\"><iframe></iframe></div><h1>A &lt;b&gt;</h1>"
         );
     }
 

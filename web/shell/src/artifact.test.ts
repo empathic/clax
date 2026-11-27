@@ -150,6 +150,15 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => root.textContent?.includes("Artifact not found"), "not-found message");
   });
 
+  it("names the tab after the artifact, and Clax alone when there is none", async () => {
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
+    await waitFor(() => document.title === "T · Clax", "the tab's title");
+    view.unmount();
+    const none = await mountView(async () => new Response(JSON.stringify({ error: { code: "not_found", message: "nope" } }), { status: 404 }));
+    await waitFor(() => none.root.textContent?.includes("Artifact not found"), "not-found message");
+    expect(document.title).toBe("Clax");
+  });
+
   it("retries a first load that found no Clax (a CDN's page) until Clax answers, and shows no failure meanwhile", async () => {
     let down = true;
     const view = await mountView(async () => (down ? new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } }) : new Response(JSON.stringify(artifact(1)))));

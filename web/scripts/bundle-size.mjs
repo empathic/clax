@@ -57,7 +57,7 @@ const entry = html => {
   return gz(html) + files.reduce((n, f) => n + gz(f), 0);
 };
 
-for (const [html, markers] of [["index.html", ["<!--clax:boot-->"]], ["artifact.html", ["<script id=\"clax-early\">", "<!--clax:boot-->", "<!--clax:frame-->", "<h1>Clax</h1>"]]]) {
+for (const [html, markers] of [["index.html", ["<!--clax:boot-->"]], ["artifact.html", ["<script id=\"clax-early\">", "<!--clax:boot-->", "<!--clax:frame-->", "<title>Clax</title>", "<h1>Clax</h1>"]]]) {
   const text = read(html).toString();
   if (text.includes(`<link rel="stylesheet"`)) throw new Error(`dist/${html} links a stylesheet; the CSS must be inlined`);
   for (const m of markers) if (!text.includes(m)) throw new Error(`dist/${html} lost ${m}, which the daemon injects at or the shell needs`);
