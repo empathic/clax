@@ -1124,7 +1124,7 @@ test.describe("with a person connected on the LAN", () => {
     const samHome = mkdtempSync(join(tmpdir(), "clax-e2e-sam-"));
     try {
       const env: NodeJS.ProcessEnv = { ...process.env, CLAX_HOME: samHome };
-      for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "CLAX_PORT"]) delete env[k];
+      for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "ANTIGRAVITY_AGENT", "ANTIGRAVITY_CONVERSATION_ID", "CLAX_PORT"]) delete env[k];
       const out = spawnSync(bin, ["connect", invite.invite.command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--no-browser"], { env, encoding: "utf8", timeout: WAIT_MS });
       expect(out.status, out.stderr).toBe(0);
       const link = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)![0];

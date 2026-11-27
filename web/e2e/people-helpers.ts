@@ -22,7 +22,7 @@ import { ownerCookie } from "./questions-helpers";
 export function personEnv(home: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (!/^(CLAX_|CLAUDE|CODEX_|GROK_|PI_CODING_AGENT)/.test(k)) env[k] = v;
+    if (!/^(CLAX_|CLAUDE|CODEX_|GROK_|ANTIGRAVITY_|PI_CODING_AGENT)/.test(k)) env[k] = v;
   }
   env.CLAX_HOME = home;
   return env;
