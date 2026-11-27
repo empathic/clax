@@ -158,9 +158,10 @@ stop_orphan_daemon() {
     ! is_agents_home "$1" || return 0
     daemon_record "$1"
     # The PID must still be that daemon: a reused PID belongs to some other
-    # program, whose command line will not name the recorded binary.
+    # program, whose command line will not name the recorded binary. On
+    # macOS the record may have a /private prefix the command line lacks.
     if [ -n "$DAEMON_EXE" ] && [ ! -e "$DAEMON_EXE" ] && [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null \
-        && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -F -- "$DAEMON_EXE" >/dev/null; then
+        && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -F -- "${DAEMON_EXE#/private}" >/dev/null; then
         echo "clax: stopping the daemon of $1 (pid $DAEMON_PID): its binary $DAEMON_EXE is gone (an earlier \`just dev\`)"
         kill "$DAEMON_PID" 2>/dev/null || true
         wait_gone "$DAEMON_PID" || echo "clax: pid $DAEMON_PID has not exited yet" >&2

@@ -109,9 +109,20 @@ reused=$!
 mkdir -p "$T/o3"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$reused" "$T/gone/clax" > "$T/o3/daemon.json"
 stop_orphan_daemon "$T/o3" >/dev/null
-if kill -0 "$reused" 2>/dev/null; then pass "stop_orphan_daemon leaves a reused PID alone"
+printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$reused" "/private$T/gone/clax" > "$T/o3/daemon.json"
+stop_orphan_daemon "$T/o3" >/dev/null
+if kill -0 "$reused" 2>/dev/null; then pass "stop_orphan_daemon leaves a reused PID alone, with or without /private on the recorded path"
 else fail "stop_orphan_daemon signalled a process that is not the recorded daemon"; fi
 kill "$reused" 2>/dev/null
+# As on macOS: the recorded path is the command line's under /private.
+fake_daemon "$T/gone/clax"
+linked=$!
+mkdir -p "$T/o4"
+printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$linked" "/private$T/gone/clax" > "$T/o4/daemon.json"
+stop_orphan_daemon "$T/o4" >/dev/null
+if wait_for "the orphaned daemon started through a symbolic link to exit" gone "$linked" 2>&3; then
+    pass "stop_orphan_daemon stops an orphan whose recorded path is its command line's under /private"
+else fail "stop_orphan_daemon left an orphan whose recorded path is its command line's under /private"; fi
 sleep "$FOREVER" &
 agents=$!
 mkdir -p "$HOME/.clax"
@@ -151,7 +162,7 @@ stop_installed_daemon "$T/none" "$T/cargo/bin/clax" >> "$T/inst/out"
 if [ ! -s "$T/inst/calls" ] && [ ! -s "$T/inst/out" ]; then
     pass "stop_installed_daemon does nothing without a running daemon"
 else fail "stop_installed_daemon, no daemon ($(cat "$T/inst/calls" "$T/inst/out"))"; fi
-kill "$orphan" "$kept" "$agents" "$same" 2>/dev/null
+kill "$orphan" "$kept" "$agents" "$same" "$linked" 2>/dev/null
 wait 2>/dev/null
 exec 2>&3 3>&-
 rm -rf "$HOME/.clax"
@@ -234,6 +245,62 @@ if CLAX_DEV_BIN="$T/clax-build" PATH="$FAKE:$PATH" CLAX_HOME="$T/mine" "$HERE/de
     && grep -q "home=$T/mine " "$T/calls"; then
     pass "a CLAX_HOME you set wins over ~/.clax-dev"
 else fail "CLAX_HOME override ($(cat "$T/calls"))"; fi
+
+# A clax whose serve joins the home's live daemon or starts and records a
+# stand-in, whose stop ends it, and whose agents prints $CLAX_HOME/agents.
+fake_exe "$T/clax-daemon" <<'SH'
+#!/bin/bash
+pid="$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$CLAX_HOME/daemon.json" 2>/dev/null)"
+case "$1" in
+    serve)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then exit 0; fi
+        (exec -a "$0 serve --foreground" sleep 2147483647) </dev/null >/dev/null 2>&1 &
+        printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$!" "$(cd "${0%/*}" && pwd -P)/${0##*/}" > "$CLAX_HOME/daemon.json"
+        ;;
+    stop) echo stop >> "$CLAX_HOME/stops"; kill "$pid" ;;
+    agents) cat "$CLAX_HOME/agents" 2>/dev/null || echo '{"agents":[]}' ;;
+    *) echo "clax 9.9.9-dev" ;;
+esac
+SH
+exec 3>&2 2>/dev/null
+own="$T/own-home"
+CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-daemon" CLAX_HOME="$own" PATH="$FAKE:$PATH" "$HERE/dev.sh" pi >"$T/out" 2>"$T/err"
+rc=$?
+daemon_record "$own"
+tmpdir="$(sed -n 's#^clax dev: clax 9.9.9-dev at \(.*\)/clax, .*#\1#p' "$T/out")"
+if [ "$rc" = 0 ] && [ -n "$DAEMON_PID" ] && [ -n "$tmpdir" ] && [ "$DAEMON_EXE" = "$tmpdir/clax" ] \
+    && wait_for "just dev's own daemon to exit" gone "$DAEMON_PID" 2>&3 && [ "$(cat "$own/stops")" = stop ] \
+    && grep -q "stopping this run's daemon of $own (pid $DAEMON_PID)" "$T/out" && [ ! -e "$tmpdir" ]; then
+    pass "just dev stops the daemon that runs its own binary when the harness exits"
+else
+    fail "just dev's own daemon on exit (rc=$rc; exe=$DAEMON_EXE tmpdir=$tmpdir; $(cat "$T/out" "$T/err"))"
+    if [ -n "$DAEMON_PID" ] && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -F "$tmpdir/clax" >/dev/null; then kill "$DAEMON_PID"; fi
+fi
+echo '{"agents":[{"handle":"a_1"}]}' > "$own/agents"
+rm -f "$own/stops"
+CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-daemon" CLAX_HOME="$own" PATH="$FAKE:$PATH" "$HERE/dev.sh" pi >"$T/out" 2>"$T/err"
+rc=$?
+daemon_record "$own"
+if [ "$rc" = 0 ] && [ ! -e "$own/stops" ] && kill -0 "$DAEMON_PID" 2>/dev/null \
+    && grep -F "(pid $DAEMON_PID) still has agents connected" "$T/out" >/dev/null; then
+    pass "just dev leaves its own daemon running while an agent is connected to it"
+else fail "just dev's own daemon with an agent connected (rc=$rc; $(cat "$T/out" "$T/err"))"; fi
+kill "$DAEMON_PID" 2>/dev/null
+rm -f "$own/agents"
+mkdir -p "$T/watch"
+: > "$T/watch/clax"
+fake_daemon "$T/watch/clax"
+other=$!
+printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$other" "$T/watch/clax" > "$own/daemon.json"
+rm -f "$own/stops"
+CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-daemon" CLAX_HOME="$own" PATH="$FAKE:$PATH" "$HERE/dev.sh" pi >"$T/out" 2>"$T/err"
+rc=$?
+if [ "$rc" = 0 ] && kill -0 "$other" 2>/dev/null && [ ! -e "$own/stops" ] && ! grep -q "stopping" "$T/out"; then
+    pass "just dev leaves the daemon it joined running when that runs another executable"
+else fail "just dev and another executable's daemon (rc=$rc; $(cat "$T/out" "$T/err"))"; fi
+kill "$other" 2>/dev/null
+wait 2>/dev/null
+exec 2>&3 3>&-
 
 : > "$T/calls"
 mkdir -p "$T/fake-fail"

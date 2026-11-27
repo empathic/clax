@@ -637,7 +637,11 @@ remote list`). `just watch` needs `cargo-watch` (`cargo install cargo-watch`).
 **An agent on your working tree: `just dev claude|codex|grok|pi`.** It builds
 `clax`, copies it into a temporary directory put first on `PATH` (removed
 when the session ends), starts the dev home's daemon, and starts the harness
-on that home. A home whose database the build cannot open (upgraded by a
+on that home. When the session ends it stops the home's daemon if that runs
+the session's own build and no agent is connected to it, so the next
+session's build serves the routes and the web UI; a daemon running another
+build (`just watch`'s, or another `just dev` session's) is left running. A
+home whose database the build cannot open (upgraded by a
 build with other migrations) stops it before the harness, with the error and
 what to do:
 
@@ -687,12 +691,12 @@ run directory (`--keep` keeps it), a failing one keeps it with its logs, and
 each run prunes all but the last two (`--no-build` reuses the last builds).
 
 Edit the plugin, skill or hooks, then start a new `just dev` session to pick
-them up. A dev-home daemon left by an earlier `just dev`, whose temporary
-binary is gone, is stopped at the next `just dev` or `just watch`, which says
-so; a `just watch` daemon is left alone, and `~/.clax` and port 7480 are never
-touched. `just install` puts the working tree in front of your everyday agents
-(their daemon restarts on the new build at their next call), and `just
-uninstall` takes it away again.
+them up. A dev-home daemon left by an earlier `just dev` that could not stop
+it (one that was killed), whose temporary binary is gone, is stopped at the
+next `just dev` or `just watch`, which says so; a `just watch` daemon is left
+alone, and `~/.clax` and port 7480 are never touched. `just install` puts
+the working tree in front of your everyday agents (their daemon restarts on
+the new build at their next call), and `just uninstall` takes it away again.
 
 - `just help` (or bare `just`) lists every recipe with a description.
 - `just test-affected` (`scripts/affected-tests.sh`) runs the Bazel tests
