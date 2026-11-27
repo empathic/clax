@@ -2133,8 +2133,10 @@ keeps a session per root conversation instead of one per process:
   later call with the error `shutting_down`, and removes the files the
   hooks keep for each conversation (`run/tool-hook/antigravity-<ID>` and
   `run/wake-nudge/antigravity-<ID>.json`, for an ID of
-  `[A-Za-z0-9._-]`). A conversation left with `/new` stays a live session
-  until then.
+  `[A-Za-z0-9._-]`). When the exit cuts off an open `wait_for_feedback`,
+  Antigravity then runs the `tool` hook for that call, which leaves an
+  empty `run/tool-hook/antigravity-<ID>` behind. A conversation left with
+  `/new` stays a live session until then.
 - A conversation resumed with `agy --conversation <ID>` keeps its ID and has
   a new shim, so its first Clax call registers it again. After a normal
   exit the earlier session has ended, and its watches with it, so the new
@@ -2406,7 +2408,13 @@ Antigravity's agent ran (2026-11-26):
   does not read. In
   Antigravity's default mode these commands run in a sandbox that could not
   connect to 127.0.0.1, so a `clax` command there that needs the daemon
-  fails; the plugin's MCP server and hooks run outside the sandbox.
+  fails; the plugin's MCP server and hooks run outside the sandbox. Run
+  live on 2026-11-26, the MCP servers of clax-antigravity and of an
+  imported Claude Code copy had `agy`'s own environment plus their
+  plugin's `PLUGIN_ROOT` and `PLUGIN_DATA`, and no `ANTIGRAVITY_*` variable
+  (read with `ps`); the copy's hooks had `ANTIGRAVITY_CONVERSATION_ID` and
+  `PLUGIN_ROOT`, as their `standdown mode=hook agent=claude
+  host=antigravity` lines in `hooks.log` show.
 
 ## Comments and feedback
 
@@ -5308,8 +5316,13 @@ comment text it is a request to weigh.
 Measured on 2026-09-29 with Codex CLI 0.158.0 and Claude Code 2.1.284; Pi
 0.73.1 from its source; Grok Build 1.0.45 from its source (not yet run live;
 `scripts/smoke-grok.sh` records the measured version); Antigravity's `agy`
-1.5.18 from the hook and background-call behaviour observed on 2026-11-26
-(not yet run live through the clax-antigravity plugin).
+1.5.18 run live through the clax-antigravity plugin on 2026-11-26
+(`scripts/smoke-antigravity.sh` and the interactive steps it prints, with
+Gemini 3.8 Flash): tier 4 in a headless run, and tier 5 in an interactive
+one, including a wake after the wait had been open eleven minutes and a
+wake of a conversation left with `/new`; tiers 1 to 3 were not exercised
+with a comment, nor were a subagent's calls, a client cancelling an open
+wait, or a wait across machine sleep.
 
 | Tier | Claude Code | Codex | Grok Build | Antigravity | Pi |
 |---|---|---|---|---|---|

@@ -163,7 +163,7 @@ headless:
 
 - `wait_for_feedback` keeps the bounds it has on other harnesses (50 s by
   default, at most 600 s). The run waits for the call, and its result
-  starts one more turn.
+  reaches the agent before the run exits.
 - The `Stop` hook does not remind the agent to wait, and the `watch`
   result's `wake` says that nothing wakes a headless run.
 
