@@ -13,7 +13,9 @@ Signs in to a hosted Clax for one queue request (you approve it in your
 browser), asks you for a report queue taking reports from the origins,
 waits for your answer, and writes CLAX_QUEUE, CLAX_QUEUE_TOKEN and
 CLAX_QUEUE_KEY to the env file (default .env; made owner-only if new,
-those lines replaced if present). It never prints the token or the key.
+those lines replaced if present). CLAX_QUEUE_KEY is an Ed25519 key made
+on this machine: only its public half is sent. It never prints the token
+or the key.
 `;
 
 /** `argv`'s options, or a usage error's message. */

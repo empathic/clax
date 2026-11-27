@@ -119,6 +119,9 @@ which prints the sign-in's link and code for you to approve, asks you for
 the queue, waits (up to an hour) for your answer, and writes `CLAX_QUEUE`,
 `CLAX_QUEUE_TOKEN` and `CLAX_QUEUE_KEY` to the env file (made owner-only
 if new; lines of those names replaced), printing only that it wrote them.
+It makes the grant's Ed25519 key itself and sends only the public half
+with the take (`POST /api/queue-requests/<id>/take {public_key}`), so the
+private key in `CLAX_QUEUE_KEY` never left your machine.
 A local daemon has no device sign-in: there an agent runs `clax queue
 create` instead, as the page says.
 

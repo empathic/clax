@@ -29,6 +29,13 @@ On your Clax instance's Queues page (`/queues`), as the queue's admin:
 2. **Manage, Create service grant**: copy its token and private key into
    your backend's secrets. They are shown once, and never go to a browser.
 
+Or, on a hosted Clax, run `npx @empathic/clax-client-sdk setup --instance
+https://<instance> --name "<app>" --origin https://app.example.com`: it
+asks you for the queue in your browser and writes `CLAX_QUEUE`,
+`CLAX_QUEUE_TOKEN` and `CLAX_QUEUE_KEY` to `.env`. It makes the grant's
+Ed25519 key on your machine and sends only its public half, so the
+private key in `CLAX_QUEUE_KEY` never leaves it.
+
 ## Install
 
 ```

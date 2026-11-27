@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ENV_NAMES, setup, SetupError, withVars, type SetupDeps, type SetupOptions } from "./setup";
+import { ServiceClient } from "./service";
+import { canonical, fromBase64url } from "./sign";
 
 const ORIGIN = "https://clax.example";
 const GRANT = "cxq_secret-token";
@@ -59,7 +61,17 @@ const signedIn: Answer = () => json(200, {
 });
 const request = (status: string, extra: object = {}) => ({ id: "01JREQ", status, name: "Invoices", origins: ["https://app.example.com"], ...extra });
 const asked: Answer = () => json(201, { request: request("pending") });
-const taken: Answer = () => json(200, { request: request("approved", { queue_id: "q-77" }), grant: { id: "sg1" }, token: GRANT, private_key: KEY });
+// The instance's answer to a take that sent its own public key: no private key.
+const taken: Answer = () => json(200, { request: request("approved", { queue_id: "q-77" }), grant: { id: "sg1" }, token: GRANT });
+
+/** The `CLAX_QUEUE_KEY` line of env file `text`. */
+const keyOf = (text: string) => /^CLAX_QUEUE_KEY=(.*)$/m.exec(text)![1];
+
+/** The public half, in unpadded base64url, of PKCS#8 private key `key`. */
+async function publicOf(key: string): Promise<string> {
+  const k = await crypto.subtle.importKey("pkcs8", fromBase64url(key) as BufferSource, { name: "Ed25519" }, true, ["sign"]);
+  return (await crypto.subtle.exportKey("jwk", k)).x!;
+}
 
 const OPTS: SetupOptions = { instance: ORIGIN, name: "Invoices", origins: ["https://app.example.com", "https://app-pr-*.fly.dev"], envFile: ".env", clientName: "setup test", note: "for the app" };
 
@@ -81,7 +93,8 @@ describe("setup", () => {
     const w = world(approvedScript());
     const result = await setup(OPTS, w.deps);
     expect(result).toEqual({ queue: "q-77", envFile: ".env", mcpUrl: `${ORIGIN}/mcp` });
-    expect(w.files[".env"]).toBe(`CLAX_QUEUE=q-77\nCLAX_QUEUE_TOKEN=${GRANT}\nCLAX_QUEUE_KEY=${KEY}\n`);
+    const key = keyOf(w.files[".env"]);
+    expect(w.files[".env"]).toBe(`CLAX_QUEUE=q-77\nCLAX_QUEUE_TOKEN=${GRANT}\nCLAX_QUEUE_KEY=${key}\n`);
     expect(w.modes[".env"]).toBe("new");
 
     // The scoped sign-in, polled no sooner than its interval.
@@ -105,14 +118,51 @@ describe("setup", () => {
     expect(out).toContain(`${ORIGIN}/device?code=ABCD-EFGH`);
     expect(out).toContain(`${ORIGIN}/inbox?queue_request=01JREQ`);
     expect(out).toContain(`Wrote ${ENV_NAMES.join(", ")} to .env`);
-    for (const secret of [GRANT, KEY, "cxa_scoped", "dev-123"]) expect(out).not.toContain(secret);
+    for (const secret of [GRANT, key, "cxa_scoped", "dev-123"]) expect(out).not.toContain(secret);
+
+    // The take sent the public half of the key written, and never the key.
+    const take = JSON.parse(String(w.calls[7].init.body));
+    expect(Object.keys(take)).toEqual(["public_key"]);
+    expect(take.public_key).toBe(await publicOf(key));
+    for (const c of w.calls) expect(String(c.init.body ?? "")).not.toContain(key);
   });
 
   it("replaces the variables an existing env file has, keeping its other lines and its mode", async () => {
     const w = world(approvedScript(), { "app/.env": "PORT=3000\nexport CLAX_QUEUE=old\nCLAX_QUEUE_TOKEN=cxq_old\nCLAX_QUEUE_TOKEN=cxq_older\n# note" });
     await setup({ ...OPTS, envFile: "app/.env" }, w.deps);
-    expect(w.files["app/.env"]).toBe(`PORT=3000\nexport CLAX_QUEUE=q-77\nCLAX_QUEUE_TOKEN=${GRANT}\n# note\nCLAX_QUEUE_KEY=${KEY}\n`);
+    expect(w.files["app/.env"]).toBe(`PORT=3000\nexport CLAX_QUEUE=q-77\nCLAX_QUEUE_TOKEN=${GRANT}\n# note\nCLAX_QUEUE_KEY=${keyOf(w.files["app/.env"])}\n`);
     expect(w.modes["app/.env"]).toBe("kept");
+  });
+
+  it("writes a key ServiceClient signs with, under the public key the take sent", async () => {
+    const w = world(approvedScript());
+    await setup(OPTS, w.deps);
+    const sent = JSON.parse(String(w.calls[7].init.body)).public_key as string;
+    const requests: { url: string; init: RequestInit }[] = [];
+    const client = new ServiceClient({
+      instance: ORIGIN, queue: "q-77", token: GRANT, privateKey: keyOf(w.files[".env"]),
+      fetch: async (url, init) => {
+        requests.push({ url, init });
+        return json(200, { token: "cxr_x", expires_at: "2026-01-01T00:00:00Z" });
+      },
+    });
+    await client.mintReporterToken({ reporter_id: "emp-1", origin: "https://app.example.com", public_key: "AAAA" });
+    const { url, init } = requests[0];
+    const headers = init.headers as Record<string, string>;
+    const m = /^t=(\d+), n=([^,]+), s=(.+)$/.exec(headers["clax-signature"])!;
+    const u = new URL(url);
+    const message = await canonical({
+      method: "POST", pathAndQuery: u.pathname + u.search, host: u.host, t: Number(m[1]), nonce: m[2],
+      body: new Uint8Array(init.body as Uint8Array), token: GRANT,
+    });
+    const pub = await crypto.subtle.importKey("raw", fromBase64url(sent) as BufferSource, { name: "Ed25519" }, true, ["verify"]);
+    expect(await crypto.subtle.verify("Ed25519", pub, fromBase64url(m[3]) as BufferSource, new TextEncoder().encode(message))).toBe(true);
+  });
+
+  it("writes the private key an instance that made the pair itself handed over", async () => {
+    const w = world({ ...approvedScript(), "POST /api/queue-requests/01JREQ/take": [() => json(200, { request: request("approved", { queue_id: "q-77" }), grant: { id: "sg1" }, token: GRANT, private_key: KEY })] });
+    await setup(OPTS, w.deps);
+    expect(keyOf(w.files[".env"])).toBe(KEY);
   });
 
   it("stops on a denied queue request, writing nothing and taking nothing", async () => {

@@ -60,7 +60,9 @@ It signs in (it prints a link and a code: ask your person to open the
 link and approve), asks your person for the queue, waits for their
 answer (approve it in Clax at `{{origin}}/inbox`), and writes
 `CLAX_QUEUE`, `CLAX_QUEUE_TOKEN` and `CLAX_QUEUE_KEY` to the env file
-(made owner-only if missing; existing lines of those names replaced). It
+(made owner-only if missing; existing lines of those names replaced).
+`CLAX_QUEUE_KEY` is an Ed25519 key it makes on this machine: only its
+public half is sent, so the private key never leaves it. It
 prints that it wrote them, never their values. It exits non-zero, saying
 why, if your person denies either step or a step expires; run it again
 to start over.
@@ -122,16 +124,29 @@ Each step's answer is JSON; errors are `{"error": {"code", "message"}}`.
    `request.status` is `pending` (call again), `approved`, `denied`,
    `cancelled` or `expired`.
 
-5. Once approved, take the grant, once, straight into the env file
-   (`jq` shown; any JSON reader will do):
+5. Once approved, make the grant's Ed25519 key here, and take the grant,
+   once, with its public half: the private key never leaves this
+   machine. `KEY` is the private key as PKCS#8 in unpadded base64url (what
+   `ServiceClient`'s `privateKey` reads); `PUBLIC` is the public key's 32
+   bytes in unpadded base64url (the last 32 bytes of its DER form). The
+   take answers `{request, grant, token}`, with no private key. Then
+   write the three values straight into the env file (`jq` shown; any
+   JSON reader will do):
 
    ```
+   openssl genpkey -algorithm ed25519 -outform DER -out clax-queue-key.der
+   KEY=$(base64 < clax-queue-key.der | tr -d '\n=' | tr '+/' '-_')
+   PUBLIC=$(openssl pkey -inform DER -in clax-queue-key.der -pubout -outform DER \
+     | tail -c 32 | base64 | tr -d '\n=' | tr '+/' '-_')
+   rm clax-queue-key.der
    curl -sS -X POST {{origin}}/api/queue-requests/<id>/take \
-     -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}' \
-   | jq -r '"CLAX_QUEUE=\(.request.queue_id)\nCLAX_QUEUE_TOKEN=\(.token)\nCLAX_QUEUE_KEY=\(.private_key)"' >> .env
+     -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+     -d "{\"public_key\": \"$PUBLIC\"}" \
+   | jq -r --arg key "$KEY" '"CLAX_QUEUE=\(.request.queue_id)\nCLAX_QUEUE_TOKEN=\(.token)\nCLAX_QUEUE_KEY=\($key)"' >> .env
    ```
 
-   The take ends the token, so the grant is handed over this once: a
+   A `public_key` that is not one is 400 `invalid_key` and takes
+   nothing: fix it and take again. The take ends the token, so the grant is handed over this once: a
    second take with it is 401 `invalid_token`. If the answer was lost,
    your person can make another grant on the Queues page.
 

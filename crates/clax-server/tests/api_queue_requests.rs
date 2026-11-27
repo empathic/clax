@@ -203,6 +203,133 @@ async fn an_agent_asks_the_owner_approves_and_the_agent_takes_the_grant_once() {
     );
 }
 
+/// `POST pq` to `ts` with service token `token`, signed by `key` now, as
+/// `web/sdk`'s `signedFetch` signs it.
+async fn signed_post(
+    ts: &TestServer,
+    key: &clax_core::sig::KeyPair,
+    pq: &str,
+    token: &str,
+    body: &Value,
+) -> (u16, Value) {
+    use sha2::Digest as _;
+    let bytes = serde_json::to_vec(body).unwrap();
+    let nonce = clax_core::sig::new_nonce();
+    let sig = key
+        .sign(&clax_core::sig::SignInput {
+            method: "POST",
+            path_and_query: pq,
+            host: ts.base.strip_prefix("http://").unwrap(),
+            t: ts.store.now_utc().timestamp(),
+            nonce: &nonce,
+            body_sha256: sha2::Sha256::digest(&bytes).into(),
+            token_sha256: Some(clax_core::secret::sha256(token)),
+            agent_headers_sha256: clax_core::sig::no_agent_headers_sha256(),
+        })
+        .unwrap()
+        .to_string();
+    let r = ts
+        .client
+        .post(format!("{}{pq}", ts.base))
+        .header("authorization", format!("Clax-Queue {token}"))
+        .header("clax-signature", sig)
+        .header("content-type", "application/json")
+        .body(bytes);
+    json_of(r.send().await.unwrap()).await
+}
+
+/// An approved request of session `sid`'s agent: its take path and queue.
+async fn approved(ts: &TestServer, sid: &str) -> (String, String) {
+    let id = asked(ts, sid, "Invoices").await;
+    let (s, v) = as_browser(
+        ts,
+        reqwest::Method::POST,
+        &format!("/api/queue-requests/{id}/approve"),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let qid = v["queue"]["id"].as_str().unwrap().to_string();
+    (format!("/api/queue-requests/{id}/take"), qid)
+}
+
+#[tokio::test]
+async fn a_take_with_its_own_public_key_gets_a_grant_of_that_key_and_no_private_key() {
+    let ts = TestServer::spawn().await;
+    let sid = session(&ts).await;
+    let (take, qid) = approved(&ts, &sid).await;
+
+    // A key that is not an Ed25519 public key, or another field, takes nothing.
+    let short = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7u8; 31]);
+    for (body, want) in [
+        (json!({"public_key": "not a key"}), "invalid_key"),
+        (json!({"public_key": short}), "invalid_key"),
+        (json!({"public_key": 42}), "invalid_json"),
+        (json!({"key": "x"}), "invalid_json"),
+    ] {
+        let (s, v) = as_agent(&ts, &sid, reqwest::Method::POST, &take, Some(body.clone())).await;
+        assert_eq!((s, code(&v)), (400, want), "{body}: {v}");
+    }
+
+    // A valid key still takes the grant, once, with no private key.
+    let mine = clax_core::sig::KeyPair::generate();
+    let public = clax_core::sig::encode_public(&mine.public());
+    let (s, v) = as_agent(
+        &ts,
+        &sid,
+        reqwest::Method::POST,
+        &take,
+        Some(json!({"public_key": public})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(
+        v.get("private_key").is_none(),
+        "no private_key field at all: {v}"
+    );
+    let token = v["token"].as_str().expect("the token, once").to_string();
+    assert!(token.starts_with("cxq_"), "{v}");
+    assert_eq!(v["grant"]["name"], "Requested by claude");
+    let (s, v) = as_agent(&ts, &sid, reqwest::Method::POST, &take, Some(json!({}))).await;
+    assert_eq!(s, 200, "{v}");
+    assert!(
+        v.get("token").is_none() && v.get("private_key").is_none(),
+        "{v}"
+    );
+    assert_eq!(v["grant_taken"], true);
+
+    // The grant verifies the agent's own key, and no other.
+    let pq = format!("/api/queues/{qid}/reporter-tokens");
+    let reporter = clax_core::sig::encode_public(&clax_core::sig::KeyPair::generate().public());
+    let body = json!({"reporter_id": "emp-1", "origin": "https://app.example.com",
+                      "public_key": reporter});
+    let other = clax_core::sig::KeyPair::generate();
+    let (s, v) = signed_post(&ts, &other, &pq, &token, &body).await;
+    assert_eq!((s, code(&v)), (401, "invalid_signature"), "{v}");
+    let (s, v) = signed_post(&ts, &mine, &pq, &token, &body).await;
+    assert_eq!(s, 200, "{v}");
+    assert!(v["token"].as_str().unwrap().starts_with("cxr_"), "{v}");
+}
+
+#[tokio::test]
+async fn a_take_with_no_body_hands_over_the_pair_it_made() {
+    let ts = TestServer::spawn().await;
+    let sid = session(&ts).await;
+    let (take, qid) = approved(&ts, &sid).await;
+    let (s, v) = as_agent(&ts, &sid, reqwest::Method::POST, &take, None).await;
+    assert_eq!(s, 200, "{v}");
+    let token = v["token"].as_str().expect("the token, once").to_string();
+    let pkcs8 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(v["private_key"].as_str().expect("the private key, once"))
+        .unwrap();
+    let key = clax_core::sig::KeyPair::from_pkcs8(&pkcs8).unwrap();
+    let pq = format!("/api/queues/{qid}/reporter-tokens");
+    let reporter = clax_core::sig::encode_public(&clax_core::sig::KeyPair::generate().public());
+    let body = json!({"reporter_id": "emp-1", "origin": "https://app.example.com",
+                      "public_key": reporter});
+    let (s, v) = signed_post(&ts, &key, &pq, &token, &body).await;
+    assert_eq!(s, 200, "{v}");
+}
+
 #[tokio::test]
 async fn a_denied_request_makes_no_queue() {
     let ts = TestServer::spawn().await;

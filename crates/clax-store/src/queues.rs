@@ -1483,9 +1483,26 @@ impl Store {
         name: &str,
         origins: Option<&[String]>,
     ) -> Result<(ServiceGrant, Secret, KeyPair)> {
-        let token = clax_core::secret::token(SERVICE_TOKEN_PREFIX);
         let key = KeyPair::generate();
         let public = clax_core::sig::encode_public(&key.public());
+        let (grant, token) = self.insert_service_grant_in(tx, ctx, qid, name, origins, &public)?;
+        Ok((grant, token, key))
+    }
+
+    /// As [`Store::create_service_grant_in`], for a grant whose Ed25519
+    /// key pair its holder made: the grant verifies `public` (unpadded
+    /// base64url, [`clax_core::sig::encode_public`], checked by the
+    /// caller), and only the token is handed back.
+    pub(crate) fn insert_service_grant_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        qid: &str,
+        name: &str,
+        origins: Option<&[String]>,
+        public: &str,
+    ) -> Result<(ServiceGrant, Secret)> {
+        let token = clax_core::secret::token(SERVICE_TOKEN_PREFIX);
         let id = new_ulid();
         let now = self.now();
         let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
@@ -1524,11 +1541,11 @@ impl Store {
             id,
             queue_id: qid.to_string(),
             name: name.to_string(),
-            public_key: public,
+            public_key: public.to_string(),
             origins: origins.map(<[String]>::to_vec),
             created_at: now,
         };
-        Ok((grant, token, key))
+        Ok((grant, token))
     }
 
     /// The instance's own feedback queue and service grant (spec
