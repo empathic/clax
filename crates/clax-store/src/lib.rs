@@ -288,6 +288,11 @@ pub struct Store {
     /// The jobs the write transaction under way changed, recorded by the
     /// update hook, and their listener ([`Store::set_job_listener`]).
     jobs: jobs::JobChanges,
+    /// Set by the write under way when it queued a webhook delivery
+    /// (`queues::webhooks`); the webhook listener
+    /// ([`Store::set_webhook_listener`]) hears of it once the write commits.
+    webhooks_queued: AtomicBool,
+    webhook_listener: RwLock<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// The tests' hooks at named points of a method ([`Store::at_point`]).
     #[cfg(test)]
     test_points: Mutex<Vec<(&'static str, TestPoint)>>,
@@ -470,6 +475,8 @@ impl Store {
             clock,
             hidden,
             jobs,
+            webhooks_queued: AtomicBool::new(false),
+            webhook_listener: RwLock::new(None),
         })
     }
 
@@ -673,31 +680,37 @@ impl Store {
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let (out, changes, requests, recorded, agents, jobs) = self.exec.write(|conn| {
-            self.inbox_changes.lock().unwrap().clear();
-            self.request_changes.lock().unwrap().clear();
-            self.jobs.clear();
-            let _job = self.audit.begin();
-            self.visibility.begin();
-            *self.agents_changed.lock().unwrap() = None;
-            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            let out = f(&tx)?;
-            // Read before the commit: a job the transaction deleted after
-            // changing it is heard of as it was last.
-            let jobs = self.jobs.collect(&tx)?;
-            tx.commit()?;
-            // Inside the turn, so generations follow commit order.
-            self.visibility.committed();
-            // Taken inside the turn: the next writer's changes are its own.
-            Ok((
-                out,
-                once_per_seq(std::mem::take(&mut *self.inbox_changes.lock().unwrap())),
-                std::mem::take(&mut *self.request_changes.lock().unwrap()),
-                self.audit.take_recorded(),
-                self.agents_changed.lock().unwrap().take(),
-                jobs,
-            ))
-        })?;
+        let (out, changes, requests, recorded, agents, jobs, webhooks) =
+            self.exec.write(|conn| {
+                self.inbox_changes.lock().unwrap().clear();
+                self.request_changes.lock().unwrap().clear();
+                self.jobs.clear();
+                let _job = self.audit.begin();
+                self.visibility.begin();
+                *self.agents_changed.lock().unwrap() = None;
+                self.webhooks_queued
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let out = f(&tx)?;
+                // Read before the commit: a job the transaction deleted after
+                // changing it is heard of as it was last.
+                let jobs = self.jobs.collect(&tx)?;
+                tx.commit()?;
+                // Inside the turn, so generations follow commit order.
+                self.visibility.committed();
+                // Taken inside the turn: the next writer's changes are its own.
+                Ok((
+                    out,
+                    once_per_seq(std::mem::take(&mut *self.inbox_changes.lock().unwrap())),
+                    std::mem::take(&mut *self.request_changes.lock().unwrap()),
+                    self.audit.take_recorded(),
+                    self.agents_changed.lock().unwrap().take(),
+                    jobs,
+                    self.webhooks_queued
+                        .swap(false, std::sync::atomic::Ordering::Relaxed),
+                ))
+            })?;
         if recorded {
             self.audit.nudge();
         }
@@ -721,7 +734,26 @@ impl Store {
             }
         }
         self.jobs.tell(jobs);
+        if webhooks {
+            let listen = self.webhook_listener.read().unwrap().clone();
+            if let Some(listen) = listen {
+                listen();
+            }
+        }
         Ok(out)
+    }
+
+    /// Installs `f`, called after each committed write that queued a
+    /// webhook delivery, outside the write turn and after the other
+    /// listeners. Replaces any earlier listener.
+    pub fn set_webhook_listener(&self, f: impl Fn() + Send + Sync + 'static) {
+        *self.webhook_listener.write().unwrap() = Some(Arc::new(f));
+    }
+
+    /// Marks the write under way as having queued a webhook delivery.
+    pub(crate) fn webhooks_queued(&self) {
+        self.webhooks_queued
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Marks the write under way (in [`Store::with_tx`]) as changing the

@@ -10,9 +10,16 @@ const routes = (o: Record<string, unknown> = {}) => ({
   "GET /api/queues/q1/reports": { reports: [{ state: "open" }, { state: "open" }, { state: "claimed" }], next: null },
   "GET /api/queues/q1/members": { members: [{ public_id: "p1", name: "Alex", role: "admin", maker: true, owner: false }, { public_id: "p2", name: "Mia", role: "triage", maker: false, owner: false }] },
   "GET /api/queues/q1/service-grants": { grants: [] },
+  "GET /api/queues/q1/webhooks": { webhooks: [] },
   ...o,
 });
 const click = (el: Element | null | undefined) => flush(() => (el as HTMLElement).click());
+const HOOK = {
+  id: "wh1", url: "https://app.example/hook",
+  events: ["report.created", "report.claimed", "report.released", "report.replied", "report.fix_proposed", "report.verified", "report.reopened", "report.resolved"],
+  created_at: "2026-11-24T10:00:00Z", state: "verified", verified_at: "2026-11-24T10:00:01Z", verify_by: null, disabled_at: null, given_up: 0,
+  failing_since: null, last_error: null, dropped: 0, last_dropped_at: null,
+};
 const type = (el: Element | null, v: string) => flush(() => { const i = el as HTMLInputElement; i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); });
 
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
@@ -66,6 +73,93 @@ describe("Queues", () => {
     click([...secret.querySelectorAll("button")].find(b => b.textContent === "Done"));
     expect(m.root.querySelector(".secret")).toBeNull();
     expect(m.root.textContent).not.toContain("cxq_secret");
+  });
+
+  it("offers Verify again to an unverified endpoint and Re-enable to a disabled one, and counts dropped events", async () => {
+    const verify = { id: "dv", webhook_id: "wh1", event_id: "evt_v", event: "webhook.verify", report_id: null, state: "failed", attempts: 1, next_at: null, last_at: "2026-11-24T10:00:00Z", last_status: 200, last_error: "the answer is not a JSON object", delivered_at: null, created_at: "2026-11-24T10:00:00Z" };
+    const calls = stubFetch(routes({
+      "GET /api/queues/q1/webhooks": { webhooks: [
+        { ...HOOK, state: "unverified", verified_at: null, verify_by: "2026-11-25T10:00:00Z", last_error: "verification failed: the answer is not a JSON object" },
+        { ...HOOK, id: "wh2", state: "disabled", disabled_at: "2026-11-24T11:00:00Z", given_up: 5, dropped: 3, last_dropped_at: "2026-11-24T10:30:00Z" },
+        { ...HOOK, id: "wh3", state: "expired", verified_at: null, verify_by: "2026-11-23T10:00:00Z" },
+      ] },
+      "GET /api/queues/q1/webhooks/wh1/deliveries": { deliveries: [verify] },
+      "POST /api/queues/q1/webhooks/wh1/verify": { webhook: HOOK },
+      "POST /api/queues/q1/webhooks/wh2/verify": { webhook: HOOK },
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    const [unv, dis, exp] = ["wh1", "wh2", "wh3"].map(id => m.root.querySelector(`[data-webhook="${id}"]`)!);
+    expect(unv.querySelector(".state")!.textContent).toBe("waiting for its verification answer, until 2026-11-25 10:00");
+    expect(dis.querySelector(".state")!.textContent).toBe("disabled 2026-11-24 11:00 after 5 deliveries in a row failed");
+    expect(dis.querySelector(".dropped")!.textContent).toBe("3 events dropped over the hourly cap, latest 2026-11-24 10:30");
+    expect(exp.querySelector(".state")!.textContent).toContain("remove it and add it again");
+    const names = (el: Element) => [...el.querySelectorAll(":scope > button")].map(b => b.textContent);
+    expect(names(unv)).toEqual(["Verify again", "Deliveries", "Remove"]);
+    expect(names(dis)).toEqual(["Re-enable", "Deliveries", "Remove"]);
+    expect(names(exp)).toEqual(["Deliveries", "Remove"]);
+    click([...unv.querySelectorAll("button")].find(b => b.textContent === "Deliveries"));
+    await settle();
+    const d = m.root.querySelector('[data-delivery="dv"]')!;
+    expect(d.textContent).toContain("not verified");
+    expect(d.querySelector("button"), "a verification is not redelivered").toBeNull();
+    click([...unv.querySelectorAll("button")].find(b => b.textContent === "Verify again"));
+    await settle();
+    click([...dis.querySelectorAll("button")].find(b => b.textContent === "Re-enable"));
+    await settle();
+    expect(calls.filter(c => c.method === "POST").map(c => c.url)).toEqual(["/api/queues/q1/webhooks/wh1/verify", "/api/queues/q1/webhooks/wh2/verify"]);
+  });
+
+  it("adds a webhook for the events chosen and shows its secret once", async () => {
+    const made = { webhook: { ...HOOK, events: ["report.created"], state: "unverified", verified_at: null, verify_by: "2026-11-25T10:00:00Z" }, secret: "whsec_abc" };
+    const calls = stubFetch(routes({ "POST /api/queues/q1/webhooks": made }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    expect(m.root.textContent).toContain("No webhooks.");
+    type(m.root.querySelector('input[name="webhook_url"]'), " https://app.example/hook ");
+    // Every event is chosen to start with; keep only "Filed".
+    for (const box of [...m.root.querySelectorAll<HTMLInputElement>('input[name="event"]')].filter(b => b.value !== "report.created")) click(box);
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Add webhook"));
+    await settle();
+    expect(calls.find(c => c.method === "POST")).toMatchObject({ url: "/api/queues/q1/webhooks", body: { url: "https://app.example/hook", events: ["report.created"] } });
+    const secret = m.root.querySelector('[aria-label="New webhook"]')!;
+    expect(secret.textContent).toContain("not shown again");
+    expect(secret.querySelector("code")!.textContent).toBe("whsec_abc");
+    // What the endpoint must answer before it is sent any report event.
+    expect(secret.textContent).toContain("webhook.verify");
+    expect(secret.textContent).toContain('{"answer": "<hex HMAC-SHA256 of webhook.verify.<challenge> under the secret>"}');
+    expect(secret.textContent).toContain("res.json(event.reply)");
+    click([...secret.querySelectorAll("button")].find(b => b.textContent === "Done"));
+    expect(m.root.textContent).not.toContain("whsec_abc");
+  });
+
+  it("says an endpoint is failing, shows its deliveries and redelivers one", async () => {
+    const hook = { ...HOOK, failing_since: "2026-11-24T11:30:00Z", last_error: "upstream down" };
+    const failed = { id: "d1", webhook_id: "wh1", event_id: "evt_1", event: "report.created", report_id: "t1", state: "failed", attempts: 8, next_at: null, last_at: "2026-11-24T11:30:00Z", last_status: 503, last_error: "upstream down", delivered_at: null, created_at: "2026-11-24T10:00:00Z" };
+    const calls = stubFetch(routes({
+      "GET /api/queues/q1/webhooks": { webhooks: [hook] },
+      "GET /api/queues/q1/webhooks/wh1/deliveries": { deliveries: [failed] },
+      "POST /api/queues/q1/webhooks/wh1/deliveries/d1/redeliver": { delivery: { ...failed, state: "pending", attempts: 0 } },
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    const line = m.root.querySelector('[data-webhook="wh1"]')!;
+    expect(line.textContent).toContain("every event");
+    expect(line.querySelector(".failing")!.textContent).toBe("failing since 2026-11-24 11:30");
+    click([...line.querySelectorAll("button")].find(b => b.textContent === "Deliveries"));
+    await settle();
+    const d = m.root.querySelector('[data-delivery="d1"]')!;
+    expect(d.textContent).toContain("gave up after 8 attempts · 503");
+    expect(d.textContent).toContain("upstream down");
+    click([...d.querySelectorAll("button")].find(b => b.textContent === "Redeliver"));
+    await settle();
+    expect(calls.some(c => c.method === "POST" && c.url === "/api/queues/q1/webhooks/wh1/deliveries/d1/redeliver")).toBe(true);
   });
 
   it("limits a new service grant to the queue's preview patterns, and names a limited grant's origins", async () => {

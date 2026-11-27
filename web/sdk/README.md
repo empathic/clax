@@ -180,6 +180,45 @@ this very origin, and offers "It's fixed", "Still broken" and a note
 there. `docs/feedback.md` in the Clax repository ("Preview deployments")
 has the whole flow.
 
+## Webhooks
+
+A queue's admin can name your backend's URL as a webhook endpoint
+(**Manage, Webhooks**; its signing secret, `whsec_…`, is shown once).
+Clax then posts the queue's report events to it (`report.created`,
+`report.claimed`, `report.released`, `report.replied`,
+`report.fix_proposed`, `report.verified`, `report.reopened`,
+`report.resolved`), signed, at least once, once your backend has answered
+its verification: a `webhook.verify` event, sent when the endpoint is
+added, whose `reply` (`{answer}`, the HMAC of its challenge under the
+secret) `verifyWebhook` computes. `verifyWebhook` checks a delivery and
+answers its typed `WebhookEvent`; give it the raw body:
+
+```ts
+import { verifyWebhook, WebhookError } from "@empathic/clax-client-sdk/service";
+
+app.post("/clax/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  try {
+    const event = await verifyWebhook({ secret: process.env.CLAX_WEBHOOK_SECRET!, headers: req.headers, body: req.body });
+    if (event.type === "webhook.verify") return res.json(event.reply); // Clax sends nothing else until this
+    // Drop repeats by event.id: every attempt and redelivery carries the same one.
+  } catch (e) {
+    if (e instanceof WebhookError) return res.status(400).send(e.reason); // bad_timestamp, stale, bad_signature, bad_body
+    throw e;
+  }
+  res.sendStatus(204);
+});
+```
+
+It refuses a `Clax-Timestamp` more than `WEBHOOK_TOLERANCE_S` (300)
+seconds from `now` (default `Date.now()`) and compares the signature in
+constant time. A verification not answered rightly leaves the endpoint
+unverified until an admin presses **Verify again**;
+`webhookChallengeAnswer(secret, challenge)` is the answer on its own. An event carries the reporter's profile (name, email,
+GitHub login, avatar), as your backend minted their token with. The guide's
+[section 10](https://github.com/empathic/clax/blob/main/docs/feedback.md#10-tell-the-reporter-outside-the-app-webhooks)
+has a Slack relay; the scheme, payload and retries are the contract's
+"Queue webhooks".
+
 ## License
 
 LGPL-2.1-only: see `LICENSE` and `LICENSES/LGPL-2.1-only.txt`. The packages

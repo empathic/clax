@@ -219,6 +219,11 @@ impl From<CoreError> for ApiError {
                 code: "question_closed",
                 message,
             } => ApiError::new(StatusCode::CONFLICT, "question_closed", message),
+            // A queue webhook's verification (`clax_store::queues::webhooks`).
+            CoreError::Invalid {
+                code: code @ ("already_verified" | "verification_expired" | "not_verified"),
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, code, message),
             // The home's config.toml links to a file that does not exist.
             CoreError::Invalid {
                 code: "config_symlink_dangling",
@@ -228,6 +233,15 @@ impl From<CoreError> for ApiError {
                 code: "limit_reached",
                 message,
             } => ApiError::new(StatusCode::TOO_MANY_REQUESTS, "limit_reached", message),
+            // A queue's, or a host's, hourly cap on webhook verifications.
+            CoreError::Invalid {
+                code: "verifications_limited",
+                message,
+            } => ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "verifications_limited",
+                message,
+            ),
             // The grant flow (spec §6.2–§6.4).
             CoreError::Invalid {
                 code:

@@ -63,6 +63,7 @@ pub mod surface;
 mod test_util;
 pub mod viewer;
 pub mod views;
+pub mod webhooks;
 pub mod wrap_cache;
 
 pub use state::AppState;

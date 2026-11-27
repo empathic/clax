@@ -330,6 +330,147 @@ export interface PreviewAttached {
   changed: boolean;
 }
 
+/** A webhook event's type (`clax_core::webhook::Event`). */
+export type WebhookEventType =
+  | "report.created"
+  | "report.claimed"
+  | "report.released"
+  | "report.replied"
+  | "report.fix_proposed"
+  | "report.verified"
+  | "report.reopened"
+  | "report.resolved";
+
+/** A webhook endpoint's state: `unverified` until it answers a
+ * verification (sent no report event meanwhile), `verified`, `disabled`
+ * after deliveries given up in a row, `expired` when never verified within
+ * a day of being added (inert until removed). */
+export type WebhookState = "unverified" | "verified" | "disabled" | "expired";
+
+/** A queue's webhook endpoint as its admins read it: never its secret. */
+export interface Webhook {
+  id: string;
+  url: string;
+  events: WebhookEventType[];
+  created_at: string;
+  state: WebhookState;
+  verified_at: string | null;
+  /** Until when an unverified endpoint may be verified; `null` once it is. */
+  verify_by: string | null;
+  disabled_at: string | null;
+  /** Deliveries given up in a row since the last one delivered. */
+  given_up: number;
+  /** Since when its deliveries fail: set when one is given up, cleared when one is delivered. */
+  failing_since: string | null;
+  /** Why its latest given-up delivery, or its latest verification, failed. */
+  last_error: string | null;
+  /** Events dropped for it past the hourly cap, ever. */
+  dropped: number;
+  last_dropped_at: string | null;
+}
+
+/** `POST /api/queues/{qid}/webhooks`'s answer: the secret is shown once. */
+export interface WebhookCreated {
+  webhook: Webhook;
+  /** `whsec_…`: what `verifyWebhook` checks each delivery with. */
+  secret: string;
+}
+
+/** One delivery of an event to an endpoint, as its log shows it. */
+export interface WebhookDelivery {
+  id: string;
+  webhook_id: string;
+  event_id: string;
+  event: WebhookEventType | "webhook.verify";
+  /** `null` for a verification. */
+  report_id: string | null;
+  state: "pending" | "delivered" | "failed";
+  attempts: number;
+  next_at: string | null;
+  last_at: string | null;
+  last_status: number | null;
+  last_error: string | null;
+  delivered_at: string | null;
+  created_at: string;
+}
+
+/** The report a webhook event is about, as the queue's triage members read it. */
+export interface WebhookReport {
+  /** The report's ID: what an app's `?clax-report=<id>` names. */
+  id: string;
+  state: ReportState;
+  external_id: string;
+  artifact_id: string;
+  title: string;
+  /** The page it was filed on. */
+  page_url: string;
+  /** The report in its queue on the Clax instance, for the queue's members. */
+  link?: string;
+  reporter_id: string | null;
+  /** The profile the reporter's token was minted with: personal data. */
+  reporter: ReporterProfile | null;
+  resolve_reason?: ResolveReason;
+  reopen_count: number;
+  created_at: string;
+}
+
+/** The latest fix, on `report.fix_proposed`, `report.verified` and `report.reopened`. */
+export interface WebhookFix {
+  n: number;
+  summary: string;
+  url?: string;
+  commit?: string;
+  release?: string;
+  verify_url?: string;
+  verify_after?: string;
+  outcome: FixOutcome;
+  proposer_name: string;
+}
+
+/** The reply on `report.replied`; the reopen's comment on `report.reopened`. */
+export interface WebhookComment {
+  id: string;
+  author_kind: AuthorKind;
+  author_name: string;
+  body: string;
+  created_at: string;
+}
+
+/** What one delivery of a report event posts. `id` is the same on every
+ * attempt and redelivery: drop repeats by it. */
+export interface ReportWebhookEvent {
+  id: string;
+  type: WebhookEventType;
+  created_at: string;
+  queue: { id: string; name: string };
+  report: WebhookReport;
+  fix?: WebhookFix;
+  comment?: WebhookComment;
+}
+
+/** What an endpoint answers a verification with: 2xx and this JSON. */
+export interface WebhookVerifyReply {
+  /** The hex HMAC-SHA256, under the endpoint's secret, of `webhook.verify.<challenge>`. */
+  answer: string;
+}
+
+/** The verification Clax sends an endpoint when it is added (and on
+ * Verify again): it is sent no report event until it answers 2xx with
+ * `reply` as its JSON body. */
+export interface WebhookVerifyEvent {
+  id: string;
+  type: "webhook.verify";
+  created_at: string;
+  queue: { id: string; name: string };
+  webhook: { id: string; url: string };
+  challenge: string;
+  /** Set by `verifyWebhook`, not sent: the body to answer with. */
+  reply: WebhookVerifyReply;
+}
+
+/** What one webhook delivery posts: a report event, or the endpoint's verification. */
+export type WebhookEvent = ReportWebhookEvent | WebhookVerifyEvent;
+
 /** `GET /.well-known/clax`. */
 export interface Discovery {
   kind: "local" | "hosted" | "worker";

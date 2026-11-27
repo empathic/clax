@@ -23,6 +23,7 @@ pub mod passkey;
 pub mod people;
 pub mod remotes;
 mod server;
+pub mod webhook_receiver;
 pub mod where_to_ask;
 
 pub use client::*;
