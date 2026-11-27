@@ -82,6 +82,10 @@ published (or the person asks for an edit), publish a new version of the same
 artifact by passing its `id` or `url`. Tell the person the URL from the result;
 call `open` only when they want it shown in their browser.
 
+Write the page to a file in your scratch directory and publish it with
+`file_path`, not `html`. To change the page, edit that file and publish it
+again: writing a whole page out again for each change is slow.
+
 ## Page contract
 
 Every page follows this contract so it renders well in the gallery, in light and
@@ -337,7 +341,8 @@ comes to these steps.
    end your turn.
 2. When the call finishes, handle what it brought as in "Comment loop",
    then call `wait_for_feedback` again with no `timeout_s` and end your
-   turn.
+   turn. Make `comments_reply`, `comments_resolve` and that
+   `wait_for_feedback` in one turn, not one turn each.
 3. Keep exactly one open. A call made while one is open returns
    `already_waiting: true` and opens nothing. If you end a turn with a
    watch armed and no wait open, the Stop hook says so once: call
