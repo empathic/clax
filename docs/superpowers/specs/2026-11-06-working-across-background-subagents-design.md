@@ -119,12 +119,15 @@ Evidence:
    which threads are background; that is the daemon, the `working` tool
    (Rust MCP server and Pi extension) and the skills. The `stop` hook only
    passes on whether work is still running (7).
-6. **Codex: the owner waits.** Codex does not wake the parent when a child
-   finishes (only its under-development `wake_on_agent_messages`
-   feature does), so the skill tells a Codex owner to wait for its
-   subagents (`wait_agent`, present in multi-agent v1 and, by default, v2)
-   before ending a turn that has a thread in progress.
-
+6. **Codex: the owner keeps listening.** Codex does not wake the parent
+   when a child finishes (only its under-development
+   `wake_on_agent_messages` feature does), and gives Clax no sign that one
+   has: no hook fires, its `Stop` input lists no background work, and the
+   child's `clax mcp` process stays up until Codex exits (0.172.0,
+   2026-11-27). So a Codex owner does not end a turn that has a thread in
+   progress, and does not block on its subagents either: it calls
+   `wait_for_feedback`, answers what arrives, checks its subagents with a
+   short `wait_agent`, and repeats.
 7. **The harness says whether work is still running.** The turn end
    carries `background_work` (`POST …/working/end`): `false` ends the
    background threads with the turn (`End::TurnEndIdle`), as finished work;
@@ -145,7 +148,7 @@ Evidence:
      0.90.0; `subagents:started`/`subagents:completed`/`subagents:failed`
      of `@tintinweb/pi-subagents` 0.26.3) and reports at `agent_end`, once
      one has started.
-   - Codex says nothing; its owner waits for its subagents (6).
+   - Codex says nothing; its owner keeps the turn going (6).
 8. **The page says so.** A thread among a record's `background_thread_ids`
    reads "<agent> is working on it in the background". The record that
    carries background threads on keeps the time their work began as its

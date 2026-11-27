@@ -36,8 +36,10 @@ names it in `addresses` (tell a subagent that publishes to do so). Your
 subagents do not call `working`, `comments_reply`, `comments_resolve` or
 `comments_handoff` on the thread: they report to you, and you reply once
 every one of them has reported. Codex does not wake you when a subagent
-finishes, so in Codex wait for your subagents (`wait_agent`) before ending
-a turn that has a thread in progress.
+finishes, so in Codex keep the turn going while a thread is in progress,
+without blocking on your subagents: call `wait_for_feedback`, answer what
+arrives, check your subagents with a short `wait_agent`, and repeat until
+they have reported.
 
 **Withheld content.** What people your person has not approved wrote is
 withheld from you: a comment's `body` is null with `withheld: true`, a

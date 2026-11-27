@@ -5149,8 +5149,9 @@ threads unasked, so the publish that carries a background thread's
 change names it in `addresses`. At the end of a turn the harness says
 whether work is still running in the background: with nothing running the
 background threads end too, as finished work; with work running they
-stay. Codex does not say, so there you wait for your subagents before you
-end the turn. A record naming background threads lapses 3600 s after its
+stay. Codex does not say, and does not wake you when a subagent finishes,
+so there you keep the turn going and listen for comments while your
+subagents work. A record naming background threads lapses 3600 s after its
 last renewal, as a backstop, and 120 s after the moment it loses the last
 of them. Renewal is automatic:
 
