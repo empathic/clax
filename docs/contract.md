@@ -4420,7 +4420,25 @@ the copy's remote, the link holds the copy's address alone.
 
 The queue tools act through a queue's triage routes (`/api/queues/<qid>/reports…`)
 as the agent's person, who must be a member of the queue (404 `not_a_member`
-otherwise, as for a queue that does not exist). Claims are leases of 10
+otherwise, as for a queue that does not exist). An agent of a grant (an
+agent token on a hosted Clax, or a connected machine) acts on a queue only
+as far as its token's `clax-queues` rights reach ("Rights", under "People
+and their agents"): none until granted, membership alone giving it
+nothing. Each route asks one action at the queue: `read` for `queue_list`,
+`queue_get` (the report, its clips and diagnostics) and `queue_watch`;
+`claim` for `queue_claim`, `queue_renew`, `queue_release` and the report
+metadata written under a lease; `reply` for `queue_reply`; `fix` for
+`queue_fix`; `resolve` for `queue_resolve`. A queue the token may not
+`read` answers 404 `not_a_member`, as one that does not exist, and
+`queue_list` without `queue` lists only the queues it may `read`; with
+`read` but not the action, 403 `queue_not_granted`, naming `right: {type:
+"clax-queues", action}`. The rights are read at every request, so a grant
+removed, or a granter who left the queue, refuses the next one; a live
+claim whose `claim` is gone ends at once (its holder's next renew, write
+or fix is 409 `lease_lost`; `queue.release` with reason
+`rights_revoked`), a watch whose `read` is gone stops, and no wake or
+reporter's reply reaches a session that may not `read` the queue. The
+daemon token's agents (this machine's) are not limited by it. Claims are leases of 10
 minutes, held by the agent's session: an agent claims, renews, releases,
 replies, resolves and writes report metadata from its session (400
 `no_session` without one), and its replies, resolves and metadata writes need
@@ -4734,7 +4752,10 @@ reporter routes' tests fail on a refusal whose code it lacks.
 | `POST /api/queues/<qid>/reports/<tid>/fixes/<n>/preview` (`Clax-Fix`, the fix's ticket, unsigned, no `Origin`, no CORS) | `{origin, path?}` | `{report, verify_url, changed}`; 403 `wrong_origin`, 400 `invalid_origin` or `invalid_args`, 401 `invalid_token` or `token_expired` (above) |
 
 Triage routes (a queue member, or a member's agent as "Report queue
-tools" says; 404 `not_a_member` otherwise):
+tools" says; 404 `not_a_member` otherwise, and for an agent of a grant
+the `clax-queues` action each route asks, as that section lists: 404
+`not_a_member` without `read` there, 403 `queue_not_granted` without the
+action):
 
 | Route | Body | Answer |
 |---|---|---|
@@ -4812,7 +4833,9 @@ another session: the report waits in its queue.
 
 Error codes besides the common ones: `invalid_context`,
 `invalid_diagnostics`, `invalid_profile`, `invalid_fix`,
-`no_preview_origins` (400); `not_fix_proposed`, `not_claimable`,
+`no_preview_origins` (400); `queue_not_granted` (403: an agent's token
+may read the queue but not the action, named in `right: {type:
+"clax-queues", action}`); `not_fix_proposed`, `not_claimable`,
 `lease_lost` (409).
 
 **The instance's own feedback queue.** An instance files its people's
@@ -4993,15 +5016,22 @@ the Queues page lists pending ones too. Audit: `queue_request.ask`,
 `grant`).
 
 **A token for asking alone.** A device sign-in with `scope:
-["queue.request"]` ("The public side's device sign-in") makes a grant with
-no rights whose token reaches `POST /api/queue-requests`, `GET
-/api/queue-requests/<id>`, the session routes the remote MCP endpoint
-keeps its session by (`POST /api/sessions`, `GET` and `PATCH
-/api/sessions/<id>`), `POST /api/queue-requests/<id>/take`, `/mcp` (whose tools' requests are checked the same
-way) and `DELETE /api/hosted/agent-token`; every other route answers 403
-`forbidden`. It makes one request, and ends (its token 401) once its agent
-has taken that request's answer, an hour after it was approved, or when
-revoked on People, whichever comes first.
+["queue.request"]` ("The public side's device sign-in") makes a
+queue-request token: a grant that holds none of its person's rights and
+one grant on it, from the person who approved the sign-in,
+`clax-queue-requests` `request` ("Rights"), recorded as `grant.elevate`
+with its `expires_at`. Its rights are read as every token's are, so it
+reaches the routes that need that right (`POST /api/queue-requests`,
+`GET /api/queue-requests/<id>`, `POST /api/queue-requests/<id>/take`),
+`/mcp` (whose tools' requests are checked the same way) and `DELETE
+/api/hosted/agent-token`. Every other route answers it 403 `forbidden`,
+as one needing a right it cannot hold, or one needing none (which
+presumes what a person's grant gives), but for the session routes the
+remote MCP endpoint keeps its session by (`POST /api/sessions`, `GET` and
+`PATCH /api/sessions/<id>`). It makes one
+request, and ends (its token 401) once its agent has taken that
+request's answer, when its grant to ask ends (an hour after it was
+approved), or when revoked on People, whichever comes first.
 
 ### Working
 
@@ -6424,10 +6454,14 @@ Rights are GNAP access objects:
 {"type": "clax-comments",  "actions": ["read", "write", "reply", "resolve", "send", "watch"], "locations": ["*"]}
 {"type": "clax-db",        "actions": ["read", "write"], "level": "interact", "locations": ["*"]}
 {"type": "clax-ask",       "actions": ["ask"]}
+{"type": "clax-queues",    "actions": ["read", "claim", "reply", "fix", "resolve"], "locations": ["*"]}
+{"type": "clax-queue-requests", "actions": ["request"]}
 ```
 
 Locations are `*`, `own` (the artifacts the agent's person created) or
-artifact IDs. The presets:
+artifact IDs; a `clax-queues` object's are `*` or queue IDs, and
+`clax-ask` and `clax-queue-requests` take none. The presets (which hold no
+`clax-queues` and no `clax-queue-requests`):
 
 | Preset | Rights |
 |---|---|
@@ -6483,6 +6517,61 @@ An agent's rights:
   (400 `invalid_rights`, `not_a_person`).
 - **This machine's agents** act with the daemon token, which rights do not
   limit: narrowing or raising one is 400 `token_agent`.
+- **Zero by default: `clax-queues`.** A report queue's actions are `read`
+  (list, get, clips, diagnostics, watch), `claim` (claim, renew, release,
+  and the metadata written under a lease), `reply` (to reporters), `fix`
+  (propose a fix) and `resolve`; each implies `read`. This type is no part
+  of a person's rights, a preset, a narrowing or an agent's raise (400
+  `invalid_rights` there): an agent holds it exactly as the union of the
+  grants on its token, each read at every check within what its granter
+  may give then and what the token's person may give there. A queue's
+  members (the owner: at the queues the owner made) hold every action on
+  it; membership alone gives a token nothing. So an agent's rights are
+  `(the above, of the other types) ∪ ⋃ (each grant on its token ∩ its
+  granter's holdings ∩ its person's holdings)`, for every session of the
+  token and for its requests that name none. Every token starts with
+  none, those that existed before this type included.
+- **Zero by default: `clax-queue-requests`.** Its one action, `request`,
+  is asking one's person for a report queue (`POST /api/queue-requests`,
+  reading that request and taking its answer, "Queue requests"). It is no
+  part of a person's rights, a preset or a narrowing either: every agent
+  of a person holds it by its person's grant, with the rest of what that
+  grant gives, and a queue-request token ("A token for asking alone")
+  holds it alone, as a grant on the token from the person who approved
+  its sign-in, with an end of its own. No one grants it by hand: `PUT
+  …/elevate` refuses it (400 `invalid_rights`), and a queue-request token
+  takes no other grant (404).
+- **Granting on a token.** Anyone who holds a queue action, the owner or
+  a connected person in their browser, grants it to any approved token
+  (an agent token, or a connected machine), their own or another
+  person's: `PUT /api/people/grants/<gid>/elevate {access, if_version?}`,
+  `access` of `clax-queues` alone, its locations queue IDs they are a
+  member of (403 `beyond_your_rights` otherwise) or `*`, every queue they
+  hold, read at each check. Each granter holds one grant per token,
+  replaced whole by their `PUT`; `if_version` works as a raise's. `DELETE
+  /api/people/grants/<gid>/elevate[?granter=<public ID>|owner]` removes
+  one granter's: the granter removes their own; the token's person and
+  the owner remove anyone's (`reason` `removed_by_person`,
+  `removed_by_owner`); 404 `not_raised` when there is none or the caller
+  may not remove it, alike. A change takes effect at the token's next
+  request; a granter's grants end when they are revoked, released or
+  folded, and give nothing while they are not a member. After each change
+  that can take a capability away, what the token's sessions hold under it
+  is revisited at once: a live claim whose `claim` is gone ends (the
+  holder's next renew, write or fix is 409 `lease_lost`, `queue.release`
+  reason `rights_revoked`), a queue watch whose `read` is gone stops.
+  Each change is recorded as `grant.elevate {grant_id, access, granter,
+  reason?}`. The answer is `{grant: {grant_id, label, person, owner,
+  raises: [{granter: {public_id, name, owner}, access, version,
+  created_at}], queues?}}`: the token's person and the owner read every
+  granter's grant and `queues`, what they give it now; another granter
+  reads their own alone. Settings, Agents & machines lists each agent
+  token with its grants (`GET /api/hosted/agent-tokens`, each live token's
+  `grants`), and `GET /api/people/me/raises?queue=<qid>` gives a member
+  what they may grant there (`queue_holds`) and the live tokens of the
+  queue's members a grant reaches (`queue_raisable`, each with the
+  caller's own grant on it), beside `grant_raises`, the caller's grants on
+  tokens.
 - **A request naming no session** (the remote CLI) gets the person's
   rights within the machine's narrowing and every live narrowing of the
   machine's sessions, never a raise: an agent narrowed to read-only cannot
@@ -6624,9 +6713,9 @@ router), and a test fails when it differs:
 | `GET /api/sessions/{id}/where-to-ask` | Own | `clax-ask` `ask` | 2 MiB | yes |
 | `POST /api/sessions/{id}/terminal` | Own | none | 2 MiB | yes |
 | `GET /api/queues` | Own | none | 2 MiB | yes |
-| `POST /api/queue-requests` | Own | none | 2 MiB | yes |
-| `GET /api/queue-requests/{id}` | Own | none | 2 MiB | yes |
-| `POST /api/queue-requests/{id}/take` | Own | none | 2 MiB | yes |
+| `POST /api/queue-requests` | Own | `clax-queue-requests` `request` | 2 MiB | yes |
+| `GET /api/queue-requests/{id}` | Own | `clax-queue-requests` `request` | 2 MiB | yes |
+| `POST /api/queue-requests/{id}/take` | Own | `clax-queue-requests` `request` | 2 MiB | yes |
 | `GET /api/queues/{qid}/reports` | Own | `clax-comments` `read` | 2 MiB | yes |
 | `POST /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `DELETE /api/queues/{qid}/watch` | Own | `clax-comments` `watch` | 2 MiB | yes |
@@ -6819,6 +6908,8 @@ router), and a test fails when it differs:
 | `PUT /api/passkeys/settings` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/passkeys/{id}/remove` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/people` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/people/grants/{gid}/elevate` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/people/grants/{gid}/elevate` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/people/invites` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/people/invites` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/people/invites/{id}` | Denied | yes: 403 `not_for_agents` |

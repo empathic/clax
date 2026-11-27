@@ -117,11 +117,17 @@ export async function queueWithGrant(owner: Page, origin: string, site: Deployer
 /** Tells `page`'s overlay the page has focus again, which asks for the badge at once. */
 export const refocus = (page: Page) => page.evaluate(() => { window.dispatchEvent(new Event("focus")); });
 
-/** An agent token of the owner's (`cxa_…`), made in the owner's signed-in browser. */
+/** An agent token of the owner's (`cxa_…`), made in the owner's signed-in browser and
+ * granted every queue action on all the owner's queues, as Settings' Queues control
+ * grants it: a token has no queue access until it is granted. */
 export async function agentTokenOf(owner: Page, label = "triage-laptop"): Promise<string> {
   return owner.evaluate(async l => {
     const r = await fetch("/api/hosted/agent-tokens", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: l }) });
     if (!r.ok) throw new Error(`agent token: ${r.status} ${await r.text()}`);
-    return (await r.json()).token as string;
+    const minted = (await r.json()) as { id: string; token: string };
+    const access = [{ type: "clax-queues", actions: ["read", "claim", "reply", "fix", "resolve"], locations: ["*"] }];
+    const g = await fetch(`/api/people/grants/${encodeURIComponent(minted.id)}/elevate`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ access }) });
+    if (!g.ok) throw new Error(`queue grant: ${g.status} ${await g.text()}`);
+    return minted.token;
   }, label);
 }

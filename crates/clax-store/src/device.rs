@@ -282,14 +282,24 @@ impl Store {
                 .optional()?;
             let (id, name, peer_ip, kind, scope) = row.ok_or(CoreError::NotFound)?;
             let grant = self.bearer_grant_in(tx, ctx, viewer_id, &name, &peer_ip)?;
-            if let Some(scope) = &scope {
-                // No rights at all, and its own end: what it may do is its
-                // scope's routes alone (`clax_http::agent`).
+            if scope.is_some() {
+                // A queue-request token: none of its person's rights, and
+                // one grant from them to ask for a queue, with its own end
+                // (`crate::grant_raises`).
                 let ends = self.device_later(crate::queue_requests::SCOPED_GRANT_LIFE_S);
-                tx.execute(
-                    "UPDATE grants SET scope = ?2, scope_expires_at = ?3, narrow_json = '[]'
-                     WHERE id = ?1",
-                    params![grant.id, scope, ends],
+                let (owner, public_id): (bool, String) = tx.query_row(
+                    "SELECT COALESCE(owner, 0), public_id FROM viewers WHERE id = ?1",
+                    params![viewer_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                let granter = (!owner).then_some(public_id);
+                crate::grant_raises::issue_request_grant_in(
+                    self,
+                    tx,
+                    ctx,
+                    &grant.id,
+                    granter.as_deref(),
+                    &ends,
                 )?;
             }
             let device = kind.as_deref() == Some(CLAX_APP_KIND);
@@ -411,17 +421,10 @@ impl Store {
                         params![viewer],
                         |r| r.get(0),
                     )?;
-                    let scope: Option<(String, String)> = tx
-                        .query_row(
-                            "SELECT scope, scope_expires_at FROM grants WHERE id = ?1",
-                            params![gid],
-                            |r| {
-                                Ok(r.get::<_, Option<String>>(0)?
-                                    .zip(r.get::<_, Option<String>>(1)?))
-                            },
-                        )
-                        .optional()?
-                        .flatten();
+                    // A queue-request token answers its one right as the
+                    // scope it asked for, with that grant's end.
+                    let scope = crate::grant_raises::request_grant_in(tx, &gid)?
+                        .map(|ends| (crate::queue_requests::QUEUE_REQUEST_SCOPE.to_string(), ends));
                     let token = self.issue_bearer_token_in(tx, ctx, &gid)?;
                     Ok(DevicePoll::Issued {
                         token,

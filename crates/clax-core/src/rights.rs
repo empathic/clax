@@ -12,13 +12,21 @@
 //! - The db level for an artifact is per action: [`Rights::db_level`] with
 //!   `"write"` for a write, `"read"` for a read.
 //!
+//! Zero by default: a type for which [`RightType::zero_by_default`] holds
+//! is no part of any person's rights, preset, narrowing or session raise.
+//! A session holds it only as the union of the grants that reach it, each
+//! read at every check within what its granter may still do
+//! ([`granted_within`], [`with_grants`]). `clax-queues` is the first such
+//! type and `clax-queue-requests` the second; the others may follow them.
+//!
 //! Limits: a client's array holds at most [`MAX_ACCESS`] access objects,
 //! counted before merging, with a preset name counting as its merged
 //! objects (`clax:reader` and `clax:full` are four, `clax:collaborator`
 //! seven); each object holds at most
 //! [`MAX_LOCATIONS`] locations. Merged rights hold at most one object per
-//! type, `clax-db` level and action set: 86 in all (15 artifact action sets,
-//! 63 comment, 7 db, 1 ask).
+//! type, `clax-db` level and action set: 103 in all (15 artifact action
+//! sets, 63 comment, 7 db, 1 ask, 16 queue: every queue set holds `read`,
+//! 1 queue request).
 
 use crate::db::Level;
 use crate::{CoreError, Result};
@@ -41,6 +49,16 @@ pub const COMMENT_ACTIONS: &[&str] = &["read", "write", "reply", "resolve", "sen
 pub const DB_ACTIONS: &[&str] = &["read", "write"];
 /// Actions of `clax-ask`.
 pub const ASK_ACTIONS: &[&str] = &["ask"];
+/// Actions of `clax-queues`, on a report queue: `read` (list, get, clips,
+/// diagnostics, watch), `claim` (claim, renew, release, and the report
+/// metadata written under a lease), `reply` (to reporters), `fix` (propose
+/// a fix) and `resolve`. Each implies `read`: an object naming any of them
+/// grants `read` too.
+pub const QUEUE_ACTIONS: &[&str] = &["read", "claim", "reply", "fix", "resolve"];
+/// Actions of `clax-queue-requests`: `request`, asking one's person for a
+/// report queue (`POST /api/queue-requests`, reading that request and
+/// taking its answer). Unlocated, as `clax-ask` is.
+pub const QUEUE_REQUEST_ACTIONS: &[&str] = &["request"];
 
 /// Most access objects in one rights array a client sends. Effective rights
 /// are a product of up to three such arrays, so this bounds their rebuild.
@@ -70,6 +88,10 @@ pub enum RightType {
     Db,
     #[serde(rename = "clax-ask")]
     Ask,
+    #[serde(rename = "clax-queues")]
+    Queues,
+    #[serde(rename = "clax-queue-requests")]
+    QueueRequests,
 }
 
 impl RightType {
@@ -79,6 +101,8 @@ impl RightType {
             "clax-comments" => Some(RightType::Comments),
             "clax-db" => Some(RightType::Db),
             "clax-ask" => Some(RightType::Ask),
+            "clax-queues" => Some(RightType::Queues),
+            "clax-queue-requests" => Some(RightType::QueueRequests),
             _ => None,
         }
     }
@@ -89,6 +113,8 @@ impl RightType {
             RightType::Comments => "clax-comments",
             RightType::Db => "clax-db",
             RightType::Ask => "clax-ask",
+            RightType::Queues => "clax-queues",
+            RightType::QueueRequests => "clax-queue-requests",
         }
     }
 
@@ -99,13 +125,34 @@ impl RightType {
             RightType::Comments => COMMENT_ACTIONS,
             RightType::Db => DB_ACTIONS,
             RightType::Ask => ASK_ACTIONS,
+            RightType::Queues => QUEUE_ACTIONS,
+            RightType::QueueRequests => QUEUE_REQUEST_ACTIONS,
         }
     }
 
-    /// Whether objects of this type carry locations. `clax-ask` does not: a
-    /// question is not asked at an artifact.
+    /// Whether a session holds this type only through the grants that
+    /// reach it: no person's rights, preset, narrowing or session raise
+    /// carries it, so a new session has none of it ([`effective`] leaves
+    /// it out, [`with_grants`] adds the grants'). `clax-queues` and
+    /// `clax-queue-requests`.
+    pub fn zero_by_default(self) -> bool {
+        matches!(self, RightType::Queues | RightType::QueueRequests)
+    }
+
+    /// Whether this type's locations are artifacts (`*`, `own` or artifact
+    /// IDs). `clax-ask` has none; `clax-queues`' are queue IDs or `*`.
+    pub fn at_artifacts(self) -> bool {
+        matches!(
+            self,
+            RightType::Artifacts | RightType::Comments | RightType::Db
+        )
+    }
+
+    /// Whether objects of this type carry locations. `clax-ask` and
+    /// `clax-queue-requests` do not: a question is not asked at an
+    /// artifact, and a queue asked for does not exist yet.
     fn located(self) -> bool {
-        self != RightType::Ask
+        !matches!(self, RightType::Ask | RightType::QueueRequests)
     }
 }
 
@@ -280,9 +327,11 @@ impl Access {
             .and_then(Value::as_str)
             .and_then(RightType::parse)
             .ok_or_else(|| {
-                invalid("type must be clax-artifacts, clax-comments, clax-db or clax-ask")
+                invalid(
+                    "type must be clax-artifacts, clax-comments, clax-db, clax-ask, clax-queues or clax-queue-requests",
+                )
             })?;
-        let actions = obj
+        let mut actions = obj
             .get("actions")
             .and_then(Value::as_array)
             .filter(|a| !a.is_empty())
@@ -316,7 +365,18 @@ impl Access {
         };
         let locations = canonical_locations(locations);
         if !kind.located() && locations != [Location::Any] {
-            return Err(invalid("clax-ask takes no locations"));
+            return Err(invalid(format!("{} takes no locations", kind.as_str())));
+        }
+        if kind == RightType::Queues {
+            if locations
+                .iter()
+                .any(|l| matches!(l, Location::Own | Location::OwnArtifact(_)))
+            {
+                return Err(invalid(
+                    "clax-queues locations are \"*\" (every queue you may give) or queue IDs",
+                ));
+            }
+            actions.insert("read".to_string());
         }
         if kind == RightType::Artifacts
             && actions.contains("create")
@@ -600,9 +660,13 @@ impl Rights {
 
     /// The artifact IDs these rights name, when every location is one (an
     /// artifact ID, or `own:<id>`); `None` when any is `*` or `own`, which
-    /// `clax-ask`'s always is.
+    /// `clax-ask`'s always is, or any object is of a type not at artifacts
+    /// (`clax-ask`, `clax-queues`).
     pub fn artifact_ids(&self) -> Option<BTreeSet<String>> {
         let mut out = BTreeSet::new();
+        if self.0.iter().any(|a| !a.kind.at_artifacts()) {
+            return None;
+        }
         for l in self.0.iter().flat_map(|a| &a.locations) {
             match l {
                 Location::Artifact(id) | Location::OwnArtifact(id) => {
@@ -617,11 +681,13 @@ impl Rights {
     /// These rights at the artifacts `keep` accepts only: each object keeps
     /// the artifact IDs among its locations that `keep` accepts (an
     /// `own:<id>` as `<id>`) and loses `*`, `own` and the rest; an object
-    /// left with no location is dropped.
+    /// left with no location is dropped, and so is every object of a type
+    /// whose locations are not artifacts.
     pub fn at_artifacts(&self, keep: &dyn Fn(&str) -> bool) -> Rights {
         let out = self
             .0
             .iter()
+            .filter(|a| a.kind.at_artifacts())
             .filter_map(|a| {
                 let locations: Vec<Location> = a
                     .locations
@@ -669,6 +735,90 @@ impl Rights {
     /// could send; computed rights need `Rights::parse_internal` (the store's reader).
     pub fn to_json(&self) -> Value {
         Value::Array(self.0.iter().map(Access::to_json).collect())
+    }
+
+    /// Every action of `kind` at each of `locations` (IDs; none gives
+    /// nothing): what a holder may give of a zero-default type, such as a
+    /// queue member's `clax-queues` at their queues.
+    pub fn every_action_at(kind: RightType, locations: impl IntoIterator<Item = String>) -> Rights {
+        let locations: Vec<Location> = locations.into_iter().map(Location::Artifact).collect();
+        if locations.is_empty() {
+            return Rights::default();
+        }
+        Rights(merge(vec![Access::new(
+            kind,
+            kind.actions(),
+            locations,
+            None,
+        )]))
+    }
+
+    /// These rights without the types for which
+    /// [`RightType::zero_by_default`] holds.
+    pub fn without_zero_default(&self) -> Rights {
+        Rights(
+            self.0
+                .iter()
+                .filter(|a| !a.kind.zero_by_default())
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// These rights' objects of the zero-default types alone.
+    pub fn zero_default_only(&self) -> Rights {
+        Rights(
+            self.0
+                .iter()
+                .filter(|a| a.kind.zero_by_default())
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// These rights without the objects that apply at `*`: what they
+    /// name location by location.
+    pub fn named_only(&self) -> Rights {
+        Rights(
+            self.0
+                .iter()
+                .filter(|a| a.locations != [Location::Any])
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Whether any object is of a zero-default type.
+    pub fn has_zero_default(&self) -> bool {
+        self.0.iter().any(|a| a.kind.zero_by_default())
+    }
+
+    /// Whether every object is of a zero-default type (none is too).
+    pub fn only_zero_default(&self) -> bool {
+        self.0.iter().all(|a| a.kind.zero_by_default())
+    }
+
+    /// The locations of `kind` at which these rights allow `action`, when
+    /// none is `*` (`None` then): a listing of named things, such as the
+    /// queues a session may read.
+    pub fn locations_allowing(&self, kind: RightType, action: &str) -> Option<BTreeSet<String>> {
+        let mut out = BTreeSet::new();
+        for a in self
+            .0
+            .iter()
+            .filter(|a| a.kind == kind && a.actions.contains(action))
+        {
+            for l in &a.locations {
+                match l {
+                    Location::Any => return None,
+                    Location::Artifact(id) | Location::OwnArtifact(id) => {
+                        out.insert(id.clone());
+                    }
+                    Location::Own => {}
+                }
+            }
+        }
+        Some(out)
     }
 }
 
@@ -782,7 +932,9 @@ pub fn cap_raise(raise: &Rights, base: &Rights, narrow: &Rights) -> Rights {
     Rights(merge(out))
 }
 
-/// An agent's effective rights (spec §7.2): `(person ∩ grant narrowing ∩
+/// An agent's effective rights (spec §7.2) of the types that are not zero
+/// by default ([`RightType::zero_by_default`], left out of every input):
+/// `(person ∩ grant narrowing ∩
 /// session narrowing) ∪ (elevations capped by each narrowing)`, `elevate`
 /// the union of the agent's elevations (the owner's as given, each
 /// creator's through [`creator_elevation`]). The grant's narrowing caps a
@@ -796,8 +948,9 @@ pub fn effective(
     session_narrow: Option<&Rights>,
     elevate: Option<&Rights>,
 ) -> Rights {
-    let mut r = person.clone();
-    let mut up = elevate.cloned();
+    // The zero-default types come from grants alone (`with_grants`).
+    let mut r = person.without_zero_default();
+    let mut up = elevate.map(Rights::without_zero_default);
     for n in [grant_narrow, session_narrow].into_iter().flatten() {
         up = up.map(|e| cap_raise(&e, &r, n));
         r = r.intersect(n);
@@ -806,6 +959,32 @@ pub fn effective(
         Some(e) => r.union(&e),
         None => r,
     }
+}
+
+/// What one grant of a zero-default type gives now: its `access` of those
+/// types within each of `holders`, the current capabilities of everyone
+/// whose standing the grant rests on (its granter's, and the receiving
+/// session's person's, which a grant never exceeds). A `*` location reads
+/// as every location the holders name. Read at every check, so a grant
+/// whose proof is gone (a granter who left a queue or was revoked) gives
+/// nothing from the next check on, and nothing it gave outlives it.
+pub fn granted_within(access: &Rights, holders: &[&Rights]) -> Rights {
+    holders
+        .iter()
+        .fold(access.zero_default_only(), |r, h| r.intersect(h))
+}
+
+/// A session's rights: `base` (its [`effective`] rights of the other
+/// types) with the union of every live grant that reaches it, each already
+/// capped by its granter's current capabilities ([`granted_within`]). Two
+/// grants that overlap simply unite; removing one leaves what the others
+/// still prove.
+pub fn with_grants<'a>(base: &Rights, grants: impl IntoIterator<Item = &'a Rights>) -> Rights {
+    grants
+        .into_iter()
+        .fold(base.without_zero_default(), |r, g| {
+            r.union(&g.zero_default_only())
+        })
 }
 
 #[cfg(test)]
@@ -1460,6 +1639,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `clax-queues` is zero by default: no preset, person's rights or
+    /// raise carries it into an agent's rights; only grants do, each
+    /// within its holders, and grants unite.
+    #[test]
+    fn queue_rights_come_from_grants_alone_and_unite() {
+        let q = |v: Value| Rights::parse(&v).unwrap();
+        let none = |_: &str| false;
+        // Every action implies read; `own` is no queue location.
+        let claim = q(json!([{"type": "clax-queues", "actions": ["claim"], "locations": ["q1"]}]));
+        assert!(claim.allows(RightType::Queues, "read", Some("q1"), &none));
+        assert!(claim.allows(RightType::Queues, "claim", Some("q1"), &none));
+        assert!(!claim.allows(RightType::Queues, "fix", Some("q1"), &none));
+        assert!(!claim.allows(RightType::Queues, "read", Some("q2"), &none));
+        assert!(
+            Rights::parse(
+                &json!([{"type": "clax-queues", "actions": ["read"], "locations": ["own"]}])
+            )
+            .is_err()
+        );
+        assert!(Rights::parse(&json!([{"type": "clax-queues", "actions": ["vote"]}])).is_err());
+        // No preset holds it, and effective rights leave it out.
+        for p in [PRESET_READER, PRESET_COLLABORATOR, PRESET_FULL] {
+            assert!(!Rights::preset(p).unwrap().has_zero_default(), "{p}");
+        }
+        let person = Rights::full().union(&claim);
+        let e = effective(&person, None, None, Some(&claim));
+        assert!(!e.allows_somewhere(RightType::Queues, "read"));
+        assert!(e.allows(RightType::Artifacts, "read", Some("x"), &none));
+        // A grant gives only within its holders; `*` reads as theirs.
+        let sam = Rights::every_action_at(RightType::Queues, ["q1".to_string(), "q2".to_string()]);
+        let mia = Rights::every_action_at(RightType::Queues, ["q2".to_string()]);
+        let all = q(json!([{"type": "clax-queues", "actions": ["resolve"], "locations": ["*"]}]));
+        let g = granted_within(&all, &[&sam, &mia]);
+        assert!(g.allows(RightType::Queues, "resolve", Some("q2"), &none));
+        assert!(
+            !g.allows(RightType::Queues, "read", Some("q1"), &none),
+            "beyond the receiver"
+        );
+        assert_eq!(
+            g.locations_allowing(RightType::Queues, "read"),
+            Some(["q2".to_string()].into())
+        );
+        // A granter who holds nothing gives nothing.
+        assert!(granted_within(&all, &[&Rights::default(), &mia]).is_empty());
+        // Two overlapping grants unite; either alone still proves q2.
+        let one = granted_within(
+            &claim.union(&q(
+                json!([{"type": "clax-queues", "actions": ["read"], "locations": ["q2"]}]),
+            )),
+            &[&sam, &mia],
+        );
+        let two = granted_within(&all, &[&mia, &mia]);
+        let base = Rights::preset(PRESET_READER).unwrap();
+        let both = with_grants(&base, [&one, &two]);
+        assert!(both.allows(RightType::Queues, "resolve", Some("q2"), &none));
+        assert!(both.allows(RightType::Comments, "read", Some("x"), &none));
+        let only_one = with_grants(&base, [&one]);
+        assert!(only_one.allows(RightType::Queues, "read", Some("q2"), &none));
+        assert!(!only_one.allows(RightType::Queues, "resolve", Some("q2"), &none));
+        assert!(!with_grants(&base, []).allows_somewhere(RightType::Queues, "read"));
+        // Queue IDs are not artifacts.
+        assert_eq!(claim.artifact_ids(), None);
+        assert!(claim.at_artifacts(&|_| true).is_empty());
+        assert_eq!(Rights::parse_internal(&both.to_json()).unwrap(), both);
     }
 
     /// A preset counts toward [`MAX_ACCESS`] as its merged objects.

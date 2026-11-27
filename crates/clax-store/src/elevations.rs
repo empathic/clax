@@ -298,7 +298,8 @@ pub(super) fn drop_granted_in(
     if !sids.is_empty() {
         st.visibility_changed();
     }
-    Ok(())
+    // Their grants on tokens end the same way.
+    super::grant_raises::drop_granted_in(st, tx, ctx, granter, reason)
 }
 
 /// Removes deleted artifact `aid` from its creator's elevations (an

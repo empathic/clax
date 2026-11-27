@@ -741,6 +741,7 @@ async fn a_session_names_its_person_and_rights() {
         v["rights"],
         Rights::preset(clax_core::rights::PRESET_READER)
             .unwrap()
+            .union(&clax_store::grant_raises::queue_request_access().unwrap())
             .to_json(),
         "{v}"
     );

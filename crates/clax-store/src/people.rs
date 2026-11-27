@@ -258,7 +258,9 @@ pub struct GrantCaller {
     /// grant's.
     pub session: Option<String>,
     /// `person ∩ grant narrowing`, and with a session `∩ its narrowing ∪
-    /// its elevation` (the elevation only while the session is live, M2).
+    /// its elevation` (the elevation only while the session is live, M2);
+    /// with, whatever the session, the union of the grants on the token
+    /// of the zero-default types ([`super::grant_raises`]).
     pub rights: Rights,
 }
 
@@ -2258,8 +2260,9 @@ impl Store {
                      SELECT id FROM grants WHERE status = 'approved' AND manage_sha256 IS NOT NULL
                        AND COALESCE(last_used_at, decided_at, created_at) < ?2
                      UNION ALL
-                     SELECT id FROM grants WHERE status = 'approved'
-                       AND scope_expires_at IS NOT NULL AND scope_expires_at <= ?3"
+                     SELECT g.id FROM grants g WHERE g.status = 'approved'
+                       AND EXISTS (SELECT 1 FROM grant_elevations e WHERE e.grant_id = g.id
+                                     AND e.expires_at IS NOT NULL AND e.expires_at <= ?3)"
                 ))?;
                 stmt.query_map(params![pending_cutoff, idle_cutoff, now], |r| r.get(0))?
                     .collect::<rusqlite::Result<_>>()?
@@ -2755,15 +2758,27 @@ pub(crate) fn grant_caller_in(
             )
         }
     };
+    // The zero-default types (`clax-queues`, `clax-queue-requests`) are
+    // the union of the grants on the token, each within what its granter
+    // may give now. Its person's own grant gives every agent of theirs
+    // `clax-queue-requests` `request` (asking them for a queue); a
+    // queue-request token has no person's grant, only its grant to ask.
+    let mut granted = super::grant_raises::given_in(c, gid)?;
+    if super::grant_raises::request_grant_in(c, gid)?.is_none() {
+        granted.push(super::grant_raises::queue_request_access()?);
+    }
     Ok(GrantCaller {
         grant_id: gid.to_string(),
         person: (!owner).then_some(public_id),
         session: session.map(str::to_string),
-        rights: clax_core::rights::effective(
-            &person_rights,
-            grant_narrow.as_ref(),
-            session_narrow.as_ref(),
-            elevate.as_ref(),
+        rights: clax_core::rights::with_grants(
+            &clax_core::rights::effective(
+                &person_rights,
+                grant_narrow.as_ref(),
+                session_narrow.as_ref(),
+                elevate.as_ref(),
+            ),
+            &granted,
         ),
     })
 }
@@ -3711,7 +3726,14 @@ pub(crate) mod tests {
         let c = st.grant_caller(&gid, None).unwrap();
         assert_eq!(c.person.as_deref(), Some(sam.as_str()));
         assert_eq!(c.session, None);
-        assert_eq!(c.rights, Rights::preset(PRESET_COLLABORATOR).unwrap());
+        // Its person's rights, and by its person's grant the right to ask
+        // them for a queue (`crate::grant_raises`).
+        assert_eq!(
+            c.rights,
+            Rights::preset(PRESET_COLLABORATOR)
+                .unwrap()
+                .union(&crate::grant_raises::queue_request_access().unwrap())
+        );
         // The grant's narrowing applies.
         let reader = Rights::preset(PRESET_READER).unwrap();
         st.narrow_grant(DAEMON, &gid, Some(reader.clone())).unwrap();
@@ -3778,9 +3800,10 @@ pub(crate) mod tests {
         assert_eq!(c.person, None);
         // Everything, within the collaborator access the machine asked for.
         let collaborator = Rights::preset(PRESET_COLLABORATOR).unwrap();
+        let rights = c.rights.without_zero_default();
         assert!(
-            c.rights.is_narrower_or_equal(&collaborator)
-                && collaborator.is_narrower_or_equal(&c.rights)
+            rights.is_narrower_or_equal(&collaborator)
+                && collaborator.is_narrower_or_equal(&rights)
         );
     }
 

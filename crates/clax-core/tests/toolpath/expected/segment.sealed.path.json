@@ -236,7 +236,7 @@
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
         "graph_ref": "toolpath://clax/6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-        "head": "e000000000131",
+        "head": "e000000000132",
         "id": "clax-journal-6a1f0c3e-20261006-001"
       },
       "steps": [
@@ -6313,6 +6313,50 @@
               "e000000000130"
             ],
             "timestamp": "2026-10-06T14:09:40.131Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/grant/g_7h2k9m4q8x1a5b3c6d0e2f": {
+              "structural": {
+                "access": [
+                  {
+                    "actions": [
+                      "claim",
+                      "read"
+                    ],
+                    "locations": [
+                      "*"
+                    ],
+                    "type": "clax-queues"
+                  }
+                ],
+                "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+                "granter": "u_5am7q2",
+                "type": "clax.grant.elevate"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "grant.elevate",
+              "seq": 132,
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "u_5am7q2 granted access on grant g_7h2k9m4q8x1a5b3c6d0e2f"
+          },
+          "step": {
+            "actor": "human:clax-person/u_5am7q2",
+            "id": "e000000000132",
+            "parents": [
+              "e000000000131"
+            ],
+            "timestamp": "2026-10-06T14:09:43.132Z"
           }
         }
       ]

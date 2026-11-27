@@ -418,6 +418,7 @@ async fn status_on_a_remote_daemon_reports_the_person_and_rights() {
         v["rights"],
         clax_core::rights::Rights::preset(clax_core::rights::PRESET_READER)
             .unwrap()
+            .union(&clax_store::grant_raises::queue_request_access().unwrap())
             .to_json()
     );
 }

@@ -578,18 +578,36 @@ fn token_view(t: &clax_store::hosted::AgentToken) -> Value {
 /// `GET /api/hosted/agent-tokens` (a member) → `{tokens}`, newest first,
 /// without their tokens, each with its `kind`: `device` for the person's
 /// own device (the Clax app's sign-in), which People lists apart, else
-/// `agent`.
+/// `agent`; and each live one with `grants`, the grants on it
+/// (`clax-queues`, zero until granted) as its person reads them: `{raises:
+/// [{granter, access, version, created_at}], queues}`, `queues` what they
+/// give it now ([`crate::routes::people::grant_raises_view`]).
 async fn list_tokens(
     State(s): State<AppState>,
     headers: HeaderMap,
     Extension(r): Extension<HostedRequest>,
 ) -> Result<Response, ApiError> {
     browser_only(&headers)?;
-    let id = member_of(&r, "mint agent tokens")?.viewer.id.clone();
-    let tokens = s.store_call(move |st| st.agent_tokens(&id)).await?;
-    Ok(no_store(
-        Json(json!({"tokens": tokens.iter().map(token_view).collect::<Vec<_>>()})).into_response(),
-    ))
+    let who = member_of(&r, "mint agent tokens")?;
+    let id = who.viewer.id.clone();
+    let me = (!who.owner).then(|| who.viewer.public_id.clone());
+    let tokens = s
+        .store_call(move |st| {
+            st.agent_tokens(&id)?
+                .iter()
+                .map(|t| {
+                    let mut v = token_view(t);
+                    if t.status == "approved" {
+                        let g = st.grant(&t.id)?;
+                        v["grants"] =
+                            crate::routes::people::grant_raises_view(st, &g, me.as_deref())?;
+                    }
+                    Ok(v)
+                })
+                .collect::<clax_core::Result<Vec<Value>>>()
+        })
+        .await?;
+    Ok(no_store(Json(json!({"tokens": tokens})).into_response()))
 }
 
 #[derive(Deserialize, Default)]
@@ -1300,8 +1318,10 @@ struct DeviceCodeBody {
 /// than `clax-app`, a `return_to` that is not a loopback page
 /// ([`clax_http::loopback::loopback_return`]) or a `scope` other than
 /// `["queue.request"]` (or beside a `client_kind`), 400 `limit_reached`
-/// with too many waiting. A scoped sign-in's token holds a grant of that
-/// scope alone: no rights, the scope's routes, and an end of its own.
+/// with too many waiting. A scoped sign-in's token holds none of its
+/// person's rights and one grant from the approver,
+/// `clax-queue-requests` `request`, with an end of its own
+/// (`clax_store::grant_raises`).
 async fn device_code(
     State(s): State<AppState>,
     headers: HeaderMap,

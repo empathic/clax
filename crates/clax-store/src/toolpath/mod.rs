@@ -763,7 +763,8 @@ impl Event<'_> {
                 | K::GrantDeny
                 | K::GrantRevoke
                 | K::GrantToken
-                | K::GrantNarrow,
+                | K::GrantNarrow
+                | K::GrantElevate,
             ) => self.str("grant_id").map(Obj::Grant),
             Some(K::PersonRights | K::PersonRevoke | K::PersonReinstate) => {
                 self.str("person").map(Obj::Person)
@@ -1311,6 +1312,14 @@ impl Event<'_> {
                 self.show("grant_id")
             ),
             Some(K::GrantNarrow) => format!("Narrowed grant {}", self.show("grant_id")),
+            Some(K::GrantElevate) => {
+                let who = self.str("granter").unwrap_or("the owner");
+                if self.body.get("access").is_none_or(Value::is_null) {
+                    format!("Ended {who}'s grant on grant {}", self.show("grant_id"))
+                } else {
+                    format!("{who} granted access on grant {}", self.show("grant_id"))
+                }
+            }
             Some(K::PersonRights) => format!("Set the rights of person {}", self.show("person")),
             Some(K::PersonRevoke) => format!("Revoked person {}", self.show("person")),
             Some(K::PersonReinstate) => format!("Reinstated person {}", self.show("person")),

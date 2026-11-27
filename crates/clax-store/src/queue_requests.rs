@@ -16,11 +16,13 @@
 //!   one service grant of the queue and hands it its token and Ed25519
 //!   private key, in that answer alone: neither is kept, and a later take
 //!   (or read) says it was taken. Reading a request changes nothing.
-//! - **Scoped grants.** A grant of scope [`QUEUE_REQUEST_SCOPE`] (a device
-//!   sign-in that asked for no more) makes one request, and ends once its
-//!   agent has taken that request's answer, at its own end
-//!   ([`SCOPED_GRANT_LIFE_S`] after it was approved) or when revoked,
-//!   whichever comes first.
+//! - **Queue-request tokens.** A device sign-in that asked for
+//!   [`QUEUE_REQUEST_SCOPE`] alone makes a token whose one right is a grant
+//!   on it from the approving person, `clax-queue-requests` `request`, with
+//!   an end of its own ([`crate::grant_raises::issue_request_grant_in`]): it
+//!   makes one request, and ends once its agent has taken that request's
+//!   answer, at that grant's end ([`SCOPED_GRANT_LIFE_S`] after it was
+//!   approved) or when revoked, whichever comes first.
 //! - **Life.** A pending request expires [`REQUEST_LIFE_S`] after it was
 //!   made, or with its scoped grant if that ends sooner; the end of the
 //!   asking grant, however it ends, cancels its pending requests.
@@ -220,14 +222,20 @@ fn checked_note(note: Option<&str>) -> Result<Option<String>> {
     Ok(Some(n.to_string()))
 }
 
-/// The scope and end of grant `gid`, while it is approved.
-fn scope_of(c: &Connection, gid: &str) -> Result<Option<(Option<String>, Option<String>)>> {
-    Ok(c.query_row(
-        "SELECT scope, scope_expires_at FROM grants WHERE id = ?1 AND status = 'approved'",
+/// Whether grant `gid` is approved, and the end of its grant to ask for a
+/// queue when it is a queue-request token
+/// ([`crate::grant_raises::request_grant_in`]): `None` for a grant that is
+/// not approved, `Some(None)` for one its person gives its rights.
+fn scope_of(c: &Connection, gid: &str) -> Result<Option<Option<String>>> {
+    let approved: bool = c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM grants WHERE id = ?1 AND status = 'approved')",
         params![gid],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )
-    .optional()?)
+        |r| r.get(0),
+    )?;
+    if !approved {
+        return Ok(None);
+    }
+    Ok(Some(crate::grant_raises::request_grant_in(c, gid)?))
 }
 
 /// What the asking agent calls itself: its session's client name or
@@ -362,10 +370,10 @@ impl Store {
             settle(self, tx, &now)?;
             let mut expires_at = stamp(now_utc + chrono::Duration::seconds(REQUEST_LIFE_S));
             if let Some(gid) = &who.grant_id {
-                let (scope, ends) = scope_of(tx, gid)?.ok_or_else(|| {
+                let ends = scope_of(tx, gid)?.ok_or_else(|| {
                     CoreError::invalid("grant_revoked", "this agent's grant has ended")
                 })?;
-                if scope.is_some() {
+                if ends.is_some() {
                     let asked: bool = tx.query_row(
                         "SELECT EXISTS (SELECT 1 FROM queue_requests WHERE grant_id = ?1)",
                         params![gid],
@@ -587,7 +595,7 @@ impl Store {
             }
             if r.status != Status::Pending
                 && let Some(gid) = &r.grant_id
-                && matches!(scope_of(tx, gid)?, Some((Some(_), _)))
+                && matches!(scope_of(tx, gid)?, Some(Some(_)))
             {
                 super::people::end_grant_in(self, tx, ctx, gid)?;
             }

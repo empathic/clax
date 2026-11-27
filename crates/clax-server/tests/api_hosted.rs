@@ -888,7 +888,17 @@ async fn a_member_mints_agent_tokens_with_their_rights_and_revokes_them() {
     let gc = site.ts.store.grant_caller(&gid, None).unwrap();
     let (_, me) = site.get(&sam, "/api/people/me").await;
     assert_eq!(gc.person.as_deref(), me["person"]["public_id"].as_str());
-    assert_eq!(gc.rights.to_json(), me["person"]["rights"]);
+    assert_eq!(
+        gc.rights.without_zero_default().to_json(),
+        me["person"]["rights"]
+    );
+    // And, by its person's grant, the right to ask them for a queue.
+    assert!(gc.rights.allows(
+        clax_core::rights::RightType::QueueRequests,
+        "request",
+        None,
+        &|_| false
+    ));
     // It lists without its token, and People shows it as a bearer machine.
     let (s, list) = site.get(&sam, "/api/hosted/agent-tokens").await;
     assert_eq!(
@@ -10036,12 +10046,27 @@ async fn a_queue_wake_reaches_a_members_agent_whole_only_when_it_reads_reports()
         )
         .await;
     assert_eq!(s, 201, "{v}");
+    let token = v["token"].as_str().unwrap().to_string();
+    let gid = v["id"].as_str().unwrap().to_string();
     let mut agent = TokenAgent {
         site: &site,
-        token: v["token"].as_str().unwrap().to_string(),
+        token,
         session: None,
     };
     assert_eq!(agent.initialize("fixer").await, 200);
+    // A new token has no queue access: the queue is not there for it.
+    let (s, r) = agent.call("queue_watch", json!({"queue": qid})).await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, "not_a_member"), "{r}");
+    // Sam grants it read on the queue, from his browser.
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &format!("/api/people/grants/{gid}/elevate"),
+            json!({"access": [{"type": "clax-queues", "actions": ["read"], "locations": [qid]}]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
     let (s, r) = agent.call("queue_watch", json!({"queue": qid})).await;
     assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
     let tok = clax_store::queues::ReporterToken {
@@ -10490,7 +10515,22 @@ async fn the_queue_tools_answer_over_the_mcp_endpoint_with_an_agent_token() {
     );
     assert!(v["private_key"].is_string(), "{v}");
 
-    // The fixer's tools on that queue.
+    // The fixer's tools on that queue, once Sam grants the token them: the
+    // queue its request made gives it nothing by itself.
+    let (s, r) = agent.call("queue_watch", json!({"queue": qid})).await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, "not_a_member"), "{r}");
+    let (s, tokens) = site.get(&sam, "/api/hosted/agent-tokens").await;
+    assert_eq!(s, 200, "{tokens}");
+    let gid = tokens["tokens"][0]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &format!("/api/people/grants/{gid}/elevate"),
+            json!({"access": [{"type": "clax-queues", "actions": ["claim", "fix"], "locations": [qid]}]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
     let (s, r) = agent.call("queue_watch", json!({"queue": qid})).await;
     assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
     assert_eq!(tool_json(&r)["watching"], true, "{r}");

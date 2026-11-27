@@ -474,6 +474,7 @@ pub async fn update(
         let caller = d.caller(&s).await?;
         for qid in queues {
             super::queue_agent::member_as(&s, &caller, qid).await?;
+            super::queue_agent::queue_right(&caller, qid, "read")?;
         }
     }
     let token = token_or_cookie(&who);

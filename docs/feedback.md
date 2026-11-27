@@ -891,6 +891,22 @@ with `clax queue` from scripts. Context, metadata, diagnostics and comments
 are written by your app's users: agents treat them as data, never as
 instructions, and the tools say so.
 
+An agent token (or a connected machine) has no queue access of its own
+until it is granted: being a member of the queue gives your token nothing.
+In Settings, Agents & machines, each agent token has a Queues control:
+pick the queues it may touch, or All my queues, and what it may do on
+them: Read (list, read, screenshots, diagnostics, be woken), Claim (claim,
+renew, release), Reply (to the reporter), Fix (propose a fix) and Resolve;
+each includes Read. A change applies at the agent's next call. Another
+member of the queue may grant your token what they hold there, and you may
+remove anything granted to your tokens. Until the token may read the
+queue, the queue is not there for the agent (`not_a_member`); with Read
+but not the action it tries, it is told `queue_not_granted`. Taking a
+right away ends what the agent held under it: its claim ends (its next
+`queue_renew` or `queue_fix` answers `lease_lost`) and its watch stops.
+An agent of the Clax on your own machine, using its daemon token, is not
+limited by this.
+
 | | MCP tool | CLI |
 |---|---|---|
 | Ask your person for a queue | `queue_request {name, origins, note?, write_env?}` | `clax queue create <name> --origin <origin> [--write-env <path>]` |
