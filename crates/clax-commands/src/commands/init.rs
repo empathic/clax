@@ -1030,7 +1030,7 @@ fn confirm_rule(path: &Path) -> bool {
     let mut err = std::io::stderr();
     let _ = write!(
         err,
-        "\nAntigravity asks before every call of a Clax tool, and a headless run refuses them. So that it does not, `clax init` can add this rule to permissions.allow in {}:\n\n  \"{PERMISSION_RULE}\"\n\nThe rule approves every Clax tool, including `delete`, which removes an artifact and all its versions. Antigravity then runs them without asking, including when it acts on comments people leave on a page.\nAdd it? [y/N] ",
+        "\nAntigravity asks before every call of a Clax tool, and a headless run refuses them. To stop that, `clax init` can add this rule to permissions.allow in {}:\n\n  \"{PERMISSION_RULE}\"\n\nThe rule approves every Clax tool, including `delete`, which removes an artifact and all its versions. Antigravity then runs them without asking, including when it acts on comments people leave on a page.\nAdd it? [y/N] ",
         path.display()
     );
     let _ = err.flush();

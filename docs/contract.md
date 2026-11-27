@@ -1959,7 +1959,7 @@ session published each artifact and whether that session is live.
 The shim takes `harness_session_id` from `CLAUDE_CODE_SESSION_ID` under Claude
 Code and from `GROK_SESSION_ID` under Grok Build, else from `CLAX_SESSION_ID`
 for any harness, else sends none. Under Antigravity it takes each session's
-from the tool calls instead (see "Antigravity" below).
+harness session ID from the tool calls instead (see "Antigravity" below).
 
 A session row has `harness` (`claude`, `codex`, `grok`, `antigravity`, `pi`,
 `app`), `harness_session_id` (the harness's own ID, when known), `cwd`, `pid`
