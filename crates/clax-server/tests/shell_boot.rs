@@ -131,6 +131,7 @@ async fn embeds_what_the_api_answers_and_never_the_token() {
     assert!(b.get("frame").is_none());
     assert!(!html.contains(&ts.token));
     assert!(html.contains("<h1>Report</h1>"));
+    assert!(html.contains("<title>Report · Clax</title>"));
     assert!(!html.contains("<!--clax:boot-->") && !html.contains("<!--clax:frame-->"));
     assert!(html.contains("<iframe"));
 }
@@ -276,6 +277,9 @@ async fn hostile_titles_and_comments_stay_data() {
     assert!(html.contains(
         "<h1>&lt;/script&gt;&lt;b&gt;x&lt;/b&gt;&lt;!--clax:frame--&gt;&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</h1>"
     ));
+    assert!(html.contains(
+        "<title>&lt;/script&gt;&lt;b&gt;x&lt;/b&gt;&lt;!--clax:frame--&gt;&lt;img src=x onerror=&quot;alert(1)&quot;&gt; · Clax</title>"
+    ));
     // Exactly the entry's own scripts plus the one block, and one frame.
     assert_eq!(
         html.matches("<script").count(),
@@ -394,7 +398,7 @@ async fn an_unknown_artifact_gets_the_bare_entry() {
     let html = res.text().await.unwrap();
     assert!(!html.contains(OPEN) && !html.contains("<!--clax:boot-->"));
     assert!(!html.contains("<iframe") && !html.contains("<!--clax:frame-->"));
-    assert!(html.contains("<h1>Clax</h1>"));
+    assert!(html.contains("<h1>Clax</h1>") && html.contains("<title>Clax</title>"));
 }
 
 #[tokio::test]

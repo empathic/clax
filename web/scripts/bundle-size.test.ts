@@ -13,7 +13,7 @@ let root = "";
 afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root = ""; });
 
 /** A scratch web/ with a copy of the script, a minimal build and `budget` as the budget file. */
-const ENTRY = "<head><script id=\"clax-early\"></script><!--clax:boot--></head><body><!--clax:frame--><h1>Clax</h1></body>";
+const ENTRY = "<head><title>Clax</title><script id=\"clax-early\"></script><!--clax:boot--></head><body><!--clax:frame--><h1>Clax</h1></body>";
 
 /** The gallery entry as the build writes it: the daemon injects its bootstrap at the marker. */
 const GALLERY = "<!--clax:boot--><p>gallery</p>";
@@ -117,6 +117,7 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     for (const html of [
       ENTRY.replace("<!--clax:frame-->", ""),
       ENTRY.replace("<h1>Clax</h1>", ""),
+      ENTRY.replace("<title>Clax</title>", ""),
       ENTRY.replace("<script id=\"clax-early\"></script>", ""),
       ENTRY.replace("<script id=\"clax-early\"></script>", "").replace("</body>", "<script id=\"clax-early\"></script></body>"),
       ENTRY.replace("<script id=\"clax-early\"></script><!--clax:boot-->", "<!--clax:boot--><script id=\"clax-early\"></script>"),

@@ -7,6 +7,7 @@ import type { Boot } from "./view/boot";
 import { FrameHost } from "./view/frame-host";
 import { setBy } from "./view/publisher";
 import { type Skeleton, skeleton } from "./view/skeleton";
+import { setTitle } from "./view/tab-title";
 import { fitTitleTags, reachesGallery, setTitleTags, tagsOf } from "./view/title-tags";
 
 export { MOVE_TO_CLICK, MOVE_TO_PICK, pageWait } from "./view/artifact-controller";
@@ -21,15 +22,17 @@ function setText(el: HTMLElement, text: string): void {
   if (el.textContent !== text) el.textContent = text;
 }
 
-/** Keeps the page's own parts in step with the view: the title and its
- * by-line once the artifact is known, the top bar's comment-mode rule, and, until the frame mode is known too (or when the
+/** Keeps the page's own parts in step with the view: the title (in the
+ * heading and the tab) and its by-line once the artifact is known, the top bar's comment-mode rule, and, until the frame mode is known too (or when the
  * artifact could not be loaded), a message in the page in place of the
  * viewer. Touches the DOM only where something changed. A frame the daemon
  * served is never in a viewer this takes out: it comes with the bootstrap,
  * which makes the view ready before this first runs. */
 function pageFollows(sk: Skeleton, s: ViewState, status: HTMLElement): void {
   const ready = !s.error && !!s.data && s.origin !== undefined;
-  setText(sk.title, !s.error && s.data ? s.data.artifact.title : "Clax");
+  const title = !s.error && s.data ? s.data.artifact.title : "";
+  setText(sk.title, title || "Clax");
+  setTitle(sk.page.ownerDocument, title ? `${title} · Clax` : "Clax");
   setBy(sk.by, !s.error && s.data ? s.data.artifact : null);
   if (sk.topbar.classList.contains("commenting") !== s.commenting) sk.topbar.classList.toggle("commenting", s.commenting);
   sk.topbar.classList.toggle("working", s.working.length > 0);

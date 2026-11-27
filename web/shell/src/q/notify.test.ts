@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setTitle } from "../view/tab-title";
 import { setBadge } from "./badge";
 import { item, view } from "./fixtures";
 import { NOTIFY_ICON, Notifier } from "./notify";
@@ -87,5 +88,16 @@ describe("setBadge", () => {
     expect(icon()).toBe("/_clax/mark.svg");
     setBadge(document, 0);
     expect(icon()).toBe("/_clax/mark.svg");
+  });
+
+  it("stays on the title when the page renames itself", () => {
+    document.head.innerHTML = `<title>Clax</title>`;
+    setBadge(document, 2);
+    setTitle(document, "Quarterly Review · Clax");
+    expect(document.title).toBe("(2) Quarterly Review · Clax");
+    setBadge(document, 0);
+    expect(document.title).toBe("Quarterly Review · Clax");
+    setTitle(document, "Clax");
+    expect(document.title).toBe("Clax");
   });
 });
