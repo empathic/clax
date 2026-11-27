@@ -87,18 +87,12 @@ act. Grok asks before each MCP tool call; for headless runs, pass
 `--always-approve` or `--allow 'MCPTool(clax_grok__*)'`.
 
 For Antigravity, `clax init` installs the clax-antigravity plugin (`agy
-plugin install <dir>`) whenever `agy` is on your `PATH`, including when
-Antigravity is the only harness installed; `clax uninit` uninstalls it.
-Antigravity asks before every MCP tool call, read-only ones included, and a
-headless `agy -p` run refuses them, so `clax init` then offers to add the
-rule `mcp(clax-antigravity_clax/*)` to `permissions.allow` in
-`~/.gemini/antigravity-cli/settings.json`: it prints the rule, says that it
-approves every Clax tool, `delete` included, and adds it when you say yes
-(`--yes` for scripts). It adds nothing when an `ask` or `deny` rule there
-already names a Clax tool, since Antigravity applies those first, and says
-which. `clax uninit` leaves the rule in place. A Claude Code plugin imported
-with `agy plugin import claude` stands down, and only clax-antigravity's
-tools act. `plugins/clax-antigravity/README.md` has the details.
+plugin install <dir>`) whenever `agy` is on your `PATH`; `clax uninit`
+uninstalls it. Antigravity asks before every MCP tool call, so `clax init`
+offers to add the rule `mcp(clax-antigravity_clax/*)` to
+`~/.gemini/antigravity-cli/settings.json` (`--yes` for scripts). The rule
+approves every Clax tool, `delete` included, and `clax uninit` leaves it in
+place. `plugins/clax-antigravity/README.md` has the details.
 
 `just uninstall` reverses it: `clax uninit` removes the registrations (and
 `~/.clax/marketplace/` once no harness refers to it) and the `bin` setting

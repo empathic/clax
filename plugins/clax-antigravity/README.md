@@ -107,21 +107,16 @@ never fails a turn.
 
 ## Tool approval
 
-Antigravity asks before every call of every MCP tool, read-only ones
-included, and a headless run (`agy -p`, or a piped prompt) cannot ask, so
-it refuses them. One rule in `~/.gemini/antigravity-cli/settings.json`
-approves every Clax tool:
+Antigravity asks before every MCP tool call. One rule in
+`~/.gemini/antigravity-cli/settings.json` approves every Clax tool,
+`delete` included:
 
 ```json
 {"permissions": {"allow": ["mcp(clax-antigravity_clax/*)"]}}
 ```
 
-This approves `delete` too. `clax init` offers to add the rule after it
-installs the plugin, and adds it only on a yes at a terminal or with
-`--yes`, keeping every other key of the file. It adds nothing when an `ask`
-or `deny` rule already names a tool of this server, and names that rule
-instead. The plugin ships no permission of its own, and `clax uninit`
-leaves the rule in place.
+`clax init` offers to add it (`--yes` for scripts), unless an `ask` or
+`deny` rule already names a Clax tool. `clax uninit` leaves it in place.
 
 Antigravity's default mode runs the agent's shell commands in a sandbox,
 which cannot connect to the Clax server on 127.0.0.1. The MCP server and

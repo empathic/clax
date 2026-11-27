@@ -48,8 +48,7 @@ in their own terminal (`clax init` also installs the extension).
 
 Antigravity asks the person before each Clax tool call unless they allowed
 them all with the rule `mcp(clax-antigravity_clax/*)` (`clax init --agent
-antigravity` offers to add it); a headless run cannot ask, so there a call
-the rule does not allow is refused.
+antigravity` offers to add it).
 
 ## Reference files
 

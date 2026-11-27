@@ -85,9 +85,8 @@ A few things differ by harness:
   `clax init` offers, once, to approve those for you.
 - **Grok Build** asks before every tool call. For headless runs, pass
   `--always-approve` or `--allow 'MCPTool(clax_grok__*)'`.
-- **Antigravity** asks before every tool call, and a headless `agy -p` run
-  refuses them. `clax init` offers to add the one rule that approves every
-  Clax tool, `mcp(clax-antigravity_clax/*)`.
+- **Antigravity** asks before every tool call. `clax init` offers to add
+  the rule that approves the Clax tools, `mcp(clax-antigravity_clax/*)`.
 - **Pi** and **Codex** start a new turn when you send them a comment, even
   when the session is idle. So does an **Antigravity**
   conversation once its agent has published or watched a page: the agent

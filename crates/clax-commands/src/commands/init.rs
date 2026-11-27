@@ -51,9 +51,8 @@
 //! and without `--yes` it adds nothing and says how to.
 //!
 //! For Antigravity, after a successful install, `init` offers in the same
-//! way the one permission rule that keeps Antigravity from asking before,
-//! or in a headless run refusing, every Clax tool call
-//! ([`crate::antigravity_permissions`]). It adds nothing beside an `ask` or
+//! way the one permission rule that keeps Antigravity from asking before
+//! every Clax tool call ([`crate::antigravity_permissions`]). It adds nothing beside an `ask` or
 //! `deny` rule that names Clax's server, and never rewrites a settings file
 //! it cannot parse. `uninit` leaves the rule and says so.
 //!
@@ -1030,7 +1029,7 @@ fn confirm_rule(path: &Path) -> bool {
     let mut err = std::io::stderr();
     let _ = write!(
         err,
-        "\nAntigravity asks before every call of a Clax tool, and a headless run refuses them. To stop that, `clax init` can add this rule to permissions.allow in {}:\n\n  \"{PERMISSION_RULE}\"\n\nThe rule approves every Clax tool, including `delete`, which removes an artifact and all its versions. Antigravity then runs them without asking, including when it acts on comments people leave on a page.\nAdd it? [y/N] ",
+        "\nAntigravity asks before each Clax tool call. Add this rule to {} so it stops asking?\n\n  \"{PERMISSION_RULE}\"\n\nIt covers every Clax tool, including `delete`. [y/N] ",
         path.display()
     );
     let _ = err.flush();
@@ -1065,19 +1064,19 @@ fn antigravity_permission(path: &Path, ask: impl FnOnce() -> Option<bool>) -> Va
     let settled = |state: &State| match state {
         State::Allowed => Some(out(
             "unchanged",
-            format!("{shown} already allows every Clax tool"),
+            format!("{shown} already allows the Clax tools"),
         )),
         State::Blocked(rules) => {
             let list: Vec<String> = rules.iter().map(|r| format!("`{r}`")).collect();
-            let (the, names) = if rules.len() == 1 {
-                ("the rule", "names")
+            let overrides = if rules.len() == 1 {
+                "overrides"
             } else {
-                ("the rules", "name")
+                "override"
             };
             Some(out(
                 "blocked",
                 format!(
-                    "{the} {} in {shown} {names} Clax's tools, and Antigravity applies ask and deny rules before allow rules, so \"{PERMISSION_RULE}\" was not added; Antigravity goes on asking or refusing as your settings say",
+                    "{} in {shown} {overrides} an allow rule, so \"{PERMISSION_RULE}\" was not added",
                     list.join(", ")
                 ),
             ))
@@ -1100,7 +1099,7 @@ fn antigravity_permission(path: &Path, ask: impl FnOnce() -> Option<bool>) -> Va
                 "not_added"
             },
             format!(
-                "Antigravity will ask before every call of a Clax tool, and a headless run refuses them; to approve every Clax tool, including `delete`, run `{} --yes`, or add \"{PERMISSION_RULE}\" to permissions.allow in {shown}",
+                "Antigravity asks before each Clax tool call; `{} --yes` adds \"{PERMISSION_RULE}\" to stop it",
                 antigravity_permissions::SETUP_COMMAND
             ),
         );
@@ -1119,12 +1118,7 @@ fn antigravity_permission(path: &Path, ask: impl FnOnce() -> Option<bool>) -> Va
     if let Err(e) = codex_approvals::write_config(path, &next) {
         return out("failed", format!("could not write {shown}: {e}"));
     }
-    out(
-        "added",
-        format!(
-            "added \"{PERMISSION_RULE}\" to permissions.allow in {shown}; it approves every Clax tool, including `delete`"
-        ),
-    )
+    out("added", format!("added \"{PERMISSION_RULE}\" to {shown}"))
 }
 
 /// After `uninit` removed the Antigravity plugin: a note that the rule is
@@ -1137,7 +1131,7 @@ fn antigravity_rule_left(path: &Path) -> Option<Value> {
             "settings": path,
             "rule": PERMISSION_RULE,
             "detail": format!(
-                "\"{PERMISSION_RULE}\" is left in permissions.allow in {}; remove it there if Antigravity should ask before Clax's tools when the plugin is installed again",
+                "\"{PERMISSION_RULE}\" is still in {}",
                 path.display()
             ),
         })

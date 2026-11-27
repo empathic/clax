@@ -868,12 +868,7 @@ fn init_without_a_terminal_adds_nothing_and_prints_the_rule() {
     let settings = e.agy_settings().display().to_string();
     assert_eq!(p["settings"], settings, "{v}");
     let d = p["detail"].as_str().unwrap();
-    for want in [
-        AGY_RULE,
-        "`clax init --agent antigravity --yes`",
-        "`delete`",
-        &settings,
-    ] {
+    for want in [AGY_RULE, "`clax init --agent antigravity --yes`"] {
         assert!(d.contains(want), "{want}: {d}");
     }
     assert!(!e.p(".gemini").exists());

@@ -1214,9 +1214,8 @@ pub fn antigravity_version_check(version_line: Option<&str>) -> Value {
 
 /// `antigravity_permissions`: whether the settings file under `root`
 /// ([`settings_path`]) lets every Clax tool run without asking. A warning
-/// when it does not (the rule is the person's choice, and without it a
-/// headless run refuses the tools); failed when the file cannot be read or
-/// parsed.
+/// when it does not (the rule is the person's choice); failed when the file
+/// cannot be read or parsed.
 pub fn antigravity_permissions_check(root: &Path) -> Value {
     const NAME: &str = "antigravity_permissions";
     let path = settings_path(root);
@@ -1227,21 +1226,19 @@ pub fn antigravity_permissions_check(root: &Path) -> Value {
         Err(e) => Err(e.to_string()),
     };
     match text.and_then(|t| antigravity_permissions::assess(&t)) {
-        Ok(antigravity_permissions::State::Allowed) => check(
-            NAME,
-            true,
-            format!("{shown} allows every Clax tool, so Antigravity runs them without asking"),
-        ),
+        Ok(antigravity_permissions::State::Allowed) => {
+            check(NAME, true, format!("{shown} allows the Clax tools"))
+        }
         Ok(antigravity_permissions::State::Missing) => warn(
             NAME,
             format!(
-                "{shown} does not allow the Clax tools, so Antigravity asks before every Clax tool call and a headless run refuses them. Add \"{PERMISSION_RULE}\" to permissions.allow there, or run `{SETUP_COMMAND}`, which offers to add it; it approves every Clax tool, delete included"
+                "{shown} does not allow the Clax tools, so Antigravity asks before each call; `{SETUP_COMMAND}` offers to add \"{PERMISSION_RULE}\""
             ),
         ),
         Ok(antigravity_permissions::State::Blocked(rules)) => warn(
             NAME,
             format!(
-                "{shown} has ask or deny rules for the Clax tools, which Antigravity applies over any allow rule: {}. Antigravity asks before those tools or refuses them, and a headless run refuses them. Remove those rules; `{SETUP_COMMAND}` then adds \"{PERMISSION_RULE}\" to permissions.allow if it is not there",
+                "{shown} has ask or deny rules that override an allow rule for the Clax tools: {}. Remove them, then run `{SETUP_COMMAND}`",
                 rules.join(", ")
             ),
         ),
@@ -2515,7 +2512,7 @@ mod tests {
         assert_eq!(
             c["detail"],
             format!(
-                "{} allows every Clax tool, so Antigravity runs them without asking",
+                "{} allows the Clax tools",
                 settings_path(f.home()).display()
             )
         );
@@ -2526,7 +2523,7 @@ mod tests {
     {
         let f = Fixture::new();
         let want = format!(
-            "{} does not allow the Clax tools, so Antigravity asks before every Clax tool call and a headless run refuses them. Add \"{PERMISSION_RULE}\" to permissions.allow there, or run `{SETUP_COMMAND}`, which offers to add it; it approves every Clax tool, delete included",
+            "{} does not allow the Clax tools, so Antigravity asks before each call; `{SETUP_COMMAND}` offers to add \"{PERMISSION_RULE}\"",
             settings_path(f.home()).display()
         );
         let c = antigravity_permissions_check(f.home());
@@ -2557,7 +2554,7 @@ mod tests {
         assert_eq!(
             c["detail"],
             format!(
-                "{} has ask or deny rules for the Clax tools, which Antigravity applies over any allow rule: mcp(*), mcp(clax-antigravity_clax/delete). Antigravity asks before those tools or refuses them, and a headless run refuses them. Remove those rules; `{SETUP_COMMAND}` then adds \"{PERMISSION_RULE}\" to permissions.allow if it is not there",
+                "{} has ask or deny rules that override an allow rule for the Clax tools: mcp(*), mcp(clax-antigravity_clax/delete). Remove them, then run `{SETUP_COMMAND}`",
                 settings_path(f.home()).display()
             )
         );

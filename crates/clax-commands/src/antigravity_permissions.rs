@@ -1,8 +1,7 @@
 //! The rule in Antigravity's settings that approves every Clax tool, and
 //! adding it.
 //!
-//! Antigravity asks before every MCP tool call, and a headless run refuses
-//! them. [`PERMISSION_RULE`] in `permissions.allow` of
+//! Antigravity asks before every MCP tool call. [`PERMISSION_RULE`] in `permissions.allow` of
 //! `~/.gemini/antigravity-cli/settings.json` approves every tool of Clax's
 //! server. Antigravity applies `deny` rules over `ask` rules over `allow`
 //! rules, so an `ask` or `deny` rule that names the server wins over it.
