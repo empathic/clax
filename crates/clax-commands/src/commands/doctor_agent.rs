@@ -22,7 +22,7 @@
 //!   settings approve the Clax tools; `antigravity_sessions`, each live
 //!   session the shim registered without a conversation ID; and
 //!   `claude_copy`, whether the Claude Code plugin has stood down in an
-//!   Antigravity session.
+//!   Antigravity session and is still installed there.
 //! - `channel` (Claude Code): whether the installed plugin declares the Clax
 //!   channel, and how the latest session was launched.
 
@@ -1298,8 +1298,10 @@ pub fn antigravity_sessions_check(sessions: &Result<Vec<Value>, String>) -> Valu
 
 /// `claude_copy`, for Grok Build or Antigravity: never failed. Whether the
 /// Claude Code plugin has stood down under `host`, from its `standdown`
-/// lines in hooks.log that name that host.
-pub fn claude_copy_check(home: &Home, host: DoctorAgent) -> Value {
+/// lines in hooks.log that name that host. Under Antigravity the copy is
+/// called installed only while `<antigravity root>/.gemini/config/plugins/clax`
+/// is a directory (`dirs`; `None` when HOME is not set).
+pub fn claude_copy_check(home: &Home, host: DoctorAgent, dirs: Option<&Dirs>) -> Value {
     let host_word = format!("host={}", host.harness());
     let n = [
         home.hooks_log_path().with_extension("log.1"),
@@ -1316,13 +1318,23 @@ pub fn claude_copy_check(home: &Home, host: DoctorAgent) -> Value {
             .count()
     })
     .sum::<usize>();
+    let copy = dirs.map(|d| antigravity_plugins(d).join("clax"));
     let detail = match (host, n) {
         (DoctorAgent::Antigravity, 0) => {
             "the Claude Code plugin has not run in an Antigravity session".to_string()
         }
-        (DoctorAgent::Antigravity, n) => format!(
-            "the Claude Code plugin is installed in Antigravity and stood down {n} time(s): clax-antigravity acts instead. `agy plugin uninstall clax` removes the copy"
-        ),
+        (DoctorAgent::Antigravity, n) => match copy {
+            Some(dir) if dir.is_dir() => format!(
+                "the Claude Code plugin is installed in Antigravity and stood down {n} time(s): clax-antigravity acts instead. `agy plugin uninstall clax` removes the copy"
+            ),
+            Some(dir) => format!(
+                "the Claude Code plugin stood down {n} time(s) in Antigravity and is no longer installed there ({} is gone)",
+                dir.display()
+            ),
+            None => format!(
+                "the Claude Code plugin stood down {n} time(s) in Antigravity; HOME is not set, so whether it is still installed is not known"
+            ),
+        },
         (_, 0) => "the Claude Code plugin has not run in a Grok session".to_string(),
         (_, n) => format!(
             "the Claude Code plugin is enabled in Grok and stood down {n} time(s): clax-grok acts instead. `grok plugin disable clax` removes its idle clax server"
@@ -1465,7 +1477,7 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
         let path = std::env::var_os("PATH").unwrap_or_default();
         let line = on_path(&path, "grok").and_then(|g| version_line(&g));
         out.push(grok_version_check(line.as_deref()));
-        out.push(claude_copy_check(home, agent));
+        out.push(claude_copy_check(home, agent, dirs.as_ref()));
     }
     let feedback = sessions.as_ref().map_err(String::clone).map(|list| {
         list.iter()
@@ -1493,7 +1505,7 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
             None => check("antigravity_permissions", false, "HOME is not set"),
         });
         out.push(antigravity_sessions_check(&sessions));
-        out.push(claude_copy_check(home, agent));
+        out.push(claude_copy_check(home, agent, dirs.as_ref()));
     }
     if agent == DoctorAgent::Claude {
         out.push(channel_check(plugin_root.as_deref(), home));
@@ -2310,7 +2322,7 @@ mod tests {
             "no grok hook has run"
         );
         assert!(
-            claude_copy_check(&home, DoctorAgent::Grok)["detail"]
+            claude_copy_check(&home, DoctorAgent::Grok, Some(&f.dirs()))["detail"]
                 .as_str()
                 .unwrap()
                 .contains("has not run"),
@@ -2324,7 +2336,7 @@ mod tests {
             false,
             "a stand-down is not a Claude Code hook run"
         );
-        let c = claude_copy_check(&home, DoctorAgent::Grok);
+        let c = claude_copy_check(&home, DoctorAgent::Grok, Some(&f.dirs()));
         assert_eq!(c["ok"], true);
         assert!(
             c["detail"]
@@ -2618,7 +2630,8 @@ mod tests {
     fn antigravity_stand_downs_are_counted_apart_from_grok_ones() {
         let f = Fixture::new();
         let home = f.clax_home();
-        let c = claude_copy_check(&home, DoctorAgent::Antigravity);
+        let dirs = f.dirs();
+        let c = claude_copy_check(&home, DoctorAgent::Antigravity, Some(&dirs));
         assert_eq!(c["ok"], true);
         assert_eq!(
             c["detail"],
@@ -2632,19 +2645,57 @@ mod tests {
         ] {
             crate::hooklog::append(&home, line);
         }
-        let c = claude_copy_check(&home, DoctorAgent::Antigravity);
+        let copy = dirs.antigravity_root.join(".gemini/config/plugins/clax");
+        std::fs::create_dir_all(&copy).unwrap();
+        let c = claude_copy_check(&home, DoctorAgent::Antigravity, Some(&dirs));
         assert_eq!(c["ok"], true);
         assert_eq!(
             c["detail"],
             "the Claude Code plugin is installed in Antigravity and stood down 2 time(s): clax-antigravity acts instead. `agy plugin uninstall clax` removes the copy"
         );
-        let grok = claude_copy_check(&home, DoctorAgent::Grok);
+        let grok = claude_copy_check(&home, DoctorAgent::Grok, Some(&dirs));
         assert!(
             grok["detail"]
                 .as_str()
                 .unwrap()
                 .contains("stood down 1 time(s)"),
             "{grok}"
+        );
+    }
+
+    #[test]
+    fn a_removed_antigravity_copy_is_not_called_installed() {
+        let f = Fixture::new();
+        let home = f.clax_home();
+        let dirs = f.dirs();
+        crate::hooklog::append(
+            &home,
+            "2026-11-26T10:00:00Z standdown mode=hook agent=claude host=antigravity",
+        );
+        let copy = dirs.antigravity_root.join(".gemini/config/plugins/clax");
+        let c = claude_copy_check(&home, DoctorAgent::Antigravity, Some(&dirs));
+        assert_eq!(c["ok"], true);
+        assert_eq!(
+            c["detail"],
+            format!(
+                "the Claude Code plugin stood down 1 time(s) in Antigravity and is no longer installed there ({} is gone)",
+                copy.display()
+            )
+        );
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, "").unwrap();
+        let c = claude_copy_check(&home, DoctorAgent::Antigravity, Some(&dirs));
+        assert!(
+            c["detail"]
+                .as_str()
+                .unwrap()
+                .contains("no longer installed"),
+            "a file is no plugin: {c}"
+        );
+        let c = claude_copy_check(&home, DoctorAgent::Antigravity, None);
+        assert_eq!(
+            c["detail"],
+            "the Claude Code plugin stood down 1 time(s) in Antigravity; HOME is not set, so whether it is still installed is not known"
         );
     }
 

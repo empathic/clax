@@ -1646,13 +1646,24 @@ fn doctor_agent_checks_an_antigravity_install() {
         "{detail}"
     );
     let copy = by_name(&all, "claude_copy");
+    let detail = copy["detail"].as_str().unwrap();
     assert!(
-        copy["detail"]
-            .as_str()
-            .unwrap()
-            .contains("stood down 2 time(s)"),
+        detail.contains("stood down 2 time(s)")
+            && detail.contains("no longer installed")
+            && !detail.contains("uninstall"),
         "{copy}"
     );
+    let claude_copy = e.dir.path().join(".gemini/config/plugins/clax");
+    std::fs::create_dir_all(&claude_copy).unwrap();
+    let copy = by_name(&checks(), "claude_copy");
+    let detail = copy["detail"].as_str().unwrap();
+    assert!(
+        detail.starts_with(
+            "the Claude Code plugin is installed in Antigravity and stood down 2 time(s)"
+        ) && detail.ends_with("`agy plugin uninstall clax` removes the copy"),
+        "{copy}"
+    );
+    std::fs::remove_dir(&claude_copy).unwrap();
 
     // Each reference file the plugin ships is part of the skill.
     let references = installed.join("skills/clax/references");
