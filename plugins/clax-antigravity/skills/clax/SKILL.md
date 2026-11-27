@@ -354,7 +354,7 @@ After a conversation is resumed (`agy --conversation <ID>`), the earlier
 wait and its watches are gone: `watch` the pages still in play, then call
 `wait_for_feedback` again.
 
-In a headless run (`agy -p`) nothing wakes you: do not wait unless the
-person asked you to. A wait there is bounded as `timeout_s` says (50
+In a headless run (`agy -p`, or a prompt piped on standard input) nothing
+wakes you: do not wait unless the person asked you to. A wait there is bounded as `timeout_s` says (50
 seconds by default, at most 600), and the run does not exit until it
 finishes. Comments reach you on your next Clax tool call.

@@ -152,6 +152,32 @@ pub fn path_without(path: &str, out: &Path, hide: &[&str]) -> std::ffi::OsString
     std::env::join_paths(dirs).expect("PATH entries hold no ':'")
 }
 
+/// The runner [`stdin_runner`] installs. util-linux's `script` (Linux) takes
+/// the command as one string, BSD's (macOS) as words; only util-linux's
+/// knows `-V`.
+const STDIN_RUNNER: &str = r#"#!/bin/bash
+exec 3<&0 4>&1 5>&2
+mode="$1"
+shift
+[ "$mode" = terminal ] || exec "$@"
+if script -V >/dev/null 2>&1; then
+  exec script -qec "$(printf '%q ' "$@")" /dev/null </dev/null >/dev/null
+fi
+exec script -q /dev/null "$@" </dev/null >/dev/null
+"#;
+
+/// A runner for a fake program whose standard input must be a terminal, or
+/// must not be, while the test's own pipes still reach the program's child.
+/// Run it as `<runner> terminal <program> [args…]` to give `program` a new
+/// pseudo-terminal (`script(1)`) as its standard input, output and error,
+/// whose output is discarded, or as `<runner> inherit <program> [args…]` to
+/// give it the runner's own. Either way `program` finds the runner's
+/// standard input, output and error on descriptors 3, 4 and 5, to hand to
+/// its child: `child <&3 >&4 2>&5 3<&- 4>&- 5>&-`.
+pub fn stdin_runner() -> PathBuf {
+    shared_copy(STDIN_RUNNER)
+}
+
 /// The store for shared copies: `CLAX_FAKE_EXE_DIR` when set and not empty
 /// (Bazel's tests set it, so the store outlives one test's temporary
 /// directory), else `<tmp>/clax-fake-exe`.
@@ -326,6 +352,31 @@ mod tests {
                 assert!(mark.exists());
                 std::fs::remove_file(&mark).unwrap();
             }
+        }
+    }
+
+    #[test]
+    fn the_stdin_runner_gives_a_terminal_and_hands_on_the_pipes() {
+        use std::io::Write;
+        let t = tempfile::tempdir().unwrap();
+        let prog = install(
+            &t.path().join("prog"),
+            "#!/bin/bash\n{ [ -t 0 ] && echo terminal || echo other; cat <&3; echo err >&5; } >&4\n",
+        );
+        for (mode, out) in [("terminal", "terminal\nin\n"), ("inherit", "other\nin\n")] {
+            let mut child = Command::new(stdin_runner())
+                .arg(mode)
+                .arg(&prog)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(b"in\n").unwrap();
+            let o = child.wait_with_output().unwrap();
+            assert!(o.status.success(), "{mode}: {o:?}");
+            assert_eq!(String::from_utf8_lossy(&o.stdout), out, "{mode}");
+            assert_eq!(String::from_utf8_lossy(&o.stderr), "err\n", "{mode}");
         }
     }
 

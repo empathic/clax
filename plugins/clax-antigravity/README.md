@@ -108,8 +108,9 @@ never fails a turn.
 ## Tool approval
 
 Antigravity asks before every call of every MCP tool, read-only ones
-included, and a headless run (`agy -p`) cannot ask, so it refuses them. One
-rule in `~/.gemini/antigravity-cli/settings.json` approves every Clax tool:
+included, and a headless run (`agy -p`, or a piped prompt) cannot ask, so
+it refuses them. One rule in `~/.gemini/antigravity-cli/settings.json`
+approves every Clax tool:
 
 ```json
 {"permissions": {"allow": ["mcp(clax-antigravity_clax/*)"]}}
@@ -156,10 +157,12 @@ the agent watches the pages still in play and waits again.
 
 ## Headless runs
 
-`agy -p` waits for every open background call before it exits, so a wait
-with no upper bound would hang it. When the `agy` process's command line
-has `-p`, `--print` or `--prompt` (or cannot be read), the run counts as
-headless:
+A headless run (`agy -p`, or a prompt piped to `agy` on standard input)
+waits for every open background call before it exits, so a wait with no
+upper bound would hang it. The run counts as interactive only when the
+`agy` process's command line has no `-p`, `--print` or `--prompt` and its
+standard input is a terminal; otherwise (also when either cannot be read)
+it counts as headless:
 
 - `wait_for_feedback` keeps the bounds it has on other harnesses (50 s by
   default, at most 600 s). The run waits for the call, and its result

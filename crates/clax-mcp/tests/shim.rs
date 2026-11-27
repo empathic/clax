@@ -15,9 +15,11 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// A stand-in for `agy`: runs the shim as its child, with stdin and stdout
-/// passed through, so the shim's parent command line is `agy`'s.
-const FAKE_AGY: &str = "#!/bin/bash\n\"$CLAX_TEST_BIN\" --port 0 mcp --agent antigravity\n";
+/// A stand-in for `agy`, run by [`clax_fake_exe::stdin_runner`]: runs the
+/// shim as its child on the runner's stdin, stdout and stderr, so the shim's
+/// parent is an `agy` with this command line and the runner's choice of
+/// standard input.
+const FAKE_AGY: &str = "#!/bin/bash\n\"$CLAX_TEST_BIN\" --port 0 mcp --agent antigravity <&3 >&4 2>&5 3<&- 4>&- 5>&-\n";
 
 /// A running shim with its own `CLAX_HOME`; dropping it stops the daemon the
 /// shim started. The shim logs its warnings to `<dir>/shim.log`
@@ -63,13 +65,23 @@ impl Shim {
         Shim::spawn(dir, None, "antigravity", ("CLAX_SESSION_ID", "from-env")).await
     }
 
-    /// [`Shim::start_antigravity`] run by a fake `agy` given `flags`: an
-    /// interactive run with none, a headless one with `-p x`.
+    /// [`Shim::start_antigravity`] run by a fake `agy` given `flags`, with a
+    /// terminal on its standard input: an interactive run with no flags, a
+    /// headless one with `-p x`.
     async fn start_agy(flags: &[&str]) -> Shim {
+        Shim::start_agy_on("terminal", flags).await
+    }
+
+    /// [`Shim::start_agy`] with `stdin` as the `agy`'s standard input:
+    /// `terminal`, or `inherit` for the test's pipe
+    /// ([`clax_fake_exe::stdin_runner`]).
+    async fn start_agy_on(stdin: &str, flags: &[&str]) -> Shim {
         let dir = Shim::serving_daemon();
         let agy = clax_fake_exe::install(&dir.path().join("agy"), FAKE_AGY);
-        let args = flags.iter().map(|f| f.to_string()).collect();
-        Shim::launch(dir, agy, args, ("CLAX_SESSION_ID", "from-env")).await
+        let mut args = vec![stdin.to_string(), agy.display().to_string()];
+        args.extend(flags.iter().map(|f| f.to_string()));
+        let runner = clax_fake_exe::stdin_runner();
+        Shim::launch(dir, runner, args, ("CLAX_SESSION_ID", "from-env")).await
     }
 
     /// A directory whose home `<dir>/ax` a daemon serves.
@@ -1116,7 +1128,17 @@ async fn a_wait_with_a_timeout_is_bounded() {
 
 #[tokio::test]
 async fn a_headless_run_waits_with_bounds_and_says_nothing_wakes_it() {
-    let shim = Shim::start_agy(&["-p", "x"]).await;
+    is_headless(Shim::start_agy(&["-p", "x"]).await).await;
+}
+
+#[tokio::test]
+async fn a_prompt_piped_to_agy_is_a_headless_run() {
+    is_headless(Shim::start_agy_on("inherit", &[]).await).await;
+}
+
+/// That `shim` runs as a headless run: a wait with no `timeout_s` is
+/// bounded, `push` says headless, and `watch` says nothing wakes the run.
+async fn is_headless(shim: Shim) {
     let sid = session_of(&shim, "r1").await;
     let wait = shim.start_wait("r1", json!({})).await;
     shim.until_waiters(&sid, "", 1).await;

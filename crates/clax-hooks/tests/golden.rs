@@ -1033,19 +1033,36 @@ fn grok_working_through_a_turn() {
 /// The conversation ID of every `antigravity-*.json` fixture.
 const AGY_CONVERSATION: &str = "c0ffee00-0000-4000-8000-000000000001";
 
-/// A stand-in `agy`: runs `clax hook --agent antigravity <its first
-/// argument>` as its child, which reads the hook's input from the stdin it
-/// inherits. Its further arguments only show on its command line.
-const FAKE_AGY: &str = "#!/bin/bash\n\"$CLAX_TEST_BIN\" hook --agent antigravity \"$1\"\n";
+/// A stand-in `agy`, run by [`clax_fake_exe::stdin_runner`]: runs `clax
+/// hook --agent antigravity <its first argument>` as its child on the
+/// runner's stdin, stdout and stderr, so the hook reads its input from the
+/// test. Its further arguments only show on its command line.
+const FAKE_AGY: &str =
+    "#!/bin/bash\n\"$CLAX_TEST_BIN\" hook --agent antigravity \"$1\" <&3 >&4 2>&5 3<&- 4>&- 5>&-\n";
 
 /// Runs Antigravity's `event` hook under [`FAKE_AGY`] started as `agy
-/// <event> <flags>`, so the hook's parent is an `agy` with that command
-/// line.
+/// <event> <flags>` with a terminal on its standard input, so the hook's
+/// parent is an interactive `agy` unless `flags` ask it to print.
 fn hook_under_agy(home: &Path, event: &str, flags: &[&str], stdin: &[u8]) -> Ran {
+    hook_under_agy_on("terminal", home, event, flags, stdin)
+}
+
+/// [`hook_under_agy`] with `agy_stdin` as the `agy`'s standard input:
+/// `terminal`, or `inherit` for the hook's input file
+/// ([`clax_fake_exe::stdin_runner`]).
+fn hook_under_agy_on(
+    agy_stdin: &str,
+    home: &Path,
+    event: &str,
+    flags: &[&str],
+    stdin: &[u8],
+) -> Ran {
     let dir = tempfile::tempdir().unwrap();
     let agy = clax_fake_exe::install(&dir.path().join("agy"), FAKE_AGY);
-    let mut cmd = in_test_env(Command::new(agy), home);
-    cmd.arg(event)
+    let mut cmd = in_test_env(Command::new(clax_fake_exe::stdin_runner()), home);
+    cmd.arg(agy_stdin)
+        .arg(agy)
+        .arg(event)
         .args(flags)
         .env("CLAX_TEST_BIN", clax_bin(None));
     run_with_stdin(cmd, stdin)
@@ -1239,6 +1256,12 @@ fn antigravity_stop_gives_no_reminder_in_a_headless_run() {
     assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "no agy parent");
     let r = hook_under_agy(&d.home(), "stop", &["-p", "x"], &stop);
     assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""), "agy -p");
+    let r = hook_under_agy_on("inherit", &d.home(), "stop", &[], &stop);
+    assert_eq!(
+        (r.code, r.stdout.as_str()),
+        (Some(0), ""),
+        "a prompt piped to agy"
+    );
 }
 
 #[test]

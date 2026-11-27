@@ -526,11 +526,11 @@ The wake is `wait_for_feedback`, marked as a background tool.
 `agy -p` waits for open background calls before it exits, so an unbounded
 wait would hang it.
 
-- The shim and the `stop` hook decide whether the run is headless from the
-  `agy` process's command line: a parent (for the hook, any of the
-  ancestors it already collects) whose program is `agy` with `-p`,
-  `--print` or `--prompt`. When the command line cannot be read the run
-  counts as headless.
+- The shim and the `stop` hook decide from the `agy` process (for the hook,
+  the nearest of the ancestors it already collects): a run is interactive
+  only when its command line has no `-p`, `--print` or `--prompt` and its
+  standard input is a terminal, so a prompt piped in is headless too; when
+  either cannot be read the run counts as headless.
 - In a headless run `wait_for_feedback` keeps today's bounds (default
   50 s, at most 600 s). The run waits for the call, the result starts one
   more turn (observed), and the run exits when that turn ends unless the

@@ -2200,12 +2200,15 @@ ended." when a wait was open at an earlier stop. A thread sent to an `antigravit
 the watch is armed, else on its next tool result, as for Claude Code, Codex
 and Grok Build.
 
-**Headless runs.** `agy -p` waits for every open background call before it
-exits. The shim decides from its parent's command line, and the `stop` hook
-from its parent's and ancestors', the nearest `agy` first: a run is
-headless when `-p`, `--print` or `--prompt` (or `--print=…`, `--prompt=…`)
-comes before any `-i` or `--prompt-interactive`, and also when no `agy`
-command line can be read. In a headless run `wait_for_feedback` keeps its
+**Headless runs.** A headless run (`agy -p`, or a prompt piped to `agy` on
+standard input) waits for every open background call before it exits. The
+shim decides from its parent, and the `stop` hook from its parent and
+ancestors, by the nearest `agy`: the run is interactive only when that
+`agy`'s command line has no `-p`, `--print` or `--prompt` (or `--print=…`,
+`--prompt=…`) before any `-i` or `--prompt-interactive`, and its standard
+input is a terminal. Otherwise it is headless, as it is when whether that
+standard input is a terminal cannot be told, when no command line can be
+read, or when none that can is `agy`'s. In a headless run `wait_for_feedback` keeps its
 bounds, the shim adds `"headless": true` to `push`, `wake.do` says "Nothing
 wakes a headless run. Comments reach you on your next Clax tool call. End
 your turn when you are done.", and `stop` gives no turn-end reminder. A
