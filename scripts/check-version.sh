@@ -28,11 +28,12 @@ versions = {
     "plugins/claude-code/.claude-plugin/plugin.json": load("plugins/claude-code/.claude-plugin/plugin.json").get("version"),
     "plugins/clax/.codex-plugin/plugin.json": load("plugins/clax/.codex-plugin/plugin.json").get("version"),
     "plugins/clax-grok/.grok-plugin/plugin.json": load("plugins/clax-grok/.grok-plugin/plugin.json").get("version"),
+    "plugins/clax-antigravity/.antigravity-plugin/plugin.json": load("plugins/clax-antigravity/.antigravity-plugin/plugin.json").get("version"),
     ".claude-plugin/marketplace.json version": market.get("version"),
     ".claude-plugin/marketplace.json plugins[clax]": next((p.get("version") for p in market.get("plugins", []) if p.get("name") == "clax"), None),
     "plugins/pi/package.json": load("plugins/pi/package.json").get("version"),
 }
-for path in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh", "plugins/pi/scripts/ensure-clax.sh"):
+for path in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh", "plugins/clax-antigravity/scripts/ensure-clax.sh", "plugins/pi/scripts/ensure-clax.sh"):
     versions[f"{path} CLAX_VERSION"] = first(r'^CLAX_VERSION="([^"]+)"', open(path).read())
 for path in ("deploy/k8s/sqlite/kustomization.yaml",):
     versions[f"{path} newTag"] = first(r'^    newTag: "([^"]+)"', open(path).read())
@@ -41,7 +42,7 @@ versions["docs/kubernetes.md release manifests"] = first(r'/releases/download/v(
 images = re.findall(r'ghcr\.io/empathic/clax-fleet:([0-9][0-9A-Za-z.-]*)', kubernetes)
 for i, v in enumerate(images or [None], 1):
     versions[f"docs/kubernetes.md image #{i}"] = v
-for path in ("plugins/claude-code/skills/clax/SKILL.md", "plugins/clax/skills/clax/SKILL.md", "plugins/pi/skills/clax/SKILL.md", "plugins/clax-grok/skills/clax/SKILL.md"):
+for path in ("plugins/claude-code/skills/clax/SKILL.md", "plugins/clax/skills/clax/SKILL.md", "plugins/pi/skills/clax/SKILL.md", "plugins/clax-grok/skills/clax/SKILL.md", "plugins/clax-antigravity/skills/clax/SKILL.md"):
     versions[f"{path} tool block"] = first(r'^This is Clax plugin (\S+?)\.(?:\s|$)', open(path).read())
 # Every member that takes the workspace version, in Cargo.lock.
 members = re.search(r'^members\s*=\s*\[(.*?)\]', cargo, re.M | re.S)

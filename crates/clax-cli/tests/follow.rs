@@ -24,7 +24,7 @@ fn browser_cookie(home: &std::path::Path) -> String {
 
 /// The harness environment a test inherits from the agent running it; every
 /// `clax` run here starts without it.
-const HARNESS_ENV: [&str; 12] = [
+const HARNESS_ENV: [&str; 14] = [
     "GROK_SESSION_ID",
     "GROK_HOOK_EVENT",
     "GROK_PLUGIN_ROOT",
@@ -37,6 +37,8 @@ const HARNESS_ENV: [&str; 12] = [
     "CODEX_HOME",
     "PI_CODING_AGENT_DIR",
     "CLAX_SESSION_ID",
+    "ANTIGRAVITY_AGENT",
+    "ANTIGRAVITY_CONVERSATION_ID",
 ];
 
 fn clax(home: &Path) -> Command {

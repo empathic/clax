@@ -10,7 +10,7 @@ default: help
 help:
     @just --list --unsorted
 
-# Build clax and start a harness on this checkout's dev home (~/.clax-dev on 7481; a linked worktree's own ~/.clax-dev-<name>) (claude and pi load this checkout's plugin; codex and grok use the installed one); with no harness, `just watch`
+# Build clax and start a harness on this checkout's dev home (~/.clax-dev on 7481; a linked worktree's own ~/.clax-dev-<name>) (claude and pi load this checkout's plugin; codex, grok and antigravity use the installed one); with no harness, `just watch`
 dev *ARGS:
     ./scripts/dev.sh "$@"
 

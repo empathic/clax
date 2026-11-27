@@ -13,9 +13,14 @@ use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler,
 /// text; `scripts/test-plugins.sh` checks that they match.
 pub const GROK_STANDDOWN: &str = "This is the Clax plugin for Claude Code, which Grok Build also loads. In Grok, Clax runs from the clax-grok plugin, whose tools are named `clax_grok__<tool>` (for example `clax_grok__publish`); this server does nothing. If no `clax_grok` tools are listed, run `clax init --agent grok`. To remove this server from Grok, run `grok plugin disable clax`.";
 
+/// What the Claude Code plugin's copy says when Antigravity runs it (after
+/// `agy plugin import claude`). The wrapper carries the same text as
+/// `ANTIGRAVITY_STANDDOWN`; `scripts/test-plugins.sh` checks that they match.
+pub const ANTIGRAVITY_STANDDOWN: &str = "Clax runs from the clax-antigravity plugin in Antigravity, and this copy (the Claude Code plugin, imported into Antigravity) does nothing here. If the Clax tools are missing, run: clax init --agent antigravity. To remove this copy: agy plugin uninstall clax";
+
 /// The description of the stand-down server's `status` tool.
 pub const STATUS_DESCRIPTION: &str =
-    "Says which Clax plugin serves this Grok session; this server does nothing else.";
+    "Says which Clax plugin serves this session; this server does nothing else.";
 
 /// A server whose one tool, `status`, returns `text`.
 #[derive(Clone)]
@@ -34,7 +39,7 @@ impl StandDown {
     }
 
     #[tool(
-        description = "Says which Clax plugin serves this Grok session; this server does nothing else.",
+        description = "Says which Clax plugin serves this session; this server does nothing else.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn status(
@@ -95,5 +100,13 @@ mod tests {
             (a.read_only_hint, a.open_world_hint),
             (Some(true), Some(false))
         );
+    }
+
+    #[test]
+    fn the_antigravity_text_names_the_native_plugin_and_how_to_remove_the_copy() {
+        assert!(ANTIGRAVITY_STANDDOWN.contains("clax-antigravity"));
+        assert!(ANTIGRAVITY_STANDDOWN.contains("clax init --agent antigravity"));
+        assert!(ANTIGRAVITY_STANDDOWN.ends_with("agy plugin uninstall clax"));
+        assert!(!ANTIGRAVITY_STANDDOWN.contains("Grok"));
     }
 }

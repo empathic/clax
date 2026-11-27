@@ -30,13 +30,14 @@ pub const AGENT: &str = "agent";
 /// sandbox. Grok Build was not available to probe, so `GROK_SESSION_ID` is
 /// not read; Pi 0.73.1 sets `PI_CODING_AGENT=true` in its own process,
 /// which its bash tool inherits (the Clax extension also sets
-/// `CLAX_CHANNEL`).
+/// `CLAX_CHANNEL`); Antigravity's `agy` 1.5.18 sets `ANTIGRAVITY_AGENT=1`.
 pub const HARNESS_VARIABLES: &[(&str, Option<&str>)] = &[
     ("CLAUDECODE", Some("1")),
     ("CODEX_THREAD_ID", None),
     ("CODEX_SANDBOX", None),
     ("CODEX_CI", None),
     ("PI_CODING_AGENT", Some("true")),
+    ("ANTIGRAVITY_AGENT", Some("1")),
 ];
 
 /// Whether a CLI whose environment `env` reads runs under a harness.
@@ -84,6 +85,8 @@ mod tests {
         assert!(with(&[("CODEX_CI", "1")]));
         assert!(with(&[("PI_CODING_AGENT", "true")]));
         assert!(!with(&[("PI_CODING_AGENT_DIR", "/p")]));
+        assert!(with(&[("ANTIGRAVITY_AGENT", "1")]));
+        assert!(!with(&[("ANTIGRAVITY_AGENT", "0")]));
         assert!(with(&[("CLAX_CHANNEL", "agent")]));
         // Variables no probe confirmed are not read.
         for unconfirmed in [

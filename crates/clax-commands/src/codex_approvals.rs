@@ -191,7 +191,7 @@ fn follow_links(path: &Path) -> std::io::Result<PathBuf> {
     )))
 }
 
-/// Replaces the config at `path` with `text` atomically: a sibling
+/// Replaces the file at `path` with `text` atomically: a sibling
 /// temporary file, with the old file's permissions, renamed over it. A
 /// symbolic link at `path` is followed, even when its target does not exist
 /// yet, so the file it names is written and the link stays.
@@ -199,7 +199,8 @@ pub fn write_config(path: &Path, text: &str) -> std::io::Result<()> {
     let target = follow_links(path)?;
     let dir = target.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".config.toml.clax.{}.tmp", std::process::id()));
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!(".{name}.clax.{}.tmp", std::process::id()));
     std::fs::write(&tmp, text)?;
     if let Ok(m) = std::fs::metadata(&target) {
         std::fs::set_permissions(&tmp, m.permissions())?;

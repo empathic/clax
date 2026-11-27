@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// The harness names a session may carry.
-pub const HARNESSES: [&str; 5] = ["claude", "codex", "grok", "pi", "app"];
+pub const HARNESSES: [&str; 6] = ["claude", "codex", "grok", "antigravity", "pi", "app"];
 
 /// The harness of a session another machine's Clax registers to publish
 /// its person's own versions there, made by hand (the CLI or the browser)
@@ -389,6 +389,8 @@ pub struct Live {
     /// The Pi extension's injection loop polls, or holds while the
     /// session's `wait_for_feedback` (which hands it every comment) waits.
     pub inject: bool,
+    /// A `tier=wait` poll with a wait (`wait_for_feedback`) is open.
+    pub waiting: bool,
 }
 
 impl Live {
@@ -402,6 +404,7 @@ impl Live {
             follower: followers.has(sid, FollowKind::Follower),
             channel: followers.has(sid, FollowKind::Channel),
             inject: followers.has(sid, FollowKind::Inject) || waiters.is_waiting(sid),
+            waiting: waiters.is_waiting(sid),
         }
     }
 }
@@ -409,13 +412,18 @@ impl Live {
 /// Why the Pi extension does not wake this session.
 const PI_NO_LOOP: &str = "the Clax Pi extension's injection loop is not polling for this session (Pi has not started it, it has shut down, or the client is not the Pi extension); comments arrive on the next clax tool call or during wait_for_feedback";
 
+/// Why nothing wakes this Antigravity conversation.
+const ANTIGRAVITY_NO_WAIT: &str = "no wait_for_feedback call is open for this conversation; the clax skill opens one after a publish. Meanwhile comments arrive at the end of a turn (Stop hook), at the start of the next turn, or on the next clax tool call";
+
 /// How feedback can be pushed to this session (tier 5), and why not when it
 /// cannot. For Codex, `last_error` and `last_error_at` hold the latest
 /// `codex queue` failure (`null` after a success or before any run); a
 /// failure leaves push available, since the next comment is pushed again.
 /// For Pi, push is the extension's injection loop: available while it
 /// polls. For Grok, push is the monitor: available while a `clax feedback
-/// follow` of the session is connected. For Claude Code, the daemon
+/// follow` of the session is connected. For Antigravity, push is its open
+/// `wait_for_feedback` call: tier `wait`, available while a `tier=wait`
+/// poll of the session waits. For Claude Code, the daemon
 /// reports a notice follower as tier `notice`, and the shim's channel
 /// alone as tier `channel` with `sure: false` (Claude Code never says
 /// whether it registered the channel); the shim refines it. The Clax app's
@@ -451,6 +459,8 @@ fn push_info(
         "pi" => json!({"tier": "inject", "available": live.inject,
             "reason": (!live.inject).then_some(PI_NO_LOOP)}),
         "app" => json!({"tier": "wait", "available": true, "reason": null}),
+        "antigravity" => json!({"tier": "wait", "available": live.waiting,
+            "reason": (!live.waiting).then_some(ANTIGRAVITY_NO_WAIT)}),
         "grok" => {
             let reason = (!live.follower).then_some(
                 "no clax feedback follow is running for this session; the clax-grok skill starts one with Grok's monitor tool after a publish. Meanwhile comments arrive at the end of a turn (Stop hook), on the next clax tool call, or during wait_for_feedback",
@@ -494,8 +504,9 @@ impl Wake {
 /// through `codex queue` (the daemon's `codex`, the harness session ID
 /// known, and the session on this daemon's machine, not `elsewhere`), Pi
 /// through its extension's injection loop, Grok Build while a notice
-/// follower is connected, and Claude Code while one is, or unsure while
-/// only its channel polls.
+/// follower is connected, Antigravity while its `wait_for_feedback` call
+/// is open, and Claude Code while a notice follower is connected, or
+/// unsure while only its channel polls.
 pub fn wakes_when_idle(
     harness: &str,
     harness_session_known: bool,
@@ -508,6 +519,7 @@ pub fn wakes_when_idle(
         "codex" => yes(!elsewhere && codex.available() && harness_session_known),
         "pi" => yes(live.inject),
         "grok" => yes(live.follower),
+        "antigravity" => yes(live.waiting),
         "claude" if live.follower => Wake::Yes,
         "claude" if live.channel => Wake::Unsure,
         _ => Wake::No,
@@ -812,12 +824,17 @@ mod tests {
                 ..Live::default()
             },
             Live {
+                waiting: true,
+                ..Live::default()
+            },
+            Live {
                 follower: true,
                 channel: true,
                 inject: true,
+                waiting: true,
             },
         ];
-        for harness in ["claude", "codex", "grok", "pi", "by-hand"] {
+        for harness in ["claude", "codex", "grok", "pi", "antigravity", "by-hand"] {
             for codex in [&off, &on] {
                 for live in lives {
                     for hs in [None, Some("h".to_string())] {
@@ -920,6 +937,54 @@ mod tests {
             wakes_when_idle("claude", true, false, &off, both),
             Wake::Yes
         );
+    }
+
+    /// An Antigravity conversation is woken while its wait_for_feedback
+    /// call is open, and only then.
+    #[test]
+    fn antigravity_is_woken_while_its_wait_is_open() {
+        let off = CodexPush::from_env(Some("".into()), None);
+        let session: Session = serde_json::from_value(json!({
+            "id": "s", "harness": "antigravity", "pid": null, "parent_pid": 1, "cwd": "/", "ended_at": null, "agent_handle": "a",
+            "started_at": "2026-01-01T00:00:00Z", "last_seen_at": "2026-01-01T00:00:00Z",
+            "harness_session_id": "h",
+        }))
+        .unwrap();
+        let waiting = Live {
+            waiting: true,
+            ..Live::default()
+        };
+        assert_eq!(
+            push_info(&session, &off, None, None, waiting, false),
+            json!({"tier": "wait", "available": true, "reason": null})
+        );
+        assert_eq!(
+            wakes_when_idle("antigravity", true, false, &off, waiting),
+            Wake::Yes
+        );
+        // A follower or a channel is not the wait.
+        let other = Live {
+            follower: true,
+            channel: true,
+            inject: true,
+            waiting: false,
+        };
+        for live in [Live::default(), other] {
+            assert_eq!(
+                push_info(&session, &off, None, None, live, false),
+                json!({"tier": "wait", "available": false, "reason": "no wait_for_feedback call is open for this conversation; the clax skill opens one after a publish. Meanwhile comments arrive at the end of a turn (Stop hook), at the start of the next turn, or on the next clax tool call"})
+            );
+            assert_eq!(
+                wakes_when_idle("antigravity", true, false, &off, live),
+                Wake::No
+            );
+        }
+    }
+
+    #[test]
+    fn antigravity_is_a_harness_a_session_may_carry() {
+        assert!(check_harness("antigravity", false).is_ok());
+        assert!(check_harness("agy", false).is_err());
     }
 
     #[test]

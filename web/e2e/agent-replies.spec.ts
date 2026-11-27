@@ -13,7 +13,7 @@ import { api, expect, publish, registerSession, run, setName, startDaemon, test 
 /** Runs the CLI as the person, on their scratch home, outside any agent channel. */
 function asPerson(home: string, args: string[], input?: string, cwd?: string, env: NodeJS.ProcessEnv = {}) {
   const all: NodeJS.ProcessEnv = { ...process.env, CLAX_HOME: home, ...env };
-  for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "CLAX_PORT"]) if (!(k in env)) delete all[k];
+  for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "ANTIGRAVITY_AGENT", "ANTIGRAVITY_CONVERSATION_ID", "CLAX_PORT"]) if (!(k in env)) delete all[k];
   return run(process.env.CLAX_E2E_BIN!, args, { env: all, input, cwd });
 }
 

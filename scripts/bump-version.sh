@@ -45,10 +45,10 @@ sub("Cargo.toml", r'(\[workspace\.package\]\s*\nversion\s*=\s*")([^"]+)(")')
 crates = workspace_versioned()
 for crate in crates:
     sub("Cargo.lock", r'(^name = "%s"\nversion = ")([^"]+)(")' % re.escape(crate))
-for f in ("plugins/claude-code/.claude-plugin/plugin.json", "plugins/clax/.codex-plugin/plugin.json", "plugins/clax-grok/.grok-plugin/plugin.json", "plugins/pi/package.json"):
+for f in ("plugins/claude-code/.claude-plugin/plugin.json", "plugins/clax/.codex-plugin/plugin.json", "plugins/clax-grok/.grok-plugin/plugin.json", "plugins/clax-antigravity/.antigravity-plugin/plugin.json", "plugins/pi/package.json"):
     sub(f, r'(^  "version": ")([^"]+)(")')
 sub(".claude-plugin/marketplace.json", r'("version": ")([^"]+)(")', count=2)
-for f in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh", "plugins/pi/scripts/ensure-clax.sh"):
+for f in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh", "plugins/clax-antigravity/scripts/ensure-clax.sh", "plugins/pi/scripts/ensure-clax.sh"):
     sub(f, r'(^CLAX_VERSION=")([^"]+)(")')
 # The clax-fleet image the Kubernetes overlay runs, which the release tag's
 # fleet-image workflow publishes, and the docs' examples of it.

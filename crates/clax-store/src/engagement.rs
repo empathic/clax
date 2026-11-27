@@ -84,14 +84,15 @@ impl Store {
     }
 
     /// A turn of live session `sid` ended now, in a harness that reports no
-    /// prompts (Codex, Grok Build). When no Clax delivery reached the
-    /// session since its previous turn ended (for its first turn: at all),
-    /// the turn stands for a terminal prompt, recorded as inferred. Returns
-    /// whether it did. A delivery sets a flag that the next turn clears
-    /// ([`Store::note_delivery`]), so a delivery stamped in the same
-    /// millisecond as the turn before it still counts. A Codex queue
-    /// delivery that came while this turn was open ([`Store::note_queued`])
-    /// starts the next turn, so it stays set for that one.
+    /// prompts (Codex, Grok Build, Antigravity). When no Clax delivery
+    /// reached the session since its previous turn ended (for its first
+    /// turn: at all), the turn stands for a terminal prompt, recorded as
+    /// inferred. Returns whether it did. A delivery sets a flag that the
+    /// next turn clears ([`Store::note_delivery`]), so a delivery stamped in
+    /// the same millisecond as the turn before it still counts. A Codex
+    /// queue delivery that came while this turn was open
+    /// ([`Store::note_queued`]) starts the next turn, so it stays set for
+    /// that one.
     ///
     /// # Errors
     /// `unknown_session` for a missing or ended session.
@@ -127,14 +128,15 @@ impl Store {
     }
 
     /// Live session `sid`, in a harness that reports no prompts (Codex,
-    /// Grok Build), polled for feedback now from within a turn (any tier
-    /// but its Stop hook's or the Codex queue's): its turn is open until
-    /// the next reported end. The first such poll after a reported turn end
-    /// ([`Store::note_turn`]), when no Clax delivery reached the session
-    /// since that end, shows a new turn the person started in the
-    /// terminal: it is recorded as an inferred prompt now. Later polls of
-    /// the same turn record nothing; neither does a poll before the
-    /// session's first reported turn end. Returns whether it recorded one.
+    /// Grok Build, Antigravity), polled for feedback now from within a turn
+    /// (any tier but its Stop hook's, the Codex queue's or Antigravity's
+    /// `wait`): its turn is open until the next reported end. The first
+    /// such poll after a reported turn end ([`Store::note_turn`]), when no
+    /// Clax delivery reached the session since that end, shows a new turn
+    /// the person started in the terminal: it is recorded as an inferred
+    /// prompt now. Later polls of the same turn record nothing; neither
+    /// does a poll before the session's first reported turn end. Returns
+    /// whether it recorded one.
     /// A turn a delivery started keeps `delivered_since_turn` set, so it is
     /// not counted, and its end is Clax's as before.
     ///

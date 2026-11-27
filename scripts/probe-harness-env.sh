@@ -7,21 +7,22 @@
 # `bash scripts/probe-harness-env.sh` and show the output verbatim). It
 # prints, one per line and sorted:
 #   - every variable's name whose name suggests a harness (CLAUDE*, CODEX*,
-#     GROK*, PI_*, CLAX*, AI_AGENT), with its value only for the variables
-#     the CLI may read (CLAUDECODE, CODEX_THREAD_ID, CODEX_SANDBOX,
-#     CODEX_CI, GROK_SESSION_ID, PI_CODING_AGENT, CLAX_CHANNEL; IDs and
+#     GROK*, ANTIGRAVITY*, PI_*, CLAX*, AI_AGENT), with its value only for
+#     the variables the CLI may read (CLAUDECODE, CODEX_THREAD_ID,
+#     CODEX_SANDBOX, CODEX_CI, GROK_SESSION_ID, ANTIGRAVITY_AGENT,
+#     ANTIGRAVITY_CONVERSATION_ID, PI_CODING_AGENT, CLAX_CHANNEL; IDs and
 #     flags, never secrets), others as <set>;
 #   - then `names:` and the names of every other variable set, values
 #     never shown (tokens live in some of them).
 # Record the result per harness in docs/contract.md ("Harness shell
 # environments").
 set -euo pipefail
-shown="CLAUDECODE CODEX_THREAD_ID CODEX_SANDBOX CODEX_CI GROK_SESSION_ID PI_CODING_AGENT CLAX_CHANNEL"
+shown="CLAUDECODE CODEX_THREAD_ID CODEX_SANDBOX CODEX_CI GROK_SESSION_ID ANTIGRAVITY_AGENT ANTIGRAVITY_CONVERSATION_ID PI_CODING_AGENT CLAX_CHANNEL"
 harness=""
 others=""
 while IFS= read -r name; do
     case "$name" in
-        CLAUDE*|CODEX*|GROK*|PI_*|CLAX*|AI_AGENT)
+        CLAUDE*|CODEX*|GROK*|ANTIGRAVITY*|PI_*|CLAX*|AI_AGENT)
             value="<set>"
             for s in $shown; do
                 if [ "$s" = "$name" ]; then value="${!name}"; fi

@@ -17,7 +17,10 @@ pub struct Args {
     pub fix: bool,
     /// Also check each layer of this harness's integration: the binary, the
     /// installed plugin and skill, its MCP sessions, its hooks, and feedback
-    /// delivery (and, for Codex, native push).
+    /// delivery (and, for Codex, native push); for Claude Code, the channel;
+    /// for Grok Build and Antigravity, the harness's version and a Claude
+    /// Code copy it runs; for Antigravity, also its permission rule and its
+    /// sessions with no conversation ID.
     #[arg(long, value_enum)]
     pub agent: Option<DoctorAgent>,
 }
@@ -27,7 +30,7 @@ fn check(name: &str, ok: bool, detail: impl Into<String>) -> serde_json::Value {
 }
 
 /// A passing check that the person should still read: printed `warn`.
-fn warn(name: &str, detail: impl Into<String>) -> serde_json::Value {
+pub(super) fn warn(name: &str, detail: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"name": name, "ok": true, "warn": true, "detail": detail.into()})
 }
 

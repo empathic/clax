@@ -3,8 +3,8 @@
 Your coding agent can build you a page: a report, a dashboard, a prototype,
 a chart. Clax gives those pages a home on your own machine.
 
-- **Agents publish.** Claude Code, Codex, Pi and Grok Build publish HTML
-  pages to Clax, and every version is kept.
+- **Agents publish.** Claude Code, Codex, Pi, Grok Build and Antigravity
+  publish HTML pages to Clax, and every version is kept.
 - **You look and comment.** Open the gallery in your browser, point at
   anything on a page, and leave a comment.
 - **Agents act on it.** Send a comment to the agent and it gets it, makes
@@ -66,7 +66,7 @@ covers the tools, the `/clax` command, and the comment loop.
 ### Every harness at once
 
 Install the `clax` command, then let it set up every harness it finds on
-your `PATH`. Grok Build installs this way:
+your `PATH`. Grok Build and Antigravity install this way:
 
 ```sh
 curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash
@@ -75,9 +75,9 @@ clax init
 
 `install.sh` puts `clax` in `~/.local/bin` after checking it against the
 release's checksums. `clax init` registers the Clax plugin with Claude
-Code, Codex, Pi and Grok Build, whichever are installed, and sets up the
-Chrome extension. Start a new session in each harness afterwards. Run the
-same two commands again to upgrade.
+Code, Codex, Pi, Grok Build and Antigravity, whichever are installed, and
+sets up the Chrome extension. Start a new session in each harness
+afterwards. Run the same two commands again to upgrade.
 
 A few things differ by harness:
 
@@ -85,8 +85,12 @@ A few things differ by harness:
   `clax init` offers, once, to approve those for you.
 - **Grok Build** asks before every tool call. For headless runs, pass
   `--always-approve` or `--allow 'MCPTool(clax_grok__*)'`.
+- **Antigravity** asks before every tool call. `clax init` offers to add
+  the rule that approves the Clax tools, `mcp(clax-antigravity_clax/*)`.
 - **Pi** and **Codex** start a new turn when you send them a comment, even
-  when the session is idle.
+  when the session is idle. So does an **Antigravity**
+  conversation once its agent has published or watched a page: the agent
+  keeps a wait for comments open in the background.
 
 You can also install each plugin from a clone of this repository, with no
 build needed. See [Install](docs/usage.md#install) in the usage guide.
@@ -143,7 +147,7 @@ clax list           # list artifacts
 clax comments       # open comment threads, newest activity first
 clax status         # is Clax running, and which agents are working on what
 clax doctor         # check that everything is healthy
-clax doctor --agent claude   # check one harness's plugin: claude, codex, pi or grok
+clax doctor --agent claude   # check one harness's plugin: claude, codex, pi, grok or antigravity
 clax stop           # stop Clax
 ```
 
@@ -156,7 +160,8 @@ command.
   publishing to a hosted Clax, and upgrading.
 - Plugin guides: [Claude Code](plugins/claude-code/README.md),
   [Codex](plugins/clax/README.md), [Pi](plugins/pi/README.md),
-  [Grok Build](plugins/clax-grok/README.md).
+  [Grok Build](plugins/clax-grok/README.md),
+  [Antigravity](plugins/clax-antigravity/README.md).
 - [The contract](docs/contract.md): every tool's arguments and results, the
   page contract and the security model, for anyone building an integration.
 - [Bug reports from your app](docs/feedback.md): add Clax's report overlay

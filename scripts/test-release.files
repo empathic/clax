@@ -54,6 +54,14 @@ plugins/clax-grok/.grok-plugin/plugin.json
 plugins/clax-grok/scripts/ensure-clax.sh
 plugins/clax-grok/skills/clax/SKILL.md
 plugins/clax-grok/README.md
+plugins/clax-antigravity/.antigravity-plugin/plugin.json
+plugins/clax-antigravity/scripts/ensure-clax.sh
+plugins/clax-antigravity/skills/clax/SKILL.md
+plugins/clax-antigravity/skills/clax/references/asking.md
+plugins/clax-antigravity/skills/clax/references/runtime-capabilities.md
+plugins/clax-antigravity/skills/clax/references/tools.md
+plugins/clax-antigravity/skills/clax/references/working-beside-others.md
+plugins/clax-antigravity/README.md
 plugins/pi/scripts/ensure-clax.sh
 scripts/pin-release.sh
 deploy/k8s/sqlite/kustomization.yaml

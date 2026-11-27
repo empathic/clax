@@ -1,5 +1,5 @@
-//! `clax init` / `clax uninit` against fake `claude`, `codex`, `grok` and
-//! `pi` commands and scratch harness configuration directories. The real
+//! `clax init` / `clax uninit` against fake `claude`, `codex`, `grok`, `agy`
+//! and `pi` commands and scratch harness configuration directories. The real
 //! harnesses and their real configuration are never touched.
 
 use assert_cmd::Command;
@@ -16,14 +16,14 @@ impl Env {
     /// A scratch HOME with fake CLIs for `harnesses` in `fakebin`. Each fake
     /// appends "<name> <args>" to `calls`, and exits 1 when that line is
     /// listed in `fail`. Given `plugin list --json`, a fake prints
-    /// `grok-list.json`, else `[]`.
+    /// `<name>-list.json`, else `[]`.
     fn new(harnesses: &[&str]) -> Env {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("fakebin");
         for h in harnesses {
             clax_fake_exe::install(
                 &bin.join(h),
-                "#!/bin/sh\nd=\"${0%/*}/..\"\nline=\"${0##*/} $*\"\necho \"$line\" >> \"$d/calls\"\npwd -P >> \"$d/cwds\"\nif grep -qxF \"$line\" \"$d/fail\" 2>/dev/null; then echo \"$line failed\" >&2; exit 1; fi\nif [ \"$*\" = \"plugin list --json\" ]; then cat \"$d/grok-list.json\" 2>/dev/null || echo '[]'; fi\nexit 0\n",
+                "#!/bin/sh\nd=\"${0%/*}/..\"\nline=\"${0##*/} $*\"\necho \"$line\" >> \"$d/calls\"\npwd -P >> \"$d/cwds\"\nif grep -qxF \"$line\" \"$d/fail\" 2>/dev/null; then echo \"$line failed\" >&2; exit 1; fi\nif [ \"$*\" = \"plugin list --json\" ]; then cat \"$d/${0##*/}-list.json\" 2>/dev/null || echo '[]'; fi\nexit 0\n",
             );
         }
         Env { dir }
@@ -45,6 +45,8 @@ impl Env {
             .env_remove("GROK_SESSION_ID")
             .env_remove("GROK_HOOK_EVENT")
             .env_remove("CLAUDE_PID")
+            .env_remove("ANTIGRAVITY_AGENT")
+            .env_remove("ANTIGRAVITY_CONVERSATION_ID")
             .env_remove("XDG_CONFIG_HOME")
             .env(
                 "CLAX_NATIVE_HOST_DIRS",
@@ -770,6 +772,234 @@ fn uninit_keeps_the_marketplace_while_grok_still_lists_a_plugin_from_it() {
             .contains("grok still registers it"),
         "{v}"
     );
+}
+
+const AGY_RULE: &str = "mcp(clax-antigravity_clax/*)";
+
+impl Env {
+    fn agy_settings(&self) -> PathBuf {
+        self.p(".gemini/antigravity-cli/settings.json")
+    }
+    fn seed_agy_settings(&self, text: &str) {
+        let p = self.agy_settings();
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+}
+
+fn agy_permissions(v: &serde_json::Value) -> serde_json::Value {
+    v["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["agent"] == "antigravity")
+        .unwrap()["permissions"]
+        .clone()
+}
+
+#[test]
+fn a_machine_with_only_agy_registers_clax_antigravity() {
+    let e = Env::new(&["agy"]);
+    let (ok, v) = e.json(&["init"]);
+    assert!(ok, "{v}");
+    for other in ["claude", "codex", "grok", "pi"] {
+        assert_eq!(status(&v, other), "skipped", "{v}");
+    }
+    assert_eq!(status(&v, "antigravity"), "registered", "{v}");
+    let dir = e.root().join("plugins/clax-antigravity");
+    assert_eq!(
+        e.calls(),
+        [
+            "agy plugin uninstall clax-antigravity".to_string(),
+            format!("agy plugin install {}", dir.display()),
+        ]
+    );
+    assert!(dir.join(".antigravity-plugin/plugin.json").is_file());
+    let rec: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(e.p("ax/registrations.json")).unwrap()).unwrap();
+    assert_eq!(
+        rec["harnesses"]["antigravity"],
+        serde_json::json!({"plugin": "clax-antigravity", "source": dir})
+    );
+}
+
+#[test]
+fn init_yes_adds_the_antigravity_rule_and_keeps_the_other_settings() {
+    let e = Env::new(&["agy"]);
+    e.seed_agy_settings(
+        r#"{"trustedWorkspaces":["/w"],"model":"m","permissions":{"allow":["command(git status)"],"deny":["command(rm)"]}}"#,
+    );
+    let (ok, v) = e.json(&["init", "--agent", "antigravity", "--yes"]);
+    assert!(ok, "{v}");
+    let p = agy_permissions(&v);
+    assert_eq!(p["status"], "added", "{v}");
+    assert_eq!(p["rule"], AGY_RULE, "{v}");
+    let text = std::fs::read_to_string(e.agy_settings()).unwrap();
+    assert!(
+        text.ends_with("}\n") && text.contains("\n  \"model\""),
+        "{text}"
+    );
+    let settings: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        settings,
+        serde_json::json!({
+            "model": "m",
+            "trustedWorkspaces": ["/w"],
+            "permissions": {
+                "allow": ["command(git status)", AGY_RULE],
+                "deny": ["command(rm)"],
+            },
+        })
+    );
+
+    let (ok, v) = e.json(&["init", "--agent", "antigravity", "--yes"]);
+    assert!(ok, "{v}");
+    assert_eq!(agy_permissions(&v)["status"], "unchanged", "{v}");
+    assert_eq!(std::fs::read_to_string(e.agy_settings()).unwrap(), text);
+}
+
+#[test]
+fn init_without_a_terminal_adds_nothing_and_prints_the_rule() {
+    let e = Env::new(&["agy"]);
+    let (ok, v) = e.json(&["init", "--agent", "antigravity"]);
+    assert!(ok, "{v}");
+    let p = agy_permissions(&v);
+    assert_eq!(p["status"], "not_added", "{v}");
+    let settings = e.agy_settings().display().to_string();
+    assert_eq!(p["settings"], settings, "{v}");
+    let d = p["detail"].as_str().unwrap();
+    for want in [AGY_RULE, "`clax init --agent antigravity --yes`"] {
+        assert!(d.contains(want), "{want}: {d}");
+    }
+    assert!(!e.p(".gemini").exists());
+
+    let out = e
+        .cmd()
+        .args(["init", "--agent", "antigravity"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("antigravity permissions: not_added ("),
+        "{text}"
+    );
+    assert!(text.contains(AGY_RULE), "{text}");
+    assert!(!e.p(".gemini").exists());
+}
+
+#[test]
+fn init_adds_nothing_beside_an_ask_rule_and_names_it() {
+    let e = Env::new(&["agy"]);
+    let seed = r#"{"permissions":{"ask":["mcp(clax-antigravity_clax/delete)"]}}"#;
+    e.seed_agy_settings(seed);
+    let (ok, v) = e.json(&["init", "--agent", "antigravity", "--yes"]);
+    assert!(ok, "{v}");
+    let p = agy_permissions(&v);
+    assert_eq!(p["status"], "blocked", "{v}");
+    assert!(
+        p["detail"]
+            .as_str()
+            .unwrap()
+            .contains("`mcp(clax-antigravity_clax/delete)`"),
+        "{v}"
+    );
+    assert_eq!(std::fs::read_to_string(e.agy_settings()).unwrap(), seed);
+}
+
+#[test]
+fn a_settings_file_that_is_not_json_is_left_untouched() {
+    let e = Env::new(&["agy"]);
+    let seed = "{\"model\": \"m\", // a comment\n}\n";
+    e.seed_agy_settings(seed);
+    let (ok, v) = e.json(&["init", "--agent", "antigravity", "--yes"]);
+    assert!(ok, "{v}");
+    let p = agy_permissions(&v);
+    assert_eq!(p["status"], "failed", "{v}");
+    assert!(
+        p["detail"].as_str().unwrap().contains("could not parse"),
+        "{v}"
+    );
+    assert_eq!(std::fs::read(e.agy_settings()).unwrap(), seed.as_bytes());
+}
+
+#[test]
+fn a_failed_agy_install_offers_no_rule() {
+    let e = Env::new(&["agy"]);
+    std::fs::write(
+        e.p("fail"),
+        format!(
+            "agy plugin uninstall clax-antigravity\nagy plugin install {}\n",
+            e.root().join("plugins/clax-antigravity").display()
+        ),
+    )
+    .unwrap();
+    let (ok, v) = e.json(&["init", "--agent", "antigravity", "--yes"]);
+    assert!(!ok);
+    assert_eq!(status(&v, "antigravity"), "failed", "{v}");
+    assert!(detail(&v, "antigravity").contains("(ignored)"), "{v}");
+    assert!(agy_permissions(&v).is_null(), "{v}");
+    assert!(!e.p(".gemini").exists());
+}
+
+#[test]
+fn agy_plugin_list_that_is_not_json_counts_as_not_installed() {
+    let e = Env::new(&["agy"]);
+    assert!(e.json(&["init", "--agent", "antigravity"]).0);
+    std::fs::write(
+        e.p("agy-list.json"),
+        serde_json::json!([{
+            "name": "clax-antigravity",
+            "enabled": true,
+            "path": e.p(".gemini/config/plugins/clax-antigravity"),
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    let (_, v) = e.json(&["uninit"]);
+    assert!(e.root().exists(), "{v}");
+    assert!(
+        v["marketplace_detail"]
+            .as_str()
+            .unwrap()
+            .contains("antigravity still registers it"),
+        "{v}"
+    );
+
+    std::fs::write(e.p("agy-list.json"), "No plugins installed.\n").unwrap();
+    let (ok, v) = e.json(&["uninit"]);
+    assert!(ok, "{v}");
+    assert_eq!(v["marketplace_detail"], "removed", "{v}");
+    assert!(!e.root().exists());
+}
+
+#[test]
+fn uninit_removes_the_plugin_and_leaves_the_rule() {
+    let e = Env::new(&["agy"]);
+    assert!(e.json(&["init", "--agent", "antigravity", "--yes"]).0);
+    let text = std::fs::read_to_string(e.agy_settings()).unwrap();
+    assert!(text.contains(AGY_RULE), "{text}");
+    let (ok, v) = e.json(&["uninit"]);
+    assert!(ok, "{v}");
+    assert_eq!(status(&v, "antigravity"), "removed", "{v}");
+    assert_eq!(
+        e.calls().last().map(String::as_str),
+        Some("agy plugin list --json")
+    );
+    assert!(
+        e.calls()
+            .iter()
+            .filter(|c| *c == "agy plugin uninstall clax-antigravity")
+            .count()
+            == 2,
+        "{:?}",
+        e.calls()
+    );
+    let p = agy_permissions(&v);
+    assert_eq!(p["status"], "kept", "{v}");
+    assert!(p["detail"].as_str().unwrap().contains(AGY_RULE), "{v}");
+    assert_eq!(std::fs::read_to_string(e.agy_settings()).unwrap(), text);
+    assert!(!e.root().exists(), "{v}");
 }
 
 #[test]

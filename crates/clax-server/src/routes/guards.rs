@@ -2385,7 +2385,7 @@ mod agents {
             |p: &str| std::fs::read_to_string(root.join(p)).unwrap_or_else(|e| panic!("{p}: {e}"));
         // Every copy of the wrapper is the same file.
         let wrapper = read("scripts/ensure-clax.sh");
-        for p in ["claude-code", "clax", "clax-grok", "pi"] {
+        for p in ["claude-code", "clax", "clax-grok", "clax-antigravity", "pi"] {
             assert_eq!(
                 read(&format!("plugins/{p}/scripts/ensure-clax.sh")),
                 wrapper,
@@ -2406,7 +2406,7 @@ mod agents {
             tool_hook.contains("ensure-clax.sh\" exec hook"),
             "tool-hook.sh must run ensure-clax.sh exec hook"
         );
-        for p in ["claude-code", "clax"] {
+        for p in ["claude-code", "clax", "clax-antigravity"] {
             assert_eq!(
                 read(&format!("plugins/{p}/scripts/tool-hook.sh")),
                 tool_hook,
@@ -2451,6 +2451,30 @@ mod agents {
             }
             assert!(n > 0, "{p}");
         }
+        // Antigravity's hooks run from the plugin directory, by relative
+        // path, in named groups of handlers or of `{matcher, hooks}`.
+        let hooks: serde_json::Value =
+            serde_json::from_str(&read("plugins/clax-antigravity/hooks.json")).unwrap();
+        let mut n = 0;
+        for group in hooks.as_object().unwrap().values() {
+            for entries in group.as_object().unwrap().values() {
+                for e in entries.as_array().unwrap() {
+                    for h in e["hooks"]
+                        .as_array()
+                        .map_or(vec![e], |hs| hs.iter().collect())
+                    {
+                        let cmd = h["command"].as_str().unwrap();
+                        assert!(
+                            cmd.starts_with("./scripts/ensure-clax.sh exec ")
+                                || cmd.starts_with("./scripts/tool-hook.sh "),
+                            "plugins/clax-antigravity/hooks.json: {cmd}"
+                        );
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert!(n > 0, "clax-antigravity");
         // Pi: it resolves the binary through the wrapper (no arguments: the
         // path; `which`: the path, never installing), then runs it directly
         // only for `--version`, `status --json` and `serve --json`, the last

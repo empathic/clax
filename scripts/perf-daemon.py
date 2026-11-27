@@ -1181,7 +1181,8 @@ def connect(binary, scratch, invite, name):
     home = os.path.join(scratch, name.lower())
     os.makedirs(home, mode=0o700)
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith("CLAX_") and k not in ("CLAUDECODE", "CODEX_SESSION_ID")}
+           if not k.startswith("CLAX_") and k not in ("CLAUDECODE", "CODEX_SESSION_ID",
+                                                       "ANTIGRAVITY_AGENT", "ANTIGRAVITY_CONVERSATION_ID")}
     env["CLAX_HOME"] = home
     r = subprocess.run([binary, "connect", invite, "--name", f"{name.lower()}-laptop", "--yes", "--no-browser"],
                        env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)

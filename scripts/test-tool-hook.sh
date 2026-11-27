@@ -25,7 +25,8 @@ calls() { if [ -f "$CALLS" ]; then wc -l < "$CALLS" | tr -d ' '; else echo 0; fi
 # The input comes from a process substitution, not a pipe: a gate that exits
 # without reading it (an unknown harness) would leave a pipe's writer to die
 # of SIGPIPE, and pipefail would report that as the gate's status.
-gate() { "$T/bin/tool-hook.sh" "$1" < <(printf '%s' "$2") 2>"$T/err"; }
+# gate <harness> <input> [mode]
+gate() { local agent="$1" input="$2"; shift 2; "$T/bin/tool-hook.sh" "$agent" "$@" < <(printf '%s' "$input") 2>"$T/err"; }
 # Sets a file's mtime $2 seconds from now.
 age() { python3 -c 'import os, sys, time; t = time.time() + int(sys.argv[2]); os.utime(sys.argv[1], (t, t))' "$1" "$2"; }
 IN='{"session_id":"cc-1","hook_event_name":"PostToolUse","tool_name":"Edit"}'
@@ -70,6 +71,39 @@ chmod 000 "$STAMPS"
 out="$(gate claude '{"session_id":"cc-3"}')"; code=$?
 chmod 755 "$STAMPS"
 if [ "$code" = 0 ] && [ -z "$out" ] && [ "$(calls)" = 9 ]; then pass "an unwritable stamp directory still renews and exits 0"; else fail "unwritable: $code '$out' $(calls)"; fi
+
+AG='"conversationId":"c0ffee00-0000-4000-8000-000000000001","hookEventName":"PreInvocation"'
+n="$(calls)"
+out="$(gate antigravity "{$AG,\"invocationNum\":0}" prompt)"; code=$?
+if [ "$code" = 0 ] && [ "$out" = '{"noise": true}' ] && [ ! -s "$T/err" ] && [ "$(calls)" = $((n + 1)) ] \
+  && tail -n 1 "$CALLS" | grep -F "exec hook --agent antigravity prompt|{$AG,\"invocationNum\":0}" >/dev/null; then
+  pass "antigravity prompt at a turn's first model call runs clax hook ... prompt and passes its stdout through"
+else fail "prompt, invocationNum 0: exit $code, stdout '$out', $(calls) runs, $(tail -n 1 "$CALLS")"; fi
+out="$(gate antigravity "{$AG,\"invocationNum\":0}" prompt)"
+if [ "$out" = '{"noise": true}' ] && [ "$(calls)" = $((n + 2)) ] && [ ! -e "$STAMPS/antigravity-c0ffee00-0000-4000-8000-000000000001" ]; then
+  pass "prompt mode keeps no stamp and runs again within 60 s"
+else fail "prompt again: stdout '$out', $(calls) runs, $(ls "$STAMPS")"; fi
+out="$(gate antigravity "{$AG,\"invocationNum\":2}" prompt)"; code=$?
+if [ "$code" = 0 ] && [ -z "$out" ] && [ "$(calls)" = $((n + 2)) ]; then pass "a later model call of the turn starts no clax"
+else fail "prompt, invocationNum 2: exit $code, stdout '$out', $(calls) runs"; fi
+out="$(gate antigravity "{$AG}" prompt)"
+gate antigravity "{$AG, \"invocationNum\": 0}" prompt >/dev/null
+if [ "$out" = '{"noise": true}' ] && [ "$(calls)" = $((n + 4)) ]; then pass "without invocationNum, or with it spaced, prompt mode runs clax"
+else fail "prompt, no invocationNum: stdout '$out', $(calls) runs"; fi
+
+n="$(calls)"
+TIN='{"conversationId":"c0ffee00-0000-4000-8000-000000000001","hookEventName":"PostToolUse"}'
+out="$(gate antigravity "$TIN")"
+gate antigravity "$TIN" >/dev/null
+if [ -z "$out" ] && [ "$(calls)" = $((n + 1)) ] && [ -f "$STAMPS/antigravity-c0ffee00-0000-4000-8000-000000000001" ] \
+  && tail -n 1 "$CALLS" | grep -F "exec hook --agent antigravity tool|$TIN" >/dev/null; then
+  pass "antigravity's tool hook stamps by conversationId and runs at most once a minute"
+else fail "antigravity tool: stdout '$out', $(calls) runs, $(ls "$STAMPS")"; fi
+gate antigravity '{"conversationId":"../x"}' >/dev/null
+if [ "$(calls)" = $((n + 2)) ] && [ ! -e "$STAMPS/antigravity-../x" ] && [ ! -e "$CLAX_HOME/run/x" ] \
+  && [ "$(find "$STAMPS" -name 'antigravity-*' | wc -l | tr -d ' ')" = 1 ]; then
+  pass "an unusable conversationId stamps nothing"
+else fail "antigravity ../x: $(calls) runs, $(ls -R "$CLAX_HOME")"; fi
 
 if [ "$FAILED" -ne 0 ]; then echo "tool hook gate checks failed"; exit 1; fi
 echo "tool hook gate checks passed"

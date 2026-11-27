@@ -26,7 +26,7 @@ pub fn as_clax(text: &str) -> String {
 
 /// The harness CLIs `clax init` and `clax doctor` look for on PATH.
 #[allow(dead_code)]
-pub const HARNESSES: [&str; 4] = ["claude", "codex", "grok", "pi"];
+pub const HARNESSES: [&str; 5] = ["claude", "codex", "grok", "agy", "pi"];
 
 /// `/usr/bin:/bin` with each program in `hide` absent. The directories it
 /// makes go under `scratch`.
@@ -96,6 +96,8 @@ impl Env {
             "CODEX_SANDBOX",
             "CODEX_CI",
             "PI_CODING_AGENT",
+            "ANTIGRAVITY_AGENT",
+            "ANTIGRAVITY_CONVERSATION_ID",
         ] {
             c.env_remove(var);
         }

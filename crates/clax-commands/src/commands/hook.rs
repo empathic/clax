@@ -109,6 +109,7 @@ pub enum Agent {
     Claude,
     Codex,
     Grok,
+    Antigravity,
 }
 
 /// The deadline for the whole invocation and for each daemon request.
@@ -164,6 +165,7 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
             Agent::Grok => "grok",
+            Agent::Antigravity => clax_core::antigravity::HARNESS,
         }
     }
 }
@@ -176,7 +178,9 @@ pub enum Event {
     SessionEnd,
     /// The agent is about to stop; hand it pending feedback by blocking the stop.
     Stop,
-    /// The person submitted a prompt; add pending feedback as context.
+    /// A turn starts (the person submitted a prompt, or, under
+    /// Antigravity, the turn's first model call); add pending feedback as
+    /// context.
     Prompt,
     /// A tool call finished; renew the session's working records.
     Tool,
@@ -727,9 +731,10 @@ pub fn log_run(
 /// Runs the hook. Never fails the harness: any error or timeout prints one
 /// line to stderr and leaves stdout empty, except for a Codex session
 /// start's approval notice ([`codex_notice`]), which is printed either way.
-/// Never starts a daemon. Each run is
-/// logged to hooks.log. A Claude Code hook that Grok Build runs stands down:
-/// it prints nothing and logs one standdown line.
+/// Never starts a daemon. Each run is logged to hooks.log. A Claude Code
+/// hook that Grok Build or Antigravity runs stands down: it prints nothing
+/// and logs one standdown line. An Antigravity run prints in Antigravity's
+/// shapes ([`HookOutput::for_antigravity`]).
 pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let started = Instant::now();
     let parent_pid = std::os::unix::process::parent_id();
@@ -781,6 +786,11 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let out = match &notice {
         Some(n) => out.with_system_message(&n.text),
         None => out,
+    };
+    let out = if matches!(agent, Agent::Antigravity) {
+        out.for_antigravity()
+    } else {
+        out
     };
     if let Some(line) = out.to_line()
         && writeln!(std::io::stdout(), "{line}").is_ok()
@@ -1015,6 +1025,19 @@ fn wake_ledger(home: &Home, agent: Agent, input: &HookInput) -> Option<std::path
     )
 }
 
+/// The host that runs this Claude Code hook when another harness does:
+/// Grok Build or Antigravity, in whose sessions only their own plugins'
+/// hooks act ([`crate::host`]).
+fn standdown_host(input: &HookInput) -> Option<&'static str> {
+    if crate::host::grok_runs_hook(|k| std::env::var(k).ok(), input) {
+        Some("grok")
+    } else if crate::host::antigravity_runs_hook(input) {
+        Some("antigravity")
+    } else {
+        None
+    }
+}
+
 /// Handles one hook run; `None` means it stood down.
 fn handle(
     agent: Agent,
@@ -1027,17 +1050,26 @@ fn handle(
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let input = HookInput::parse(&stdin);
     if matches!(agent, Agent::Claude)
-        && crate::host::grok_runs_hook(|k| std::env::var(k).ok(), &input)
+        && let Some(host) = standdown_host(&input)
     {
-        // Grok Build runs the Claude Code copy's hooks too; in a Grok
-        // session only clax-grok's hooks act (spec D17).
-        crate::host::log_standdown(home, "hook");
+        crate::host::log_standdown(home, "hook", host);
         return Ok(None);
     }
     // Grok Build discards an allowing prompt hook's output, and a
     // prompt_hook request marks comments delivered, so Grok's prompt hook
     // does nothing (the plugin does not wire it).
     if matches!((agent, event), (Agent::Grok, Event::Prompt)) {
+        return Ok(Some(HookOutput::none()));
+    }
+    // Antigravity has no session-end event, and a conversation has no
+    // session to join until its first Clax call; nor does it ask through
+    // these hooks.
+    if matches!(agent, Agent::Antigravity)
+        && matches!(
+            event,
+            Event::SessionStart | Event::SessionEnd | Event::CallId | Event::Ask | Event::Asked
+        )
+    {
         return Ok(Some(HookOutput::none()));
     }
     let client = Client::discover(home)
@@ -1107,7 +1139,14 @@ fn handle(
             });
             events::stop_with(agent.harness(), &input, &client, wake.as_ref())
         }
-        Event::Prompt => events::prompt(agent.harness(), &input, &client),
+        // Antigravity's turn starts with a background result too, not only
+        // with what the person typed.
+        Event::Prompt => events::prompt_with(
+            agent.harness(),
+            &input,
+            &client,
+            !matches!(agent, Agent::Antigravity),
+        ),
         Event::Tool => events::tool(agent.harness(), &input, &client),
         Event::CallId if matches!(agent, Agent::Claude) => {
             events::tool_call_id(agent.harness(), &input, &client)
@@ -1216,8 +1255,8 @@ fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let input = HookInput::parse(&stdin);
-    if crate::host::grok_runs_hook(|k| std::env::var(k).ok(), &input) {
-        crate::host::log_standdown(home, "hook");
+    if let Some(host) = standdown_host(&input) {
+        crate::host::log_standdown(home, "hook", host);
         return AskMsg::Quiet;
     }
     let Some(client) = Client::discover(home) else {

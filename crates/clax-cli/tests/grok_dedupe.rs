@@ -35,6 +35,8 @@ const HARNESS_VARS: &[&str] = &[
     "CLAUDE_PROJECT_DIR",
     "CLAX_SESSION_ID",
     "CLAX_BIN",
+    "ANTIGRAVITY_AGENT",
+    "ANTIGRAVITY_CONVERSATION_ID",
 ];
 
 fn claude_copy() -> PathBuf {

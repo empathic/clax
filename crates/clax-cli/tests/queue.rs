@@ -14,7 +14,7 @@ use std::sync::mpsc::{Receiver, channel};
 
 /// The harness environment a test inherits from the agent running it; every
 /// `clax` run here starts without it.
-const HARNESS_ENV: [&str; 19] = [
+const HARNESS_ENV: [&str; 21] = [
     "CLAX_CHANNEL",
     "CLAX_QUEUE",
     "CLAUDECODE",
@@ -22,6 +22,8 @@ const HARNESS_ENV: [&str; 19] = [
     "CODEX_SANDBOX",
     "CODEX_CI",
     "PI_CODING_AGENT",
+    "ANTIGRAVITY_AGENT",
+    "ANTIGRAVITY_CONVERSATION_ID",
     "GROK_SESSION_ID",
     "GROK_HOOK_EVENT",
     "GROK_PLUGIN_ROOT",

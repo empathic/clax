@@ -38,6 +38,9 @@ if (cd "$T" && scripts/bump-version.sh 9.8.7 >/dev/null) && [ "$(cd "$T" && scri
     && grep -q '^CLAX_VERSION="9.8.7"$' "$T/plugins/clax/scripts/ensure-clax.sh" \
     && cmp -s "$T/scripts/ensure-clax.sh" "$T/plugins/clax-grok/scripts/ensure-clax.sh" \
     && grep -q '^This is Clax plugin 9.8.7\.' "$T/plugins/clax-grok/skills/clax/SKILL.md" \
+    && cmp -s "$T/scripts/ensure-clax.sh" "$T/plugins/clax-antigravity/scripts/ensure-clax.sh" \
+    && grep -q '^This is Clax plugin 9.8.7\.' "$T/plugins/clax-antigravity/skills/clax/SKILL.md" \
+    && grep -q '^  "version": "9.8.7",$' "$T/plugins/clax-antigravity/.antigravity-plugin/plugin.json" \
     && cmp -s "$T/scripts/ensure-clax.sh" "$T/plugins/claude-code/scripts/ensure-clax.sh" \
     && cmp -s "$T/scripts/ensure-clax.sh" "$T/plugins/pi/scripts/ensure-clax.sh" \
     && grep -q '^This is Clax plugin 9.8.7\.' "$T/plugins/pi/skills/clax/SKILL.md" \
@@ -64,14 +67,14 @@ fresh() {
     rm -rf "$1"; mkdir -p "$1"
     (cd "$HERE" && for f in $FILES; do mkdir -p "$1/$(dirname "$f")"; cp "$f" "$1/$f"; done)
 }
-for f in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh; do
+for f in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh plugins/clax-antigravity/scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh; do
     fresh "$T/stray"
     sed -i.bak "s/^CLAX_VERSION=\".*\"$/CLAX_VERSION=\"9.9.9\"/" "$T/stray/$f"
     out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
     if [ "$rc" = 1 ] && echo "$out" | grep "$f CLAX_VERSION: 9.9.9" >/dev/null; then pass "a stray launcher copy is named ($f)"
     else fail "a stray launcher copy is named ($f: $out)"; fi
 done
-for f in plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md plugins/clax-grok/skills/clax/SKILL.md; do
+for f in plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md plugins/clax-grok/skills/clax/SKILL.md plugins/clax-antigravity/skills/clax/SKILL.md; do
     fresh "$T/stray"
     sed -i.bak "s/^This is Clax plugin [^ ]*\. /This is Clax plugin 9.9.9. /" "$T/stray/$f"
     out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
@@ -157,7 +160,7 @@ grep -v aarch64-unknown-linux-musl "$REL/good/v$V/SHA256SUMS" | sed "s/  clax-${
 SERVER_PID=$!
 wait_for "the fake release server's port" test -s "$T/port" || exit 1
 BASE="http://127.0.0.1:$(cat "$T/port")"
-WRAPPERS="scripts/ensure-clax.sh plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh"
+WRAPPERS="scripts/ensure-clax.sh plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh plugins/clax-antigravity/scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh"
 sums_of() {
     if command -v sha256sum >/dev/null 2>&1; then (cd "$1" && for w in $WRAPPERS; do sha256sum "$w"; done)
     else (cd "$1" && for w in $WRAPPERS; do shasum -a 256 "$w"; done); fi

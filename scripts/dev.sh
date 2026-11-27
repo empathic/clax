@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# `just dev [claude|codex|grok|pi] [harness arguments...]`: builds clax (with
-# Bazel when it is installed: scripts/run.sh bin), copies
-# it to a temporary directory (removed on exit) that it names in CLAX_BIN, which
-# the plugins run ahead of anything else, and puts first on PATH; it starts
+# `just dev [claude|codex|grok|antigravity|pi] [harness arguments...]`: builds
+# clax (with Bazel when it is installed: scripts/run.sh bin), copies it to a
+# temporary directory (removed on exit) that it names in CLAX_BIN, which the
+# plugins run ahead of anything else, and puts first on PATH; it starts
 # the harness on this checkout's dev home (scripts/dev-home.sh, watch_settings:
 # ~/.clax-dev on 7481 for the main checkout, ~/.clax-dev-<name> on a port of
 # its own for a linked worktree, or $CLAX_HOME and $CLAX_DEV_PORT). It starts
@@ -24,6 +24,11 @@
 #           codex: Grok's TUI has no flag that loads a plugin from a
 #           directory for one run. Grok's own home and config are used as
 #           they are; to try plugin changes in Grok, run `just install`.
+#   antigravity  runs `agy` with the installed clax-antigravity plugin and the
+#           fresh build, like grok (a workspace plugin is not used: its tools
+#           are missing on the first turn). The plugin's MCP server and hooks
+#           inherit agy's environment, CLAX_BIN and CLAX_HOME among it; to try
+#           plugin changes in Antigravity, run `just install`.
 # Without a harness, or when the first argument is an option (`just dev`,
 # `just dev --shared`), it runs `just watch` with those arguments instead.
 # CLAX_DEV_BIN=<binary> uses that binary instead of building (tests).
@@ -33,7 +38,7 @@ ROOT="$(pwd -P)"
 
 case "${1:-}" in
     "" | -*)
-        echo "clax dev: no harness given, so running \`just watch\` (\`just dev claude|codex|grok|pi\` starts a harness)" >&2
+        echo "clax dev: no harness given, so running \`just watch\` (\`just dev claude|codex|grok|antigravity|pi\` starts a harness)" >&2
         exec scripts/watch.sh "$@"
         ;;
 esac
@@ -42,10 +47,11 @@ esac
 harness="$1"
 shift
 case "$harness" in
-    claude | codex | grok | pi) ;;
-    *) echo "usage: just dev [claude|codex|grok|pi] [harness arguments...]" >&2; exit 2 ;;
+    claude | codex | grok | pi) cli="$harness" ;;
+    antigravity) cli=agy ;;
+    *) echo "usage: just dev [claude|codex|grok|antigravity|pi] [harness arguments...]" >&2; exit 2 ;;
 esac
-command -v "$harness" >/dev/null 2>&1 || { echo "clax dev: $harness is not on PATH" >&2; exit 1; }
+command -v "$cli" >/dev/null 2>&1 || { echo "clax dev: $cli is not on PATH" >&2; exit 1; }
 
 if [ -n "${CLAX_DEV_BIN:-}" ]; then
     bin="$CLAX_DEV_BIN"
@@ -126,5 +132,9 @@ case "$harness" in
     grok)
         echo "clax dev: Grok runs its installed Clax plugin (clax-grok); run \`just install\` to try plugin changes"
         grok "$@"
+        ;;
+    antigravity)
+        echo "clax dev: Antigravity runs its installed Clax plugin (clax-antigravity); run \`just install\` to try plugin changes"
+        agy "$@"
         ;;
 esac

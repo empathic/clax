@@ -19,7 +19,7 @@ import { ownerCookie } from "./questions-helpers";
 /** The environment of a CLI run as a person, on their scratch home, outside any agent channel. */
 function personEnv(home: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, CLAX_HOME: home };
-  for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "CLAX_PORT"]) delete env[k];
+  for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "ANTIGRAVITY_AGENT", "ANTIGRAVITY_CONVERSATION_ID", "CLAX_PORT"]) delete env[k];
   return env;
 }
 

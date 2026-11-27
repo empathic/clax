@@ -73,7 +73,7 @@ const HARNESS_SESSION = `remote-e2e-${randomBytes(4).toString("hex")}`;
 function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (/^(CLAX_|CLAUDE|CODEX_|GROK_|PI_)/.test(k)) continue;
+    if (/^(CLAX_|CLAUDE|CODEX_|GROK_|ANTIGRAVITY_|PI_)/.test(k)) continue;
     env[k] = v;
   }
   return { ...env, ...extra };

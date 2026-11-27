@@ -60,11 +60,16 @@
 # MCP and CLI modes warn about it, hooks stay silent.
 #
 # In a Grok Build session, Clax acts only through --agent grok (the
-# clax-grok plugin); Grok also loads this Claude Code plugin. A run with
-# --agent claude that Grok started stands down before any clax is looked
-# for: a hook (GROK_HOOK_EVENT set) reads its input and exits 0 silently;
-# the MCP server (GROK_SESSION_ID set, and CLAUDE_PID not this script's
-# parent) answers with a minimal server whose one tool, status, says so.
+# clax-grok plugin); Grok also loads this Claude Code plugin. Under
+# Antigravity it acts only through --agent antigravity; `agy plugin import
+# claude` imports this plugin too. A run with --agent claude that either
+# started stands down before any clax is looked for: a hook reads its input
+# and exits 0 silently; the MCP server answers with a minimal server whose
+# one tool, status, says so. Grok: a hook with GROK_HOOK_EVENT set, the
+# MCP server with GROK_SESSION_ID set. Antigravity: a hook with both
+# ANTIGRAVITY_CONVERSATION_ID and PLUGIN_ROOT set, the MCP server whose
+# parent runs `agy`. An MCP server whose parent is CLAUDE_PID (Claude Code)
+# never stands down.
 #
 # Every failure, every install, and every MCP start, appends one line to
 # $CLAX_HOME/logs/hooks.log (rotated to hooks.log.1 past 1 MiB).
@@ -94,6 +99,9 @@ REPO="empathic/clax"
 # What the Claude Code copy's MCP server says when Grok Build runs it; the
 # same text as GROK_STANDDOWN in crates/clax-mcp/src/standdown.rs.
 GROK_STANDDOWN="This is the Clax plugin for Claude Code, which Grok Build also loads. In Grok, Clax runs from the clax-grok plugin, whose tools are named \`clax_grok__<tool>\` (for example \`clax_grok__publish\`); this server does nothing. If no \`clax_grok\` tools are listed, run \`clax init --agent grok\`. To remove this server from Grok, run \`grok plugin disable clax\`."
+# What it says when Antigravity runs it; the same text as
+# ANTIGRAVITY_STANDDOWN in crates/clax-mcp/src/standdown.rs.
+ANTIGRAVITY_STANDDOWN="Clax runs from the clax-antigravity plugin in Antigravity, and this copy (the Claude Code plugin, imported into Antigravity) does nothing here. If the Clax tools are missing, run: clax init --agent antigravity. To remove this copy: agy plugin uninstall clax"
 LOG_MAX_BYTES=1048576
 # How long the MCP server waits for a first-run download before it answers
 # with the fallback server (Codex gives an MCP server 10 s to start).
@@ -140,7 +148,7 @@ for a in "$@"; do
     prev="$a"
 done
 BIN="" SOURCE="" GOT_VERSION="" WARNING="" REASON="" TRIED="" CHECK_WHY=""
-PENDING="" INSTALL_STATE=""
+PENDING="" INSTALL_STATE="" STANDDOWN_HOST=""
 MCP_ARGS=()
 # How long `clax --version` and `clax mcp --preflight` may take.
 PROBE_SECS=5
@@ -647,18 +655,36 @@ status_text() {
     echo "$1"
 }
 
-# True when Grok Build started this Claude Code copy's hook or MCP server.
-# Claude Code sets CLAUDE_PID to its own PID and starts MCP servers
-# directly, so under Claude Code CLAUDE_PID is this script's parent, even
-# when Claude Code was started from a Grok shell that passed on
-# GROK_SESSION_ID. Grok sets GROK_HOOK_EVENT on every hook it runs.
-grok_runs_claude_copy() {
+# True when Grok Build or Antigravity started this Claude Code copy's hook
+# or MCP server; STANDDOWN_HOST is then grok or antigravity.
+standdown_host() {
+    STANDDOWN_HOST=""
     [ "$AGENT" = claude ] || return 1
     case "$MODE" in
-        hook) [ -n "${GROK_HOOK_EVENT:-}" ] ;;
-        mcp) [ -n "${GROK_SESSION_ID:-}" ] && [ "${CLAUDE_PID:-}" != "$PPID" ] ;;
-        *) return 1 ;;
+        hook)
+            if [ -n "${GROK_HOOK_EVENT:-}" ]; then STANDDOWN_HOST=grok
+            elif [ -n "${ANTIGRAVITY_CONVERSATION_ID:-}" ] && [ -n "${PLUGIN_ROOT:-}" ]; then STANDDOWN_HOST=antigravity
+            fi
+            ;;
+        mcp)
+            # Claude Code sets CLAUDE_PID to its own PID and is its servers' parent.
+            if [ "${CLAUDE_PID:-}" = "$PPID" ]; then return 1
+            elif parent_is_agy; then STANDDOWN_HOST=antigravity
+            elif [ -n "${GROK_SESSION_ID:-}" ]; then STANDDOWN_HOST=grok
+            fi
+            ;;
     esac
+    [ -n "$STANDDOWN_HOST" ]
+}
+
+# True when the file name of the first or second word of this script's
+# parent's command line is agy (the second: a script named agy run by an
+# interpreter).
+parent_is_agy() {
+    local args first second
+    args="$(ps -ww -o args= -p "$PPID" 2>/dev/null)" || return 1
+    read -r first second _ <<< "$args"
+    [ "${first##*/}" = agy ] || [ "${second##*/}" = agy ]
 }
 
 # A minimal MCP server on stdin/stdout whose one tool, status, is described
@@ -698,9 +724,12 @@ serve_unavailable() {
         "Clax could not start. Call this tool for the reason and the fix." true
 }
 
-# This Claude Code copy in a Grok Build session: clax-grok acts instead.
+# This Claude Code copy under Grok Build or Antigravity: that harness's own
+# plugin acts instead.
 serve_standdown() {
-    serve_status "$GROK_STANDDOWN" "Says which Clax plugin serves this Grok session; this server does nothing else." false
+    local text="$GROK_STANDDOWN"
+    if [ "$STANDDOWN_HOST" = antigravity ]; then text="$ANTIGRAVITY_STANDDOWN"; fi
+    serve_status "$text" "Says which Clax plugin serves this session; this server does nothing else." false
 }
 
 # Runs a hook with the binary and always exits 0: a hook must never fail its
@@ -747,10 +776,10 @@ preflight() {
 }
 
 main() {
-    if grok_runs_claude_copy; then
-        hooks_log "standdown mode=$MODE agent=claude host=grok"
+    if standdown_host; then
+        hooks_log "standdown mode=$MODE agent=claude host=$STANDDOWN_HOST"
         case "$MODE" in
-            # Read the hook's input, so Grok's write to stdin never fails.
+            # Read the hook's input, so the harness's write to stdin never fails.
             hook) cat > /dev/null 2>&1 || true ;;
             *) serve_standdown ;;
         esac

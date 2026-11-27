@@ -1,9 +1,9 @@
 //! The plugin trees and marketplaces `clax init` writes out: the layout
 //! matches the repository (`.claude-plugin/marketplace.json`,
 //! `.agents/plugins/marketplace.json`, `.grok-plugin/marketplace.json` and
-//! `plugins/{claude-code,clax,clax-grok,pi}`), so the manifests'
-//! `./plugins/<name>` sources resolve. The Pi package carries what its
-//! `package.json` ships.
+//! `plugins/{claude-code,clax,clax-grok,clax-antigravity,pi}`), so the
+//! manifests' `./plugins/<name>` sources resolve. The Pi package carries
+//! what its `package.json` ships.
 
 use rust_embed::RustEmbed;
 
@@ -26,6 +26,11 @@ macro_rules! plugin_dir {
 plugin_dir!(ClaudeCode, "$CLAX_PLUGINS_DIR/claude-code/", "claude-code/");
 plugin_dir!(Codex, "$CLAX_PLUGINS_DIR/clax/", "clax/");
 plugin_dir!(Grok, "$CLAX_PLUGINS_DIR/clax-grok/", "clax-grok/");
+plugin_dir!(
+    Antigravity,
+    "$CLAX_PLUGINS_DIR/clax-antigravity/",
+    "clax-antigravity/"
+);
 plugin_dir!(PiSrc, "$CLAX_PLUGINS_DIR/pi/src/", "pi/src/");
 plugin_dir!(PiSkills, "$CLAX_PLUGINS_DIR/pi/skills/", "pi/skills/");
 plugin_dir!(PiScripts, "$CLAX_PLUGINS_DIR/pi/scripts/", "pi/scripts/");
@@ -66,6 +71,7 @@ pub fn plugin_files() -> Vec<(String, Vec<u8>)> {
     out.extend(embedded::<ClaudeCode>());
     out.extend(embedded::<Codex>());
     out.extend(embedded::<Grok>());
+    out.extend(embedded::<Antigravity>());
     out.extend(embedded::<PiSrc>());
     out.extend(embedded::<PiSkills>());
     out.extend(embedded::<PiScripts>());
@@ -123,6 +129,15 @@ mod tests {
             "plugins/clax-grok/.mcp.json",
             "plugins/clax-grok/hooks/hooks.json",
             "plugins/clax-grok/scripts/ensure-clax.sh",
+            "plugins/clax-antigravity/.antigravity-plugin/plugin.json",
+            "plugins/clax-antigravity/mcp_config.json",
+            "plugins/clax-antigravity/hooks.json",
+            "plugins/clax-antigravity/scripts/ensure-clax.sh",
+            "plugins/clax-antigravity/scripts/tool-hook.sh",
+            "plugins/clax-antigravity/skills/clax/references/asking.md",
+            "plugins/clax-antigravity/skills/clax/references/runtime-capabilities.md",
+            "plugins/clax-antigravity/skills/clax/references/tools.md",
+            "plugins/clax-antigravity/skills/clax/references/working-beside-others.md",
             "plugins/pi/package.json",
             ".grok-plugin/marketplace.json",
         ] {

@@ -1,9 +1,10 @@
 //! The plugins this binary was built with, and writing them out as a
 //! marketplace directory (`clax init`). The layout matches the repository:
 //! `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`,
-//! `.grok-plugin/marketplace.json` and `plugins/{claude-code,clax,clax-grok,pi}`,
-//! so the manifests' `./plugins/<name>` sources resolve. The files are the
-//! binary's ([`clax_core::embedded::Bundle::plugins`]).
+//! `.grok-plugin/marketplace.json` and
+//! `plugins/{claude-code,clax,clax-grok,clax-antigravity,pi}`, so the
+//! manifests' `./plugins/<name>` sources resolve. The files are the binary's
+//! ([`clax_core::embedded::Bundle::plugins`]).
 
 use std::path::Path;
 
@@ -98,6 +99,20 @@ mod tests {
             ("plugins/clax-grok/.mcp.json", "{}"),
             ("plugins/clax-grok/hooks/hooks.json", "{}"),
             (
+                "plugins/clax-antigravity/scripts/ensure-clax.sh",
+                "#!/bin/sh\n",
+            ),
+            (
+                "plugins/clax-antigravity/scripts/tool-hook.sh",
+                "#!/bin/sh\n",
+            ),
+            (
+                "plugins/clax-antigravity/.antigravity-plugin/plugin.json",
+                "{}",
+            ),
+            ("plugins/clax-antigravity/mcp_config.json", "{}"),
+            ("plugins/clax-antigravity/hooks.json", "{}"),
+            (
                 ".grok-plugin/marketplace.json",
                 r#"{"plugins": [{"source": "./plugins/clax-grok"}]}"#,
             ),
@@ -110,7 +125,7 @@ mod tests {
     /// `materialize` writes the whole tree, with the wrappers executable
     /// and everything else not.
     #[test]
-    fn materialize_writes_the_grok_plugin_and_marketplace() {
+    fn materialize_writes_the_grok_and_antigravity_plugins_and_marketplace() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("marketplace");
@@ -126,6 +141,17 @@ mod tests {
         assert_eq!(mode("plugins/clax-grok/.grok-plugin/plugin.json"), 0o644);
         assert_eq!(mode("plugins/clax-grok/.mcp.json"), 0o644);
         assert_eq!(mode("plugins/clax-grok/hooks/hooks.json"), 0o644);
+        assert_eq!(
+            mode("plugins/clax-antigravity/scripts/ensure-clax.sh"),
+            0o755
+        );
+        assert_eq!(mode("plugins/clax-antigravity/scripts/tool-hook.sh"), 0o755);
+        assert_eq!(
+            mode("plugins/clax-antigravity/.antigravity-plugin/plugin.json"),
+            0o644
+        );
+        assert_eq!(mode("plugins/clax-antigravity/mcp_config.json"), 0o644);
+        assert_eq!(mode("plugins/clax-antigravity/hooks.json"), 0o644);
         let index = std::fs::read_to_string(root.join(".grok-plugin/marketplace.json")).unwrap();
         assert!(index.contains("./plugins/clax-grok"), "{index}");
     }

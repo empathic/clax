@@ -1,17 +1,21 @@
 //! The stdio MCP server a harness spawns per session (`clax mcp --agent <harness>`):
 //! it ensures a daemon, registers the harness session, serves [`ClaxTools`]
 //! over stdin/stdout, heartbeats the session, and ends it when stdin closes.
+//! Antigravity's shim serves every conversation of its `agy` process instead,
+//! with a session per root conversation ([`Conversations`]).
 //!
 //! Stdout carries the MCP protocol only; diagnostics go to stderr.
 
 use crate::client::DaemonClient;
 pub use crate::client::{Endpoint, Refresh};
+use crate::conversations::Conversations;
 use crate::tools::{ClaxTools, UpgradeHoldProbe};
 use anyhow::Context;
 use clax_core::Home;
 use clax_core::RegisterSession;
 use rmcp::ServiceExt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How often the session is marked seen while the shim runs.
@@ -25,6 +29,7 @@ pub enum Harness {
     Claude,
     Codex,
     Grok,
+    Antigravity,
 }
 
 impl Harness {
@@ -34,6 +39,7 @@ impl Harness {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
             Harness::Grok => "grok",
+            Harness::Antigravity => clax_core::antigravity::HARNESS,
         }
     }
 }
@@ -42,11 +48,12 @@ impl Harness {
 /// `env`, the process's working directory `current_dir`, and the parent
 /// process's working directory `parent_cwd`. The harness session ID is
 /// `CLAUDE_CODE_SESSION_ID` under Claude Code and `GROK_SESSION_ID` under
-/// Grok Build, else `CLAX_SESSION_ID`. The working directory is
-/// `CLAUDE_PROJECT_DIR` under Claude Code, else `current_dir`; under Codex it
-/// is `parent_cwd`, else empty, because Codex starts the shim in the plugin's
-/// own directory; under Grok it is `current_dir`, because Grok starts servers
-/// in its own working directory. Empty variables count as unset. The
+/// Grok Build, else `CLAX_SESSION_ID`; under Antigravity there is none, since
+/// each conversation's comes from its calls. The working directory is
+/// `CLAUDE_PROJECT_DIR` under Claude Code, else `current_dir`; under Codex and
+/// Antigravity it is `parent_cwd`, else empty, because they start the shim in
+/// the plugin's own directory; under Grok it is `current_dir`, because Grok
+/// starts servers in its own working directory. Empty variables count as unset. The
 /// repository and branch that working directory is in name the agent
 /// (spec 2026-10-08 §11), read from the files with no `git` process.
 pub fn registration(
@@ -61,12 +68,15 @@ pub fn registration(
     let own_id = match harness {
         Harness::Claude => var("CLAUDE_CODE_SESSION_ID"),
         Harness::Grok => var("GROK_SESSION_ID"),
-        Harness::Codex => None,
+        Harness::Codex | Harness::Antigravity => None,
     };
-    let harness_session_id = own_id.or_else(|| var("CLAX_SESSION_ID"));
+    let harness_session_id = match harness {
+        Harness::Antigravity => None,
+        _ => own_id.or_else(|| var("CLAX_SESSION_ID")),
+    };
     let dir = match harness {
         Harness::Claude => var("CLAUDE_PROJECT_DIR").map(PathBuf::from).or(current_dir),
-        Harness::Codex => parent_cwd,
+        Harness::Codex | Harness::Antigravity => parent_cwd,
         Harness::Grok => current_dir,
     };
     let (repo, branch) = dir
@@ -169,6 +179,15 @@ fn parse_lsof_cwd(out: &str) -> Option<PathBuf> {
 /// the daemon's version, when given. With `channel`, the tools declare the
 /// Claude Code channel, and when its launch flag is present the shim
 /// forwards the session's comment notices as channel events.
+///
+/// Under Antigravity nothing is registered before a call: each root
+/// conversation gets its own session on its first call, heartbeated from
+/// then on ([`Conversations`]), and a `wait_for_feedback` with no
+/// `timeout_s` has no time cap. On exit every one is ended, and the files Antigravity's hooks keep for it
+/// (`run/tool-hook/antigravity-<ID>`, `run/wake-nudge/antigravity-<ID>.json`)
+/// are removed for an ID made of `[A-Za-z0-9._-]`. At start and at exit the
+/// shim also removes every `run/tool-hook/antigravity-*` stamp older than
+/// [`STAMP_AGE`] ([`sweep_stamps`]), whichever conversation it belongs to.
 pub async fn run(
     harness: Harness,
     home: &Home,
@@ -180,10 +199,12 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let parent_pid = std::os::unix::process::parent_id();
     let parent_cwd = match harness {
-        Harness::Codex => tokio::task::spawn_blocking(move || process_cwd(parent_pid))
-            .await
-            .ok()
-            .flatten(),
+        Harness::Codex | Harness::Antigravity => {
+            tokio::task::spawn_blocking(move || process_cwd(parent_pid))
+                .await
+                .ok()
+                .flatten()
+        }
         _ => None,
     };
     let reg = registration(
@@ -199,23 +220,35 @@ pub async fn run(
     // Remote mode (spec §16, M26): the daemon `remote.json` names, signed;
     // none is started or found here. A `remote.json` that cannot be used
     // fails every call with why (spec §22), never falling back.
-    let client = match clax_core::remote::Mode::of(home) {
-        clax_core::remote::Mode::Local => DaemonClient::managed(refresh, discover, reg),
-        clax_core::remote::Mode::Remote(r) => DaemonClient::managed_remote(r, reg),
+    let (refresh, discover, remote) = match clax_core::remote::Mode::of(home) {
+        clax_core::remote::Mode::Local => (refresh, discover, None),
+        clax_core::remote::Mode::Remote(r) => (refresh, discover, Some(r)),
         clax_core::remote::Mode::Broken(e) => {
             let why = e.to_string();
-            let fail: Refresh = std::sync::Arc::new(move || Err(anyhow::anyhow!("{why}")));
-            DaemonClient::managed(fail.clone(), fail, reg)
+            let fail: Refresh = Arc::new(move || Err(anyhow::anyhow!("{why}")));
+            (fail.clone(), fail, None)
         }
-    }
-    .with_git(git.clone());
-    match client.ensure_session().await {
-        Ok(()) => tracing::info!(
-            session = client.session().map(|s| s.id),
-            harness = harness.as_str(),
-            "session registered"
-        ),
-        Err(e) => tracing::warn!("no clax daemon yet; registration pending: {e}"),
+    };
+    let connect = {
+        let git = git.clone();
+        Arc::new(move |reg: RegisterSession| {
+            match &remote {
+                Some(r) => DaemonClient::managed_remote(r.clone(), reg),
+                None => DaemonClient::managed(refresh.clone(), discover.clone(), reg),
+            }
+            .with_git(git.clone())
+        })
+    };
+    let client = connect(reg.clone());
+    if harness != Harness::Antigravity {
+        match client.ensure_session().await {
+            Ok(()) => tracing::info!(
+                session = client.session().map(|s| s.id),
+                harness = harness.as_str(),
+                "session registered"
+            ),
+            Err(e) => tracing::warn!("no clax daemon yet; registration pending: {e}"),
+        }
     }
     let plugin_version = crate::plugin::root_from_env(
         |k| std::env::var(k).ok(),
@@ -246,45 +279,122 @@ pub async fn run(
         tools = tools.with_channel(ch);
     }
 
-    let beat = {
-        let client = client.clone();
-        tokio::spawn(async move {
-            let mut every =
-                tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
-            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            let mut healthy = client.session().is_some();
-            loop {
-                every.tick().await;
-                match client.heartbeat().await {
-                    Ok(_) if !healthy => {
-                        healthy = true;
-                        tracing::info!("heartbeat recovered");
-                    }
-                    Err(e) if healthy => {
-                        healthy = false;
-                        tracing::warn!("heartbeat failed: {e}");
-                    }
-                    _ => {}
-                }
-            }
-        })
-    };
+    if harness == Harness::Antigravity {
+        sweep_stamps(home, std::time::SystemTime::now());
+        let tools = tools.with_unbounded_wait(true);
+        let conversations = Arc::new(Conversations::new(tools, reg, connect, heartbeat));
+        let served = serve(conversations.clone(), None).await;
+        for root in conversations.end_all(END_TIMEOUT).await {
+            remove_hook_files(home, &root);
+        }
+        sweep_stamps(home, std::time::SystemTime::now());
+        return served;
+    }
+    let beating = tokio::spawn(beat(client.clone(), heartbeat));
+    let served = serve(tools.clone(), forward.then(|| client.clone())).await;
+    beating.abort();
+    end(&tools, END_TIMEOUT).await;
+    served
+}
 
-    let served = serve(tools.clone(), client.clone(), forward).await;
-    beat.abort();
-    // The last calls' reports, sent before the session ends.
-    if tokio::time::timeout(END_TIMEOUT, tools.settle_reports())
+/// Marks `client`'s session seen every `every`, from one `every` from now,
+/// logging when heartbeats start failing and when they recover. Never ends.
+pub(crate) async fn beat(client: DaemonClient, every: Duration) {
+    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut healthy = client.session().is_some();
+    loop {
+        ticks.tick().await;
+        match client.heartbeat().await {
+            Ok(_) if !healthy => {
+                healthy = true;
+                tracing::info!("heartbeat recovered");
+            }
+            Err(e) if healthy => {
+                healthy = false;
+                tracing::warn!("heartbeat failed: {e}");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Sends the last reports of `tools`' calls, then ends their client's
+/// session, each within `within`.
+pub(crate) async fn end(tools: &ClaxTools, within: Duration) {
+    if tokio::time::timeout(within, tools.settle_reports())
         .await
         .is_err()
     {
         tracing::warn!("tool-call reports still unsent at exit");
     }
-    match tokio::time::timeout(END_TIMEOUT, client.end_session()).await {
+    match tokio::time::timeout(within, tools.client().end_session()).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => tracing::warn!("ending the session failed: {e}"),
         Err(_) => tracing::warn!("ending the session timed out"),
     }
-    served
+}
+
+/// Removes the files Antigravity's hooks keep for conversation `id` in
+/// `home`, when `id` is a plain file name of `[A-Za-z0-9._-]`.
+fn remove_hook_files(home: &Home, id: &str) {
+    let plain = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !plain {
+        return;
+    }
+    let run = home.root().join("run");
+    let harness = clax_core::antigravity::HARNESS;
+    for f in [
+        run.join("tool-hook").join(format!("{harness}-{id}")),
+        run.join("wake-nudge").join(format!("{harness}-{id}.json")),
+    ] {
+        match std::fs::remove_file(&f) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!("removing {} failed: {e}", f.display())
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The age past which [`sweep_stamps`] removes a stamp: the `tool` hook's
+/// own interval (`scripts/tool-hook.sh`), so a missing stamp acts as one
+/// this old.
+const STAMP_AGE: Duration = Duration::from_secs(60);
+
+/// Removes the regular files named `antigravity-*` directly in `home`'s
+/// `run/tool-hook` whose modification time is more than [`STAMP_AGE`]
+/// before `now`. Links, directories, other harnesses' stamps and a
+/// `run/tool-hook` that is not a directory are left alone.
+fn sweep_stamps(home: &Home, now: std::time::SystemTime) {
+    let dir = home.root().join("run").join("tool-hook");
+    if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let prefix = format!("{}-", clax_core::antigravity::HARNESS);
+    for entry in entries.flatten() {
+        let stale = entry.file_name().to_string_lossy().starts_with(&prefix)
+            && entry.metadata().is_ok_and(|m| {
+                m.is_file()
+                    && m.modified()
+                        .is_ok_and(|t| now.duration_since(t).is_ok_and(|age| age > STAMP_AGE))
+            });
+        if !stale {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!("removing {} failed: {e}", entry.path().display())
+            }
+            _ => {}
+        }
+    }
 }
 
 /// How long each notices poll waits.
@@ -333,14 +443,21 @@ async fn forward_notices(client: DaemonClient, peer: rmcp::Peer<rmcp::RoleServer
     }
 }
 
-/// Serves `tools` over stdin/stdout until the transport closes or SIGTERM
-/// arrives; when `forward`, forwards `client`'s comment notices as channel
-/// events meanwhile.
-async fn serve(tools: ClaxTools, client: DaemonClient, forward: bool) -> anyhow::Result<()> {
+/// Serves `server` over stdin/stdout until the transport closes or SIGTERM
+/// arrives; with `notices`, forwards that client's comment notices as
+/// channel events meanwhile.
+async fn serve<S: rmcp::ServerHandler>(
+    server: S,
+    notices: Option<DaemonClient>,
+) -> anyhow::Result<()> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let transport = crate::probe::stdio(&tools);
-    let service = tools.serve(transport).await.context("MCP initialization")?;
-    let forward = forward.then(|| tokio::spawn(forward_notices(client, service.peer().clone())));
+    let transport = crate::probe::stdio(&server);
+    let service = server
+        .serve(transport)
+        .await
+        .context("MCP initialization")?;
+    let forward =
+        notices.map(|client| tokio::spawn(forward_notices(client, service.peer().clone())));
     let cancel = service.cancellation_token();
     let signalled = tokio::spawn(async move {
         term.recv().await;
@@ -463,6 +580,26 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_takes_no_session_id_from_the_environment_and_the_parent_cwd() {
+        let r = registration(
+            Harness::Antigravity,
+            env(&[
+                ("CLAX_SESSION_ID", "ax-1"),
+                ("CLAUDE_CODE_SESSION_ID", "cc-1"),
+                ("GROK_SESSION_ID", "g-1"),
+                ("CLAUDE_PROJECT_DIR", "/proj"),
+            ]),
+            Some(PathBuf::from("/plugin")),
+            Some(PathBuf::from("/work")),
+            10,
+            9,
+        );
+        assert_eq!(r.harness, "antigravity");
+        assert_eq!(r.harness_session_id, None);
+        assert_eq!(r.cwd, "/work");
+    }
+
+    #[test]
     fn the_registration_names_the_repository_and_branch_of_the_working_directory() {
         let d = tempfile::tempdir().unwrap();
         let repo = d.path().join("web");
@@ -513,5 +650,84 @@ mod tests {
             9,
         );
         assert_eq!(r.cwd, "");
+    }
+
+    #[test]
+    fn only_stale_antigravity_stamps_are_swept() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let stamps = home.root().join("run/tool-hook");
+        std::fs::create_dir_all(stamps.join("antigravity-d")).unwrap();
+        let then = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let stamp = |name: &str, at: SystemTime| {
+            let f = std::fs::File::create(stamps.join(name)).unwrap();
+            f.set_modified(at).unwrap();
+        };
+        stamp("antigravity-old", then - Duration::from_secs(61));
+        stamp("antigravity-fresh", then - Duration::from_secs(59));
+        stamp("claude-old", then - Duration::from_secs(3600));
+        stamp("codex-old", then - Duration::from_secs(3600));
+        let outside = dir.path().join("outside");
+        std::fs::File::create(&outside)
+            .unwrap()
+            .set_modified(then - Duration::from_secs(3600))
+            .unwrap();
+        std::os::unix::fs::symlink(&outside, stamps.join("antigravity-x")).unwrap();
+
+        sweep_stamps(&home, then);
+        let mut left: Vec<String> = std::fs::read_dir(&stamps)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "antigravity-d",
+                "antigravity-fresh",
+                "antigravity-x",
+                "claude-old",
+                "codex-old"
+            ]
+        );
+        assert!(outside.exists(), "the link's target was removed");
+        sweep_stamps(&Home::at(dir.path().join("none")), then);
+    }
+
+    #[test]
+    fn a_linked_stamp_directory_is_not_swept() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let then = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        std::fs::File::create(elsewhere.join("antigravity-old"))
+            .unwrap()
+            .set_modified(then - Duration::from_secs(3600))
+            .unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        std::fs::create_dir_all(home.root().join("run")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.root().join("run/tool-hook")).unwrap();
+        sweep_stamps(&home, then);
+        assert!(elsewhere.join("antigravity-old").exists());
+    }
+
+    #[test]
+    fn hook_files_are_removed_only_for_a_plain_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let run = home.root().join("run");
+        for d in ["tool-hook/antigravity-a", "wake-nudge/antigravity-a"] {
+            std::fs::create_dir_all(run.join(d)).unwrap();
+        }
+        let planted = [run.join("x"), run.join("x.json")];
+        for f in &planted {
+            std::fs::write(f, "").unwrap();
+        }
+        remove_hook_files(&home, "a/../../x");
+        for f in &planted {
+            assert!(f.exists(), "{} was removed", f.display());
+        }
     }
 }

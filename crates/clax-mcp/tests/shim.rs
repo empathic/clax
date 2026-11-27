@@ -6,8 +6,10 @@ use clax_core::Home;
 use clax_core::daemon::read_daemon_info;
 use clax_fake_exe::clax_bin;
 use clax_testkit::{until, within};
-use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::service::RunningService;
+use rmcp::model::{
+    CallToolRequest, CallToolRequestParams, CallToolResult, ClientRequest, ServerResult,
+};
+use rmcp::service::{PeerRequestOptions, RequestHandle, RunningService};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
@@ -48,6 +50,28 @@ impl Shim {
         .await
     }
 
+    /// Starts an Antigravity shim, with `CLAX_SESSION_ID` set (it must not
+    /// be used), against a daemon already serving its home, so the daemon
+    /// can be asked about sessions before any call.
+    async fn start_antigravity() -> Shim {
+        let dir = Shim::serving_daemon();
+        Shim::spawn(dir, None, "antigravity", ("CLAX_SESSION_ID", "from-env")).await
+    }
+
+    /// A directory whose home `<dir>/ax` a daemon serves.
+    fn serving_daemon() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new(clax_bin(None))
+            .args(["--port", "0", "serve"])
+            .env("CLAX_HOME", dir.path().join("ax"))
+            .env("CLAX_CODEX_BIN", "")
+            .env("HOME", dir.path())
+            .output()
+            .expect("run clax serve");
+        assert!(out.status.success(), "{out:?}");
+        dir
+    }
+
     /// Starts `clax mcp --agent <agent>` with the inherited harness
     /// environment cleared and only `session_var` set.
     async fn spawn(
@@ -70,6 +94,8 @@ impl Shim {
                 "CLAUDE_PLUGIN_ROOT",
                 "CLAUDE_PROJECT_DIR",
                 "CLAX_SESSION_ID",
+                "ANTIGRAVITY_AGENT",
+                "ANTIGRAVITY_CONVERSATION_ID",
             ] {
                 c.env_remove(var);
             }
@@ -139,11 +165,62 @@ impl Shim {
             .expect("JSON body")
     }
 
+    /// POSTs `body` to `path` on the daemon with its token.
+    async fn post(&self, path: &str, body: Value) -> Value {
+        let token = read_daemon_info(&self.home()).expect("daemon.json").token;
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .post(format!("{}{path}", self.daemon_base()))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .expect("daemon answers")
+            .json()
+            .await
+            .expect("JSON body")
+    }
+
+    /// Waits until session `sid` has `n` feedback polls of the kind
+    /// `query` names (`parked=wait`, `held=true`; empty for every open
+    /// `wait_for_feedback` poll).
+    async fn until_waiters(&self, sid: &str, query: &str, n: u64) {
+        let what = format!("{n} feedback polls ({query}) of {sid}");
+        let path = format!("/api/_test/sessions/{sid}/feedback/waiters?until={n}&{query}");
+        within(
+            &what,
+            until(&what, || async {
+                (self.get(&path).await["count"] == n).then_some(())
+            }),
+        )
+        .await;
+    }
+
+    /// Ends every open `wait_for_feedback` poll of session `sid` now, as if
+    /// it had run out; how many that was.
+    async fn expire(&self, sid: &str) -> Value {
+        self.post(
+            &format!("/api/_test/sessions/{sid}/feedback/expire"),
+            json!({}),
+        )
+        .await["expired"]
+            .clone()
+    }
+
     async fn live_sessions(&self) -> Vec<Value> {
         self.get("/api/sessions?live=true").await["sessions"]
             .as_array()
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// The live sessions of harness `antigravity`.
+    async fn antigravity_sessions(&self) -> Vec<Value> {
+        let mut live = self.live_sessions().await;
+        live.retain(|s| s["harness"] == "antigravity");
+        live
     }
 
     async fn call(&self, name: &'static str, args: Value) -> CallToolResult {
@@ -154,6 +231,34 @@ impl Shim {
             .call_tool(CallToolRequestParams::new(name).with_arguments(args))
             .await
             .expect("tool call")
+    }
+
+    /// Calls tool `name` with `args` and the request `_meta` `meta`.
+    async fn call_with_meta(&self, meta: Value, name: &'static str, args: Value) -> CallToolResult {
+        let (Value::Object(meta), Value::Object(args)) = (meta, args) else {
+            panic!("the meta and the tool arguments are objects")
+        };
+        let mut params = CallToolRequestParams::new(name).with_arguments(args);
+        params.meta = Some(meta.into());
+        self.client().call_tool(params).await.expect("tool call")
+    }
+
+    /// Sends a `wait_for_feedback` call with `args` from root conversation
+    /// `root`, returning its handle, by which the test can cancel it.
+    async fn start_wait(&self, root: &str, args: Value) -> RequestHandle<RoleClient> {
+        let (Value::Object(meta), Value::Object(args)) = (from_conversation(root, root), args)
+        else {
+            panic!("the meta and the tool arguments are objects")
+        };
+        let mut params = CallToolRequestParams::new("wait_for_feedback").with_arguments(args);
+        params.meta = Some(meta.into());
+        self.client()
+            .send_cancellable_request(
+                ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+                PeerRequestOptions::no_options(),
+            )
+            .await
+            .expect("the call is sent")
     }
 
     /// Runs `clax stop` against this shim's home and checks the daemon
@@ -657,4 +762,321 @@ async fn shim_records_registration_git_and_reports_calls_before_exit() {
     assert_eq!(call["tool"], "publish");
     assert_eq!(call["call_id"], created["call"]["call_id"]);
     assert_eq!(call["outcome"], "ok");
+}
+
+/// The `_meta` of a call from conversation `conversation` under root
+/// conversation `root`, as Antigravity sends it.
+fn from_conversation(root: &str, conversation: &str) -> Value {
+    json!({
+        clax_core::antigravity::META_ROOT: root,
+        clax_core::antigravity::META_CONVERSATION: conversation,
+        "antigravity.google/artifacts_dir": format!("/brain/{conversation}"),
+    })
+}
+
+/// Posts comment `body` on version 1 of artifact `aid` from a browser of
+/// this machine's, as a viewer the store minted.
+async fn comment(shim: &Shim, aid: &str, body: &'static str) {
+    let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+    clax_store::Store::open(&shim.home())
+        .unwrap()
+        .mint_viewer(&cookie, true)
+        .unwrap();
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", clax_testkit::element_anchor().to_string())
+        .text("body", body)
+        .text("version", "1");
+    let res = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads",
+            shim.daemon_base()
+        ))
+        .header("cookie", format!("clax_viewer={cookie}"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+}
+
+#[tokio::test]
+async fn an_antigravity_shim_registers_no_session_before_a_call() {
+    let shim = Shim::start_antigravity().await;
+    assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 43);
+    assert_eq!(shim.antigravity_sessions().await, Vec::<Value>::new());
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn two_root_conversations_get_two_sessions() {
+    let shim = Shim::start_antigravity().await;
+    let s1 = ok(&shim
+        .call_with_meta(from_conversation("r1", "r1"), "status", json!({}))
+        .await);
+    let s2 = ok(&shim
+        .call_with_meta(from_conversation("r2", "r2"), "status", json!({}))
+        .await);
+    assert_eq!(s1["session"]["harness_session_id"], "r1", "{s1}");
+    assert_eq!(s2["session"]["harness_session_id"], "r2", "{s2}");
+    let again = ok(&shim
+        .call_with_meta(from_conversation("r1", "r1"), "status", json!({}))
+        .await);
+    assert_eq!(again["session"]["id"], s1["session"]["id"]);
+
+    let mut live: Vec<(Value, Value)> = shim
+        .antigravity_sessions()
+        .await
+        .into_iter()
+        .map(|s| (s["harness_session_id"].clone(), s["id"].clone()))
+        .collect();
+    live.sort_by_key(|(h, _)| h.to_string());
+    assert_eq!(
+        live,
+        [
+            (json!("r1"), s1["session"]["id"].clone()),
+            (json!("r2"), s2["session"]["id"].clone()),
+        ]
+    );
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_subagent_acts_in_the_root_session_and_is_handed_nothing() {
+    let shim = Shim::start_antigravity().await;
+    let p = ok(&shim
+        .call_with_meta(
+            from_conversation("r1", "r1"),
+            "publish",
+            json!({"html": "<main><h2>Goals</h2></main>", "title": "Loop"}),
+        )
+        .await);
+    let aid = p["artifact_id"].as_str().unwrap();
+    comment(&shim, aid, "@agent two columns").await;
+
+    // `body` checks the result has one content block: no feedback.
+    let listed = ok(&shim
+        .call_with_meta(from_conversation("r1", "s1"), "list", json!({}))
+        .await);
+    assert_eq!(listed["artifacts"].as_array().unwrap().len(), 1, "{listed}");
+    let status = ok(&shim
+        .call_with_meta(from_conversation("r1", "s1"), "status", json!({}))
+        .await);
+    assert_eq!(status["session"]["harness_session_id"], "r1", "{status}");
+    let live = shim.antigravity_sessions().await;
+    assert_eq!(live.len(), 1, "{live:?}");
+
+    let r = shim
+        .call_with_meta(from_conversation("r1", "r1"), "list", json!({}))
+        .await;
+    assert_eq!(r.content.len(), 2, "{r:?}");
+    let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(v["feedback"][0]["body"], "@agent two columns", "{v}");
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_subagent_cannot_wait() {
+    let shim = Shim::start_antigravity().await;
+    let r = shim
+        .call_with_meta(
+            from_conversation("r1", "s1"),
+            "wait_for_feedback",
+            json!({"timeout_s": 1}),
+        )
+        .await;
+    let (v, is_error) = body(&r);
+    assert!(is_error, "{v}");
+    assert_eq!(
+        v["error"]["message"],
+        "wait_for_feedback is for the main conversation: call it there, not from a subagent.",
+        "{v}"
+    );
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_call_with_no_conversation_registers_without_a_harness_session_id() {
+    let shim = Shim::start_antigravity().await;
+    let status = ok(&shim.call("status", json!({})).await);
+    let live = shim.antigravity_sessions().await;
+    assert_eq!(live.len(), 1, "{live:?}");
+    assert_eq!(live[0]["harness_session_id"], Value::Null, "{live:?}");
+    assert_eq!(live[0]["id"], status["session"]["id"]);
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn empty_or_non_string_conversation_keys_count_as_absent() {
+    let shim = Shim::start_antigravity().await;
+    let (root, conversation) = (
+        clax_core::antigravity::META_ROOT,
+        clax_core::antigravity::META_CONVERSATION,
+    );
+    let empty = ok(&shim
+        .call_with_meta(json!({root: "", conversation: ""}), "status", json!({}))
+        .await);
+    let numbers = ok(&shim
+        .call_with_meta(json!({root: 1, conversation: 2}), "status", json!({}))
+        .await);
+    let live = shim.antigravity_sessions().await;
+    assert_eq!(live.len(), 1, "{live:?}");
+    assert_eq!(live[0]["harness_session_id"], Value::Null, "{live:?}");
+    assert_eq!(empty["session"]["id"], live[0]["id"]);
+    assert_eq!(numbers["session"]["id"], live[0]["id"]);
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn every_conversation_is_ended_on_exit_and_its_hook_files_removed() {
+    let mut shim = Shim::start_antigravity().await;
+    let run = shim.home().root().join("run");
+    let stamp = run.join("tool-hook/antigravity-r1");
+    let ledger = run.join("wake-nudge/antigravity-r1.json");
+    let beside = [run.join("x"), run.join("x.json")];
+    for f in [&stamp, &ledger].into_iter().chain(&beside) {
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, "").unwrap();
+    }
+    let mut ids = Vec::new();
+    for root in ["r1", "r2", "../x"] {
+        let s = ok(&shim
+            .call_with_meta(from_conversation(root, root), "status", json!({}))
+            .await);
+        ids.push(s["session"]["id"].as_str().unwrap().to_string());
+    }
+    assert_eq!(shim.antigravity_sessions().await.len(), 3);
+
+    // Closes the shim's stdin and waits for it to exit.
+    shim.client.take().unwrap().cancel().await.unwrap();
+    for id in &ids {
+        let s = shim.get(&format!("/api/sessions/{id}")).await;
+        assert!(!s["session"]["ended_at"].is_null(), "{s}");
+    }
+    assert!(!stamp.exists() && !ledger.exists());
+    for f in &beside {
+        assert!(f.exists(), "{}", f.display());
+    }
+    shim.finish().await;
+}
+
+/// The result a `wait_for_feedback` call answered `handle` with.
+async fn wait_result(handle: RequestHandle<RoleClient>) -> CallToolResult {
+    match within("the wait's result", handle.await_response()).await {
+        Ok(ServerResult::CallToolResult(r)) => r,
+        other => panic!("not a tool result: {other:?}"),
+    }
+}
+
+/// The session ID of root conversation `root`, registering it.
+async fn session_of(shim: &Shim, root: &str) -> String {
+    let s = ok(&shim
+        .call_with_meta(from_conversation(root, root), "status", json!({}))
+        .await);
+    s["session"]["id"].as_str().unwrap().to_string()
+}
+
+/// Cancels the wait `handle` names and waits until its poll is gone.
+async fn cancel_wait(shim: &Shim, sid: &str, handle: RequestHandle<RoleClient>) {
+    handle.cancel(Some("test".into())).await.unwrap();
+    shim.until_waiters(sid, "", 0).await;
+}
+
+#[tokio::test]
+async fn an_unbounded_wait_outlasts_a_server_poll() {
+    let shim = Shim::start_antigravity().await;
+    let sid = session_of(&shim, "r1").await;
+    let mut wait = shim.start_wait("r1", json!({})).await;
+    shim.until_waiters(&sid, "parked=wait", 1).await;
+    // Past its first take, the open poll never stops at `first_take`; the
+    // next poll does.
+    let hold = format!("/api/_test/sessions/{sid}/feedback/hold");
+    shim.post(&hold, json!({"hold": true, "at": "first_take"}))
+        .await;
+    assert_eq!(shim.expire(&sid).await, 1);
+    shim.until_waiters(&sid, "held=true", 1).await;
+    assert!(wait.rx.try_recv().is_err(), "the wait answered");
+    shim.post(&hold, json!({"hold": false})).await;
+    cancel_wait(&shim, &sid, wait).await;
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn an_unbounded_wait_returns_the_comment() {
+    let shim = Shim::start_antigravity().await;
+    let p = ok(&shim
+        .call_with_meta(
+            from_conversation("r1", "r1"),
+            "publish",
+            json!({"html": "<main><h2>Goals</h2></main>", "title": "Loop"}),
+        )
+        .await);
+    let sid = session_of(&shim, "r1").await;
+    let wait = shim.start_wait("r1", json!({})).await;
+    shim.until_waiters(&sid, "", 1).await;
+    comment(
+        &shim,
+        p["artifact_id"].as_str().unwrap(),
+        "@agent two columns",
+    )
+    .await;
+    let r = wait_result(wait).await;
+    let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(v["feedback"][0]["body"], "@agent two columns", "{v}");
+    assert_eq!(v["call_again"], false, "{v}");
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_second_wait_while_one_is_open_returns_at_once() {
+    let shim = Shim::start_antigravity().await;
+    let sid = session_of(&shim, "r1").await;
+    let wait = shim.start_wait("r1", json!({})).await;
+    shim.until_waiters(&sid, "", 1).await;
+    let second = ok(&shim
+        .call_with_meta(
+            from_conversation("r1", "r1"),
+            "wait_for_feedback",
+            json!({}),
+        )
+        .await);
+    assert_eq!(second["already_waiting"], true, "{second}");
+    assert_eq!(second["call_again"], false, "{second}");
+    let open = shim
+        .get(&format!("/api/_test/sessions/{sid}/feedback/waiters"))
+        .await;
+    assert_eq!(open["count"], 1, "{open}");
+    cancel_wait(&shim, &sid, wait).await;
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_cancelled_wait_can_be_opened_again() {
+    let shim = Shim::start_antigravity().await;
+    let sid = session_of(&shim, "r1").await;
+    let first = shim.start_wait("r1", json!({})).await;
+    shim.until_waiters(&sid, "", 1).await;
+    cancel_wait(&shim, &sid, first).await;
+
+    let mut again = shim.start_wait("r1", json!({})).await;
+    tokio::select! {
+        r = &mut again.rx => panic!("the wait answered instead of waiting: {r:?}"),
+        () = shim.until_waiters(&sid, "", 1) => {}
+    }
+    cancel_wait(&shim, &sid, again).await;
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_wait_with_a_timeout_is_bounded() {
+    let shim = Shim::start_antigravity().await;
+    let sid = session_of(&shim, "r1").await;
+    let wait = shim.start_wait("r1", json!({"timeout_s": 5})).await;
+    shim.until_waiters(&sid, "", 1).await;
+    assert_eq!(shim.expire(&sid).await, 1);
+    let v = ok(&wait_result(wait).await);
+    assert_eq!(v["call_again"], true, "{v}");
+    shim.finish().await;
 }

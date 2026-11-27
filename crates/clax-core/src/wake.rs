@@ -63,8 +63,9 @@ channel flag so I can be woken.\" Then end your turn when you are done.";
 /// - `when_idle`: whether a comment wakes the idle session now.
 /// - `via`: `channel` (Claude Code channel), `follower` (a `clax feedback
 ///   follow` is connected), `queue` (Codex's `codex queue`), `inject` (the
-///   Pi extension) or `monitor` (Grok's monitor running the follower); null
-///   when nothing wakes it.
+///   Pi extension), `monitor` (Grok's monitor running the follower) or
+///   `wait` (Antigravity's open `wait_for_feedback` call); null when nothing
+///   wakes it.
 /// - `follow_command` (and under Claude Code `follow_once_command`): the
 ///   background command that would wake it, when one would.
 /// - `sure`: false when Clax cannot tell whether the path works (a
@@ -79,6 +80,7 @@ pub fn block(harness: &str, push: &Value, bin: &str, hs: Option<&str>) -> Value 
             Some("queue") => "queue",
             Some("inject") => "inject",
             Some("monitor") => "monitor",
+            Some("wait") if harness == crate::antigravity::HARNESS => "wait",
             _ => "follower",
         };
         let how = match via {
@@ -86,6 +88,7 @@ pub fn block(harness: &str, push: &Value, bin: &str, hs: Option<&str>) -> Value 
             "queue" => "through codex queue",
             "inject" => "through the Clax Pi extension",
             "monitor" => "through the follower your monitor runs",
+            "wait" => "by finishing your open wait_for_feedback call",
             _ => "through the clax feedback follow already running",
         };
         if via == "channel" {
@@ -124,6 +127,12 @@ running; if you already started one this turn, start nothing."
                 "A comment will not wake this session while it is idle. Start follow_command now \
 with Grok's monitor tool (persistent: true), exactly as given: each line it prints is a comment \
 notice that wakes you. Keep exactly one running."
+            );
+        }
+        ("antigravity", _) => {
+            out["do"] = json!(
+                "A comment will not wake this conversation while it is idle. Call wait_for_feedback \
+with no timeout_s now; it runs in the background. Keep exactly one open, then end your turn."
             );
         }
         ("codex", _) if push["other_machine"] == true => {
@@ -286,6 +295,42 @@ mod tests {
             "'/b' feedback follow --agent grok --harness-session 'g'"
         );
         assert!(w["do"].as_str().unwrap().contains("monitor tool"));
+    }
+
+    #[test]
+    fn antigravity_with_an_open_wait_starts_nothing() {
+        let w = block(
+            "antigravity",
+            &json!({"tier": "wait", "available": true, "reason": null}),
+            "/b",
+            Some("a"),
+        );
+        assert_eq!(w["via"], "wait");
+        assert_eq!(w["when_idle"], true);
+        assert_eq!(
+            w["do"],
+            "Start nothing: a comment sent to you wakes this session by finishing your open \
+wait_for_feedback call. End your turn when you are done."
+        );
+        assert!(w.get("follow_command").is_none(), "{w}");
+    }
+
+    #[test]
+    fn antigravity_without_a_wait_is_told_to_open_one() {
+        let w = block(
+            "antigravity",
+            &json!({"tier": "wait", "available": false, "reason": "r"}),
+            "/b",
+            Some("a"),
+        );
+        assert_eq!(w["when_idle"], false);
+        assert_eq!(w["reason"], "r");
+        assert_eq!(
+            w["do"],
+            "A comment will not wake this conversation while it is idle. Call wait_for_feedback \
+with no timeout_s now; it runs in the background. Keep exactly one open, then end your turn."
+        );
+        assert!(w.get("follow_command").is_none(), "{w}");
     }
 
     #[test]

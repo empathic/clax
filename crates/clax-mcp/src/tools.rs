@@ -239,6 +239,9 @@ pub struct StatusArgs {
 pub const DEFAULT_WAIT_S: u64 = 50;
 /// Largest `timeout_s` of `wait_for_feedback`; larger values are capped.
 pub const MAX_WAIT_S: u64 = 600;
+/// How long after its start an unbounded `wait_for_feedback` sends its next
+/// poll when a poll hands over nothing sooner.
+const REPOLL_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 /// Smallest `timeout_s` of `wait_for_feedback`; `0` is raised to it, so an
 /// agent calling it again in a loop always waits.
 pub const MIN_WAIT_S: u64 = 1;
@@ -1431,6 +1434,14 @@ pub struct ClaxTools {
     /// Where a tool reads the time to keep within its wait (the system
     /// clock unless [`ClaxTools::with_clock`] gives another).
     clock: std::sync::Arc<dyn clax_core::working::Clock>,
+    /// Feedback is appended to results and `wait_for_feedback` waits; false
+    /// for a subagent's tools ([`ClaxTools::without_feedback`]).
+    feedback: bool,
+    /// [`ClaxTools::with_unbounded_wait`].
+    unbounded_wait: bool,
+    /// An unbounded `wait_for_feedback` is open; shared by clones, fresh in
+    /// [`ClaxTools::for_client`].
+    waiting: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tool_router: std::sync::Arc<ToolRouter<Self>>,
 }
 
@@ -1450,6 +1461,26 @@ impl Drop for CallGuard<'_> {
         if clax_rt::in_runtime() {
             self.tools.report_call(&self.call, self.outcome);
         }
+    }
+}
+
+/// The one open unbounded `wait_for_feedback` of a [`ClaxTools`], held
+/// until the wait returns or is dropped.
+struct OpenWait(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl OpenWait {
+    /// `None` while another is open.
+    fn take(flag: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Option<OpenWait> {
+        use std::sync::atomic::Ordering;
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| OpenWait(flag.clone()))
+    }
+}
+
+impl Drop for OpenWait {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -1500,8 +1531,20 @@ impl ClaxTools {
             git: None,
             reports: Default::default(),
             clock: std::sync::Arc::new(clax_core::working::SystemClock),
+            feedback: true,
+            unbounded_wait: false,
+            waiting: Default::default(),
             tool_router: std::sync::Arc::new(Self::tool_router()),
         }
+    }
+
+    /// `wait_for_feedback` with no `timeout_s` waits until there is
+    /// something to hand over (under Antigravity). One such
+    /// wait is open at a time; another call meanwhile returns at once with
+    /// `already_waiting: true`.
+    pub fn with_unbounded_wait(mut self, on: bool) -> ClaxTools {
+        self.unbounded_wait = on;
+        self
     }
 
     /// These tools capturing the agent's git state with `git` on each call
@@ -1645,6 +1688,30 @@ impl ClaxTools {
         ClaxTools {
             client: self.client.in_session(session.clone(), secret),
             session: Some(session),
+            ..self.clone()
+        }
+    }
+
+    /// These tools on `client`, with their own per-session state: no
+    /// session but the client's, and their own open questions, connection
+    /// requests, tool-call reports and open wait.
+    pub fn for_client(&self, client: DaemonClient) -> ClaxTools {
+        ClaxTools {
+            client,
+            session: None,
+            ask_surface: Default::default(),
+            connect_pages: Default::default(),
+            reports: Default::default(),
+            waiting: Default::default(),
+            ..self.clone()
+        }
+    }
+
+    /// These tools for a subagent: no feedback is appended to results and
+    /// `wait_for_feedback` is refused.
+    pub fn without_feedback(&self) -> ClaxTools {
+        ClaxTools {
+            feedback: false,
             ..self.clone()
         }
     }
@@ -2799,10 +2866,10 @@ impl ClaxTools {
 
     /// Tier 1: the session's undelivered and resend-eligible feedback and
     /// late answers, handed over by the daemon (and so acknowledged). Empty
-    /// without a session or when the fetch fails; a failed fetch never fails
-    /// the tool.
+    /// without a session, for a subagent, or when the fetch fails; a failed
+    /// fetch never fails the tool.
     async fn piggyback(&self) -> render::Handover {
-        if self.session().is_none() {
+        if !self.feedback || self.session().is_none() {
             return render::Handover::default();
         }
         match self.client.feedback("piggyback", 0, None).await {
@@ -4225,7 +4292,19 @@ impl ClaxTools {
     }
 
     /// Tier 4. Its own result carries the feedback, so no piggyback follows.
+    /// A subagent's wait is refused. Unbounded
+    /// ([`ClaxTools::with_unbounded_wait`]) and with no `timeout_s`, it
+    /// polls again each time a poll hands over nothing (no sooner than
+    /// [`REPOLL_PAUSE`] after that poll began), while no other such wait of
+    /// these tools is open.
     async fn do_wait(&self, a: WaitArgs) -> CallToolResult {
+        if !self.feedback {
+            return render::error(
+                "subagent",
+                "wait_for_feedback is for the main conversation: call it there, not from a subagent.",
+                json!({}),
+            );
+        }
         let artifact = match &a.url_or_id {
             Some(r) => match self.resolve_wait_id(r).await {
                 Ok(id) => Some(id),
@@ -4236,27 +4315,51 @@ impl ClaxTools {
         if let Err(e) = self.require_session().await {
             return e;
         }
+        let unbounded = self.unbounded_wait && a.timeout_s.is_none();
+        let _open = if unbounded {
+            let Some(open) = OpenWait::take(&self.waiting) else {
+                return render::success(json!({"already_waiting": true, "call_again": false}));
+            };
+            Some(open)
+        } else {
+            None
+        };
         let secs = a
             .timeout_s
-            .unwrap_or(DEFAULT_WAIT_S)
+            .unwrap_or(if unbounded {
+                MAX_WAIT_S
+            } else {
+                DEFAULT_WAIT_S
+            })
             .clamp(MIN_WAIT_S, MAX_WAIT_S);
-        match self
-            .client
-            .feedback("wait", secs, artifact.as_deref())
-            .await
-        {
-            Err(e) => self.fail(e),
-            Ok(res) => {
-                let h = self.handover(&res).await;
-                self.forget_answered(&h);
-                // A note alone is no feedback: the agent still calls again.
-                let call_again =
-                    h.feedback.is_empty() && h.answers.is_empty() && h.withheld.is_empty();
-                render::success_with(
-                    json!({"waited_s": res["waited_s"], "call_again": call_again}),
-                    h,
-                )
+        let mut waited_s = 0;
+        loop {
+            let polled = clax_rt::time::Instant::now();
+            let res = match self
+                .client
+                .feedback("wait", secs, artifact.as_deref())
+                .await
+            {
+                Err(e) => return self.fail(e),
+                Ok(res) => res,
+            };
+            waited_s += res["waited_s"].as_u64().unwrap_or(0);
+            let h = self.handover(&res).await;
+            self.forget_answered(&h);
+            // A note is handed over once: an unbounded wait returns it too.
+            if unbounded && h.is_empty() {
+                // A daemon shutting down answers at once.
+                if polled.elapsed() < REPOLL_PAUSE {
+                    clax_rt::time::sleep_until(polled + REPOLL_PAUSE).await;
+                }
+                continue;
             }
+            // A note alone is no feedback: the agent still calls again.
+            let call_again = h.feedback.is_empty() && h.answers.is_empty() && h.withheld.is_empty();
+            return render::success_with(
+                json!({"waited_s": waited_s, "call_again": call_again}),
+                h,
+            );
         }
     }
 }
@@ -5484,6 +5587,132 @@ mod tests {
                 assert!(a.destructive_hint.is_some(), "{}", t.name);
             }
         }
+    }
+
+    /// The time on tokio's paused clock: the tests that read it run under
+    /// `start_paused`, so it is the test's own time, never the wall's.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "reads tokio's paused clock (start_paused), not real time"
+    )]
+    fn paused_now() -> tokio::time::Instant {
+        tokio::time::Instant::now()
+    }
+
+    /// A daemon that answers feedback polls in turn from `answers`: each
+    /// after moving paused time on by its seconds, with its body. It keeps
+    /// the paused time each poll arrived at.
+    struct Polls {
+        answers: std::sync::Mutex<std::collections::VecDeque<(u64, Value)>>,
+        arrived: std::sync::Mutex<Vec<tokio::time::Instant>>,
+    }
+
+    impl crate::client::InProcess for Polls {
+        fn call(&self, _req: http::Request<bytes::Bytes>) -> crate::client::InProcessFuture {
+            self.arrived.lock().unwrap().push(paused_now());
+            let (after_s, body) = self
+                .answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("a poll the test did not expect");
+            Box::pin(async move {
+                tokio::time::advance(std::time::Duration::from_secs(after_s)).await;
+                http::Response::builder()
+                    .header("content-type", "application/json")
+                    .body(bytes::Bytes::from(body.to_string()))
+                    .unwrap()
+            })
+        }
+    }
+
+    /// Antigravity tools in session `s1` on a daemon answering `answers`,
+    /// with the polls' arrival times.
+    fn waiting_on(
+        answers: Vec<(u64, Value)>,
+        unbounded: bool,
+    ) -> (ClaxTools, std::sync::Arc<Polls>) {
+        let polls = std::sync::Arc::new(Polls {
+            answers: std::sync::Mutex::new(answers.into()),
+            arrived: Default::default(),
+        });
+        let client = DaemonClient::new("http://127.0.0.1:9".into(), "t".into(), Some("s1".into()))
+            .with_in_process(polls.clone());
+        let session: Session = serde_json::from_value(json!({
+            "id": "s1", "harness": "antigravity", "harness_session_id": "r1", "cwd": "",
+            "pid": null, "parent_pid": null, "started_at": "", "last_seen_at": "",
+            "ended_at": null, "agent_handle": "a",
+        }))
+        .unwrap();
+        let tools = ClaxTools::new(client, String::new(), Some(session), PathBuf::new())
+            .with_unbounded_wait(unbounded);
+        (tools, polls)
+    }
+
+    fn empty_poll(waited_s: u64) -> Value {
+        json!({"feedback": [], "answers": [], "text": null, "waited_s": waited_s})
+    }
+
+    fn a_comment() -> Value {
+        json!({"feedback": [{"body": "@agent hi"}], "answers": [], "text": "hi", "waited_s": 0})
+    }
+
+    async fn wait(tools: &ClaxTools, timeout_s: Option<u64>) -> Value {
+        let r = tools
+            .do_wait(WaitArgs {
+                url_or_id: None,
+                timeout_s,
+            })
+            .await;
+        serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap()
+    }
+
+    fn gaps(polls: &Polls) -> Vec<std::time::Duration> {
+        let at = polls.arrived.lock().unwrap();
+        at.windows(2).map(|w| w[1] - w[0]).collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unbounded_wait_pauses_before_polling_again_after_an_answer_at_once() {
+        let (tools, polls) = waiting_on(
+            vec![(0, empty_poll(0)), (0, empty_poll(0)), (0, a_comment())],
+            true,
+        );
+        let v = wait(&tools, None).await;
+        assert_eq!(v["feedback"][0]["body"], "@agent hi", "{v}");
+        assert_eq!(v["call_again"], false, "{v}");
+        let second = std::time::Duration::from_secs(1);
+        assert_eq!(gaps(&polls), [second, second]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unbounded_wait_polls_again_at_once_after_a_full_poll() {
+        let (tools, polls) = waiting_on(vec![(600, empty_poll(600)), (0, a_comment())], true);
+        let v = wait(&tools, None).await;
+        assert_eq!(v["waited_s"], 600, "{v}");
+        assert_eq!(gaps(&polls), [std::time::Duration::from_secs(600)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_bounded_wait_answers_after_one_poll() {
+        let (tools, polls) = waiting_on(vec![(0, empty_poll(0))], true);
+        assert_eq!(wait(&tools, Some(5)).await["call_again"], true);
+        assert_eq!(polls.arrived.lock().unwrap().len(), 1);
+        let (tools, polls) = waiting_on(vec![(0, empty_poll(0))], false);
+        assert_eq!(wait(&tools, None).await["call_again"], true);
+        assert_eq!(polls.arrived.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn each_conversation_has_its_own_open_wait() {
+        let client = || DaemonClient::new("http://127.0.0.1:9".into(), "t".into(), None);
+        let tools = ClaxTools::new(client(), String::new(), None, PathBuf::new());
+        let open = OpenWait::take(&tools.waiting).expect("none is open");
+        assert!(OpenWait::take(&tools.clone().waiting).is_none());
+        let other = tools.for_client(client());
+        assert!(OpenWait::take(&other.waiting).is_some());
+        drop(open);
+        assert!(OpenWait::take(&tools.waiting).is_some());
     }
 
     /// Forty-three tools, `connect_instance` (spec 2026-10-29 §3),

@@ -213,10 +213,12 @@ pub fn where_to_ask_reply(
     }}))
 }
 
-/// The harnesses no hook reports a prompt for (Codex, Grok Build): each
-/// Stop with no Clax delivery since the last stands for one, and so does
-/// the first poll from within a turn after such a Stop.
-pub const INFERRED: [&str; 2] = ["codex", "grok"];
+/// The harnesses no hook reports a prompt for (Codex, Grok Build, and
+/// Antigravity, whose turn-start hook also runs for a turn a background
+/// result starts): each Stop with no Clax delivery since the last stands
+/// for one, and so does the first poll from within a turn after such a
+/// Stop.
+pub const INFERRED: [&str; 3] = ["codex", "grok", "antigravity"];
 
 /// Records what a feedback poll of live session `sid` at `tier` says of
 /// its person: `prompt`, they typed to it (Claude Code's prompt hook),
@@ -224,8 +226,9 @@ pub const INFERRED: [&str; 2] = ["codex", "grok"];
 /// announces each. For a harness in [`INFERRED`], a `stop_hook` poll ends
 /// its turn, which stands for a prompt when nothing came from Clax since
 /// the last turn ([`Store::note_turn`]); any other poll but the Codex
-/// queue's comes from within a turn, and the first after a Stop with
-/// nothing from Clax since starts one the person typed
+/// queue's and an Antigravity session's `wait` (its `wait_for_feedback`,
+/// open between turns) comes from within a turn, and the first after a
+/// Stop with nothing from Clax since starts one the person typed
 /// ([`Store::note_turn_start`]).
 ///
 /// # Errors
@@ -243,10 +246,15 @@ pub fn note_poll(
         crate::views::question::announce_ids(s, st, &lapsed);
         return Ok(());
     }
-    if tier == Tier::Queue
-        || !st
-            .get_session(sid)?
-            .is_some_and(|x| INFERRED.contains(&x.harness.as_str()))
+    if tier == Tier::Queue {
+        return Ok(());
+    }
+    let Some(session) = st.get_session(sid)? else {
+        return Ok(());
+    };
+    let harness = session.harness.as_str();
+    if !INFERRED.contains(&harness)
+        || (tier == Tier::Wait && harness == clax_core::antigravity::HARNESS)
     {
         return Ok(());
     }
