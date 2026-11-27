@@ -2686,9 +2686,13 @@ the refusal and the list is read again. With none, it shows a prompt to
 paste into an agent (one with the Clax plugin) that names the artifact's
 address and asks the agent to watch it, read the brief thread and publish
 the page there; the list appears once an agent connects, and the
-artifact's Send reaches an agent once it watches. Every way out of the
-dialog once the artifact is made opens it, a Close while Create is in
-flight included, once Create answers.
+artifact's Send reaches an agent once it watches. Once the artifact is
+made, the dialog offers Leave it for now, which (like Escape) only closes
+it, leaving the person on the gallery that lists the artifact, and Open
+the artifact, which opens it. A Cancel, Close or Escape while Create is in
+flight closes the dialog the same way: the artifact is still made (and
+built, when ClaxBot was asked to), and the gallery lists it, but nothing
+opens it.
 
 ### Reopening and deleting threads
 

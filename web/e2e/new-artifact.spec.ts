@@ -71,6 +71,21 @@ test("with no agent live, the dialog gives a prompt to paste into one, and opens
   await expect(frame.locator("h1")).toHaveText("Launch notes");
 });
 
+test("once the artifact is made, Leave it for now and Escape close the dialog on the gallery, which lists it, and open nothing", async ({ page, freshDaemon: d }) => {
+  await page.goto(d.base);
+  const gallery = page.url();
+  for (const [title, dismiss] of [["Launch notes", "Leave it for now"], ["Release plan", "Escape"]] as const) {
+    const who = await create(page, title);
+    await expect(who).toContainText("No agent is connected.");
+    await expect(who.locator("header").getByRole("button")).toHaveCount(0);
+    if (dismiss === "Escape") await page.keyboard.press("Escape");
+    else await who.getByRole("button", { name: dismiss }).click();
+    await expect(who).toHaveCount(0);
+    expect(page.url()).toBe(gallery);
+    await expect(page.locator(".card-wrap", { hasText: title })).toBeVisible();
+  }
+});
+
 test("a LAN viewer, who may not create, is offered no New", async ({ page, daemon: d }) => {
   await asLocalViewer(page.context(), d);
   await page.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "not_loopback", message: "not a loopback connection" } }) }));
