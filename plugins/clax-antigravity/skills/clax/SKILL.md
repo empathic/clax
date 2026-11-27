@@ -66,8 +66,8 @@ is in files beside it. Read the one you need with your file tool, from the
   `references/runtime-capabilities.md` (every runtime capability, and what
   is not yet available).
 - Before you take, reply to or hand off a thread that may be another
-  agent's, or when a result says `thread_taken`, `withheld`,
-  `not_permitted` or `not_for_agents`, read
+  agent's, or hand one to subagents, or when a result says `thread_taken`,
+  `withheld`, `not_permitted` or `not_for_agents`, read
   `references/working-beside-others.md`.
 
 ## When to publish
@@ -311,9 +311,10 @@ to each thread after publishing the change, so the version lists the thread
 as addressed before your reply clears it. Call `working` with `done: true`
 when you stop without replying or publishing.
 
-- `working` (`url_or_id`; optional `thread_ids`, `message`, `done`):
-  `working: true` with the stored `message`, `thread_ids` and `expires_in_s`,
-  or `working: false` after `done`.
+- `working` (`url_or_id`; optional `thread_ids`, `message`, `done`,
+  `background`): `working: true` with the stored `message`, `thread_ids`,
+  `background_thread_ids` (when any) and `expires_in_s`, or
+  `working: false` after `done`.
 
 When the person wants to iterate live ("watch for my comments", "I'll leave
 comments on it"), loop: call `wait_for_feedback`, handle whatever arrives, and
