@@ -89,22 +89,53 @@ unset XDG_CONFIG_HOME
 
 sha() { if [ -f "$1" ]; then shasum -a 256 "$1" | awk '{ print $1 }'; else echo absent; fi; }
 exists() { if [ -e "$1" ]; then echo 1; else echo 0; fi; }
-plugin_names() { agy plugin list --json 2>/dev/null | python3 -c '
+# The installed plugins' names, one per line; fails when agy cannot list
+# them or prints anything but a JSON list of objects with a name.
+list_plugins() {
+    local out
+    out="$(agy plugin list --json 2>/dev/null)" || return 1
+    printf '%s' "$out" | python3 -c '
 import json, sys
 try:
-    for p in json.load(sys.stdin) or []:
-        print(p.get("name", ""))
+    plugins = json.load(sys.stdin)
+    names = [p["name"] for p in (plugins or [])]
+    assert isinstance(plugins, (list, type(None))) and all(isinstance(n, str) for n in names)
 except Exception:
-    pass'; }
+    sys.exit(1)
+for n in names:
+    print(n)'
+}
+plugin_names() { list_plugins || echo "smoke: agy plugin list --json failed or did not parse" >&2; }
+# shellcheck disable=SC2329 # run by wait_for
+clax_serve() { # clax_serve PID: whether PID is alive and runs clax serve
+    case "$(ps -o command= -p "$1" 2>/dev/null)" in *clax*serve*) return 0 ;; *) return 1 ;; esac
+}
+# shellcheck disable=SC2329 # run by wait_for
+not_serving() { ! clax_serve "$1"; }
 
 declare -a RESULTS=()
 record() { RESULTS+=("$1|$2|$3"); echo "smoke: $2 $1: $3"; }
+
+# Stops the headless agy (AGY_PID) while it runs.
+stop_agy() {
+    if [ -n "${AGY_PID:-}" ] && ! gone "$AGY_PID"; then
+        kill "$AGY_PID" 2>/dev/null || true
+        if ! WAIT_FOR_POLLS=200 wait_for "the headless agy to exit" gone "$AGY_PID"; then
+            kill -KILL "$AGY_PID" 2>/dev/null || true
+        fi
+        echo "smoke: stopped the headless agy (pid $AGY_PID)"
+    fi
+    AGY_PID=""
+}
 
 # Removes what this run added to ~/.gemini and stops the daemon it started.
 # Each path goes only when it did not exist before the run, and a directory
 # only when it is empty, so nothing the person put there is removed.
 # shellcheck disable=SC2329 # run by the EXIT trap, or by --cleanup
 cleanup() {
+    # The headless agy first: its shim would start a daemon again, and it
+    # must not outlive the plugin it runs from.
+    stop_agy
     local names
     names="$(plugin_names)"
     if printf '%s\n' "$names" | grep -x clax-antigravity >/dev/null; then
@@ -132,6 +163,17 @@ cleanup() {
             echo "smoke: stopped the scratch daemon (pid $DAEMON_PID)"
         else
             echo "smoke: the daemon (pid $DAEMON_PID) has not exited; kill $DAEMON_PID" >&2
+        fi
+    fi
+    # A daemon some other client started in the scratch home.
+    local pid
+    pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$CLAX_HOME/daemon.json" 2>/dev/null || true)"
+    if [ -n "$pid" ] && [ "$pid" != "${DAEMON_PID:-}" ] && clax_serve "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        if WAIT_FOR_POLLS=200 wait_for "the daemon $pid to exit" not_serving "$pid"; then
+            echo "smoke: stopped the scratch home's daemon (pid $pid)"
+        else
+            echo "smoke: the scratch home's daemon (pid $pid) has not exited; kill $pid" >&2
         fi
     fi
 }
@@ -175,6 +217,10 @@ summary() {
     return "$failed"
 }
 
+# A signal ends the script through its EXIT trap.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 if [ "$MODE" = cleanup ]; then
     trap cleanup EXIT
     check_uninstall
@@ -186,12 +232,14 @@ if [ "$MODE" = cleanup ]; then
     exit $?
 fi
 
-# Refuse before touching anything: the cleanup removes plugins by these names.
-NAMES="$(plugin_names)"
+# Refuse before touching anything: the cleanup removes plugins by these
+# names, so it must know that none is the person's.
+NAMES="$(list_plugins)" || die "agy plugin list --json failed or did not print a JSON list, so the script cannot tell whether clax-antigravity or clax is yours"
 for n in clax-antigravity clax; do
     if printf '%s\n' "$NAMES" | grep -x "$n" >/dev/null; then
         die "a plugin named $n is already installed in agy; this script would remove it on exit (agy plugin uninstall $n first)"
     fi
+    [ ! -e "$PLUGINS_DIR/$n" ] || die "$PLUGINS_DIR/$n exists; this script would replace and remove it (agy plugin uninstall $n, or remove the directory, first)"
 done
 
 SETTINGS_SHA="$(sha "$SETTINGS_FILE")"
@@ -203,7 +251,7 @@ PRE_MCP_COPY="$(exists "$MCP_DIR/clax_clax")"
 PRE_DATA="$(exists "$DATA_DIR")"
 PRE_DATA_OURS="$(exists "$DATA_DIR/clax-antigravity")"
 PRE_DATA_COPY="$(exists "$DATA_DIR/clax")"
-DAEMON_PID=""
+DAEMON_PID="" AGY_PID=""
 trap cleanup EXIT
 
 echo "smoke: building clax"
@@ -301,7 +349,7 @@ fi
 # it never read open, once the page exists), and the agent answers it.
 PROMPT="Publish a one-line HTML page titled Smoke with the Clax publish tool. Then call wait_for_feedback with timeout_s 120. When it brings a comment, reply to that comment in its thread with the single word received, then end your turn."
 PRINT_TIMEOUT=300
-(cd "$WS" && agy -p "$PROMPT" --output-format json --model "$MODEL" \
+(cd "$WS" && exec agy -p "$PROMPT" --output-format json --model "$MODEL" \
     --settings "$SCRATCH/agy-settings.json" --print-timeout "${PRINT_TIMEOUT}s" \
     </dev/null >"$SCRATCH/run1.json" 2>"$SCRATCH/run1.err") &
 AGY_PID=$!
@@ -348,10 +396,12 @@ print(json.dumps(p) if p.get("available") else "")' 2>/dev/null || true)"
 # The hang guard: --print-timeout ends the run first.
 RC=0
 if ! WAIT_FOR_POLLS=$((PRINT_TIMEOUT * 40)) wait_for "the headless run" headless_poll; then
-    kill "$AGY_PID" 2>/dev/null || true
     RC=hung
+    stop_agy
 else
     wait "$AGY_PID" || RC=$?
+    # Reaped: the PID may name another process from now on.
+    AGY_PID=""
 fi
 
 CONV="$(python3 -c '
@@ -416,6 +466,7 @@ if [ "$MODE" = keep ]; then
         cat <<TXT
 
 smoke: --keep: the plugin is installed and the daemon is running (pid $DAEMON_PID, $(base)).
+smoke: until --cleanup, any agy session started outside agy.sh loads this unmerged plugin against your own Clax; exit every agy.sh session before --cleanup.
 smoke: interactive agy: $SCRATCH/agy.sh   when done: scripts/smoke-antigravity.sh --cleanup $SCRATCH
 TXT
         exit 0
