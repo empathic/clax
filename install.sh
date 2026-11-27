@@ -124,7 +124,7 @@ main() {
         *":$INSTALL_DIR:"*) ;;
         *) echo "clax install: $INSTALL_DIR is not on PATH; add it: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
     esac
-    echo "clax install: to register this clax's plugins with Claude Code, Codex, Grok and Pi and have them run this binary, run \`clax init\`"
+    echo "clax install: to register this clax's plugins with Claude Code, Codex, Grok, Antigravity and Pi and have them run this binary, run \`clax init\`"
 }
 
 main "$@"

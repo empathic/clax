@@ -29,9 +29,11 @@ public Clax"), and the data tools `db_get`, `db_list`,
 `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch` and `queue_request` (see "Report queue tools"). The MCP implementation lives in
 `crates/clax-mcp` and is served two ways:
 
-- the stdio shim `clax mcp --agent <claude|codex|grok>`, which a harness
-  starts once per session and which attributes publishes to that session
-  (Pi does not use it; `--agent pi` is a usage error). The plugins start it
+- the stdio shim `clax mcp --agent <claude|codex|grok|antigravity>`, which
+  a harness starts once per session and which attributes publishes to that
+  session (Antigravity starts it once per `agy` process, and it keeps a
+  session per conversation: "Antigravity" under "Sessions"; Pi does not use
+  it, and `--agent pi` is a usage error). The plugins start it
   through `scripts/ensure-clax.sh`, which first runs `clax mcp --preflight`
   (it reads the home, its `config.toml` and the port, checks that a daemon
   could serve on that port or one it would move to, starts no daemon, and
@@ -56,6 +58,7 @@ Names as the model sees them:
 | Claude Code, plain `.mcp.json` entry named `clax` | `mcp__clax__<tool>` |
 | Codex | `mcp__clax__<tool>` |
 | Grok Build | `clax_grok__<tool>`, through `search_tool` and `use_tool` |
+| Antigravity | `mcp_clax-antigravity_clax_<tool>` for the eleven eager tools (`publish`, `read`, `list`, `open`, `status`, `watch`, `wait_for_feedback`, `working`, `comments_read`, `comments_reply`, `comments_resolve`); every other tool through `call_mcp_tool` with `ServerName` `clax-antigravity_clax`, after the model reads its schema from `~/.gemini/antigravity-cli/mcp/clax-antigravity_clax/<tool>.json` |
 | Pi | `clax_<tool>` |
 
 Every MCP tool carries MCP annotations, all with `openWorldHint: false`
@@ -79,7 +82,9 @@ could exempt a Clax tool from it. `plugins/pi/test/fixtures/contract.json` lists
 read-only tools, and tools that are neither destructive nor open-world
 (`status` among them),
 without asking, so in Codex only the six destructive tools ask before a call
-until the person approves them (`clax init`, below).
+until the person approves them (`clax init`, below). Antigravity asks before
+every MCP tool call, read-only ones included, and a headless run refuses
+them, until a permission rule allows them (`clax init`, below).
 
 The command line covers the same operations for scripts and harnesses
 without MCP: `clax publish`, `read`, `list`, `open`, `delete`, `pin`,
@@ -890,7 +895,9 @@ successful run clears both, and a failure leaves `available` true. Under Codex `
 `null` with `reason` "Codex session ID unknown, native push disabled" or the
 daemon's reason for having no `codex` (see "Delivery tiers per harness");
 under Pi it is `{"tier": "inject", "available": true, "reason": null}`; under
-Claude Code it is as shown above. `push` is `null` without a session, or when
+Antigravity `tier` is `"wait"`, available while a `wait_for_feedback` call
+of the session is open, with `"headless": true` in a headless run ("Antigravity"
+under "Sessions"); under Claude Code it is as shown above. `push` is `null` without a session, or when
 the daemon could not be asked.
 
 Under Claude Code, `push.tier` is `"channel"` (`available: true`) when the
@@ -1476,8 +1483,9 @@ the watch's result as `watch` (or why it failed as `watch_error`); an
 instance's origin alone watches nothing. `clax remote request <url> [--reason <text>] [--session <sid>]
 [--wait <s>]` does the same from the CLI, as the session `--session`
 names, else the live session its harness's variable names
-(`CODEX_THREAD_ID`, `GROK_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`), else the
-live session whose harness process is an ancestor of the CLI's; it waits
+(`CODEX_THREAD_ID`, `GROK_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`,
+`ANTIGRAVITY_CONVERSATION_ID`), else the live session whose harness process
+is an ancestor of the CLI's; it waits
 as the tool does. An agent never sees the device code or the token.
 
 **Pushing.** `clax push <artifact> [--to <remote>] [--new|--fork]
@@ -1950,7 +1958,8 @@ session published each artifact and whether that session is live.
 
 The shim takes `harness_session_id` from `CLAUDE_CODE_SESSION_ID` under Claude
 Code and from `GROK_SESSION_ID` under Grok Build, else from `CLAX_SESSION_ID`
-for any harness, else sends none.
+for any harness, else sends none. Under Antigravity it takes each session's
+from the tool calls instead (see "Antigravity" below).
 
 A session row has `harness` (`claude`, `codex`, `grok`, `antigravity`, `pi`,
 `app`), `harness_session_id` (the harness's own ID, when known), `cwd`, `pid`
@@ -2089,6 +2098,121 @@ an allowing `UserPromptSubmit` hook's output.
 Grok also loads the Clax Claude Code plugin when the person enables it in
 Grok. That copy stands down: see "The wrapper". Exactly one Clax MCP server
 and one set of Clax hooks act in a Grok session.
+
+### Antigravity
+
+An `agy` process starts the clax-antigravity plugin's MCP server
+(`clax mcp --agent antigravity`, which the plugin names
+`clax-antigravity_clax`) once, when it launches, and shares it between all
+its conversations: the first, any started with `/new`, and their
+subagents. The server's parent is the `agy` process and its working
+directory is the plugin's; it gets `PLUGIN_ROOT` and `PLUGIN_DATA`, but no
+`ANTIGRAVITY_*` variable. So the shim registers nothing when it starts, and
+keeps a session per root conversation instead of one per process:
+
+- Antigravity names the caller of each `tools/call` in its `_meta`:
+  `antigravity.google/root_conversation_id`, else
+  `antigravity.google/conversation_id`, is the root conversation's ID, which
+  is the session's `harness_session_id`. A conversation's first call
+  registers its session (harness `antigravity`, that ID, the shim's `pid`,
+  the `agy` process as `parent_pid`, and the `agy` process's working
+  directory as `cwd`, read as under Codex, with the repository and branch it
+  is in); the call then runs as that session, which the shim heartbeats
+  from then on. `CLAX_SESSION_ID` is not read.
+- A subagent's call, whose `conversation_id` differs from its
+  `root_conversation_id`, acts in the root conversation's session, but no
+  feedback is appended to its result, and `wait_for_feedback` from it is
+  refused (`subagent`): feedback is handed only to the root conversation.
+- A call whose `_meta` names no conversation registers as under Codex, with
+  no harness session ID, so every such call of one `agy` process shares a
+  session. `clax doctor --agent antigravity` warns about such a session
+  (`antigravity_sessions`).
+- A call the client cancels (`notifications/cancelled`) is dropped, and no
+  result is sent for it. On SIGTERM or when stdin closes, the shim ends
+  every session it registered, each within the 3 s deadline, answers any
+  later call with the error `shutting_down`, and removes the files the
+  hooks keep for each conversation (`run/tool-hook/antigravity-<ID>` and
+  `run/wake-nudge/antigravity-<ID>.json`, for an ID of
+  `[A-Za-z0-9._-]`). A conversation left with `/new` stays a live session
+  until then.
+- A conversation resumed with `agy --conversation <ID>` keeps its ID and has
+  a new shim, so its first Clax call registers it again. After a normal
+  exit the earlier session has ended, and its watches with it, so the new
+  one watches nothing until the agent publishes or calls `watch`.
+
+The hooks are `clax hook --agent antigravity <event>`, in the plugin's
+`hooks.json`: `PreInvocation` runs `prompt` through `scripts/tool-hook.sh
+antigravity prompt`, which starts `clax` only for the first model call of a
+turn (`invocationNum` 0 or absent); `Stop` runs `stop`; `PostToolUse`, for
+every tool, runs `tool` through `scripts/tool-hook.sh antigravity`. They
+read Antigravity's camelCase input (`conversationId` as the session ID,
+`cwd`, `hookEventName`, `transcriptPath`) and print Antigravity's shapes:
+`stop` hands comments over with `{"decision":"continue","reason":"<text>"}`,
+which continues the turn with the text as a system message, and `prompt`
+with `{"injectSteps":[{"systemMessage":{"systemMessage":"<text>"}}]}`. No
+hook joins or creates a session: each acts on the live `antigravity`
+session whose harness session ID is the `conversationId`, and does nothing
+without one, so a subagent's hooks, and a conversation's before its first
+Clax call, do nothing. `session-start`, `session-end`, `call-id`, `ask` and
+`asked` exit 0 at once with no output, and the plugin wires none of them:
+Antigravity has no session-end event, and its `SessionStart` fires for
+every subagent and not on resume.
+
+- `stop` acts only when `terminationReason` is `NO_TOOL_CALL` (or absent),
+  a turn's normal end. An `executionNum` above 0, at the `Stop` after a hook
+  continued the turn, counts as `stop_hook_active`.
+- `prompt` takes `tier=prompt_hook` feedback without `prompt=true`: a turn
+  also starts when a background call finishes, so whether the person typed
+  is inferred, as for Codex and Grok Build ("Delivery tiers per harness").
+
+**Waking.** The plugin marks `wait_for_feedback` as a background tool
+(`"background": "always"` in `mcp_config.json`) and gives the server no
+call time limit (`"timeoutSeconds": -1`). Antigravity returns a background
+call to the model at once as a task, lets the turn end while it is open,
+and when it finishes starts a turn with its result (or, while the
+conversation is busy, adds the result at its next model call). In an
+interactive run, `wait_for_feedback` with no `timeout_s` has no limit: the
+shim polls the daemon (`tier=wait`, at most 600 s a poll; after a poll that
+came back empty in under a second it waits out that second) until a poll
+hands something over (feedback, an answer, a withheld thread or a note), or
+the client cancels the call. A session has one such wait open at a time:
+a second call returns `{"already_waiting": true, "call_again": false}` at
+once and opens nothing. With a `timeout_s` the call keeps its bounds
+(default 50 s, at most 600) and returns `call_again: true` when nothing
+came.
+
+`push` for an `antigravity` session is `{"tier": "wait", "available":
+<a tier=wait poll of the session is waiting>, "reason": …}`, with a reason
+saying that no `wait_for_feedback` call is open when it is not available;
+it reads unavailable for the instant between two polls. While it is
+available, the `watch` result's `wake.do` says "Start nothing: a comment
+sent to you wakes this session by finishing your open wait_for_feedback
+call. End your turn when you are done.", and otherwise "A comment will not
+wake this conversation while it is idle. Call wait_for_feedback with no
+timeout_s now; it runs in the background. Keep exactly one open, then end
+your turn." The `stop` hook's turn-end reminder applies: when the session
+watches something with replies on and no wait is open, it continues the
+turn once, with a reason that says what the session watches and gives that
+instruction, and that opens with "Your earlier wait_for_feedback call has
+ended." when a wait was open at an earlier stop. A thread sent to an `antigravity` session waits on its Stop hook when
+the watch is armed, else on its next tool result, as for Claude Code, Codex
+and Grok Build.
+
+**Headless runs.** `agy -p` waits for every open background call before it
+exits. The shim decides from its parent's command line, and the `stop` hook
+from its parent's and ancestors', the nearest `agy` first: a run is
+headless when `-p`, `--print` or `--prompt` (or `--print=…`, `--prompt=…`)
+comes before any `-i` or `--prompt-interactive`, and also when no `agy`
+command line can be read. In a headless run `wait_for_feedback` keeps its
+bounds, the shim adds `"headless": true` to `push`, `wake.do` says "Nothing
+wakes a headless run. Comments reach you on your next Clax tool call. End
+your turn when you are done.", and `stop` gives no turn-end reminder. A
+headless run also refuses every Clax tool call that the permission rule
+(`clax init`) does not allow.
+
+`agy plugin import claude` installs the Clax Claude Code plugin in
+Antigravity as `clax`. That copy stands down: see "The wrapper". Exactly
+one Clax MCP server and one set of Clax hooks act in an `agy` process.
 
 ### Pi
 
@@ -2241,6 +2365,7 @@ from its environment, first match wins:
 | `CLAUDECODE=1` | Claude Code, in its Bash tool's shell | an agent channel |
 | `CODEX_THREAD_ID`, `CODEX_CI`, `CODEX_SANDBOX` (any value but empty) | Codex, in its shell tool's environment | an agent channel |
 | `PI_CODING_AGENT=true` | Pi, in its own process, which its bash tool inherits | an agent channel |
+| `ANTIGRAVITY_AGENT=1` | Antigravity, in the environment of the commands its agent runs | an agent channel |
 
 Otherwise it is the owner. A command under a harness that reaches a route
 that serves people (403 `not_for_agents`: `clax inbox`, and anything reading
@@ -2249,7 +2374,8 @@ people: open http://localhost:7480/inbox in a browser.`, and exits 2.
 
 **Harness shell environments.** `scripts/probe-harness-env.sh` prints the
 environment a harness's shell tool gives a command; the table above lists
-exactly the variables it observed (2026-10-09):
+exactly the variables it observed (2026-10-09), and those seen in a command
+Antigravity's agent ran (2026-11-26):
 
 - **Claude Code 2.1.294** (`claude -p`, its Bash tool, with `CLAUDECODE`
   unset in the parent): `CLAUDECODE=1`, beside `CLAUDE_CODE_ENTRYPOINT`,
@@ -2270,6 +2396,17 @@ exactly the variables it observed (2026-10-09):
   not read. Grok's hooks and MCP server run through the wrapper or send the
   marker themselves; a `clax` command Grok's agent runs in its own shell is
   the owner's until a probe confirms a variable.
+- **Antigravity's `agy` 1.5.18** (a command its agent ran):
+  `ANTIGRAVITY_AGENT=1` and `ANTIGRAVITY_CONVERSATION_ID` (the
+  conversation's ID, which `clax remote request` reads), beside
+  `ANTIGRAVITY_TRAJECTORY_ID`, `ANTIGRAVITY_AGENTAPI_EXE`,
+  `ANTIGRAVITY_APP_DATA_DIR`, `ANTIGRAVITY_CSRF_TOKEN`,
+  `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_LS_VERSION`,
+  `ANTIGRAVITY_PROJECT_ID` and `ANTIGRAVITY_SOURCE_METADATA`, which the CLI
+  does not read. In
+  Antigravity's default mode these commands run in a sandbox that could not
+  connect to 127.0.0.1, so a `clax` command there that needs the daemon
+  fails; the plugin's MCP server and hooks run outside the sandbox.
 
 ## Comments and feedback
 
@@ -4358,7 +4495,7 @@ the copy's remote, the link holds the copy's address alone.
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}`; a thread no version lists yet is listed as addressed in the current version |
 | `comments_handoff` | `url_or_id`, `thread_id`; optional `to` (a live agent's name) | `{artifact_id, url, released, thread, note}`: with `to`, the thread is sent to that agent, which owns it (`thread.owner`); without, the owner releases it. `thread_taken` when another live agent owns it. |
 | `watch` | `url_or_id` (an artifact, or a page URL); optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}`; for a page URL `{artifact_id, url, page_url, scope, watching: true, replies_armed}`, or `{page_url, watching: false, replies_armed: false}` with `on: false` (`page_url` without its route) |
-| `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50) | `{feedback: [...], waited_s, call_again}` |
+| `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50; in an interactive Antigravity run, no limit when omitted) | `{feedback: [...], waited_s, call_again}`; under Antigravity, `{already_waiting: true, call_again: false}` for a call with no limit made while one is open |
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
 | `draft` | `url_or_id`; `html` or `file_path` (the page) and/or `files` (as `publish` takes them, `null` removing a path); optional `if_version`, `note` (at most 140 characters), `done` | `{artifact_id, url, drafting: true, base_version, paths, note, note_truncated, expires_in_s}` or `{artifact_id, url, drafting: false, ended}` |
 | `git_remote` | `url_or_id`, `scope` (`read` or `write`) | `{artifact_id, url, scope, remote, token, expires_at, clone_command, jj_clone_command, existing_checkout}` (see "Git remotes") |
@@ -4898,7 +5035,9 @@ taking `url_or_id`.
 `wait_for_feedback` returns as soon as comments sent to this session arrive
 (only those on `url_or_id` when given), or after `timeout_s` seconds with
 `feedback: []` and `call_again: true`. `timeout_s` is raised to 1 and capped
-at 600. `waited_s` is whole seconds.
+at 600. `waited_s` is whole seconds. Under Antigravity, in an interactive
+run, a call with no `timeout_s` has no limit, and a subagent's call is the
+error `subagent` ("Antigravity" under "Sessions").
 
 Error codes besides the common ones: `invalid_id` (`url_or_id` names no
 artifact, or a page URL with no live page), `invalid_args` (a `thread_id` that is not a thread ID, empty
@@ -5168,15 +5307,17 @@ comment text it is a request to weigh.
 
 Measured on 2026-09-29 with Codex CLI 0.158.0 and Claude Code 2.1.284; Pi
 0.73.1 from its source; Grok Build 1.0.45 from its source (not yet run live;
-`scripts/smoke-grok.sh` records the measured version).
+`scripts/smoke-grok.sh` records the measured version); Antigravity's `agy`
+1.5.18 from the hook and background-call behaviour observed on 2026-11-26
+(not yet run live through the clax-antigravity plugin).
 
-| Tier | Claude Code | Codex | Grok Build | Pi |
-|---|---|---|---|---|
-| 1, tool result | next clax tool call (shim) | next clax tool call (shim) | next clax tool call (shim) | next `clax_*` tool call (`tool_result` handler) |
-| 2, Stop hook | end of the turn: `{"decision":"block","reason":...}` continues the turn with the payload | same shape and behaviour, measured with `codex exec` | end of the turn: the same shape continues the turn; the hook acts only on `reason` `end_turn` | none |
-| 3, prompt hook | the person's next message (`UserPromptSubmit` `additionalContext`); also at session start (`SessionStart` `additionalContext`) | only at session start: the `SessionStart` hook adds waiting comments to its `additionalContext`; no `UserPromptSubmit` hook is wired | none: an allowing `UserPromptSubmit` hook's output is discarded and `SessionStart` output is ignored | none |
-| 4, `wait_for_feedback` | immediate while waiting | immediate while waiting; one call stays under Codex's 60 s tool limit | immediate while waiting; Grok's tool timeout defaults to 6000 s | immediate while waiting |
-| 5, native push | channel (opt-in launch flag, research preview) or follow fallback: a notice, never the payload. Launched with `--dangerously-load-development-channels plugin:clax@clax`, the shim sends a `notifications/claude/channel` event per comment, which starts a turn when idle and joins the next turn when busy. Otherwise the skill runs `clax feedback follow --once` in the background, and its exit wakes the session. Either way the comment is then delivered by tier 1, 2 or 4 | `codex queue`: an idle attached TUI starts a turn in about 0.2 s; a busy one runs it as its next turn; with no client attached (an exited TUI, a `codex exec` thread) it is held until `codex resume`, and `codex queue` still exits 0 | once the agent has started the monitor (`clax feedback follow`): a notice line wakes an idle session at once and a busy one after its turn; it points at the comment, which then arrives through tier 1, 2 or 4 (from source; not run live) | the extension long-polls and calls `sendUserMessage(..., {deliverAs: "followUp"})`: a turn starts at once when idle, after the current work when busy (from source; not run live) |
+| Tier | Claude Code | Codex | Grok Build | Antigravity | Pi |
+|---|---|---|---|---|---|
+| 1, tool result | next clax tool call (shim) | next clax tool call (shim) | next clax tool call (shim) | next clax tool call of the root conversation (shim); none for a subagent's | next `clax_*` tool call (`tool_result` handler) |
+| 2, Stop hook | end of the turn: `{"decision":"block","reason":...}` continues the turn with the payload | same shape and behaviour, measured with `codex exec` | end of the turn: the same shape continues the turn; the hook acts only on `reason` `end_turn` | end of the turn: `{"decision":"continue","reason":...}` continues the turn with the payload as a system message; the hook acts only on `terminationReason` `NO_TOOL_CALL` | none |
+| 3, prompt hook | the person's next message (`UserPromptSubmit` `additionalContext`); also at session start (`SessionStart` `additionalContext`) | only at session start: the `SessionStart` hook adds waiting comments to its `additionalContext`; no `UserPromptSubmit` hook is wired | none: an allowing `UserPromptSubmit` hook's output is discarded and `SessionStart` output is ignored | the first model call of each turn, whether the person or a finished background call started it (`PreInvocation` `injectSteps`, as a system message) | none |
+| 4, `wait_for_feedback` | immediate while waiting | immediate while waiting; one call stays under Codex's 60 s tool limit | immediate while waiting; Grok's tool timeout defaults to 6000 s | immediate while waiting; the call runs in the background, and the plugin sets no tool time limit | immediate while waiting |
+| 5, native push | channel (opt-in launch flag, research preview) or follow fallback: a notice, never the payload. Launched with `--dangerously-load-development-channels plugin:clax@clax`, the shim sends a `notifications/claude/channel` event per comment, which starts a turn when idle and joins the next turn when busy. Otherwise the skill runs `clax feedback follow --once` in the background, and its exit wakes the session. Either way the comment is then delivered by tier 1, 2 or 4 | `codex queue`: an idle attached TUI starts a turn in about 0.2 s; a busy one runs it as its next turn; with no client attached (an exited TUI, a `codex exec` thread) it is held until `codex resume`, and `codex queue` still exits 0 | once the agent has started the monitor (`clax feedback follow`): a notice line wakes an idle session at once and a busy one after its turn; it points at the comment, which then arrives through tier 1, 2 or 4 (from source; not run live) | the open `wait_for_feedback` call with no `timeout_s` (interactive runs only): it finishes with the payload, which starts a turn when idle and arrives at the next model call when busy | the extension long-polls and calls `sendUserMessage(..., {deliverAs: "followUp"})`: a turn starts at once when idle, after the current work when busy (from source; not run live) |
 
 Tier 1 applies to every successful tool result of a session-bound shim or Pi
 extension, except `wait_for_feedback`, whose result is tier 4. Tiers 2 and 5
@@ -5198,14 +5339,15 @@ where to ask them (`where_to_ask`, under "Agent questions"):
   /api/sessions/<sid>/terminal` does: it withdraws the session's open
   hook in-terminal questions (reason `lapsed`). `SessionStart`'s poll
   sends no flag and records nothing.
-- **Inferred turns:** Codex and Grok Build report no prompts. A
-  `tier=stop_hook` poll of a `codex` or `grok` session records the end of a
-  turn, which counts as a terminal prompt (`terminal_inferred: true`) when
+- **Inferred turns:** Codex, Grok Build and Antigravity report no prompts.
+  A `tier=stop_hook` poll of a `codex`, `grok` or `antigravity` session
+  records the end of a turn, which counts as a terminal prompt (`terminal_inferred: true`) when
   nothing from Clax (a thread, an answer, an Ask me here) was handed to the
   session since the previous turn. A Stop poll that hands something over
   makes the turn it continues Clax's. The first other poll of such a
-  session after a Stop (any tier but `stop_hook` and `queue`: a tool
-  result's, `wait_for_feedback`'s), when nothing from Clax was handed to
+  session after a Stop (any tier but `stop_hook` and `queue`, and for an
+  `antigravity` session `wait`, whose polls come from outside a turn: a
+  tool result's, `wait_for_feedback`'s), when nothing from Clax was handed to
   it since that Stop, starts a turn the person typed: it is recorded then
   as an inferred prompt. A Codex queue delivery that lands while a turn is
   open (a poll came since the last Stop) is run as the next turn, so it
@@ -5845,8 +5987,8 @@ waited_s=<n>` to its `hooks.log` line, never question or answer text:
 the input not an `AskUserQuestion` call), `released` also covers a
 question withdrawn while the hook waited, `skipped` is input that is not
 an `AskUserQuestion` call, and `waited_s` is how long the poll was held.
-Under `--agent codex` or `--agent grok` both commands exit 0 at once. The
-Codex and Grok plugins wire neither hook.
+Under `--agent codex`, `--agent grok` or `--agent antigravity` both commands
+exit 0 at once. The Codex, Grok and Antigravity plugins wire neither hook.
 
 ### `[questions]` in `config.toml`
 
@@ -8691,10 +8833,11 @@ The stream ends when the daemon shuts down.
 
 A person installs a plugin; nothing else. Claude Code installs it from this
 repository's marketplace (`/plugin marketplace add empathic/clax`, then
-`/plugin install clax@clax`); Codex, Grok Build and Pi install it from a
-clone, with nothing built (`codex plugin marketplace add <clone>` and
-`codex plugin add clax@clax`; `grok plugin install
-<clone>/plugins/clax-grok --trust`; `pi install <clone>/plugins/pi`). The
+`/plugin install clax@clax`); Codex, Grok Build, Antigravity and Pi install
+it from a clone, with nothing built (`codex plugin marketplace add <clone>`
+and `codex plugin add clax@clax`; `grok plugin install
+<clone>/plugins/clax-grok --trust`; `agy plugin install
+<clone>/plugins/clax-antigravity`; `pi install <clone>/plugins/pi`). The
 plugin's wrapper downloads the Clax release the plugin pins on first use
 ("The wrapper" below).
 
@@ -8706,8 +8849,9 @@ each harness whose CLI is on `PATH`: `claude plugin marketplace add` and
 `claude plugin install clax@clax`; `codex plugin marketplace add` and
 `codex plugin add clax@clax`; `pi install ~/.clax/marketplace/plugins/pi`;
 `grok plugin uninstall clax-grok --confirm` (failure ignored) and
-`grok plugin install ~/.clax/marketplace/plugins/clax-grok --trust`.
-It first removes the existing Clax registrations and any under Clax's
+`grok plugin install ~/.clax/marketplace/plugins/clax-grok --trust`;
+`agy plugin uninstall clax-antigravity` (failure ignored) and `agy plugin
+install ~/.clax/marketplace/plugins/clax-antigravity`. It first removes the existing Clax registrations and any under Clax's
 previous name. A removal command that fails is named in the harness's
 `detail` as ignored, unless the harness's registry, read without error,
 does not list what the command removes. It records what it registered in
@@ -8751,6 +8895,15 @@ name `clax` is the Claude Code plugin that Grok discovers in
 `clax uninit` keeps the marketplace while `grok plugin list --json` still
 names a path under it, and also when `grok` is not on `PATH` but
 `registrations.json` records a Grok registration.
+
+Antigravity registrations are removed by the name `clax-antigravity` only.
+In Antigravity, the name `clax` is the Claude Code plugin as `agy plugin
+import claude` installs it, and Clax never runs an `agy` command that names
+it. `agy plugin install` copies the plugin to
+`~/.gemini/config/plugins/clax-antigravity/`, and `agy plugin list --json`
+names that copy, not its source, so `clax uninit` keeps the marketplace
+while the listing names `clax-antigravity`, and also when `agy` is not on
+`PATH` but `registrations.json` records an Antigravity registration.
 
 `just install` builds the web UI, runs `cargo install --locked --root
 "$CARGO_HOME" --path crates/clax-cli` (into `$CARGO_HOME/bin`, by default
@@ -8820,6 +8973,29 @@ answers no at `init`'s prompt, in
 `~/.clax/run/codex-approvals-notice-<hash of the Codex home>`), naming `clax
 init --agent codex` when an executable `clax` is on `PATH` and the settings
 otherwise. Neither writes Codex's config.
+
+For Antigravity, once the plugin is installed, `clax init` offers the
+permission rule `mcp(clax-antigravity_clax/*)` in `permissions.allow` of
+`~/.gemini/antigravity-cli/settings.json`. Antigravity asks before every
+MCP tool call, read-only ones included, and a headless run refuses them;
+the rule allows every Clax tool, `delete` included. Antigravity's rule
+precedence, as Google documents it, is that a deny rule takes precedence
+over an ask rule, and an ask rule over an allow rule. So when an `ask` or
+`deny` rule already names Clax's server (`mcp(*)`,
+`mcp(clax-antigravity_clax/*)` or `mcp(clax-antigravity_clax/<tool>)`),
+`init` adds nothing and names that rule; when `permissions.allow` already
+has the rule or `mcp(*)`, it changes nothing. Otherwise it prints the rule,
+the file and what the rule approves, and asks on the terminal whether to
+add it; `--yes` adds it without asking, and without a terminal and without
+`--yes` nothing is added. After the answer the file is read again and the
+rule is appended to `permissions.allow` as the file is then, every other
+key kept (the file is written again with its keys sorted). The
+Antigravity entry of `agents` reports this as `"permissions": {"status":
+"added" | "unchanged" | "blocked" | "declined" | "not_added" | "failed",
+"settings", "rule", "detail"}`; a failure here never fails `init`. `clax
+uninit` leaves the rule in place and reports it as `"permissions":
+{"status": "kept", …}`. The plugin ships no permission of its own, which
+would approve `delete` without asking the person.
 
 `clax init` also runs `clax extension install` and reports its result as
 `"extension"` (below); `clax uninit` revokes every extension credential
@@ -9093,6 +9269,24 @@ Either layer appends `standdown mode=<hook|mcp> agent=claude host=grok` to
 > nothing. If no `clax_grok` tools are listed, run `clax init --agent
 > grok`. To remove this server from Grok, run `grok plugin disable clax`.
 
+Under Antigravity, `agy plugin import claude` installs the Claude Code
+plugin as `clax`, and the wrapper stands that copy down the same way. A run
+with `--agent claude` counts as started by Antigravity when it is a hook
+with both `ANTIGRAVITY_CONVERSATION_ID` and `PLUGIN_ROOT` set, or the MCP
+server whose parent process runs `agy` (the file name of its command
+line's first or second word) and is not `CLAUDE_PID`; an MCP server whose
+parent is `CLAUDE_PID` never stands down, and its parent's command line is
+not read. `clax mcp --agent claude` and `clax hook --agent claude` apply
+the same rule themselves (a hook counts as Antigravity's when its input has
+`conversationId`). Either layer appends `standdown mode=<hook|mcp>
+agent=claude host=antigravity` to `hooks.log`. The stood-down server's
+`status` text:
+
+> Clax runs from the clax-antigravity plugin in Antigravity, and this copy
+> (the Claude Code plugin, imported into Antigravity) does nothing here. If
+> the Clax tools are missing, run: clax init --agent antigravity. To remove
+> this copy: agy plugin uninstall clax
+
 ### `config.toml`
 
 A home's configuration is layered (`clax_core::config`, read with
@@ -9318,8 +9512,8 @@ which does not fail the run.
 
 ### `clax doctor --agent`
 
-`clax doctor --agent <claude|codex|grok|pi>` runs one check per layer between a
-harness and the daemon, each `ok` or failed with the fix:
+`clax doctor --agent <claude|codex|grok|antigravity|pi>` runs one check per
+layer between a harness and the daemon, each `ok` or failed with the fix:
 
 - `binary`: this `clax`, the one the plugins run and why (`CLAX_BIN`, the
   `bin` setting, or the managed install of the release the installed
@@ -9331,6 +9525,7 @@ harness and the daemon, each `ok` or failed with the fix:
   version, with the build, the reason, when the hold ends, and what to do.
 - `plugin`: the harness's installed copy of the plugin; failed when none is
   found, or its manifest version or its wrapper differs from this binary's.
+  For Antigravity, the copy is `~/.gemini/config/plugins/clax-antigravity`.
   For Pi, the copies are the Clax packages that `<pi dir>/settings.json` and
   the working directory's `.pi/settings.json` lead to (npm, git or local
   sources) and those `pi list --no-approve` prints; the detail names a
@@ -9343,11 +9538,12 @@ harness and the daemon, each `ok` or failed with the fix:
   when the second copy is a project entry, which Pi loads only in a project
   it trusts.
 - `skill`: the installed skill's stated version and tool count, and whether
-  it is the skill this binary was built with.
+  it is the skill this binary was built with (for Antigravity, also each
+  file under `skills/clax/references/`).
 - `mcp`: whether the daemon has a live session of the harness.
 - `hooks`: the harness's latest lines in `hooks.log`; failed when the latest
-  is a `launcher` failure, or when no Claude Code or Grok hook has run (Pi runs no
-  hooks; Codex hooks are optional).
+  is a `launcher` failure, or when no Claude Code, Grok or Antigravity hook
+  has run (Pi runs no hooks; Codex hooks are optional).
 - `feedback`: each live session's watches and push state, and for Codex
   `codex_push` and `codex_sessions` (native push).
 - `channel` (Claude Code only): whether the installed plugin's manifest
@@ -9357,9 +9553,22 @@ harness and the daemon, each `ok` or failed with the fix:
   opt-in, so a session launched without it passes.
 - `grok` (Grok only): `grok --version`; failed when `grok` is not on
   `PATH` or reports a version older than 1.0.45.
-- `claude_copy` (Grok only, never failed): whether the Claude Code plugin
-  has stood down in a Grok session (its `standdown` lines in `hooks.log`),
-  with `grok plugin disable clax` to remove its idle server.
+- `antigravity` (Antigravity only): `agy --version`; failed when `agy` is
+  not on `PATH` or reports a version older than 1.5.18.
+- `antigravity_permissions` (Antigravity only): whether
+  `~/.gemini/antigravity-cli/settings.json` allows every Clax tool. A
+  warning when it does not, or when an `ask` or `deny` rule names Clax's
+  server, with the rule to add and that a headless run refuses the tools
+  without it; failed when the file cannot be read or parsed.
+- `antigravity_sessions` (Antigravity only): a warning naming each live
+  session a shim registered with no harness session ID, which means
+  Antigravity sent that shim's calls without a conversation ID, so every
+  conversation of that `agy` process shares one session.
+- `claude_copy` (Grok and Antigravity, never failed): whether the Claude
+  Code plugin has stood down in a session of that harness (its `standdown`
+  lines in `hooks.log` with that `host`), with `grok plugin disable clax` to
+  remove its idle server in Grok, or `agy plugin uninstall clax` to remove
+  the copy from Antigravity.
 
 ### Comments, versions and the database from the command line
 
@@ -9840,7 +10049,7 @@ taken from the request's identity and session:
 
 | Who | Actor string | `ActorDef` |
 |---|---|---|
-| an agent with a harness session ID | `agent:<provider>/<harness session ID>` | `name` ("Claude Code", "Codex", "Pi", "Grok"; "Agent" when unknown), `provider` (anthropic, openai, xai; none for Pi), `identities`: `clax-session`, `<provider>-session`, `clax-agent` (the agent handle) and, when known, `<provider>-transcript` |
+| an agent with a harness session ID | `agent:<provider>/<harness session ID>` | `name` ("Claude Code", "Codex", "Pi", "Grok", "Antigravity"; "Agent" when unknown), `provider` (anthropic, openai, xai, google; none for Pi), `identities`: `clax-session`, `<provider>-session`, `clax-agent` (the agent handle) and, when known, `<provider>-transcript` |
 | an agent without one | `agent:<provider>/clax-<session ID>` (`agent:unknown/…` when the history no longer names the harness) | the same, minus the harness identities |
 | the sessionless `/mcp` route | `agent:clax-mcp` | `name` "MCP client (no session)" |
 | the owner | `human:clax-owner` | `name` "Clax owner"; identity `{system: "clax", id: "<install ID>/<public ID>"}` |
@@ -9915,7 +10124,8 @@ the shim's report (at most 64 waiting), then records `null`. Answers: 201
 `tool_use_id` already recorded in the last 60 s; 204 for a tool that is not
 one of Clax's own; 400 `invalid_tool_call_id`; 404 `unknown_session`. The
 Pi extension passes its `toolCallId` as `harness_call_id` directly. Codex
-and Grok give no call ID; their calls are joined by the rule below.
+and Grok give no call ID, and the Antigravity plugin sends none; their calls
+are joined by the rule below.
 
 ### The journal
 
@@ -12409,6 +12619,16 @@ was made; and a run's end, sent until it is acknowledged.
   `/new` or `/resume` within one process is not yet measured; until it
   is, a resumed Grok session may keep the Clax session of its first
   conversation.
+- Antigravity's conversation IDs in each call's `_meta`, and the turn a
+  finished background call starts, are behaviour observed on `agy` 1.5.18
+  that Google does not document. Without the IDs, every conversation of an
+  `agy` process shares one session, which `clax doctor --agent antigravity`
+  reports; without the turn, an idle Antigravity conversation is woken by
+  nothing.
+- Antigravity loads a workspace plugin (`.agents/plugins/<name>/`) with no
+  install, but its tools are missing on the first turn, so `just dev
+  antigravity` runs the installed clax-antigravity plugin; plugin changes
+  reach it through `just install`.
 - Claude Code channels are a research preview: CLI only, with claude.ai or
   Console authentication (not Bedrock, Google Cloud or Foundry). Clax is
   not on the `--channels` allowlist, so it needs

@@ -231,6 +231,17 @@ Grok's Clax, whether or not clax-grok is loaded. To drop it from Grok, run
 `grok plugin disable clax`; `clax doctor --agent grok` reports it as
 `claude_copy`.
 
+## In Antigravity
+
+`agy plugin import claude` installs this plugin in Antigravity under the
+name `clax`. Clax runs in Antigravity from its own plugin, clax-antigravity
+(`clax init --agent antigravity`), whose server is `clax-antigravity_clax`.
+When Antigravity runs this plugin, it stands down: its MCP server offers
+only `status`, which says that Clax runs from clax-antigravity and how to
+install it or remove this copy, and its hooks print nothing. To remove it
+from Antigravity, run `agy plugin uninstall clax`; `clax doctor --agent
+antigravity` reports it as `claude_copy`.
+
 ## Maintaining
 
 `scripts/ensure-clax.sh` here is a copy of `scripts/ensure-clax.sh` at the

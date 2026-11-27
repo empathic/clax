@@ -21,6 +21,8 @@ Clax release it pins on first use (see "Which clax the plugins run" below).
   `codex plugin add clax@clax` (a clone works in place of
   `empathic/clax`).
 - Grok Build, from a clone: `grok plugin install <clone>/plugins/clax-grok --trust`.
+- Antigravity (the `agy` CLI), from a clone: `agy plugin install
+  <clone>/plugins/clax-antigravity`.
 - Pi, from a clone: `pi install <clone>/plugins/pi`.
 
 In Claude Code the tools work in the same session once `/plugin install`
@@ -58,7 +60,7 @@ build running, since clients keep a daemon of their own version. A daemon of
 any other executable, such as `just watch --shared`'s, is left running and
 named. `clax init` writes the Clax plugins built into that binary to
 `~/.clax/marketplace/`, registers them with each harness whose CLI is on
-your `PATH` (Claude Code, Codex, Pi and Grok Build), and sets the `bin`
+your `PATH` (Claude Code, Codex, Pi, Grok Build and Antigravity), and sets the `bin`
 setting in `~/.clax/config.toml` to itself, so the plugins run your build
 rather than the release they pin. The registration replaces any older one,
 including registrations under Clax's previous name. When Pi's
@@ -84,6 +86,20 @@ stands down and only clax-grok's tools (`clax_grok__publish` and the rest)
 act. Grok asks before each MCP tool call; for headless runs, pass
 `--always-approve` or `--allow 'MCPTool(clax_grok__*)'`.
 
+For Antigravity, `clax init` installs the clax-antigravity plugin (`agy
+plugin install <dir>`) whenever `agy` is on your `PATH`, including when
+Antigravity is the only harness installed; `clax uninit` uninstalls it.
+Antigravity asks before every MCP tool call, read-only ones included, and a
+headless `agy -p` run refuses them, so `clax init` then offers to add the
+rule `mcp(clax-antigravity_clax/*)` to `permissions.allow` in
+`~/.gemini/antigravity-cli/settings.json`: it prints the rule, says that it
+approves every Clax tool, `delete` included, and adds it when you say yes
+(`--yes` for scripts). It adds nothing when an `ask` or `deny` rule there
+already names a Clax tool, since Antigravity applies those first, and says
+which. `clax uninit` leaves the rule in place. A Claude Code plugin imported
+with `agy plugin import claude` stands down, and only clax-antigravity's
+tools act. `plugins/clax-antigravity/README.md` has the details.
+
 `just uninstall` reverses it: `clax uninit` removes the registrations (and
 `~/.clax/marketplace/` once no harness refers to it) and the `bin` setting
 when it names the installed `clax`, the agents' daemon is stopped when it
@@ -106,7 +122,7 @@ only while the repository is public; for a private repository both
 
 ### Which clax the plugins run
 
-Every plugin (Claude Code, Codex and Grok Build through
+Every plugin (Claude Code, Codex, Grok Build and Antigravity through
 `scripts/ensure-clax.sh`, Pi through its copy of the same script) runs, in
 order:
 
@@ -125,7 +141,7 @@ order:
 
 `PATH` is never consulted. A binary named by `CLAX_BIN` or the `bin` setting
 whose version differs from the plugin's runs with a warning. When a plugin
-half works, `clax doctor --agent <claude|codex|pi|grok>` checks each layer;
+half works, `clax doctor --agent <claude|codex|pi|grok|antigravity>` checks each layer;
 its `binary` check shows which `clax` the plugins run and why. If the MCP
 server cannot run `clax` at all, its one tool, `status`, says why, and
 `~/.clax/logs/hooks.log` has the details.
@@ -157,7 +173,7 @@ clax queue follow <QID> --session <SID>    # one JSON line per report filed into
 clax status                          # show whether the daemon is running, whether a browser is signed in and which agents are working on what
 clax doctor                          # check the home directory, daemon, database, and stored files
 clax doctor --fix                    # also remove stray temp files and stale rows (never live artifacts' rows)
-clax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex, pi or grok
+clax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex, pi, grok or antigravity
 clax passkeys reset                  # with the daemon stopped: remove every confirmation passkey and stop requiring one
 clax stop                            # stop the daemon
 clax serve --bind 0.0.0.0            # serve connected people on the LAN (stop a running daemon first)
@@ -524,7 +540,7 @@ published from the app, is not an app: its get page says so.
 
 ## Use from an agent
 
-Each harness gets the same forty-three tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch`, `queue_request`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
+Each harness gets the same forty-three tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch`, `queue_request`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md), [plugins/clax-antigravity/README.md](../plugins/clax-antigravity/README.md).
 
 The plugins run `CLAX_BIN`, else the `bin` setting, else the release they
 pin (see "Which clax the plugins run"). `status` and `clax doctor --agent`
@@ -541,7 +557,11 @@ a notice through the channel. Otherwise the skill keeps a background
 the session. A notice only points at the comment. The comment itself still
 arrives once, through the next clax tool call, the end of the turn, or
 `wait_for_feedback`. `status` and `clax doctor --agent claude` show which
-path a session uses.
+path a session uses. An idle Antigravity conversation wakes while it has a
+`wait_for_feedback` call open: Antigravity runs that tool in the
+background, and in an interactive run the skill keeps one open after a
+publish or watch, so a comment finishes it and starts a turn. A headless
+`agy -p` run is not woken.
 
 ## Documentation
 
@@ -567,11 +587,11 @@ registrations that pointed at an old or moved checkout, and removes those
 under Clax's previous name. Then remove binaries that nothing should run:
 check `which -a clax`, and delete an old `~/.local/bin/clax` or
 `~/.clax/bin/clax`. The plugins no longer read `CLAX_SOURCE_DIR`; unset it
-wherever you set it. Check with `clax doctor --agent <claude|codex|pi|grok>`.
+wherever you set it. Check with `clax doctor --agent <claude|codex|pi|grok|antigravity>`.
 
 A newer daemon is never replaced by an older `clax`. After installing an
 older version, run `clax stop` once. An older daemon is replaced by the
-Claude Code and Codex plugins' MCP server and by `clax serve`, not by Pi or
+plugins' MCP server (every harness's but Pi's) and by `clax serve`, not by Pi or
 the other CLI commands, so after an upgrade that came from `install.sh`, a
 machine that uses only Pi or the CLI keeps the older daemon until `clax
 stop`. `just install` stops it itself.
@@ -634,7 +654,7 @@ change rebuilds. `just dev` with no harness, or with an option first
 `just clax <arguments>` runs any other `clax` command there (`just clax
 remote list`). `just watch` needs `cargo-watch` (`cargo install cargo-watch`).
 
-**An agent on your working tree: `just dev claude|codex|grok|pi`.** It builds
+**An agent on your working tree: `just dev claude|codex|grok|antigravity|pi`.** It builds
 `clax`, copies it into a temporary directory put first on `PATH` (removed
 when the session ends), starts the dev home's daemon, and starts the harness
 on that home. When the session ends it stops the home's daemon if that runs
@@ -649,6 +669,7 @@ what to do:
 just dev claude
 just dev codex
 just dev grok
+just dev antigravity
 just dev pi
 just dev claude --resume  # extra arguments go to the harness
 ```
@@ -666,6 +687,12 @@ just dev claude --resume  # extra arguments go to the harness
 - Grok works like Codex: `just dev grok` runs your installed clax-grok
   plugin, with your own `~/.grok`, on the fresh build and the dev home. To
   try plugin, skill or hook changes in Grok, run `just install`.
+- Antigravity works like Grok: `just dev antigravity` runs `agy` with your
+  installed clax-antigravity plugin and your own `~/.gemini`, on the fresh
+  build and the dev home, which the plugin's MCP server and hooks inherit
+  from `agy`. A workspace plugin is not used, because its tools are missing
+  on the first turn. To try plugin, skill or hook changes in Antigravity,
+  run `just install`.
 
 **A second person: `scripts/dev-second-person.sh <invite>`.** To try People
 (`/settings/people`) and the other multi-person surfaces alone, run the dev daemon on
@@ -795,7 +822,7 @@ one is. To run
 one file's tests: `cargo nextest run -p clax-server -E 'test(/^api_batch::/)'`,
 or `cargo test -p clax-server --test integration api_batch::`.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release command, SDK release command, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-release-script.sh` (`scripts/release.sh` against fakes of `gh`, `just` and Bazel), `scripts/test-release-sdk.sh` (`scripts/release-sdk.sh` against fakes of `gh`, `npm` and `pnpm`), `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), the Clax app's build script test (`scripts/test-build-app-clax.sh`, a dry run with no build), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target, the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the Worker's checks (`crates/clax-worker`, whose format check, tests (the SQLite VFS's among them) and clippy are the workspace's: `scripts/worker-checks.sh`; `just worker-test` runs them all, under Bazel, `just worker-test-native` with Cargo and pnpm): `test-deploy-config.mjs`, then `test-wasm.mjs`, which builds the wasm Worker into `target/clax-worker/build`, writes through it under `wrangler dev --local` on free ports with fresh state under `target/clax-worker/wasm-test/`, restarts wrangler and checks the data and `PRAGMA integrity_check`, then `test-sandbox.mjs`, ClaxBot's sandbox conformance suite against the Worker Loader sandbox on that build (`crates/clax-worker/src/sandbox/`); and, after the web e2e tests, `e2e.mjs`, which runs the Clax server in its Durable Object under `wrangler dev --local` with the web UI from `web/dist` and checks in two browsers that a published artifact shows in the gallery and opens, that a comment reaches the other browser live over the stream's WebSocket, also after the server is rebuilt as after hibernation, and that everything is there after a restart), the Clax app's gate (`apps/clax_app/tool/check.sh`, skipped where `flutter` is not installed; see "The Clax app" below), and the Playwright end-to-end tests of the web UI. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release command, SDK release command, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-release-script.sh` (`scripts/release.sh` against fakes of `gh`, `just` and Bazel), `scripts/test-release-sdk.sh` (`scripts/release-sdk.sh` against fakes of `gh`, `npm` and `pnpm`), `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), the Clax app's build script test (`scripts/test-build-app-clax.sh`, a dry run with no build), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the five skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the five plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target, the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the Worker's checks (`crates/clax-worker`, whose format check, tests (the SQLite VFS's among them) and clippy are the workspace's: `scripts/worker-checks.sh`; `just worker-test` runs them all, under Bazel, `just worker-test-native` with Cargo and pnpm): `test-deploy-config.mjs`, then `test-wasm.mjs`, which builds the wasm Worker into `target/clax-worker/build`, writes through it under `wrangler dev --local` on free ports with fresh state under `target/clax-worker/wasm-test/`, restarts wrangler and checks the data and `PRAGMA integrity_check`, then `test-sandbox.mjs`, ClaxBot's sandbox conformance suite against the Worker Loader sandbox on that build (`crates/clax-worker/src/sandbox/`); and, after the web e2e tests, `e2e.mjs`, which runs the Clax server in its Durable Object under `wrangler dev --local` with the web UI from `web/dist` and checks in two browsers that a published artifact shows in the gallery and opens, that a comment reaches the other browser live over the stream's WebSocket, also after the server is rebuilt as after hibernation, and that everything is there after a restart), the Clax app's gate (`apps/clax_app/tool/check.sh`, skipped where `flutter` is not installed; see "The Clax app" below), and the Playwright end-to-end tests of the web UI. `just web-test` runs the web lint, typecheck, and unit tests.
 
 The web UI is built first (`scripts/build-web.sh`, which keeps the modification times of output it did not change, so an unchanged web UI does not rebuild the release binary that embeds it) and its unit tests run next, alone, since some are timing-sensitive. The other gates then run in concurrent lanes (web e2e then the Worker's e2e, the Rust tests, clippy and `cargo fmt`, web lint and typecheck, the release build, Pi, the scripts, the Worker, the wasm32 check, the Clax app), the longest first, each printing a line as it finishes; a failed gate prints its output. The Rust tests are built before clippy runs, so they start as soon as they can. `pnpm install --frozen-lockfile` runs in `web/`, `plugins/pi/` and `crates/clax-worker/` only when `node_modules` was not installed from the current `pnpm-lock.yaml` by the same Node and pnpm (a hash in `node_modules/.clax-install-stamp`; `CLAX_PNPM_INSTALL=always` ignores it). One debug `clax` is built for the whole run and given to the tests that cannot name it and to the browser tests' daemons as `CLAX_TEST_BIN` (`just test` does the same for the Rust tests), and one release `clax` to the perf gates as `CLAX_PERF_BIN`. The perf gates then run alone, one at a time. The run ends with each gate's time and the total; a slow gate is reported, never failed. On a warm build cache and an otherwise idle machine, the whole run takes under two minutes.
 

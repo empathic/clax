@@ -7,8 +7,8 @@ are all welcome.
 
 Open an issue at <https://github.com/empathic/clax/issues>. For a bug, say
 what you did, what you expected and what happened, and include the output
-of `clax doctor` (and `clax doctor --agent <claude|codex|pi|grok>` for a
-problem with one harness).
+of `clax doctor` (and `clax doctor --agent
+<claude|codex|pi|grok|antigravity>` for a problem with one harness).
 
 ## Sending a change
 

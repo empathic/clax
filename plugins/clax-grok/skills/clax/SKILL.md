@@ -276,9 +276,12 @@ Sent comments reach you in one of these ways:
   array, plus a trailing text block starting with `---` and
   `[clax] N comments sent to you:`.
 - At the end of your turn, from the Stop hook, where the harness has one and
-  the watch has replies on (Claude Code, Codex, Grok Build).
-- With the person's next message, from the prompt hook (Claude Code).
-- From `wait_for_feedback`, which returns as soon as a comment arrives.
+  the watch has replies on (Claude Code, Codex, Grok Build, Antigravity).
+- With the person's next message, from the prompt hook (Claude Code), or at
+  the start of each turn (Antigravity).
+- From `wait_for_feedback`, which returns as soon as a comment arrives. In
+  Antigravity it runs in the background, so an open call also wakes an
+  idle conversation.
 - Pushed into an idle session where the harness allows it and the watch has
   replies on (Codex through `codex queue`, Pi through the extension).
 
@@ -353,13 +356,14 @@ Tools:
   hook and out of native push; they still arrive on tool results, with the
   person's next message, and from `wait_for_feedback`. The result's `wake`
   says whether a comment wakes this session while it is idle:
-  `when_idle`, `via` (`channel`, `follower`, `queue`, `inject` or
-  `monitor`), `reason`, `follow_command` (and in Claude Code
+  `when_idle`, `via` (`channel`, `follower`, `queue`, `inject`, `monitor`
+  or `wait`), `reason`, `follow_command` (and in Claude Code
   `follow_once_command`) when starting one in the background would wake
   it, and `do`, the one thing to do next. `replies_armed: true` alone does
   not mean you will be woken: always do what `wake.do` says.
 - `wait_for_feedback` (optional `url_or_id`; `timeout_s` default 50, at most
-  600): `{"feedback": [...], "waited_s": n, "call_again": true|false}`.
+  600; in an interactive Antigravity run, no limit when omitted):
+  `{"feedback": [...], "waited_s": n, "call_again": true|false}`.
 
 **Live pages.** When you run a web app's dev server (or any page the person
 will look at in Chrome), call `watch` with its URL, for example
@@ -400,8 +404,9 @@ When the person wants to iterate live ("watch for my comments", "I'll leave
 comments on it"), loop: call `wait_for_feedback`, handle whatever arrives, and
 call it again after handling the result, whatever `call_again` says, while the
 person wants live feedback; stop when the person says to stop. Each
-call returns within `timeout_s` because harnesses cap a single tool call
-(Codex at 60 seconds).
+call returns within `timeout_s` because most harnesses cap a single tool
+call (Codex at 60 seconds); in an interactive Antigravity run a call with no
+`timeout_s` waits until a comment arrives.
 
 ## Where to ask
 

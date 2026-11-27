@@ -52,7 +52,7 @@ just clax remote list
 ## An agent on your working tree
 
 ```
-just dev claude     # or codex, grok, pi; extra arguments go to the harness
+just dev claude     # or codex, grok, antigravity, pi; extra arguments go to the harness
 ```
 
 Builds `clax`, puts it first on `PATH` for the session, starts the dev
@@ -62,9 +62,11 @@ agent is connected to it. When the build cannot
 open the home's database, it stops before the harness and says why and what
 to do. Claude Code and Pi load this checkout's plugin
 (Claude Code with `--plugin-dir plugins/claude-code`, and your installed
-`clax@clax` is off for that session); Codex and Grok cannot load a plugin
-from a directory, so they run your installed plugin on the fresh build, and
-`just install` is how to try plugin changes there. Start a new `just dev`
+`clax@clax` is off for that session); Codex, Grok and Antigravity run
+your installed plugin on the fresh build (Codex and Grok cannot load a
+plugin from a directory for one session, and an Antigravity workspace
+plugin has no tools on its first turn), and `just install` is how to try
+plugin changes there. Start a new `just dev`
 session to pick up plugin, skill or hook edits.
 
 `just install` puts the working tree in front of your everyday agents, and

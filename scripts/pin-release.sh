@@ -2,8 +2,9 @@
 # Pins the plugins to a published Clax release: fetches the release's
 # SHA256SUMS and writes PINNED_VERSION and the four per-target SHA256 values
 # into scripts/ensure-clax.sh and every plugin's copy of it (the Claude Code,
-# Codex, Grok Build and Pi plugins), so that the plugins download and run that
-# release when neither CLAX_BIN nor the `bin` setting names a binary.
+# Codex, Grok Build, Antigravity and Pi plugins), so that the plugins download
+# and run that release when neither CLAX_BIN nor the `bin` setting names a
+# binary.
 #
 # Usage: pin-release.sh vX.Y.Z
 #
