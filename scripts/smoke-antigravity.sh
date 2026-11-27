@@ -105,13 +105,37 @@ except Exception:
 for n in names:
     print(n)'
 }
-plugin_names() { list_plugins || echo "smoke: agy plugin list --json failed or did not parse" >&2; }
-# shellcheck disable=SC2329 # run by wait_for
-clax_serve() { # clax_serve PID: whether PID is alive and runs clax serve
-    case "$(ps -o command= -p "$1" 2>/dev/null)" in *clax*serve*) return 0 ;; *) return 1 ;; esac
+# Whether PID runs `clax serve` with this scratch home as its CLAX_HOME:
+# the only daemons the cleanup may stop. A PID read from a file may since
+# name another process; a name alone never makes it this home's.
+own_daemon() {
+    local cmd env
+    cmd="$(ps -o command= -p "$1" 2>/dev/null)" || return 1
+    case "$cmd" in *clax*serve*) ;; *) return 1 ;; esac
+    if [ -r "/proc/$1/environ" ]; then
+        env="$(tr '\0' '\n' < "/proc/$1/environ")"
+    else
+        env="$(ps -E -ww -o command= -p "$1" 2>/dev/null | tr ' ' '\n')"
+    fi
+    printf '%s\n' "$env" | grep -xF "CLAX_HOME=$CLAX_HOME" >/dev/null
 }
 # shellcheck disable=SC2329 # run by wait_for
-not_serving() { ! clax_serve "$1"; }
+not_own_daemon() { ! own_daemon "$1"; }
+# stop_daemon PID WHAT: stops PID when it is this home's daemon; says so
+# when it is alive and not.
+stop_daemon() {
+    [ -n "$1" ] || return 0
+    if own_daemon "$1"; then
+        kill "$1" 2>/dev/null || true
+        if WAIT_FOR_POLLS=200 wait_for "$2 to exit" not_own_daemon "$1"; then
+            echo "smoke: stopped $2 (pid $1)"
+        else
+            echo "smoke: $2 (pid $1) has not exited; kill $1" >&2
+        fi
+    elif ! gone "$1"; then
+        echo "smoke: left pid $1 running: $2 names it, but it is not a clax serve of $CLAX_HOME" >&2
+    fi
+}
 
 declare -a RESULTS=()
 record() { RESULTS+=("$1|$2|$3"); echo "smoke: $2 $1: $3"; }
@@ -133,20 +157,23 @@ stop_agy() {
 # only when it is empty, so nothing the person put there is removed.
 # shellcheck disable=SC2329 # run by the EXIT trap, or by --cleanup
 cleanup() {
+    # Every wait below is bounded; a second signal must not cut them short.
+    trap '' INT TERM
     # The headless agy first: its shim would start a daemon again, and it
     # must not outlive the plugin it runs from.
     stop_agy
-    local names
-    names="$(plugin_names)"
-    if printf '%s\n' "$names" | grep -x clax-antigravity >/dev/null; then
-        agy plugin uninstall clax-antigravity >/dev/null 2>&1 || echo "smoke: could not uninstall clax-antigravity" >&2
-    fi
-    # The interactive steps install the Claude Code copy as `clax`; the
-    # script refused to start while a plugin of that name was installed.
-    if printf '%s\n' "$names" | grep -x clax >/dev/null; then
-        agy plugin uninstall clax >/dev/null 2>&1 || echo "smoke: could not uninstall clax" >&2
-    fi
-    local d
+    # The interactive steps install the Claude Code copy as `clax`. The
+    # script refused to start while either name was installed or on disk,
+    # so both are this run's: each goes when agy lists it or its directory
+    # exists, whether or not agy can list.
+    local names n d
+    names="$(list_plugins)" || { names=""; echo "smoke: agy plugin list --json failed during cleanup; uninstalling by the plugin directories" >&2; }
+    for n in clax-antigravity clax; do
+        if [ -e "$PLUGINS_DIR/$n" ] || printf '%s\n' "$names" | grep -x "$n" >/dev/null; then
+            agy plugin uninstall "$n" >/dev/null 2>&1 || true
+            [ ! -e "$PLUGINS_DIR/$n" ] || echo "smoke: $PLUGINS_DIR/$n is still installed (agy plugin uninstall $n failed): run it yourself" >&2
+        fi
+    done
     for d in "$MCP_DIR/clax-antigravity_clax:${PRE_MCP_OURS:-1}" "$MCP_DIR/clax_clax:${PRE_MCP_COPY:-1}" \
         "$DATA_DIR/clax-antigravity:${PRE_DATA_OURS:-1}" "$DATA_DIR/clax:${PRE_DATA_COPY:-1}"; do
         if [ "${d##*:}" = 0 ]; then rm -rf "${d%:*}"; fi
@@ -157,25 +184,11 @@ cleanup() {
             rmdir "${d%:*}" 2>/dev/null || echo "smoke: left ${d%:*}, which is not empty" >&2
         fi
     done
-    if [ -n "${DAEMON_PID:-}" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
-        kill "$DAEMON_PID" 2>/dev/null || true
-        if WAIT_FOR_POLLS=200 wait_for "the daemon to exit" gone "$DAEMON_PID"; then
-            echo "smoke: stopped the scratch daemon (pid $DAEMON_PID)"
-        else
-            echo "smoke: the daemon (pid $DAEMON_PID) has not exited; kill $DAEMON_PID" >&2
-        fi
-    fi
+    stop_daemon "${DAEMON_PID:-}" "the scratch daemon"
     # A daemon some other client started in the scratch home.
     local pid
     pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$CLAX_HOME/daemon.json" 2>/dev/null || true)"
-    if [ -n "$pid" ] && [ "$pid" != "${DAEMON_PID:-}" ] && clax_serve "$pid"; then
-        kill "$pid" 2>/dev/null || true
-        if WAIT_FOR_POLLS=200 wait_for "the daemon $pid to exit" not_serving "$pid"; then
-            echo "smoke: stopped the scratch home's daemon (pid $pid)"
-        else
-            echo "smoke: the scratch home's daemon (pid $pid) has not exited; kill $pid" >&2
-        fi
-    fi
+    [ "$pid" = "${DAEMON_PID:-}" ] || stop_daemon "$pid" "$CLAX_HOME/daemon.json"
 }
 
 base() { echo "http://127.0.0.1:$PORT"; }
@@ -189,19 +202,24 @@ api() { # api METHOD PATH [CURL ARGS...]: with the scratch home's bearer token
 # 5: uninstall, and what is left of the run in ~/.gemini.
 check_uninstall() {
     "$CLAX_BIN" uninit --agent antigravity --json </dev/null >"$SCRATCH/uninit.json" 2>"$SCRATCH/uninit.err" || true
-    local status listed after
+    local status names listed after on_disk=no
     status="$(python3 -c '
 import json, sys
 try:
     print(next(a["status"] for a in json.load(open(sys.argv[1]))["agents"] if a["agent"] == "antigravity"))
 except Exception:
     print("none")' "$SCRATCH/uninit.json")"
-    listed="$(plugin_names | grep -cx clax-antigravity || true)"
-    after="$(sha "$SETTINGS_FILE")"
-    if [ "$status" = removed ] && [ "$listed" = 0 ] && [ "$after" = "$SETTINGS_SHA" ]; then
-        record 5 PASS "uninit: $status; agy lists no clax-antigravity; settings.json unchanged ($after)"
+    if names="$(list_plugins)"; then
+        listed="$(printf '%s\n' "$names" | grep -cx clax-antigravity || true)"
     else
-        record 5 FAIL "uninit: $status (see $SCRATCH/uninit.json); clax-antigravity listed: $listed; settings.json $SETTINGS_SHA before, $after after"
+        listed="unknown (agy plugin list --json failed)"
+    fi
+    [ ! -e "$PLUGINS_DIR/clax-antigravity" ] || on_disk=yes
+    after="$(sha "$SETTINGS_FILE")"
+    if [ "$status" = removed ] && [ "$listed" = 0 ] && [ "$on_disk" = no ] && [ "$after" = "$SETTINGS_SHA" ]; then
+        record 5 PASS "uninit: $status; agy lists no clax-antigravity and its directory is gone; settings.json unchanged ($after)"
+    else
+        record 5 FAIL "uninit: $status (see $SCRATCH/uninit.json); clax-antigravity listed: $listed; its directory there: $on_disk; settings.json $SETTINGS_SHA before, $after after"
     fi
 }
 
@@ -329,7 +347,7 @@ else
 fi
 
 # 2: agy lists the plugin; doctor's checks.
-LISTED="$(plugin_names | grep -cx clax-antigravity || true)"
+LISTED="$(list_plugins | grep -cx clax-antigravity || true)"
 "$CLAX_BIN" doctor --agent antigravity --json </dev/null >"$SCRATCH/doctor.json" 2>/dev/null || true
 DOCTOR="$(python3 -c '
 import json, sys
