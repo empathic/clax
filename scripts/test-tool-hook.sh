@@ -76,7 +76,7 @@ AG='"conversationId":"c0ffee00-0000-4000-8000-000000000001","hookEventName":"Pre
 n="$(calls)"
 out="$(gate antigravity "{$AG,\"invocationNum\":0}" prompt)"; code=$?
 if [ "$code" = 0 ] && [ "$out" = '{"noise": true}' ] && [ ! -s "$T/err" ] && [ "$(calls)" = $((n + 1)) ] \
-  && tail -n 1 "$CALLS" | grep -qF "exec hook --agent antigravity prompt|{$AG,\"invocationNum\":0}"; then
+  && tail -n 1 "$CALLS" | grep -F "exec hook --agent antigravity prompt|{$AG,\"invocationNum\":0}" >/dev/null; then
   pass "antigravity prompt at a turn's first model call runs clax hook ... prompt and passes its stdout through"
 else fail "prompt, invocationNum 0: exit $code, stdout '$out', $(calls) runs, $(tail -n 1 "$CALLS")"; fi
 out="$(gate antigravity "{$AG,\"invocationNum\":0}" prompt)"
@@ -96,7 +96,7 @@ TIN='{"conversationId":"c0ffee00-0000-4000-8000-000000000001","hookEventName":"P
 out="$(gate antigravity "$TIN")"
 gate antigravity "$TIN" >/dev/null
 if [ -z "$out" ] && [ "$(calls)" = $((n + 1)) ] && [ -f "$STAMPS/antigravity-c0ffee00-0000-4000-8000-000000000001" ] \
-  && tail -n 1 "$CALLS" | grep -qF "exec hook --agent antigravity tool|$TIN"; then
+  && tail -n 1 "$CALLS" | grep -F "exec hook --agent antigravity tool|$TIN" >/dev/null; then
   pass "antigravity's tool hook stamps by conversationId and runs at most once a minute"
 else fail "antigravity tool: stdout '$out', $(calls) runs, $(ls "$STAMPS")"; fi
 gate antigravity '{"conversationId":"../x"}' >/dev/null
