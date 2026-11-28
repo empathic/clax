@@ -88,6 +88,11 @@ run it through the command the plugin's session context gives.
   the whole branch, `--list` to see them). Run `just check` (or `just ci`)
   once before the branch merges. A lane that fails in code you did not touch is rerun alone and
   both results reported.
+- Before each push, run `just lint`: the format check, clippy and the web
+  lint, which CI runs first and which stop it before any test runs.
+  Also run the tests that cover the changed behavior, even inside a long
+  suite: one e2e spec file is `--test_arg=--grep=<file stem>` on its
+  lane (`//web:e2e_rest`, …).
 - Run anything longer than a minute or two in the background, log it to a
   file inside your own worktree (`target/…`, git-ignored; a log there is
   no build), never a shared scratch directory, and wait in bounded
