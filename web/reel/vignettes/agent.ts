@@ -253,7 +253,7 @@ export default {
       session: sid,
       body: JSON.stringify({ if_version: 1, note: NOTE, addresses: [tid], files: { "index.html": { content: v2, encoding: "utf8" } } }),
     }));
-    const reload = alex.getByRole("button", { name: "Reload", exact: true });
+    const reload = alex.locator(".topbar button.reload");
     await d.until(async () => (await reload.count()) > 0, "Alex's view offers version 2");
     await d.hold(150);
     const at = await reload.boundingBox();
