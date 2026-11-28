@@ -323,6 +323,17 @@ impl Run {
     pub fn artifact(&self) -> Option<&str> {
         Some(self.artifact_id.as_str()).filter(|a| !a.is_empty())
     }
+
+    /// Whether the run's rights apply only at its own artifact: true for a
+    /// brief's run that an agent's grant asked for ([`Run::agent_grant`]).
+    /// Such a run has no rights at another artifact
+    /// ([`crate::Store::bot_rights`]), and it creates no artifact. The
+    /// answer does not depend on whether the run has an artifact. Such a
+    /// run without an artifact has no rights.
+    #[must_use]
+    pub fn is_limited_to_its_artifact(&self) -> bool {
+        self.request == RequestKind::Brief && self.agent_grant.is_some()
+    }
 }
 
 /// One step.

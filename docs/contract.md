@@ -10452,7 +10452,11 @@ counted at 3 bytes a token (the row is marked `estimated`).
 **Runs** (`bot_runs`, `bot_steps`, `bot_draft_files`, `bot_calls`): a run
 an agent sent keeps that agent's grant (`agent_grant`), and every write and
 read it makes takes the person's rights narrowed by the grant, refused once
-the grant ends. A run made by a send is made in the transaction that checks
+the grant ends. A brief's run that an agent's grant asked for is limited to
+its own artifact. Its rights are the grant's rights at that artifact
+alone, without `create`. Such a run without an artifact has no rights.
+Its `artifacts.create` is refused `forbidden`.
+A run made by a send is made in the transaction that checks
 no other run that has not ended names one of its threads
 (`create_run_exclusive`); otherwise the route answers 409 `run_active`
 with that run's ID (`{error: {code, message, run: {id}}}`). A run
